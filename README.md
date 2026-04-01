@@ -35,7 +35,6 @@ Grab the binary for your platform from [Releases](https://github.com/chauduyphan
 | Platform | File |
 |----------|------|
 | macOS (Apple Silicon) | `deals-macos-arm64` |
-| macOS (Intel) | `deals-macos-x64` |
 | Linux (x64) | `deals-linux-x64` |
 | Windows (x64) | `deals-windows-x64.exe` |
 

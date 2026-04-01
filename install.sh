@@ -44,10 +44,15 @@ detect_platform() {
             ;;
     esac
 
-    # macOS x64 build is available; Linux is x64 only
+    # Only arm64 macOS and x64 Linux binaries are available
     if [ "$os" = "linux" ] && [ "$arch" = "arm64" ]; then
         echo "Error: Linux arm64 binaries are not available yet." >&2
         echo "Install from source instead: pip install audible-deals" >&2
+        exit 1
+    fi
+    if [ "$os" = "macos" ] && [ "$arch" = "x64" ]; then
+        echo "Error: macOS Intel binaries are not available. Install from source:" >&2
+        echo "  pip install audible-deals" >&2
         exit 1
     fi
 

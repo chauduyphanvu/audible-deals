@@ -84,8 +84,6 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: deals-linux-x64
-          - os: macos-13
-            artifact: deals-macos-x64
           - os: macos-latest
             artifact: deals-macos-arm64
           - os: windows-latest
@@ -137,6 +135,5 @@ jobs:
           files: |
             python-dist/*
             deals-linux-x64/deals-linux-x64
-            deals-macos-x64/deals-macos-x64
             deals-macos-arm64/deals-macos-arm64
             deals-windows-x64.exe/deals-windows-x64.exe
