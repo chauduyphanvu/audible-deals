@@ -305,6 +305,77 @@ deals completions zsh >> ~/.zshrc
 deals completions fish > ~/.config/fish/completions/deals.fish
 ```
 
+## Advanced recipes
+
+These combine flags and commands for power-user workflows.
+
+### Find new series by a favorite narrator
+
+```bash
+deals find --narrator "R.C. Bray" --max-price 5 --first-in-series --skip-owned
+```
+
+Only book 1s, only stuff you don't own, only narrated by that person.
+
+### Profiles for different moods
+
+```bash
+deals profile save long-cheap --max-price 3 --min-hours 15 --sort price-per-hour --deep
+deals profile save hidden-gems --max-price 5 --min-rating 4.5 --min-ratings 50 --first-in-series
+deals profile save binge-series --max-price 5 --min-hours 20 --sort price-per-hour
+
+# Then just:
+deals find --profile long-cheap --skip-owned
+```
+
+### Cross-locale price comparison
+
+```bash
+deals detail B00R6S1RCY                    # US price
+deals --locale uk detail B00R6S1RCY        # UK price
+deals --locale de detail B00R6S1RCY        # DE price
+```
+
+Same book, different prices across marketplaces. Sometimes one store has a deeper cut.
+
+### Custom filtering with jq
+
+`--json` lets you filter beyond what the built-in flags support (requires [jq](https://jqlang.github.io/jq/)):
+
+```bash
+# Books with 1000+ ratings and 80%+ discount, sorted by popularity
+deals find --genre sci-fi --max-price 5 --json | \
+  jq '[.[] | select(.num_ratings > 1000 and .discount_pct > 80)] | sort_by(-.num_ratings)'
+
+# Just grab ASINs for scripting
+deals find --genre thriller --max-price 3 --json | jq -r '.[].asin'
+```
+
+### Daily sweep script
+
+```bash
+#!/bin/bash
+for genre in sci-fi thriller mystery romance; do
+  echo "=== $genre ==="
+  deals find --genre "$genre" --max-price 3 --skip-owned --deep -n 5 -q -o "deals-${genre}.csv"
+done
+```
+
+### Automated deal alerts (cron + webhook)
+
+Load up your wishlist, then schedule `notify`:
+
+```bash
+# Add books you're watching
+deals wishlist add B00R6S1RCY B082FKF7RC --max-price 3
+
+# Cron job — check every morning at 8am, ping Slack when something hits target
+# Add to crontab with: crontab -e
+0 8 * * * deals notify --webhook https://hooks.slack.com/services/XXX/YYY/ZZZ
+```
+
+Without `--webhook`, `notify` prints JSON to stdout — useful for piping into other tools.
+
 ## Development
 
 ```bash
