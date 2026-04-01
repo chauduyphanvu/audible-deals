@@ -16,10 +16,10 @@ from audible_deals.client import Product
 console = Console()
 
 
-def price_str(price: float | None) -> str:
+def price_str(price: float | None, currency: str = "$") -> str:
     if price is None:
         return "-"
-    return f"${price:.2f}"
+    return f"{currency}{price:.2f}"
 
 
 def rating_str(rating: float, num_ratings: int = 0) -> str:
@@ -45,11 +45,11 @@ def _discount_color(pct: int) -> str:
     return "dim"
 
 
-def _pph_str(price: float | None, hours: float) -> str:
+def _pph_str(price: float | None, hours: float, currency: str = "$") -> str:
     """Format price-per-hour."""
     if price is None or hours <= 0:
         return "-"
-    return f"${price / hours:.2f}"
+    return f"{currency}{price / hours:.2f}"
 
 
 def display_products(
@@ -78,8 +78,9 @@ def display_products(
     table.add_column("Rating", justify="right", width=10)
 
     for i, p in enumerate(products, 1):
+        cur = p.currency
         # Price cell: combine current, original, and discount
-        p_str = price_str(p.price)
+        p_str = price_str(p.price, cur)
         if p.price is not None and max_price is not None:
             if p.price <= max_price * 0.6:
                 p_str = f"[bold green]{p_str}[/bold green]"
@@ -90,12 +91,17 @@ def display_products(
         d = p.discount_pct
         if d and d > 0 and p.list_price:
             color = _discount_color(d)
-            p_str += f" [dim]${p.list_price:.0f}[/dim] [{color}]-{d}%[/{color}]"
+            p_str += f" [dim]{cur}{p.list_price:.0f}[/dim] [{color}]-{d}%[/{color}]"
 
-        # Title + author + ASIN combined
+        # Title + series + author + ASIN combined
         title_line = p.title
         if p.in_plus_catalog:
             title_line += " [magenta][+][/magenta]"
+        if p.series_name:
+            series_tag = p.series_name
+            if p.series_position:
+                series_tag += f" #{p.series_position}"
+            title_line += f" [dim italic]({series_tag})[/dim italic]"
         meta = p.authors_str
         if meta:
             meta += f"  [cyan]{p.asin}[/cyan]"
@@ -108,7 +114,7 @@ def display_products(
             title_line,
             p_str,
             str(p.hours) if p.hours else "-",
-            _pph_str(p.price, p.hours),
+            _pph_str(p.price, p.hours, cur),
             rating_str(p.rating, p.num_ratings),
         )
 
@@ -146,9 +152,10 @@ def display_product_detail(p: Product) -> None:
 
     lines.append("")
 
-    price_line = f"  [dim]Price:[/dim]      {price_str(p.price)}"
+    cur = p.currency
+    price_line = f"  [dim]Price:[/dim]      {price_str(p.price, cur)}"
     if p.list_price and p.price != p.list_price:
-        price_line += f"  [dim](was {price_str(p.list_price)})[/dim]"
+        price_line += f"  [dim](was {price_str(p.list_price, cur)})[/dim]"
     if p.discount_pct and p.discount_pct > 0:
         price_line += f"  [bold yellow]-{p.discount_pct}% off[/bold yellow]"
     lines.append(price_line)
@@ -199,11 +206,11 @@ def display_comparison(products: list[Product]) -> None:
         ("Title", [p.title for p in products]),
         ("Author", [p.authors_str for p in products]),
         ("Narrator", [p.narrators_str for p in products]),
-        ("Price", [price_str(p.price) for p in products]),
-        ("List Price", [price_str(p.list_price) for p in products]),
+        ("Price", [price_str(p.price, p.currency) for p in products]),
+        ("List Price", [price_str(p.list_price, p.currency) for p in products]),
         ("Discount", [discount_str(p.discount_pct) or "-" for p in products]),
         ("Hours", [str(p.hours) if p.hours else "-" for p in products]),
-        ("$/hr", [_pph_str(p.price, p.hours) for p in products]),
+        ("$/hr", [_pph_str(p.price, p.hours, p.currency) for p in products]),
         ("Rating", [rating_str(p.rating, p.num_ratings) for p in products]),
         ("Series", [
             f"{p.series_name} #{p.series_position}" if p.series_name else "-"
@@ -225,7 +232,7 @@ def display_comparison(products: list[Product]) -> None:
         best = min(priced, key=lambda p: p.price / p.hours)
         console.print(
             f"\n  Best value: [bold green]{best.title}[/bold green] "
-            f"at {_pph_str(best.price, best.hours)}/hr"
+            f"at {_pph_str(best.price, best.hours, best.currency)}/hr"
         )
 
 
@@ -247,11 +254,16 @@ def display_summary(
     max_price: float | None = None,
     editions_removed: int = 0,
     series_collapsed: int = 0,
+    currency: str = "$",
+    total_before_limit: int | None = None,
 ) -> None:
     """Print a summary line after filtering."""
-    parts = [f"[bold]{shown}[/bold] deals found"]
+    if total_before_limit is not None and total_before_limit > shown:
+        parts = [f"[bold]{shown}[/bold] of {total_before_limit} deals shown"]
+    else:
+        parts = [f"[bold]{shown}[/bold] deals found"]
     if max_price is not None:
-        parts[0] += f" under [green]${max_price:.2f}[/green]"
+        parts[0] += f" under [green]{currency}{max_price:.2f}[/green]"
     detail_parts = []
     if filtered_out > 0:
         detail_parts.append(f"{filtered_out} filtered out")

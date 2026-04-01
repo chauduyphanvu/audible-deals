@@ -34,6 +34,19 @@ CATALOG_RESPONSE_GROUPS = ",".join([
     "price",
 ])
 
+# Locale → currency symbol and Audible domain
+LOCALE_CURRENCY: dict[str, str] = {
+    "us": "$", "uk": "£", "ca": "CA$", "au": "A$",
+    "in": "₹", "de": "€", "fr": "€", "jp": "¥", "es": "€",
+}
+LOCALE_DOMAIN: dict[str, str] = {
+    "us": "www.audible.com", "uk": "www.audible.co.uk",
+    "ca": "www.audible.ca", "au": "www.audible.com.au",
+    "in": "www.audible.in", "de": "www.audible.de",
+    "fr": "www.audible.fr", "jp": "www.audible.co.jp",
+    "es": "www.audible.es",
+}
+
 CONFIG_DIR = Path.home() / ".config" / "audible-deals"
 AUTH_FILE = CONFIG_DIR / "auth.json"
 CATEGORIES_CACHE_FILE = CONFIG_DIR / "categories_cache.json"
@@ -107,6 +120,7 @@ class Product:
     language: str = ""
     release_date: str = ""
     in_plus_catalog: bool = False
+    locale: str = "us"
 
     @property
     def full_title(self) -> str:
@@ -133,11 +147,16 @@ class Product:
         return ", ".join(self.narrators[:2])
 
     @property
+    def currency(self) -> str:
+        return LOCALE_CURRENCY.get(self.locale, "$")
+
+    @property
     def url(self) -> str:
-        return f"https://www.audible.com/pd/{self.asin}"
+        domain = LOCALE_DOMAIN.get(self.locale, "www.audible.com")
+        return f"https://{domain}/pd/{self.asin}"
 
 
-def parse_product(raw: dict[str, Any]) -> Product:
+def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     """Parse a raw API product dict into a Product.
 
     Handles the nested response format from Audible's catalog API,
@@ -213,6 +232,7 @@ def parse_product(raw: dict[str, Any]) -> Product:
         language=raw.get("language", ""),
         release_date=raw.get("release_date", ""),
         in_plus_catalog=in_plus,
+        locale=locale,
     )
 
 
@@ -409,7 +429,7 @@ class DealsClient:
         if isinstance(resp, tuple):
             resp = resp[0]
 
-        products = [parse_product(p) for p in resp.get("products", [])]
+        products = [parse_product(p, locale=self.locale) for p in resp.get("products", [])]
         total = resp.get("total_results", len(products))
 
         return products, total
@@ -599,7 +619,7 @@ class DealsClient:
             if isinstance(resp, tuple):
                 resp = resp[0]
             for raw in resp.get("products", []):
-                product = parse_product(raw)
+                product = parse_product(raw, locale=self.locale)
                 if product.asin and product.title:
                     results.append(product)
         return results
