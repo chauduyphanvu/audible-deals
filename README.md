@@ -336,6 +336,12 @@ All data is stored locally in `~/.config/audible-deals/`:
 - [audible](https://github.com/mkb79/Audible) by mkb79 — the Python package that makes Audible API access possible
 - [Libation](https://github.com/rmcrackan/Libation) — an excellent open-source Audible library manager whose source code was invaluable as a reference for understanding Audible's undocumented API (response groups, batch patterns, category structures, auth token format). Auth tokens exported from Libation can be imported directly via `deals import-auth`.
 
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup, coding guidelines, and how to submit a PR. Please read the [Code of Conduct](CODE_OF_CONDUCT.md) before participating.
+
+To report a security vulnerability, see [SECURITY.md](SECURITY.md).
+
 ## License
 
-MIT
+[MIT](LICENSE)

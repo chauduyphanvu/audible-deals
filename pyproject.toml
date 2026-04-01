@@ -2,12 +2,32 @@
 name = "audible-deals"
 version = "0.3.0"
 description = "CLI to find and sort Audible audiobook deals by price and genre"
+readme = "README.md"
+license = { text = "MIT" }
 requires-python = ">=3.11"
+keywords = ["audible", "audiobook", "deals", "cli", "price-tracker"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Environment :: Console",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Multimedia :: Sound/Audio",
+]
 dependencies = [
     "audible>=0.8.0",
     "click>=8.1",
     "rich>=13.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/chauduyphanvu/audible-deals"
+Repository = "https://github.com/chauduyphanvu/audible-deals"
+Issues = "https://github.com/chauduyphanvu/audible-deals/issues"
+Changelog = "https://github.com/chauduyphanvu/audible-deals/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
