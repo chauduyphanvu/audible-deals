@@ -127,7 +127,7 @@ jobs:
         run: find . -type f | head -20
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@da05d552573ad5aba039eaac05058a918a7bf631  # v2.2.2
+        uses: softprops/action-gh-release@153bb8e04406b158c6c84fc1615b65b24149a1fe  # v2.6.1
         with:
           tag_name: "v${{ inputs.version }}"
           name: "v${{ inputs.version }}"
