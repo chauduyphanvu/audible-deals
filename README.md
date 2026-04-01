@@ -20,8 +20,34 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 
 ### Install
 
+**One-liner (macOS / Linux):**
+
 ```bash
-# Clone and install (requires Python 3.11+)
+curl -fsSL https://raw.githubusercontent.com/chauduyphanvu/audible-deals/main/install.sh | bash
+```
+
+This detects your OS and architecture, downloads the right binary, and installs it to `~/.local/bin`.
+
+**Manual download:**
+
+Grab the binary for your platform from [Releases](https://github.com/chauduyphanvu/audible-deals/releases/latest):
+
+| Platform | File |
+|----------|------|
+| macOS (Apple Silicon) | `deals-macos-arm64` |
+| macOS (Intel) | `deals-macos-x64` |
+| Linux (x64) | `deals-linux-x64` |
+| Windows (x64) | `deals-windows-x64.exe` |
+
+```bash
+# Example: macOS Apple Silicon
+chmod +x deals-macos-arm64
+sudo mv deals-macos-arm64 /usr/local/bin/deals
+```
+
+**From source (requires Python 3.11+):**
+
+```bash
 git clone https://github.com/chauduyphanvu/audible-deals.git
 cd audible-deals
 pip install -e .
