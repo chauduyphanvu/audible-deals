@@ -5,10 +5,12 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import click
 import pytest
 from click.testing import CliRunner
 
 from audible_deals.cli import (
+    _validate_webhook_url,
     _dedupe_editions,
     _export_products,
     _filter_products,
@@ -557,3 +559,111 @@ class TestCompletionsCommand:
         result = runner.invoke(cli, ["completions", "--help"])
         assert result.exit_code == 0
         assert "bash" in result.output
+
+    def test_completions_no_shell_invocation(self, monkeypatch):
+        """Verify subprocess.run is called directly, not via /bin/sh -c."""
+        import subprocess as sp
+        calls = []
+
+        def fake_run(*args, **kwargs):
+            calls.append((args, kwargs))
+            return sp.CompletedProcess(args[0], 0, stdout="# completion", stderr="")
+
+        monkeypatch.setattr("subprocess.run", fake_run)
+        monkeypatch.setattr("shutil.which", lambda _: None)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["completions", "bash"])
+        assert result.exit_code == 0
+        assert len(calls) == 1
+        cmd = calls[0][0][0]
+        assert "/bin/sh" not in cmd
+        assert "env" in calls[0][1]
+        assert "_DEALS_COMPLETE" in calls[0][1]["env"]
+
+
+# ===================================================================
+# ASIN validation in commands
+# ===================================================================
+
+class TestAsinValidationInCommands:
+    def test_detail_rejects_path_traversal(self, tmp_config, mock_client):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["detail", "../../../etc/passwd"])
+        assert result.exit_code != 0
+        assert "Invalid ASIN" in result.output
+
+    def test_detail_accepts_valid_asin(self, mock_client, tmp_config):
+        mock_client.get_product.return_value = make_product(asin="B00VALID")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["detail", "B00VALID"])
+        assert result.exit_code == 0
+
+    def test_open_rejects_path_traversal(self, tmp_config, mock_client):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["open", "../../etc/passwd"])
+        assert result.exit_code != 0
+        assert "Invalid ASIN" in result.output
+
+    def test_compare_rejects_bad_asin(self, tmp_config, mock_client):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["compare", "B00GOOD", "../bad"])
+        assert result.exit_code != 0
+        assert "Invalid ASIN" in result.output
+
+
+# ===================================================================
+# Webhook URL validation
+# ===================================================================
+
+class TestWebhookValidation:
+    def test_rejects_non_http_scheme(self):
+        with pytest.raises(click.BadParameter, match="http://"):
+            _validate_webhook_url("ftp://example.com/hook")
+
+    def test_rejects_no_host(self):
+        with pytest.raises(click.BadParameter, match="host"):
+            _validate_webhook_url("http://")
+
+    def test_rejects_localhost(self):
+        with pytest.raises(click.BadParameter, match="non-public"):
+            _validate_webhook_url("http://localhost/hook")
+
+    def test_rejects_127_0_0_1(self):
+        with pytest.raises(click.BadParameter, match="non-public"):
+            _validate_webhook_url("http://127.0.0.1/hook")
+
+    def test_rejects_private_ip(self, monkeypatch):
+        import socket
+        monkeypatch.setattr(
+            "audible_deals.cli.socket.getaddrinfo",
+            lambda host, port: [(socket.AF_INET, 0, 0, "", ("10.0.0.1", 0))],
+        )
+        with pytest.raises(click.BadParameter, match="non-public"):
+            _validate_webhook_url("https://internal.corp/hook")
+
+    def test_rejects_link_local(self, monkeypatch):
+        import socket
+        monkeypatch.setattr(
+            "audible_deals.cli.socket.getaddrinfo",
+            lambda host, port: [(socket.AF_INET, 0, 0, "", ("169.254.169.254", 0))],
+        )
+        with pytest.raises(click.BadParameter, match="non-public"):
+            _validate_webhook_url("https://metadata.internal/hook")
+
+    def test_accepts_public_ip(self, monkeypatch):
+        import socket
+        monkeypatch.setattr(
+            "audible_deals.cli.socket.getaddrinfo",
+            lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
+        )
+        _validate_webhook_url("https://example.com/hook")  # should not raise
+
+    def test_rejects_unresolvable_host(self, monkeypatch):
+        import socket
+        monkeypatch.setattr(
+            "audible_deals.cli.socket.getaddrinfo",
+            lambda host, port: (_ for _ in ()).throw(socket.gaierror("Name not resolved")),
+        )
+        with pytest.raises(click.BadParameter, match="Cannot resolve"):
+            _validate_webhook_url("https://nonexistent.invalid/hook")

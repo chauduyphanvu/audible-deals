@@ -286,7 +286,7 @@ deals completions fish > ~/.config/fish/completions/deals.fish
 # Install with dev dependencies
 pip install -e ".[dev]"
 
-# Run tests (151 tests, ~0.2s)
+# Run tests (178 tests, ~0.2s)
 pytest tests/ -v
 
 # Run only integration tests
@@ -305,6 +305,11 @@ All data is stored locally in `~/.config/audible-deals/`:
 - `profiles.json` — saved search profiles
 - `history/` — per-ASIN price history (one JSON file per book)
 - `categories_cache.*.json` — cached category listings per locale
+
+## Acknowledgements
+
+- [audible](https://github.com/mkb79/Audible) by mkb79 — the Python package that makes Audible API access possible
+- [Libation](https://github.com/rmcrackan/Libation) — an excellent open-source Audible library manager whose source code was invaluable as a reference for understanding Audible's undocumented API (response groups, batch patterns, category structures, auth token format). Auth tokens exported from Libation can be imported directly via `deals import-auth`.
 
 ## License
 

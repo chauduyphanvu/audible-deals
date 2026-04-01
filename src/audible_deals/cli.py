@@ -22,12 +22,13 @@ from __future__ import annotations
 
 import csv
 import datetime
+import ipaddress
 import json as json_mod
 import math
 import os
 import re
 import readline  # noqa: F401 — required on macOS for input() with long strings
-import shlex
+import socket
 import sys
 import tempfile
 import urllib.parse
@@ -56,6 +57,36 @@ def _validate_asin(asin: str) -> None:
     """Validate that an ASIN is alphanumeric and won't cause path traversal."""
     if not _ASIN_RE.fullmatch(asin):
         raise click.BadParameter(f"Invalid ASIN format: {asin!r}")
+
+
+def _validate_webhook_url(url: str) -> None:
+    """Validate webhook URL: must be http(s) and must not resolve to private IPs."""
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise click.BadParameter(
+            f"Webhook URL must use http:// or https://, got {parsed.scheme!r}",
+            param_hint="'--webhook'",
+        )
+    hostname = parsed.hostname
+    if not hostname:
+        raise click.BadParameter(
+            "Webhook URL must include a host",
+            param_hint="'--webhook'",
+        )
+    try:
+        addrinfos = socket.getaddrinfo(hostname, None)
+    except socket.gaierror as e:
+        raise click.BadParameter(
+            f"Cannot resolve webhook host {hostname!r}: {e}",
+            param_hint="'--webhook'",
+        )
+    for _family, _type, _proto, _canonname, sockaddr in addrinfos:
+        ip = ipaddress.ip_address(sockaddr[0])
+        if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+            raise click.BadParameter(
+                f"Webhook URL resolves to non-public address {ip}",
+                param_hint="'--webhook'",
+            )
 
 
 def _atomic_write(path: Path, content: str) -> None:
@@ -739,6 +770,7 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
 @click.pass_context
 def detail(ctx, asin):
     """Show detailed info for a product by ASIN."""
+    _validate_asin(asin)
     dc = _get_client(ctx.obj["locale"])
     with dc:
         try:
@@ -754,6 +786,7 @@ def detail(ctx, asin):
 @click.pass_context
 def open_cmd(ctx, asin):
     """Open an audiobook's Audible page in your browser."""
+    _validate_asin(asin)
     from audible_deals.client import LOCALE_DOMAIN
     domain = LOCALE_DOMAIN.get(ctx.obj["locale"], "www.audible.com")
     url = f"https://{domain}/pd/{asin}"
@@ -773,6 +806,9 @@ def compare(ctx, asins):
     """
     if len(asins) < 2:
         raise click.UsageError("Provide at least 2 ASINs to compare.")
+
+    for asin in asins:
+        _validate_asin(asin)
 
     dc = _get_client(ctx.obj["locale"])
     with dc:
@@ -1266,14 +1302,7 @@ def notify(ctx, webhook):
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
     if webhook:
-        parsed = urllib.parse.urlparse(webhook)
-        if parsed.scheme not in ("http", "https"):
-            raise click.BadParameter(
-                f"Webhook URL must use http:// or https://, got {parsed.scheme!r}",
-                param_hint="'--webhook'",
-            )
-        if not parsed.netloc:
-            raise click.BadParameter("Webhook URL must include a host", param_hint="'--webhook'")
+        _validate_webhook_url(webhook)
 
     items = _load_wishlist()
     if not items:
@@ -1331,20 +1360,24 @@ def completions(shell):
     import shutil
     import subprocess
 
-    # Find the deals entry point script
+    env = {**os.environ, "_DEALS_COMPLETE": f"{shell}_source"}
+
     deals_bin = shutil.which("deals")
     if deals_bin:
-        shell_cmd = shlex.quote(deals_bin)
+        result = subprocess.run(
+            [deals_bin],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
     else:
-        # Fall back to running via python -m
-        shell_cmd = f"{shlex.quote(sys.executable)} -m audible_deals"
+        result = subprocess.run(
+            [sys.executable, "-m", "audible_deals"],
+            capture_output=True,
+            text=True,
+            env=env,
+        )
 
-    env_var = f"_DEALS_COMPLETE={shell}_source"
-    result = subprocess.run(
-        ["/bin/sh", "-c", f"{env_var} {shell_cmd}"],
-        capture_output=True,
-        text=True,
-    )
     if result.stdout:
         click.echo(result.stdout)
     else:

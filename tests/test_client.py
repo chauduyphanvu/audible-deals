@@ -8,9 +8,11 @@ import time
 import pytest
 
 from audible_deals.client import (
+    LOCALE_DOMAIN,
     Product,
     _extract_list_price,
     _extract_price,
+    _validate_category_id,
     parse_product,
 )
 from tests.conftest import RAW_API_PRODUCT, RAW_API_PRODUCT_MINIMAL, make_product
@@ -250,3 +252,108 @@ class TestResolveGenre:
         dc = self._make_client_with_cats(cats)
         with pytest.raises(ValueError, match="No genre matching"):
             dc.resolve_genre("zzzznothing")
+
+
+# ===================================================================
+# Category ID validation
+# ===================================================================
+
+class TestCategoryIdValidation:
+    def test_valid_numeric_id(self):
+        _validate_category_id("18580606011")  # should not raise
+
+    def test_valid_alphanumeric_id(self):
+        _validate_category_id("ABC123")  # should not raise
+
+    def test_valid_with_underscore(self):
+        _validate_category_id("cat_fiction")  # should not raise
+
+    def test_rejects_path_traversal(self):
+        with pytest.raises(ValueError, match="Invalid category ID"):
+            _validate_category_id("../../etc/passwd")
+
+    def test_rejects_slash(self):
+        with pytest.raises(ValueError, match="Invalid category ID"):
+            _validate_category_id("cat/sub")
+
+    def test_rejects_empty(self):
+        with pytest.raises(ValueError, match="Invalid category ID"):
+            _validate_category_id("")
+
+    def test_rejects_too_long(self):
+        with pytest.raises(ValueError, match="Invalid category ID"):
+            _validate_category_id("a" * 31)
+
+    def test_rejects_query_injection(self):
+        with pytest.raises(ValueError, match="Invalid category ID"):
+            _validate_category_id("123?foo=bar")
+
+
+# ===================================================================
+# Import-auth validation
+# ===================================================================
+
+class TestImportAuthValidation:
+    def test_rejects_oversized_file(self, api):
+        from audible_deals.client import DealsClient
+        big_file = api.tmp_path / "big.json"
+        big_file.write_text("x" * 1_100_000)
+
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with pytest.raises(ValueError, match="too large"):
+            dc.import_auth(big_file)
+
+    def test_rejects_missing_access_token(self, api):
+        from audible_deals.client import DealsClient
+        src = api.tmp_path / "bad.json"
+        src.write_text(json.dumps({"refresh_token": "rt"}))
+
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with pytest.raises(ValueError, match="access_token"):
+            dc.import_auth(src)
+
+    def test_rejects_missing_refresh_token(self, api):
+        from audible_deals.client import DealsClient
+        src = api.tmp_path / "bad.json"
+        src.write_text(json.dumps({"access_token": "at"}))
+
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with pytest.raises(ValueError, match="refresh_token"):
+            dc.import_auth(src)
+
+    def test_rejects_invalid_locale_code(self, api):
+        from audible_deals.client import DealsClient
+        src = api.tmp_path / "bad.json"
+        src.write_text(json.dumps({
+            "access_token": "at", "refresh_token": "rt",
+            "locale_code": "xx_invalid",
+        }))
+
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with pytest.raises(ValueError, match="Unknown locale_code"):
+            dc.import_auth(src)
+
+    def test_accepts_valid_auth(self, api):
+        from audible_deals.client import DealsClient
+        src = api.tmp_path / "good.json"
+        src.write_text(json.dumps({
+            "access_token": "at", "refresh_token": "rt",
+            "locale_code": "us",
+        }))
+
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        dc.import_auth(src)
+        written = json.loads(dc.auth_file.read_text())
+        assert written["access_token"] == "at"
+        assert written["encryption"] is False
+
+    def test_libation_rejects_missing_tokens(self, api):
+        from audible_deals.client import DealsClient
+        src = api.tmp_path / "libation_bad.json"
+        src.write_text(json.dumps({
+            "Accounts": [{"IdentityTokens": {"access_token": ""}}]
+        }))
+
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with pytest.raises(ValueError, match="Libation auth missing"):
+            dc.import_auth(src)

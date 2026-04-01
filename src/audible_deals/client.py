@@ -1,17 +1,12 @@
-"""Audible API client for catalog browsing and deal discovery.
-
-Architecture informed by Libation's AudibleUtilities/ApiExtended.cs:
-- Response group selection matching Libation's catalog query patterns
-- Batch sizing (50 items) and concurrency patterns
-- Price/category field parsing from AudibleApi.Common.Item model
-- Auth token format from Mkb79Auth.cs (shared with Python audible package)
-"""
+"""Audible API client for catalog browsing and deal discovery."""
 
 from __future__ import annotations
 
+import contextlib
 import difflib
 import json
 import os
+import re
 import tempfile
 import time
 from dataclasses import dataclass, field
@@ -20,9 +15,7 @@ from typing import Any, Iterator
 
 import audible
 
-# Response groups for catalog queries, matching Libation's comprehensive set.
-# ref: Libation/Source/ApplicationServices/LibraryCommands.cs:124-130
-# ref: Libation/Source/AudibleUtilities/ApiExtended.cs:231-235
+# Response groups for catalog queries — comprehensive set for full product data.
 CATALOG_RESPONSE_GROUPS = ",".join([
     "product_attrs",
     "product_desc",
@@ -68,7 +61,28 @@ def _atomic_write_simple(path: Path, content: str) -> None:
         raise
 
 
-# Matches Libation's BatchSize constant (ApiExtended.cs:26)
+_CATEGORY_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,30}$")
+
+
+def _validate_category_id(value: str) -> None:
+    """Validate category ID to prevent URL path injection."""
+    if not _CATEGORY_ID_RE.fullmatch(value):
+        raise ValueError(f"Invalid category ID format: {value!r}")
+
+
+@contextlib.contextmanager
+def _restrictive_umask():
+    """Temporarily set umask to 0o177 so new files are created at 0o600.
+
+    umask is process-global; safe for this single-threaded CLI.
+    """
+    old = os.umask(0o177)
+    try:
+        yield
+    finally:
+        os.umask(old)
+
+
 MAX_PAGE_SIZE = 50
 
 # Common genre abbreviations for fuzzy matching
@@ -112,11 +126,7 @@ GENRE_ALIASES: dict[str, str] = {
 
 @dataclass
 class Product:
-    """Audiobook product from Audible catalog.
-
-    Field mapping follows Libation's DataLayer/EfClasses/Book.cs entity
-    and AudibleApi.Common.Item model.
-    """
+    """Audiobook product from Audible catalog."""
 
     asin: str
     title: str
@@ -175,8 +185,7 @@ class Product:
 def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     """Parse a raw API product dict into a Product.
 
-    Handles the nested response format from Audible's catalog API,
-    mirroring Libation's DtoImporterService item mapping logic.
+    Handles the nested response format from Audible's catalog API.
     """
     price = _extract_price(raw)
     list_price = _extract_list_price(raw)
@@ -200,7 +209,6 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
             pass
 
     # Categories - flatten ladder structure
-    # ref: Libation DataLayer/EfClasses/CategoryLadder.cs
     categories: list[str] = []
     category_ids: list[str] = []
     for ladder in raw.get("category_ladders", []):
@@ -221,7 +229,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
         series_name = s.get("title", "")
         series_position = s.get("sequence", "")
 
-    # Audible Plus detection (ref: Libation checks IsAyce / Plans)
+    # Audible Plus detection
     in_plus = False
     for plan in raw.get("plans", []):
         pname = plan.get("plan_name", "")
@@ -287,11 +295,7 @@ def _extract_list_price(raw: dict) -> float | None:
 
 
 class DealsClient:
-    """Audible API client for catalog browsing.
-
-    Concurrency and pagination patterns match Libation's ApiExtended.cs
-    (MaxConcurrency=10, BatchSize=50).
-    """
+    """Audible API client for catalog browsing."""
 
     def __init__(self, auth_file: Path = AUTH_FILE, locale: str = "us"):
         self.auth_file = auth_file
@@ -310,7 +314,8 @@ class DealsClient:
             locale=self.locale,
             with_username=True,
         )
-        auth.to_file(self.auth_file)
+        with _restrictive_umask():
+            auth.to_file(self.auth_file)
         os.chmod(self.auth_file, 0o600)
 
     def login_external(self, callback_url_file: Path | None = None) -> None:
@@ -356,28 +361,35 @@ class DealsClient:
                 locale=self.locale,
             )
 
-        auth.to_file(self.auth_file)
+        with _restrictive_umask():
+            auth.to_file(self.auth_file)
         os.chmod(self.auth_file, 0o600)
 
     def import_auth(self, source_path: Path) -> None:
-        """Import auth from an audible-cli or Libation-exported JSON file.
-
-        The Mkb79Auth format used by Libation (Mkb79Auth.cs) is directly
-        compatible with the Python audible package's auth file format.
-        Both share the same JSON keys: access_token, refresh_token,
-        adp_token, device_private_key, device_info, customer_info, etc.
-        """
+        """Import auth from an audible-cli or Libation-exported JSON file."""
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.auth_file.parent, 0o700)
-        data = json.loads(source_path.read_text())
+
+        raw = source_path.read_text()
+        if len(raw) > 1_000_000:
+            raise ValueError(
+                f"Auth file too large ({len(raw):,} chars). "
+                "Expected a small JSON credentials file."
+            )
+
+        data = json.loads(raw)
 
         # Libation's AccountsSettings.json wraps tokens in an Accounts array.
-        # Each account has IdentityTokens in Mkb79Auth format.
         if "Accounts" in data:
             accounts = data["Accounts"]
             if not accounts:
                 raise ValueError("No accounts found in Libation settings")
             tokens = accounts[0].get("IdentityTokens", {})
+            for key in ("access_token", "refresh_token"):
+                if not isinstance(tokens.get(key), str) or not tokens[key]:
+                    raise ValueError(
+                        f"Libation auth missing required key: {key!r}"
+                    )
             auth_data = {
                 "website_cookies": tokens.get("website_cookies"),
                 "adp_token": tokens.get("adp_token"),
@@ -397,7 +409,17 @@ class DealsClient:
             _atomic_write_simple(self.auth_file, json.dumps(auth_data, indent=2))
             os.chmod(self.auth_file, 0o600)
         else:
-            # Already in audible-cli / Mkb79Auth format
+            # Already in audible-cli / Mkb79Auth format — validate required keys
+            for key in ("access_token", "refresh_token"):
+                if not isinstance(data.get(key), str) or not data[key]:
+                    raise ValueError(
+                        f"Auth file missing required key: {key!r}"
+                    )
+            if "locale_code" in data and data["locale_code"] not in LOCALE_DOMAIN:
+                raise ValueError(
+                    f"Unknown locale_code: {data['locale_code']!r}. "
+                    f"Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
+                )
             if "encryption" not in data:
                 data["encryption"] = False
             _atomic_write_simple(self.auth_file, json.dumps(data, indent=2))
@@ -556,6 +578,7 @@ class DealsClient:
 
     def get_category_name(self, category_id: str) -> str:
         """Look up a category's display name by ID."""
+        _validate_category_id(category_id)
         try:
             resp = self.client.get(f"1.0/catalog/categories/{category_id}")
             if isinstance(resp, tuple):
@@ -588,6 +611,7 @@ class DealsClient:
         Top-level categories are cached to disk for 7 days to save API calls.
         """
         if root:
+            _validate_category_id(root)
             # Subcategories: fetch children of a specific category
             resp = self.client.get(f"1.0/catalog/categories/{root}")
             if isinstance(resp, tuple):
@@ -625,8 +649,7 @@ class DealsClient:
     def get_products_batch(self, asins: list[str]) -> list[Product]:
         """Fetch multiple products in batches of up to 50.
 
-        Uses the plural catalog endpoint with comma-separated ASINs
-        (like Libation's GetCatalogProductsAsync).
+        Uses the plural catalog endpoint with comma-separated ASINs.
         Returns products in arbitrary order; missing ASINs are silently skipped.
         """
         results: list[Product] = []
