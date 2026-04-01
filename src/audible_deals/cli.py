@@ -500,7 +500,10 @@ def categories(ctx, parent):
     """List Audible categories. Use --parent to drill into subcategories."""
     dc = _get_client(ctx.obj["locale"])
     with dc:
-        cats = dc.get_categories(root=parent)
+        try:
+            cats = dc.get_categories(root=parent)
+        except ValueError as e:
+            raise click.ClickException(str(e))
 
     title = "Subcategories" if parent else "Top-Level Categories"
     display_categories(cats, title=title)
@@ -558,7 +561,10 @@ def search(ctx, query, max_price, category, genre, exclude_genre, sort, min_rati
             except ValueError as e:
                 raise click.ClickException(str(e))
         elif category:
-            category_name = dc.get_category_name(category)
+            try:
+                category_name = dc.get_category_name(category)
+            except ValueError as e:
+                raise click.ClickException(str(e))
         for eg in exclude_genre:
             try:
                 eid, _ = dc.resolve_genre(eg)
@@ -704,7 +710,10 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
             except ValueError as e:
                 raise click.ClickException(str(e))
         elif category:
-            category_name = dc.get_category_name(category)
+            try:
+                category_name = dc.get_category_name(category)
+            except ValueError as e:
+                raise click.ClickException(str(e))
         for eg in exclude_genre:
             try:
                 eid, _ = dc.resolve_genre(eg)
