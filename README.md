@@ -225,6 +225,12 @@ deals notify --webhook https://hooks.slack.com/services/...
 
 ## Export
 
+| Flag | What it does |
+|------|-------------|
+| `-o, --output FILE` | Export results to a file (`.json` or `.csv`) |
+| `--json` | Print results as JSON to stdout (for piping) |
+| `-q, --quiet` | Suppress the table display |
+
 ```bash
 # JSON file (-o is short for --output)
 deals find --genre mystery --max-price 5 -o deals.json
@@ -251,15 +257,15 @@ deals --locale jp find --genre sci-fi                    # shows ¥, links to au
 
 | Locale | Currency | Domain |
 |--------|----------|--------|
-| `us` | $ | audible.com |
-| `uk` | £ | audible.co.uk |
-| `ca` | CA$ | audible.ca |
-| `au` | A$ | audible.com.au |
-| `in` | ₹ | audible.in |
-| `de` | € | audible.de |
-| `fr` | € | audible.fr |
-| `jp` | ¥ | audible.co.jp |
-| `es` | € | audible.es |
+| `us` | $ | www.audible.com |
+| `uk` | £ | www.audible.co.uk |
+| `ca` | CA$ | www.audible.ca |
+| `au` | A$ | www.audible.com.au |
+| `in` | ₹ | www.audible.in |
+| `de` | € | www.audible.de |
+| `fr` | € | www.audible.fr |
+| `jp` | ¥ | www.audible.co.jp |
+| `es` | € | www.audible.es |
 
 ## Shell completions
 
@@ -291,7 +297,7 @@ pytest tests/test_integration.py -v
 
 The tool uses the [audible](https://github.com/mkb79/Audible) Python package to talk to Audible's catalog API. Since the API doesn't support sorting by price, `deals find` fetches multiple pages of results (sorted server-side by bestsellers, release date, etc.), then filters and re-sorts client-side. The `--deep` flag scans with three different sort orders to surface items that might be buried in any single ordering.
 
-Genre matching is fuzzy — common abbreviations like `sci-fi`, `ya`, `bio`, `thriller` are expanded to their full Audible category names. Top-level categories are cached locally for 7 days to avoid redundant API calls.
+Genre matching is flexible — common abbreviations like `sci-fi`, `ya`, `bio`, `thriller` are expanded via aliases, then unmatched queries fall through to substring matching and finally fuzzy matching (via `difflib`) against the full Audible category list. Top-level categories are cached locally for 7 days to avoid redundant API calls.
 
 All data is stored locally in `~/.config/audible-deals/`:
 - `auth.json` — Audible auth tokens
