@@ -27,7 +27,10 @@ import json as json_mod
 import math
 import os
 import re
-import readline  # noqa: F401 — required on macOS for input() with long strings
+try:
+    import readline  # noqa: F401 — required on macOS for input() with long strings
+except ImportError:
+    pass  # unavailable on Windows
 import socket
 import sys
 import tempfile
