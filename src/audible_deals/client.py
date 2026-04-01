@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import difflib
 import json
+import os
+import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +53,20 @@ CONFIG_DIR = Path.home() / ".config" / "audible-deals"
 AUTH_FILE = CONFIG_DIR / "auth.json"
 CATEGORIES_CACHE_FILE = CONFIG_DIR / "categories_cache.json"
 CATEGORIES_CACHE_TTL = 86400 * 7  # 7 days
+
+
+def _atomic_write_simple(path: Path, content: str) -> None:
+    """Write content to path atomically via temp file + rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
 
 # Matches Libation's BatchSize constant (ApiExtended.cs:26)
 MAX_PAGE_SIZE = 50
@@ -287,6 +303,7 @@ class DealsClient:
     def login(self, username: str, password: str) -> None:
         """Interactive Audible login. Persists tokens to auth_file."""
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.auth_file.parent, 0o700)
         auth = audible.Authenticator.from_login(
             username,
             password,
@@ -294,6 +311,7 @@ class DealsClient:
             with_username=True,
         )
         auth.to_file(self.auth_file)
+        os.chmod(self.auth_file, 0o600)
 
     def login_external(self, callback_url_file: Path | None = None) -> None:
         """Login via external browser (for captcha/2FA). Persists tokens.
@@ -304,6 +322,7 @@ class DealsClient:
         to that file, then reads it — avoiding the flaky input() prompt.
         """
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.auth_file.parent, 0o700)
 
         if callback_url_file:
 
@@ -338,6 +357,7 @@ class DealsClient:
             )
 
         auth.to_file(self.auth_file)
+        os.chmod(self.auth_file, 0o600)
 
     def import_auth(self, source_path: Path) -> None:
         """Import auth from an audible-cli or Libation-exported JSON file.
@@ -348,6 +368,7 @@ class DealsClient:
         adp_token, device_private_key, device_info, customer_info, etc.
         """
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.auth_file.parent, 0o700)
         data = json.loads(source_path.read_text())
 
         # Libation's AccountsSettings.json wraps tokens in an Accounts array.
@@ -373,12 +394,14 @@ class DealsClient:
                 "with_username": tokens.get("with_username", False),
                 "encryption": False,
             }
-            self.auth_file.write_text(json.dumps(auth_data, indent=2))
+            _atomic_write_simple(self.auth_file, json.dumps(auth_data, indent=2))
+            os.chmod(self.auth_file, 0o600)
         else:
             # Already in audible-cli / Mkb79Auth format
             if "encryption" not in data:
                 data["encryption"] = False
-            self.auth_file.write_text(json.dumps(data, indent=2))
+            _atomic_write_simple(self.auth_file, json.dumps(data, indent=2))
+            os.chmod(self.auth_file, 0o600)
 
     @property
     def is_authenticated(self) -> bool:
@@ -557,8 +580,7 @@ class DealsClient:
     def _save_categories_cache(self, categories: list[dict[str, str]]) -> None:
         """Persist top-level categories to disk."""
         cache_file = CATEGORIES_CACHE_FILE.with_suffix(f".{self.locale}.json")
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(json.dumps({"ts": time.time(), "categories": categories}))
+        _atomic_write_simple(cache_file, json.dumps({"ts": time.time(), "categories": categories}))
 
     def get_categories(self, root: str = "") -> list[dict[str, str]]:
         """Get category listing. Returns list of {id, name} dicts.

@@ -24,8 +24,14 @@ import csv
 import datetime
 import json as json_mod
 import math
+import os
+import re
 import readline  # noqa: F401 — required on macOS for input() with long strings
+import shlex
 import sys
+import tempfile
+import urllib.parse
+import urllib.request
 from dataclasses import asdict
 from pathlib import Path
 
@@ -42,6 +48,28 @@ from audible_deals.display import (
     display_products,
     display_summary,
 )
+
+_ASIN_RE = re.compile(r"^[A-Za-z0-9]{2,14}$")
+
+
+def _validate_asin(asin: str) -> None:
+    """Validate that an ASIN is alphanumeric and won't cause path traversal."""
+    if not _ASIN_RE.fullmatch(asin):
+        raise click.BadParameter(f"Invalid ASIN format: {asin!r}")
+
+
+def _atomic_write(path: Path, content: str) -> None:
+    """Write content to path atomically via temp file + rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    try:
+        with os.fdopen(fd, "w") as f:
+            f.write(content)
+        os.replace(tmp, path)
+    except BaseException:
+        os.unlink(tmp)
+        raise
+
 
 # Sort orders used by --deep to maximize item coverage
 DEEP_SORT_ORDERS = ["BestSellers", "-ReleaseDate", "AvgRating"]
@@ -781,8 +809,7 @@ def _load_wishlist() -> list[dict]:
 
 
 def _save_wishlist(items: list[dict]) -> None:
-    WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-    WISHLIST_FILE.write_text(json_mod.dumps(items, indent=2, ensure_ascii=False))
+    _atomic_write(WISHLIST_FILE, json_mod.dumps(items, indent=2, ensure_ascii=False))
 
 
 @cli.group()
@@ -803,6 +830,9 @@ def wishlist_add(ctx, asins, max_price):
     """
     items = _load_wishlist()
     existing = {item["asin"] for item in items}
+
+    for asin in asins:
+        _validate_asin(asin)
 
     dc = _get_client(ctx.obj["locale"])
     added = 0
@@ -941,8 +971,7 @@ def _load_profiles() -> dict[str, dict]:
 
 
 def _save_profiles(profiles: dict[str, dict]) -> None:
-    PROFILES_FILE.parent.mkdir(parents=True, exist_ok=True)
-    PROFILES_FILE.write_text(json_mod.dumps(profiles, indent=2, ensure_ascii=False))
+    _atomic_write(PROFILES_FILE, json_mod.dumps(profiles, indent=2, ensure_ascii=False))
 
 
 @cli.group()
@@ -1036,6 +1065,8 @@ def _record_prices(products: list[Product]) -> None:
     to_write: dict[Path, list[dict]] = {}
 
     for p in priced:
+        if not _ASIN_RE.fullmatch(p.asin):
+            continue
         hist_file = HISTORY_DIR / f"{p.asin}.json"
         entries: list[dict] = []
         if hist_file.exists():
@@ -1049,7 +1080,7 @@ def _record_prices(products: list[Product]) -> None:
         to_write[hist_file] = entries[-365:]
 
     for path, entries in to_write.items():
-        path.write_text(json_mod.dumps(entries))
+        _atomic_write(path, json_mod.dumps(entries))
 
 
 @cli.command()
@@ -1061,6 +1092,7 @@ def history(ctx, asin):
     History is recorded automatically each time an ASIN appears in
     search/find results. Use 'deals history ASIN' to view past prices.
     """
+    _validate_asin(asin)
     hist_file = HISTORY_DIR / f"{asin}.json"
     if not hist_file.exists():
         console.print(
@@ -1187,6 +1219,8 @@ def recap(days):
     wishlist_items = _load_wishlist()
     wishlist_hits: list[dict] = []
     for item in wishlist_items:
+        if not _ASIN_RE.fullmatch(item.get("asin", "")):
+            continue
         hist_file = HISTORY_DIR / f"{item['asin']}.json"
         if not hist_file.exists():
             continue
@@ -1231,6 +1265,16 @@ def notify(ctx, webhook):
         deals notify --webhook https://hooks.slack.com/services/...
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
+    if webhook:
+        parsed = urllib.parse.urlparse(webhook)
+        if parsed.scheme not in ("http", "https"):
+            raise click.BadParameter(
+                f"Webhook URL must use http:// or https://, got {parsed.scheme!r}",
+                param_hint="'--webhook'",
+            )
+        if not parsed.netloc:
+            raise click.BadParameter("Webhook URL must include a host", param_hint="'--webhook'")
+
     items = _load_wishlist()
     if not items:
         return
@@ -1259,7 +1303,6 @@ def notify(ctx, webhook):
     payload = json_mod.dumps({"deals": hits, "count": len(hits)}, indent=2)
 
     if webhook:
-        import urllib.request
         req = urllib.request.Request(
             webhook,
             data=payload.encode(),
@@ -1290,13 +1333,15 @@ def completions(shell):
 
     # Find the deals entry point script
     deals_bin = shutil.which("deals")
-    if not deals_bin:
+    if deals_bin:
+        shell_cmd = shlex.quote(deals_bin)
+    else:
         # Fall back to running via python -m
-        deals_bin = f"{sys.executable} -m audible_deals"
+        shell_cmd = f"{shlex.quote(sys.executable)} -m audible_deals"
 
     env_var = f"_DEALS_COMPLETE={shell}_source"
     result = subprocess.run(
-        ["/bin/sh", "-c", f"{env_var} {deals_bin}"],
+        ["/bin/sh", "-c", f"{env_var} {shell_cmd}"],
         capture_output=True,
         text=True,
     )
