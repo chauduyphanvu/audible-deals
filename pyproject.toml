@@ -1,6 +1,6 @@
 [project]
 name = "audible-deals"
-version = "0.3.0"
+version = "0.1.0"
 description = "CLI to find and sort Audible audiobook deals by price and genre"
 readme = "README.md"
 license = { text = "MIT" }
