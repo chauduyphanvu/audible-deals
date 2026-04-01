@@ -7,10 +7,14 @@ Usage:
     deals search QUERY [options]   Search catalog with filters
     deals find [options]           Browse & filter deals (main command)
     deals detail ASIN              Show detailed product info
+    deals open ASIN                Open Audible page in browser
     deals compare ASIN ASIN ...    Side-by-side comparison
     deals wishlist add/remove/list Manage your watchlist
     deals watch                    Check wishlist for price drops
-    deals history ASIN             View price history
+    deals notify [--webhook URL]   Send notifications for deals at target
+    deals profile save/list/delete Manage saved search profiles
+    deals history ASIN             View price history with sparkline
+    deals recap [--days N]         Recap of recent price changes
     deals completions SHELL        Generate shell completions
 """
 
@@ -893,11 +897,12 @@ def watch(ctx):
     table.add_column("Target", justify="right", width=10)
     table.add_column("Status", width=10)
 
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     hits = 0
     for p in products:
         target = targets.get(p.asin)
-        target_str = f"${target:.2f}" if target else "-"
-        p_str = f"${p.price:.2f}" if p.price is not None else "-"
+        target_str = f"{cur}{target:.2f}" if target else "-"
+        p_str = f"{cur}{p.price:.2f}" if p.price is not None else "-"
         if target and p.price is not None and p.price <= target:
             status = "[bold green]BUY[/bold green]"
             p_str = f"[bold green]{p_str}[/bold green]"
@@ -1049,7 +1054,8 @@ def _record_prices(products: list[Product]) -> None:
 
 @cli.command()
 @click.argument("asin")
-def history(asin):
+@click.pass_context
+def history(ctx, asin):
     """Show price history for an ASIN.
 
     History is recorded automatically each time an ASIN appears in
@@ -1091,6 +1097,8 @@ def history(asin):
         except ValueError:
             return ""
 
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+
     table = Table(title=f"Price History: {asin}", show_lines=False, padding=(0, 1), title_style="bold")
     table.add_column("Date", width=12)
     table.add_column("Ago", width=10, style="dim")
@@ -1100,7 +1108,7 @@ def history(asin):
     prev_price = None
     for entry in entries:
         price = entry["price"]
-        p_str = f"${price:.2f}"
+        p_str = f"{cur}{price:.2f}"
         if prev_price is not None:
             diff = price - prev_price
             if diff < 0:
@@ -1119,7 +1127,7 @@ def history(asin):
     low = min(e["price"] for e in entries)
     high = max(e["price"] for e in entries)
     current = entries[-1]["price"]
-    console.print(f"\n  Low: [green]${low:.2f}[/green]  High: [red]${high:.2f}[/red]  Current: ${current:.2f}")
+    console.print(f"\n  Low: [green]{cur}{low:.2f}[/green]  High: [red]{cur}{high:.2f}[/red]  Current: {cur}{current:.2f}")
 
     # Sparkline if more than 1 entry
     if len(entries) > 1:
