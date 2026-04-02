@@ -3,12 +3,18 @@
 
 {% block content %}
 {% set cur = locale_currency.get(product.locale, '$') %}
-<div class="space-y-8 animate-fade-in max-w-3xl">
 
-  <!-- Back navigation -->
+<style>
+  /* Page-local styles: sparkline background */
+  .spark-bg { background-color: var(--ink-900); }
+</style>
+
+<div class="space-y-10 animate-fade-in" style="max-width:860px;">
+
+  <!-- Back link -->
   <div>
     <a href="javascript:history.back()"
-       class="inline-flex items-center gap-1.5 text-sm text-surface-400 hover:text-surface-700 transition-colors font-medium">
+       class="back-link inline-flex items-center gap-1.5 text-sm">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
       </svg>
@@ -16,125 +22,130 @@
     </a>
   </div>
 
-  <!-- Title block -->
-  <div class="border-b border-surface-200 pb-8">
+  <!-- Hero title area -->
+  <div style="padding-bottom:2.5rem; border-bottom:1px solid var(--ink-700);">
 
     {% if product.series_name %}
-    <p class="font-sans text-sm font-medium text-brand-600 tracking-wide mb-3">
-      {{ product.series_name }}{% if product.series_position %}, Book {{ product.series_position }}{% endif %}
+    <p class="ink-mono text-xs font-medium tracking-widest uppercase mb-3"
+       style="color:var(--accent);">
+      Book {{ product.series_position }} of {{ product.series_name }}
     </p>
     {% endif %}
 
-    <h1 class="font-serif text-4xl sm:text-5xl text-surface-900 leading-tight">
+    <h1 class="ink-serif leading-[1.08] tracking-tight"
+        style="font-size:clamp(2rem,5vw,3.25rem); color:var(--ink-50);">
       {{ product.title }}
     </h1>
 
     {% if product.subtitle %}
-    <p class="mt-2 font-serif italic text-xl sm:text-2xl text-surface-500 leading-snug">
+    <p class="ink-serif italic mt-3 leading-snug"
+       style="font-size:clamp(1.1rem,2.5vw,1.4rem); color:var(--ink-300);">
       {{ product.subtitle }}
     </p>
     {% endif %}
 
     {% if product.authors %}
-    <p class="mt-4 text-base text-brand-700 font-medium">
+    <p class="mt-5 text-lg font-medium" style="color:var(--ink-200);">
       by {{ product.authors_str }}
     </p>
     {% endif %}
 
     {% if product.narrators %}
-    <p class="mt-1 text-sm text-surface-500">
+    <p class="mt-1 text-sm" style="color:var(--ink-400);">
       Narrated by {{ product.narrators_str }}
     </p>
     {% endif %}
 
-    {% if product.discount_pct and product.discount_pct > 0 %}
-    <div class="mt-4">
-      <span class="inline-block bg-brand-100 text-brand-800 text-xs font-bold px-3 py-1 rounded-full tracking-wide uppercase">
-        {{ product.discount_pct }}% off today
-      </span>
-    </div>
-    {% endif %}
   </div>
 
-  <!-- Price + deal block -->
-  <div class="flex flex-wrap items-start gap-8">
+  <!-- Price block + Rating -->
+  <div class="ink-card ink-card-interactive p-6 sm:p-8">
+    <div class="flex flex-wrap items-start gap-8 sm:gap-12">
 
-    <!-- Price -->
-    <div>
-      <p class="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">Price</p>
-      <div class="flex items-baseline gap-3 flex-wrap">
-        {% if product.price is not none %}
-        <span class="font-mono text-3xl font-bold text-surface-900">{{ product.price | price(cur) }}</span>
-        {% else %}
-        <span class="font-mono text-2xl text-surface-400">—</span>
-        {% endif %}
-        {% if product.list_price and product.price != product.list_price %}
-        <span class="font-mono text-base text-surface-400 line-through">{{ product.list_price | price(cur) }}</span>
-        {% endif %}
-      </div>
-      {% if product.discount_pct and product.discount_pct > 0 and product.list_price and product.price is not none %}
-      {% set savings = product.list_price - product.price %}
-      <p class="mt-1 text-sm font-semibold text-emerald-600">
-        Save {{ savings | price(cur) }} ({{ product.discount_pct }}% off)
-      </p>
-      {% endif %}
-    </div>
+      <!-- Price -->
+      <div>
+        <p class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-2"
+           style="color:var(--ink-400);">Current Price</p>
 
-    <!-- Rating -->
-    {% if product.rating %}
-    <div>
-      <p class="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">Rating</p>
-      <div class="flex items-center gap-2">
-        <span class="font-mono text-xl font-bold text-surface-900">{{ "%.1f" | format(product.rating) }}</span>
-        <div class="flex items-center gap-0.5">
-          {% for i in range(1, 6) %}
-            {% set full = product.rating >= i %}
-            {% set half = product.rating >= i - 0.5 and not full %}
-            <svg class="w-4 h-4 {{ 'text-brand-400' if full or half else 'text-surface-200' }}"
-                 fill="{{ 'currentColor' if full else 'none' }}" stroke="currentColor" viewBox="0 0 24 24">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                    d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
-            </svg>
-          {% endfor %}
+        <div class="flex items-baseline gap-3 flex-wrap">
+          {% if product.price is not none %}
+          <span class="ink-mono font-bold" style="font-size:2.5rem; color:var(--accent); line-height:1;">
+            {{ product.price | price(cur) }}
+          </span>
+          {% else %}
+          <span class="ink-mono text-2xl" style="color:var(--ink-500);">—</span>
+          {% endif %}
+
+          {% if product.list_price and product.price is not none and product.price != product.list_price %}
+          <span class="ink-mono text-base line-through" style="color:var(--ink-500);">
+            {{ product.list_price | price(cur) }}
+          </span>
+          {% endif %}
         </div>
-        {% if product.num_ratings %}
-        <span class="text-xs text-surface-400">({{ product.num_ratings }})</span>
+
+        {% if product.discount_pct and product.discount_pct > 0 and product.list_price and product.price is not none %}
+        {% set savings = product.list_price - product.price %}
+        <div class="mt-3">
+          <span class="inline-flex items-center px-3 py-1 rounded-full text-xs font-semibold ink-mono tracking-wide"
+                style="background:var(--accent-glow); color:var(--accent-light); border:1px solid rgba(229,91,60,0.3);">
+            {{ product.discount_pct }}% off &mdash; save {{ savings | price(cur) }}
+          </span>
+        </div>
         {% endif %}
       </div>
-    </div>
-    {% endif %}
 
-    <!-- Length -->
-    {% if product.hours %}
-    <div>
-      <p class="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">Length</p>
-      <p class="text-base font-medium text-surface-800">
-        {{ product.hours }} hrs
-        <span class="text-sm text-surface-400 font-normal">({{ product.length_minutes }} min)</span>
-      </p>
-    </div>
-    {% endif %}
+      <!-- Rating -->
+      {% if product.rating %}
+      <div>
+        <p class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-2"
+           style="color:var(--ink-400);">Rating</p>
+        <div class="flex items-center gap-2.5">
+          <span class="ink-mono text-2xl font-bold" style="color:var(--ink-100);">
+            {{ "%.1f" | format(product.rating) }}
+          </span>
+          <div class="flex items-center gap-0.5">
+            {% for i in range(1, 6) %}
+              {% set filled = product.rating >= i %}
+              <svg class="w-4 h-4"
+                   fill="{{ 'currentColor' if filled else 'none' }}"
+                   stroke="currentColor"
+                   viewBox="0 0 24 24"
+                   style="color:{{ 'var(--accent)' if filled else 'var(--ink-600)' }}">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                      d="M11.049 2.927c.3-.921 1.603-.921 1.902 0l1.519 4.674a1 1 0 00.95.69h4.915c.969 0 1.371 1.24.588 1.81l-3.976 2.888a1 1 0 00-.363 1.118l1.518 4.674c.3.922-.755 1.688-1.538 1.118l-3.976-2.888a1 1 0 00-1.176 0l-3.976 2.888c-.783.57-1.838-.197-1.538-1.118l1.518-4.674a1 1 0 00-.363-1.118l-3.976-2.888c-.784-.57-.38-1.81.588-1.81h4.914a1 1 0 00.951-.69l1.519-4.674z"/>
+              </svg>
+            {% endfor %}
+          </div>
+          {% if product.num_ratings %}
+          <span class="text-xs" style="color:var(--ink-500);">
+            ({{ "{:,}".format(product.num_ratings) }})
+          </span>
+          {% endif %}
+        </div>
+      </div>
+      {% endif %}
 
-    <!-- Plus badge -->
-    {% if product.in_plus_catalog %}
-    <div>
-      <p class="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-1">Audible Plus</p>
-      <span class="inline-flex items-center gap-1 px-2.5 py-1 bg-violet-50 text-violet-700 text-xs font-semibold rounded-full border border-violet-200">
-        <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
-          <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
-        </svg>
-        Included
-      </span>
-    </div>
-    {% endif %}
+      <!-- Length -->
+      {% if product.hours %}
+      <div>
+        <p class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-2"
+           style="color:var(--ink-400);">Length</p>
+        <p class="text-base font-medium" style="color:var(--ink-100);">
+          {{ product.hours }}<span class="text-sm ml-0.5" style="color:var(--ink-400);">hrs</span>
+        </p>
+        <p class="text-xs mt-0.5" style="color:var(--ink-500);">{{ product.length_minutes }} minutes</p>
+      </div>
+      {% endif %}
 
+    </div>
   </div>
 
   <!-- Action buttons -->
   <div class="flex flex-wrap gap-3">
+
     <button type="button"
             onclick="openExternal('{{ product.url }}')"
-            class="inline-flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm">
+            class="btn-accent inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
@@ -146,7 +157,8 @@
             hx-post="{{ url_for('wishlist.hx_wishlist_add') }}"
             hx-vals='{"asin": "{{ product.asin }}"}'
             hx-swap="none"
-            class="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-surface-300 hover:border-rose-300 hover:bg-rose-50 text-surface-700 hover:text-rose-700 text-sm font-semibold rounded-lg transition-colors shadow-sm">
+            class="btn-outline inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold"
+            style="color:var(--ink-300);">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
@@ -155,7 +167,8 @@
     </button>
 
     <a href="{{ url_for('compare.compare_page', asins=product.asin) }}"
-       class="inline-flex items-center gap-2 px-5 py-2.5 bg-white border border-surface-300 hover:bg-surface-50 text-surface-600 text-sm font-semibold rounded-lg transition-colors shadow-sm">
+       class="btn-ghost inline-flex items-center gap-2 px-6 py-3 rounded-lg text-sm font-semibold"
+       style="color:var(--ink-400);">
       <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M9 5H7a2 2 0 00-2 2v12a2 2 0 002 2h10a2 2 0 002-2V7a2 2 0 00-2-2h-2M9 5a2 2 0 002 2h2a2 2 0 002-2M9 5a2 2 0 012-2h2a2 2 0 012 2"/>
@@ -164,57 +177,78 @@
     </a>
   </div>
 
-  <!-- Details colophon -->
-  <div class="bg-white rounded-xl border border-surface-200 shadow-sm px-6 py-6 space-y-5">
+  <!-- Metadata colophon -->
+  <div class="ink-card ink-card-interactive p-6 sm:p-8 space-y-6">
 
-    <!-- Top row: publisher, language, release date, ASIN -->
-    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-5">
+    <dl class="grid grid-cols-2 sm:grid-cols-4 gap-x-6 gap-y-6">
 
       {% if product.publisher %}
       <div>
-        <dt class="text-xs font-semibold text-surface-400 uppercase tracking-wider">Publisher</dt>
-        <dd class="mt-1 text-sm text-surface-800 font-medium">{{ product.publisher }}</dd>
+        <dt class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-1.5"
+            style="color:var(--ink-400);">Publisher</dt>
+        <dd class="text-sm font-medium" style="color:var(--ink-100);">{{ product.publisher }}</dd>
       </div>
       {% endif %}
 
       {% if product.language %}
       <div>
-        <dt class="text-xs font-semibold text-surface-400 uppercase tracking-wider">Language</dt>
-        <dd class="mt-1 text-sm text-surface-800 font-medium capitalize">{{ product.language }}</dd>
+        <dt class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-1.5"
+            style="color:var(--ink-400);">Language</dt>
+        <dd class="text-sm font-medium capitalize" style="color:var(--ink-100);">{{ product.language }}</dd>
       </div>
       {% endif %}
 
       {% if product.release_date %}
       <div>
-        <dt class="text-xs font-semibold text-surface-400 uppercase tracking-wider">Released</dt>
-        <dd class="mt-1 text-sm text-surface-800 font-medium">{{ product.release_date }}</dd>
+        <dt class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-1.5"
+            style="color:var(--ink-400);">Released</dt>
+        <dd class="text-sm font-medium" style="color:var(--ink-100);">{{ product.release_date }}</dd>
       </div>
       {% endif %}
 
       <div>
-        <dt class="text-xs font-semibold text-surface-400 uppercase tracking-wider">ASIN</dt>
-        <dd class="mt-1 font-mono text-sm text-surface-500 select-all">{{ product.asin }}</dd>
+        <dt class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-1.5"
+            style="color:var(--ink-400);">ASIN</dt>
+        <dd class="ink-mono text-sm select-all" style="color:var(--ink-400);">{{ product.asin }}</dd>
       </div>
+
+      {% if product.in_plus_catalog %}
+      <div>
+        <dt class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-1.5"
+            style="color:var(--ink-400);">Audible Plus</dt>
+        <dd>
+          <span class="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded-full"
+                style="background:rgba(122,138,110,0.15); color:var(--sage-light); border:1px solid rgba(122,138,110,0.3);">
+            <svg class="w-3 h-3" fill="currentColor" viewBox="0 0 20 20">
+              <path fill-rule="evenodd" d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z" clip-rule="evenodd"/>
+            </svg>
+            Included in Plus
+          </span>
+        </dd>
+      </div>
+      {% endif %}
 
     </dl>
 
-    <!-- Genres -->
+    <!-- Genre chips -->
     {% if product.categories %}
-    <dl class="pt-1 border-t border-surface-100">
-      <dt class="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-2">Genres</dt>
-      <dd class="flex flex-wrap gap-1.5">
+    <div style="padding-top:1.25rem; border-top:1px solid var(--ink-700);">
+      <p class="ink-mono text-[10px] font-medium tracking-widest uppercase mb-3"
+         style="color:var(--ink-400);">Genres</p>
+      <div class="flex flex-wrap gap-2">
         {% for cat in product.categories %}
-        <span class="px-3 py-1 text-xs font-medium bg-brand-50 text-brand-700 border border-brand-200 rounded-full">
+        <span class="text-xs px-3 py-1 rounded-full font-medium"
+              style="background:var(--ink-700); color:var(--ink-300);">
           {{ cat }}
         </span>
         {% endfor %}
-      </dd>
-    </dl>
+      </div>
+    </div>
     {% endif %}
 
   </div>
 
-  <!-- Price history -->
+  <!-- Price History -->
   {% if history %}
   {% set prices = history | map(attribute='price') | list %}
   {% set min_p = prices | min %}
@@ -222,43 +256,60 @@
   {% set p_range = max_p - min_p if max_p != min_p else 1 %}
   {% set n = prices | length %}
   {% set chart_w = 600 %}
-  {% set chart_h = 80 %}
-  {% set pad = 10 %}
+  {% set chart_h = 100 %}
+  {% set pad_top = 16 %}
+  {% set pad_bot = 16 %}
 
-  <div class="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
-    <div class="px-6 pt-5 pb-4 border-b border-surface-100">
-      <h2 class="font-serif text-xl text-surface-900">Price History</h2>
-      <p class="text-xs text-surface-400 mt-0.5">{{ history | length }} recorded price point{{ 's' if history | length != 1 else '' }}</p>
+  <div class="ink-card overflow-hidden">
+
+    <div class="px-6 sm:px-8 pt-6 pb-5" style="border-bottom:1px solid var(--ink-700);">
+      <h2 class="ink-serif text-2xl" style="color:var(--ink-50);">Price History</h2>
+      <p class="text-xs mt-1" style="color:var(--ink-500);">
+        {{ history | length }} recorded price point{{ 's' if history | length != 1 else '' }}
+      </p>
     </div>
 
     <!-- Sparkline -->
-    <div class="px-6 py-5" style="background-color:#fdf8f0;">
-      <svg viewBox="0 0 {{ chart_w }} {{ chart_h + pad * 2 }}"
-           class="w-full h-24"
+    <div class="px-6 sm:px-8 py-6 spark-bg">
+      <div class="flex justify-between mb-2 px-1">
+        <span class="ink-mono text-[11px]" style="color:var(--ink-500);">{{ max_p | price(cur) }}</span>
+        <span class="ink-mono text-[11px]" style="color:var(--ink-500);">{{ min_p | price(cur) }}</span>
+      </div>
+
+      <svg viewBox="0 0 {{ chart_w }} {{ chart_h + pad_top + pad_bot }}"
+           class="w-full"
+           style="height:120px;"
            preserveAspectRatio="none">
         <defs>
           <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#f59e0b" stop-opacity="0.18"/>
-            <stop offset="100%" stop-color="#f59e0b" stop-opacity="0.03"/>
+            <stop offset="0%" stop-color="#e55b3c" stop-opacity="0.25"/>
+            <stop offset="100%" stop-color="#e55b3c" stop-opacity="0.03"/>
           </linearGradient>
         </defs>
-        <line x1="0" y1="{{ pad }}" x2="{{ chart_w }}" y2="{{ pad }}"
-              stroke="#e7e5e4" stroke-width="1"/>
-        <line x1="0" y1="{{ chart_h + pad }}" x2="{{ chart_w }}" y2="{{ chart_h + pad }}"
-              stroke="#e7e5e4" stroke-width="1"/>
-        <path d="M 0 {{ chart_h + pad }}
+
+        <line x1="0" y1="{{ pad_top }}" x2="{{ chart_w }}" y2="{{ pad_top }}"
+              stroke="#2a2826" stroke-width="1"/>
+        <line x1="0" y1="{{ (chart_h / 2) + pad_top }}" x2="{{ chart_w }}" y2="{{ (chart_h / 2) + pad_top }}"
+              stroke="#2a2826" stroke-width="1" stroke-dasharray="4,6"/>
+        <line x1="0" y1="{{ chart_h + pad_top }}" x2="{{ chart_w }}" y2="{{ chart_h + pad_top }}"
+              stroke="#2a2826" stroke-width="1"/>
+
+        <path d="M 0 {{ chart_h + pad_top }}
           {% for i in range(n) %}
-            L {{ (i / (n - 1) * chart_w) if n > 1 else chart_w / 2 }} {{ pad + (1 - (prices[i] - min_p) / p_range) * chart_h }}
+            L {{ (i / (n - 1) * chart_w) if n > 1 else chart_w / 2 }} {{ pad_top + (1 - (prices[i] - min_p) / p_range) * chart_h }}
           {% endfor %}
-          L {{ chart_w }} {{ chart_h + pad }} Z"
+          L {{ chart_w if n > 1 else chart_w / 2 }} {{ chart_h + pad_top }} Z"
           fill="url(#sparkGrad)"/>
+
         <polyline
-          points="{% for i in range(n) %}{{ (i / (n - 1) * chart_w) if n > 1 else chart_w / 2 }},{{ pad + (1 - (prices[i] - min_p) / p_range) * chart_h }} {% endfor %}"
-          fill="none" stroke="#d97706" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>
+          points="{% for i in range(n) %}{{ (i / (n - 1) * chart_w) if n > 1 else chart_w / 2 }},{{ pad_top + (1 - (prices[i] - min_p) / p_range) * chart_h }} {% endfor %}"
+          fill="none" stroke="#e55b3c" stroke-width="2.5"
+          stroke-linejoin="round" stroke-linecap="round"/>
+
         {% for i in range(n) %}
         <circle cx="{{ (i / (n - 1) * chart_w) if n > 1 else chart_w / 2 }}"
-                cy="{{ pad + (1 - (prices[i] - min_p) / p_range) * chart_h }}"
-                r="3.5" fill="white" stroke="#d97706" stroke-width="2">
+                cy="{{ pad_top + (1 - (prices[i] - min_p) / p_range) * chart_h }}"
+                r="4" fill="#1c1b1a" stroke="#e55b3c" stroke-width="2.5">
           <title>{{ history[i].date }}: {{ prices[i] | price(cur) }}</title>
         </circle>
         {% endfor %}
@@ -266,34 +317,43 @@
     </div>
 
     <!-- History table -->
-    <div class="px-6 pb-6">
-      <div class="rounded-lg border border-surface-200 overflow-hidden">
+    <div class="px-6 sm:px-8 pb-6">
+      <div class="rounded-lg overflow-hidden" style="border:1px solid var(--ink-700);">
         <table class="w-full text-sm">
           <thead>
-            <tr class="bg-surface-50 text-left border-b border-surface-200">
-              <th class="px-4 py-2.5 text-xs font-semibold text-surface-500 uppercase tracking-wider">Date</th>
-              <th class="px-4 py-2.5 text-xs font-semibold text-surface-500 uppercase tracking-wider text-right">Price</th>
-              <th class="px-4 py-2.5 text-xs font-semibold text-surface-500 uppercase tracking-wider text-right">Change</th>
+            <tr style="background:var(--ink-900); border-bottom:1px solid var(--ink-700);">
+              <th class="px-4 py-3 text-left">
+                <span class="ink-mono text-[10px] font-medium tracking-widest uppercase"
+                      style="color:var(--ink-500);">Date</span>
+              </th>
+              <th class="px-4 py-3 text-right">
+                <span class="ink-mono text-[10px] font-medium tracking-widest uppercase"
+                      style="color:var(--ink-500);">Price</span>
+              </th>
+              <th class="px-4 py-3 text-right">
+                <span class="ink-mono text-[10px] font-medium tracking-widest uppercase"
+                      style="color:var(--ink-500);">Change</span>
+              </th>
             </tr>
           </thead>
-          <tbody class="divide-y divide-surface-100">
+          <tbody>
             {% for entry in history | reverse %}
             {% set prev_price = history[loop.revindex].price if loop.revindex < history | length else none %}
-            <tr class="hover:bg-amber-50/30 transition-colors">
-              <td class="px-4 py-2.5 text-surface-600 text-xs">{{ entry.date }}</td>
-              <td class="px-4 py-2.5 text-surface-900 font-mono font-semibold text-right text-xs">
+            <tr class="ink-tr-hover" style="border-bottom:1px solid var(--ink-700);">
+              <td class="px-4 py-3 ink-mono text-xs" style="color:var(--ink-400);">{{ entry.date }}</td>
+              <td class="px-4 py-3 ink-mono text-xs font-semibold text-right" style="color:var(--ink-100);">
                 {{ entry.price | price(cur) }}
               </td>
-              <td class="px-4 py-2.5 text-right text-xs">
+              <td class="px-4 py-3 text-right text-xs">
                 {% if prev_price is not none and prev_price != entry.price %}
                   {% set diff = entry.price - prev_price %}
                   {% if diff < 0 %}
-                  <span class="text-emerald-600 font-semibold">&#9660; {{ (diff | abs) | price(cur) }}</span>
+                  <span class="ink-mono font-semibold" style="color:var(--sage-light);">&#9660; {{ (diff | abs) | price(cur) }}</span>
                   {% else %}
-                  <span class="text-red-500 font-semibold">&#9650; {{ diff | price(cur) }}</span>
+                  <span class="ink-mono font-semibold" style="color:var(--accent-light);">&#9650; {{ diff | price(cur) }}</span>
                   {% endif %}
                 {% else %}
-                <span class="text-surface-300">—</span>
+                <span style="color:var(--ink-600);">—</span>
                 {% endif %}
               </td>
             </tr>
@@ -302,21 +362,26 @@
         </table>
       </div>
     </div>
+
   </div>
 
   {% else %}
-  <div class="bg-white rounded-xl border border-surface-200 shadow-sm px-6 py-10 text-center">
-    <div class="w-12 h-12 rounded-full bg-brand-50 flex items-center justify-center mx-auto mb-3">
-      <svg class="w-6 h-6 text-brand-300" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+
+  <div class="ink-card px-8 py-14 text-center">
+    <div class="w-14 h-14 rounded-full flex items-center justify-center mx-auto mb-4"
+         style="background:rgba(255,255,255,0.04); border:1px solid var(--ink-700);">
+      <svg class="w-7 h-7" fill="none" stroke="currentColor" viewBox="0 0 24 24"
+           style="color:var(--ink-600);">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
               d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
       </svg>
     </div>
-    <p class="font-serif text-lg text-surface-700 mb-1">No price history yet</p>
-    <p class="text-sm text-surface-400 max-w-sm mx-auto">
+    <p class="ink-serif text-xl mb-2" style="color:var(--ink-300);">No price history yet</p>
+    <p class="text-sm max-w-sm mx-auto" style="color:var(--ink-500);">
       Price history is captured automatically each time this title appears in search or find results.
     </p>
   </div>
+
   {% endif %}
 
 </div>

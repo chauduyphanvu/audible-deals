@@ -4,8 +4,9 @@
 #}
 {%- macro export_btn(fmt, label, extra_class='') -%}
 <a href="{{ url_for('search.export') }}?format={{ fmt }}"
-   class="inline-flex items-center gap-1.5 rounded-xl border border-surface-200 bg-white px-3 py-1.5
-          text-xs font-medium text-surface-600 shadow-sm hover:bg-surface-50 transition-colors {{ extra_class }}">
+   class="inline-flex items-center gap-1.5 rounded-lg border border-ink-700 bg-ink-800 px-3 py-1.5
+          text-xs font-medium text-ink-400 hover:text-ink-200 hover:border-ink-600
+          transition-colors {{ extra_class }}">
     <svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
@@ -15,22 +16,21 @@
 {%- endmacro -%}
 
 {% if error %}
-<div class="rounded-xl border border-red-200 bg-red-50 px-5 py-4 text-sm text-red-700">
-    <strong>Error:</strong> {{ error }}
+<div class="rounded-xl border border-red-900/50 bg-red-950/40 px-5 py-4 text-sm text-red-300">
+    <strong class="text-red-200">Error:</strong> {{ error }}
 </div>
 
 {% elif not products %}
-<div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-surface-300
-            bg-white py-16 text-center px-8"
-     style="box-shadow: 0 2px 12px 0 rgba(120,83,20,0.04);">
-    <div class="w-14 h-14 rounded-2xl bg-surface-100 flex items-center justify-center mb-4">
-        <svg class="w-7 h-7 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+<div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-ink-700/60
+            bg-ink-800/50 py-16 text-center px-8">
+    <div class="w-14 h-14 rounded-2xl bg-ink-700 flex items-center justify-center mb-4">
+        <svg class="w-7 h-7 text-ink-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
                   d="M9.172 16.172a4 4 0 015.656 0M9 10h.01M15 10h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
         </svg>
     </div>
-    <p class="font-serif text-xl text-surface-800">No results found</p>
-    <p class="mt-2 text-sm text-surface-500">Try loosening your filters or increasing the page count.</p>
+    <p class="font-serif text-xl text-ink-200">No results found</p>
+    <p class="mt-2 text-sm text-ink-500">Try loosening your filters or increasing the page count.</p>
 </div>
 
 {% else %}
@@ -39,23 +39,23 @@
    SUMMARY BAR
 ================================================================ #}
 {% set total_filtered = breakdown.values() | sum %}
-<div class="mb-4 flex flex-wrap items-center justify-between gap-3 animate-fade-in">
+<div class="mb-5 flex flex-wrap items-center justify-between gap-3 animate-fade-in">
 
     {# Left: result count + active filter pills #}
     <div class="flex flex-wrap items-center gap-2">
-        {# Big count #}
+        {# Count #}
         <div class="flex items-baseline gap-1.5">
-            <span class="text-2xl font-bold text-surface-900 font-serif">{{ products | length }}</span>
+            <span class="text-2xl font-bold text-ink-50 font-serif">{{ products | length }}</span>
             {% if total_before_limit and total_before_limit > products | length %}
-            <span class="text-sm text-surface-500">of {{ total_before_limit }}</span>
+            <span class="text-sm text-ink-500">of {{ total_before_limit }}</span>
             {% endif %}
-            <span class="text-sm text-surface-500">result{{ "s" if products | length != 1 else "" }}</span>
+            <span class="text-sm text-ink-400">result{{ "s" if products | length != 1 else "" }}</span>
         </div>
 
         {# Price filter pill #}
         {% if max_price %}
-        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-emerald-50 border border-emerald-200
-                     text-xs font-medium text-emerald-700">
+        <span class="inline-flex items-center gap-1 px-2.5 py-1 rounded-full bg-accent/10 border border-accent/25
+                     text-xs font-medium text-accent-light">
             <svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                       d="M7 7h.01M7 3h5c.512 0 1.024.195 1.414.586l7 7a2 2 0 010 2.828l-7 7a2 2 0 01-2.828 0l-7-7A2 2 0 013 12V7a4 4 0 014-4z"/>
@@ -66,17 +66,17 @@
 
         {# Suppression info pills #}
         {% if total_filtered > 0 %}
-        <span class="px-2.5 py-1 rounded-full bg-surface-100 border border-surface-200 text-xs text-surface-500">
+        <span class="px-2.5 py-1 rounded-full bg-ink-700 border border-ink-700 text-xs text-ink-400">
             {{ total_filtered }} filtered out
         </span>
         {% endif %}
         {% if editions_removed > 0 %}
-        <span class="px-2.5 py-1 rounded-full bg-surface-100 border border-surface-200 text-xs text-surface-500">
+        <span class="px-2.5 py-1 rounded-full bg-ink-700 border border-ink-700 text-xs text-ink-400">
             {{ editions_removed }} dupes removed
         </span>
         {% endif %}
         {% if series_collapsed > 0 %}
-        <span class="px-2.5 py-1 rounded-full bg-brand-50 border border-brand-200 text-xs text-brand-700">
+        <span class="px-2.5 py-1 rounded-full bg-ink-700 border border-ink-600 text-xs text-ink-300">
             {{ series_collapsed }} series collapsed
         </span>
         {% endif %}
@@ -84,57 +84,51 @@
 
     {# Right: export buttons #}
     <div class="flex items-center gap-2">
-        {{ export_btn('json', 'JSON', 'rounded-lg') }}
-        {{ export_btn('csv',  'CSV',  'rounded-lg') }}
+        {{ export_btn('json', 'JSON') }}
+        {{ export_btn('csv',  'CSV') }}
     </div>
 </div>
 
 {# ================================================================
    DESKTOP TABLE (sm and up)
 ================================================================ #}
-<div class="hidden sm:block rounded-2xl bg-white border border-surface-200 overflow-hidden animate-fade-in"
-     style="box-shadow: 0 2px 16px 0 rgba(120,83,20,0.07);">
+<div class="hidden sm:block rounded-2xl bg-ink-800 border border-ink-700/50 overflow-hidden animate-fade-in">
     <table class="w-full text-sm">
         <thead>
-            <tr class="border-b border-surface-200" style="background:#faf8f5;">
-                <th class="px-4 py-3 text-left text-xs font-semibold text-surface-400 uppercase tracking-widest w-9">#</th>
-                <th class="px-4 py-3 text-left text-xs font-semibold text-surface-400 uppercase tracking-widest">Title / Author</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-surface-400 uppercase tracking-widest w-32">Price</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-surface-400 uppercase tracking-widest w-16">Hrs</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-surface-400 uppercase tracking-widest w-20">{{ currency }}/hr</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-surface-400 uppercase tracking-widest w-24">Rating</th>
-                <th class="px-4 py-3 text-right text-xs font-semibold text-surface-400 uppercase tracking-widest w-20">Actions</th>
+            <tr class="border-b border-ink-700/50 bg-ink-950/30">
+                <th class="px-4 py-3 text-left text-[10px] font-semibold text-ink-500 uppercase tracking-widest w-9">#</th>
+                <th class="px-4 py-3 text-left text-[10px] font-semibold text-ink-500 uppercase tracking-widest">Title / Author</th>
+                <th class="px-4 py-3 text-right text-[10px] font-semibold text-ink-500 uppercase tracking-widest w-32">Price</th>
+                <th class="px-4 py-3 text-right text-[10px] font-semibold text-ink-500 uppercase tracking-widest w-16">Hrs</th>
+                <th class="px-4 py-3 text-right text-[10px] font-semibold text-ink-500 uppercase tracking-widest w-20">{{ currency }}/hr</th>
+                <th class="px-4 py-3 text-right text-[10px] font-semibold text-ink-500 uppercase tracking-widest w-24">Rating</th>
+                <th class="px-4 py-3 text-right text-[10px] font-semibold text-ink-500 uppercase tracking-widest w-20">Actions</th>
             </tr>
         </thead>
-        <tbody class="divide-y divide-surface-100">
+        <tbody>
             {% for p in products %}
             {% set pph = (p.price / p.hours) if (p.price is not none and p.hours) else none %}
-            <tr class="group cursor-pointer transition-all duration-150
-                       hover:bg-amber-50/60"
-                style="transition: background 0.12s ease;"
+            <tr class="group cursor-pointer border-b border-ink-700/30 last:border-0 transition-all duration-150
+                       hover:bg-accent/[0.04]"
                 onclick="window.location='{{ url_for('compare.detail_page', asin=p.asin) }}'">
 
-                {# Index #}
-                <td class="px-4 py-3.5 text-xs text-surface-400 tabular-nums">{{ loop.index }}</td>
+                <td class="px-4 py-3.5 text-xs text-ink-600 tabular-nums">{{ loop.index }}</td>
 
-                {# Title / Author #}
                 <td class="px-4 py-3.5 max-w-xs">
                     <div class="min-w-0">
-                        {# Title row #}
-                        <p class="font-serif text-sm font-normal text-surface-900 leading-snug line-clamp-2
-                                  group-hover:text-brand-700 transition-colors">
+                        <p class="font-serif text-sm text-ink-100 leading-snug line-clamp-2
+                                  group-hover:text-ink-50 transition-colors">
                             {{ p.title }}
                             {% if p.in_plus_catalog %}
-                            <span class="ml-1.5 inline-block text-[10px] font-bold font-sans text-purple-600
-                                         bg-purple-50 border border-purple-200 rounded px-1 py-px align-middle">+</span>
+                            <span class="ml-1.5 inline-block text-[10px] font-bold font-sans text-purple-400
+                                         bg-purple-900/40 border border-purple-700/50 rounded px-1 py-px align-middle">+</span>
                             {% endif %}
                         </p>
 
-                        {# Series chip #}
                         {% if p.series_name %}
                         <span class="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md
-                                     bg-brand-50 border border-brand-100 text-[11px] text-brand-600">
-                            <svg class="w-2.5 h-2.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                     bg-ink-700 border border-ink-600/50 text-[11px] text-ink-400">
+                            <svg class="w-2.5 h-2.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                                       d="M4 6h16M4 10h16M4 14h16M4 18h16"/>
                             </svg>
@@ -142,96 +136,81 @@
                         </span>
                         {% endif %}
 
-                        {# Author + ASIN row #}
-                        <p class="mt-1 text-xs text-surface-500 truncate">{{ p.authors_str }}</p>
-                        <span class="font-mono text-[10px] text-surface-400">{{ p.asin }}</span>
+                        <p class="mt-1 text-xs text-ink-400 truncate">{{ p.authors_str }}</p>
+                        <span class="font-mono text-[10px] text-ink-600">{{ p.asin }}</span>
                     </div>
                 </td>
 
-                {# Price #}
                 <td class="px-4 py-3.5 text-right whitespace-nowrap align-top pt-4">
                     {% if p.price is not none %}
-                        {# Current price — large #}
-                        <div class="text-base font-semibold
-                                    {% if p.discount_pct and p.discount_pct >= 70 %}text-emerald-700
-                                    {% elif p.discount_pct and p.discount_pct >= 40 %}text-brand-700
-                                    {% else %}text-surface-900{% endif %} font-mono">
+                        <div class="text-lg font-medium text-accent font-mono tabular-nums leading-none">
                             {{ p.price | price(currency) }}
                         </div>
 
-                        {# Strikethrough original #}
                         {% if p.list_price and p.list_price != p.price %}
-                        <div class="text-xs text-surface-400 line-through font-mono mt-0.5">
+                        <div class="text-xs text-ink-600 line-through font-mono mt-0.5 tabular-nums">
                             {{ p.list_price | price(currency) }}
                         </div>
                         {% endif %}
 
-                        {# Discount badge #}
                         {% if p.discount_pct and p.discount_pct > 0 %}
                         <span class="inline-block mt-1 px-1.5 py-0.5 rounded-md text-[11px] font-bold
-                                     {% if p.discount_pct >= 70 %}bg-emerald-100 text-emerald-700
-                                     {% elif p.discount_pct >= 40 %}bg-brand-100 text-brand-700
-                                     {% else %}bg-surface-100 text-surface-500{% endif %}">
+                                     bg-accent/15 text-accent-light border border-accent/20">
                             −{{ p.discount_pct }}%
                         </span>
                         {% endif %}
                     {% else %}
-                        <span class="text-surface-400">—</span>
+                        <span class="text-ink-600">—</span>
                     {% endif %}
                 </td>
 
-                {# Hours #}
-                <td class="px-4 py-3.5 text-right text-sm text-surface-600 tabular-nums align-top pt-4">
+                <td class="px-4 py-3.5 text-right text-sm text-ink-400 tabular-nums align-top pt-4">
                     {{ p.hours if p.hours else "—" }}
                 </td>
 
-                {# $/hr — color-coded value signal #}
                 <td class="px-4 py-3.5 text-right whitespace-nowrap align-top pt-4">
                     {% if pph is not none %}
-                    <span class="font-mono text-sm font-medium
-                                 {% if pph < 0.50 %}text-emerald-700
-                                 {% elif pph < 1.00 %}text-brand-600
-                                 {% else %}text-surface-600{% endif %}">
+                    <span class="font-mono text-sm font-medium tabular-nums
+                                 {% if pph < 0.50 %}text-accent
+                                 {% elif pph < 1.00 %}text-sage
+                                 {% else %}text-ink-400{% endif %}">
                         {{ currency }}{{ "%.2f" | format(pph) }}
                     </span>
                     {% else %}
-                    <span class="text-surface-400">—</span>
+                    <span class="text-ink-600">—</span>
                     {% endif %}
                 </td>
 
-                {# Rating — star bar + number #}
                 <td class="px-4 py-3.5 text-right whitespace-nowrap align-top pt-4">
                     {% if p.rating %}
                     <div class="flex flex-col items-end gap-0.5">
-                        {# Five-dot bar #}
                         <div class="flex items-center gap-0.5">
                             {% set full = (p.rating | round(0, 'floor')) | int %}
                             {% for i in range(5) %}
                             <span class="w-1.5 h-1.5 rounded-full
-                                         {% if i < full %}bg-brand-400{% else %}bg-surface-200{% endif %}"></span>
+                                         {% if i < full %}bg-accent{% else %}bg-ink-700{% endif %}"></span>
                             {% endfor %}
                         </div>
-                        <span class="text-xs font-medium text-surface-700">{{ "%.1f" | format(p.rating) }}</span>
+                        <span class="text-xs font-medium text-ink-300 tabular-nums">{{ "%.1f" | format(p.rating) }}</span>
                         {% if p.num_ratings %}
-                        <span class="text-[10px] text-surface-400">{{ "{:,}".format(p.num_ratings) }}</span>
+                        <span class="text-[10px] text-ink-600 tabular-nums">{{ "{:,}".format(p.num_ratings) }}</span>
                         {% endif %}
                     </div>
                     {% else %}
-                    <span class="text-surface-400">—</span>
+                    <span class="text-ink-600">—</span>
                     {% endif %}
                 </td>
 
-                {# Actions #}
                 <td class="px-4 py-3.5 align-top pt-4" onclick="event.stopPropagation()">
-                    <div class="flex items-center justify-end gap-1.5">
+                    <div class="flex items-center justify-end gap-1">
                         <button
                             hx-post="{{ url_for('wishlist.hx_wishlist_add') }}"
                             hx-vals='{"asin": "{{ p.asin }}", "title": {{ p.title | tojson }}}'
                             hx-swap="none"
                             title="Add to wishlist"
-                            class="p-1.5 rounded-lg text-surface-400
-                                   hover:text-red-500 hover:bg-red-50
-                                   focus:outline-none focus:ring-2 focus:ring-red-200
+                            class="p-1.5 rounded-lg text-ink-500
+                                   hover:text-accent hover:bg-accent/10
+                                   focus:outline-none focus:ring-2 focus:ring-accent/30
                                    transition-colors">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -240,9 +219,9 @@
                         </button>
                         <a href="{{ p.url }}" target="_blank" rel="noopener"
                            title="Open on Audible"
-                           class="p-1.5 rounded-lg text-surface-400
-                                  hover:text-brand-600 hover:bg-brand-50
-                                  focus:outline-none focus:ring-2 focus:ring-brand-200
+                           class="p-1.5 rounded-lg text-ink-500
+                                  hover:text-ink-200 hover:bg-ink-700
+                                  focus:outline-none focus:ring-2 focus:ring-ink-600
                                   transition-colors">
                             <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
@@ -263,102 +242,91 @@
 <div class="sm:hidden space-y-3 animate-fade-in">
     {% for p in products %}
     {% set pph = (p.price / p.hours) if (p.price is not none and p.hours) else none %}
-    <div class="rounded-2xl bg-white border border-surface-200 overflow-hidden"
-         style="box-shadow: 0 2px 10px 0 rgba(120,83,20,0.06);">
+    <div class="rounded-2xl bg-ink-800 border border-ink-700/50 overflow-hidden
+                hover:border-ink-600 hover:shadow-[0_0_30px_rgba(229,91,60,0.06)]
+                transition-all duration-200">
 
-        {# Book card header — tappable to detail #}
         <a href="{{ url_for('compare.detail_page', asin=p.asin) }}" class="block px-4 pt-4 pb-3">
             <div class="flex items-start justify-between gap-3">
 
-                {# Left: title + series + author #}
                 <div class="min-w-0 flex-1">
-                    <p class="font-serif text-base text-surface-900 leading-snug">
+                    <p class="font-serif text-base text-ink-100 leading-snug">
                         {{ p.title }}
                         {% if p.in_plus_catalog %}
-                        <span class="ml-1 text-[10px] font-bold font-sans text-purple-600
-                                     bg-purple-50 border border-purple-200 rounded px-1 py-px align-middle">+</span>
+                        <span class="ml-1 text-[10px] font-bold font-sans text-purple-400
+                                     bg-purple-900/40 border border-purple-700/50 rounded px-1 py-px align-middle">+</span>
                         {% endif %}
                     </p>
                     {% if p.series_name %}
                     <span class="inline-flex items-center gap-1 mt-1 px-2 py-0.5 rounded-md
-                                 bg-brand-50 border border-brand-100 text-[11px] text-brand-600">
+                                 bg-ink-700 border border-ink-600/50 text-[11px] text-ink-400">
                         {{ p.series_name }}{% if p.series_position %} #{{ p.series_position }}{% endif %}
                     </span>
                     {% endif %}
-                    <p class="mt-1 text-xs text-surface-500 truncate">{{ p.authors_str }}</p>
-                    <span class="font-mono text-[10px] text-surface-400">{{ p.asin }}</span>
+                    <p class="mt-1 text-xs text-ink-400 truncate">{{ p.authors_str }}</p>
+                    <span class="font-mono text-[10px] text-ink-600">{{ p.asin }}</span>
                 </div>
 
-                {# Right: price tag #}
                 <div class="shrink-0 text-right">
                     {% if p.price is not none %}
-                    <div class="inline-block rounded-xl border px-3 py-2
-                                {% if p.discount_pct and p.discount_pct >= 70 %}border-emerald-200 bg-emerald-50
-                                {% elif p.discount_pct and p.discount_pct >= 40 %}border-brand-200 bg-brand-50
-                                {% else %}border-surface-200 bg-surface-50{% endif %}">
-                        <div class="font-mono font-bold text-base
-                                    {% if p.discount_pct and p.discount_pct >= 70 %}text-emerald-700
-                                    {% elif p.discount_pct and p.discount_pct >= 40 %}text-brand-700
-                                    {% else %}text-surface-900{% endif %}">
+                    <div class="inline-block rounded-xl border border-ink-700 bg-ink-700/50 px-3 py-2
+                                border-l-2 border-l-accent">
+                        <div class="font-mono font-bold text-base text-accent tabular-nums">
                             {{ p.price | price(currency) }}
                         </div>
                         {% if p.discount_pct and p.discount_pct > 0 %}
-                        <div class="text-[11px] font-bold mt-0.5
-                                    {% if p.discount_pct >= 70 %}text-emerald-600
-                                    {% elif p.discount_pct >= 40 %}text-brand-600
-                                    {% else %}text-surface-500{% endif %}">
+                        <div class="text-[11px] font-bold mt-0.5 text-accent-light">
                             −{{ p.discount_pct }}%
                         </div>
                         {% endif %}
                         {% if p.list_price and p.list_price != p.price %}
-                        <div class="text-[10px] text-surface-400 line-through font-mono mt-0.5">
+                        <div class="text-[10px] text-ink-600 line-through font-mono mt-0.5 tabular-nums">
                             {{ p.list_price | price(currency) }}
                         </div>
                         {% endif %}
                     </div>
                     {% else %}
-                    <span class="text-surface-400">—</span>
+                    <span class="text-ink-600">—</span>
                     {% endif %}
                 </div>
 
             </div>
         </a>
 
-        {# Card footer — stats + actions #}
-        <div class="px-4 pb-3.5 flex items-center justify-between border-t border-surface-100 pt-3">
-            <div class="flex items-center gap-3 text-xs text-surface-500">
+        <div class="px-4 pb-3.5 flex items-center justify-between border-t border-ink-700/40 pt-3">
+            <div class="flex items-center gap-3 text-xs text-ink-500">
                 {% if p.hours %}
                 <span>{{ p.hours }} hr</span>
                 {% endif %}
                 {% if pph is not none %}
-                <span class="font-mono font-medium
-                             {% if pph < 0.50 %}text-emerald-600
-                             {% elif pph < 1.00 %}text-brand-600
-                             {% else %}text-surface-600{% endif %}">
+                <span class="font-mono font-medium tabular-nums
+                             {% if pph < 0.50 %}text-accent
+                             {% elif pph < 1.00 %}text-sage
+                             {% else %}text-ink-400{% endif %}">
                     {{ currency }}{{ "%.2f" | format(pph) }}/hr
                 </span>
                 {% endif %}
                 {% if p.rating %}
                 <span class="flex items-center gap-1">
-                    <span class="text-brand-400">★</span>
-                    {{ "%.1f" | format(p.rating) }}
+                    <span class="text-accent text-[11px]">●</span>
+                    <span class="text-ink-300">{{ "%.1f" | format(p.rating) }}</span>
                 </span>
                 {% endif %}
             </div>
 
-            <div class="flex items-center gap-1.5">
+            <div class="flex items-center gap-1">
                 <button
                     hx-post="{{ url_for('wishlist.hx_wishlist_add') }}"
                     hx-vals='{"asin": "{{ p.asin }}", "title": {{ p.title | tojson }}}'
                     hx-swap="none"
-                    class="p-1.5 rounded-lg text-surface-400 hover:text-red-500 hover:bg-red-50 transition-colors">
+                    class="p-1.5 rounded-lg text-ink-500 hover:text-accent hover:bg-accent/10 transition-colors">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                               d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
                     </svg>
                 </button>
                 <a href="{{ p.url }}" target="_blank" rel="noopener"
-                   class="p-1.5 rounded-lg text-surface-400 hover:text-brand-600 hover:bg-brand-50 transition-colors">
+                   class="p-1.5 rounded-lg text-ink-500 hover:text-ink-200 hover:bg-ink-700 transition-colors">
                     <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                               d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
@@ -373,8 +341,8 @@
 {# ================================================================
    EXPORT FOOTER
 ================================================================ #}
-<div class="mt-5 flex items-center justify-between">
-    <p class="text-xs text-surface-400">
+<div class="mt-6 flex items-center justify-between">
+    <p class="text-xs text-ink-600">
         Showing {{ products | length }} result{{ "s" if products | length != 1 else "" }}
     </p>
     <div class="flex gap-2">

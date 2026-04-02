@@ -6,7 +6,7 @@
     <title>{% block title %}Audible Deals{% endblock %}</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=DM+Serif+Display:ital@0;1&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;0,9..40,700;1,9..40,400&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Instrument+Serif:ital@0;1&family=Plus+Jakarta+Sans:wght@300;400;500;600;700&display=swap" rel="stylesheet">
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://unpkg.com/htmx.org@2.0.4"></script>
     <script src="https://unpkg.com/htmx-ext-sse@2.2.2/sse.js"></script>
@@ -15,34 +15,33 @@
             theme: {
                 extend: {
                     fontFamily: {
-                        serif: ['"DM Serif Display"', 'Georgia', 'serif'],
-                        sans:  ['"DM Sans"', 'system-ui', 'sans-serif'],
-                        mono:  ['"JetBrains Mono"', 'monospace'],
+                        serif: ['"Instrument Serif"', 'Georgia', 'serif'],
+                        sans:  ['"Plus Jakarta Sans"', 'system-ui', 'sans-serif'],
+                        mono:  ['"IBM Plex Mono"', 'monospace'],
                     },
                     colors: {
-                        brand: {
-                            50:  '#fffbeb',
-                            100: '#fef3c7',
-                            200: '#fde68a',
-                            300: '#fcd34d',
-                            400: '#fbbf24',
-                            500: '#f59e0b',
-                            600: '#d97706',
-                            700: '#b45309',
-                            800: '#92400e',
-                            900: '#78350f',
+                        ink: {
+                            950: '#0a0a09',
+                            900: '#111110',
+                            800: '#1c1b1a',
+                            700: '#2a2826',
+                            600: '#3d3a37',
+                            500: '#57534e',
+                            400: '#78716c',
+                            300: '#a8a29e',
+                            200: '#d6d3d1',
+                            100: '#ede8e3',
+                            50:  '#f5f0eb',
                         },
-                        surface: {
-                            50:  '#fafaf9',
-                            100: '#f5f5f4',
-                            200: '#e7e5e4',
-                            300: '#d6d3d1',
-                            400: '#a8a29e',
-                            500: '#78716c',
-                            600: '#57534e',
-                            700: '#44403c',
-                            800: '#292524',
-                            900: '#1c1917',
+                        accent: {
+                            DEFAULT: '#e55b3c',
+                            light:   '#f07d64',
+                            dark:    '#c4432a',
+                        },
+                        sage: {
+                            DEFAULT: '#7a8a6e',
+                            light:   '#a3b295',
+                            dark:    '#5a6a4e',
                         },
                     },
                 }
@@ -50,20 +49,41 @@
         }
     </script>
     <style>
-        body {
-            font-family: "DM Sans", system-ui, sans-serif;
-            background-color: #faf8f5;
-            color: #292524;
+        :root {
+            /* Ink & Paper design tokens — used by Tailwind utilities and raw CSS alike */
+            --ink-950: #0a0a09;
+            --ink-900: #111110;
+            --ink-800: #1c1b1a;
+            --ink-700: #2a2826;
+            --ink-600: #3d3a37;
+            --ink-500: #57534e;
+            --ink-400: #78716c;
+            --ink-300: #a8a29e;
+            --ink-200: #d6d3d1;
+            --ink-100: #ede8e3;
+            --ink-50:  #f5f0eb;
+            --accent:       #e55b3c;
+            --accent-light: #f07d64;
+            --accent-dark:  #c4432a;
+            --accent-glow:  rgba(229, 91, 60, 0.15);
+            --sage:         #7a8a6e;
+            --sage-light:   #a3b295;
         }
 
-        /* Subtle warm grain texture — pointer-events:none so it never blocks interaction */
+        body {
+            font-family: "Plus Jakarta Sans", system-ui, sans-serif;
+            background-color: var(--ink-900);
+            color: var(--ink-100);
+        }
+
+        /* Subtle noise texture overlay — pointer-events:none so it never blocks interaction */
         body::after {
             content: '';
             position: fixed;
             inset: 0;
             pointer-events: none;
-            z-index: 1;
-            opacity: 0.022;
+            z-index: 50;
+            opacity: 0.03;
             background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='300' height='300'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.75' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='300' height='300' filter='url(%23n)'/%3E%3C/svg%3E");
             background-repeat: repeat;
             background-size: 200px 200px;
@@ -81,15 +101,29 @@
         }
         .animate-fade-in { animation: fade-in 0.2s ease-out; }
 
-        @keyframes slide-in {
-            from { transform: translateX(100%); }
-            to   { transform: translateX(0); }
+        @keyframes fade-up {
+            from { opacity: 0; transform: translateY(16px); }
+            to   { opacity: 1; transform: translateY(0); }
         }
-        .animate-slide-in { animation: slide-in 0.2s ease-out; }
+        .animate-fade-up { animation: fade-up 0.4s ease-out both; }
+
+        @keyframes slide-in {
+            from { transform: translateX(100%); opacity: 0; }
+            to   { transform: translateX(0); opacity: 1; }
+        }
+        .animate-slide-in { animation: slide-in 0.25s ease-out; }
+
+        /* Stagger delays for page-load animations */
+        .stagger-1 { animation-delay:  50ms; }
+        .stagger-2 { animation-delay: 100ms; }
+        .stagger-3 { animation-delay: 150ms; }
+        .stagger-4 { animation-delay: 200ms; }
+        .stagger-5 { animation-delay: 250ms; }
+        .stagger-6 { animation-delay: 300ms; }
 
         .sparkline-bar { transition: height 0.3s ease; }
 
-        /* Sidebar active left-border indicator */
+        /* Sidebar active left-border pip */
         .nav-active-pip {
             position: absolute;
             left: 0;
@@ -99,52 +133,188 @@
             height: 56%;
             min-height: 14px;
             border-radius: 0 2px 2px 0;
-            background-color: #f59e0b;
+            background-color: var(--accent);
         }
 
-        /* Sidebar nav link hover glow */
+        /* Sidebar nav link hover */
         .nav-link:hover {
-            box-shadow: inset 0 0 0 1px rgba(245, 158, 11, 0.08);
+            box-shadow: inset 0 0 0 1px rgba(229, 91, 60, 0.08);
         }
+
+        /* Global focus rings: accent color */
+        *:focus-visible {
+            outline: 2px solid var(--accent);
+            outline-offset: 2px;
+        }
+
+        /* Font utility classes */
+        .ink-serif { font-family: 'Instrument Serif', Georgia, serif !important; }
+        .ink-mono  { font-family: 'IBM Plex Mono', monospace !important; }
+
+        /* Card base: dark surface, no default hover glow (applied selectively) */
+        .ink-card {
+            background-color: var(--ink-800);
+            border: 1px solid rgba(42, 40, 38, 0.5);
+            border-radius: 0.75rem;
+        }
+        .ink-card-interactive {
+            transition: box-shadow 0.2s ease;
+        }
+        .ink-card-interactive:hover {
+            box-shadow: 0 0 0 1px rgba(229, 91, 60, 0.3), 0 4px 24px var(--accent-glow);
+        }
+
+        /* Shared button primitives */
+        .btn-accent {
+            background-color: var(--accent);
+            color: #fff;
+            border-radius: 0.5rem;
+            padding: 0.625rem 1.25rem;
+            font-size: 0.875rem;
+            font-weight: 600;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            white-space: nowrap;
+            transition: background-color 0.15s ease, box-shadow 0.15s ease;
+            border: none;
+            cursor: pointer;
+        }
+        .btn-accent:hover {
+            background-color: var(--accent-dark);
+            box-shadow: 0 4px 20px var(--accent-glow);
+        }
+        .btn-outline {
+            border: 1px solid var(--ink-600);
+            background: transparent;
+            transition: border-color 0.15s ease, background-color 0.15s ease, color 0.15s ease;
+        }
+        .btn-outline:hover {
+            border-color: var(--accent);
+            background-color: var(--accent-glow);
+            color: var(--accent-light);
+        }
+        .btn-ghost {
+            background: transparent;
+            border: 1px solid transparent;
+            transition: border-color 0.15s ease, background-color 0.15s ease;
+        }
+        .btn-ghost:hover {
+            border-color: var(--ink-600);
+            background-color: rgba(255, 255, 255, 0.04);
+        }
+        .btn-sync {
+            background-color: var(--ink-700);
+            border: 1px solid var(--ink-600);
+            border-radius: 0.5rem;
+            color: var(--ink-300);
+            padding: 0.5rem 1rem;
+            font-size: 0.8125rem;
+            font-weight: 500;
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            transition: background-color 0.15s ease, border-color 0.15s ease, color 0.15s ease;
+            cursor: pointer;
+        }
+        .btn-sync:hover {
+            background-color: var(--ink-600);
+            border-color: var(--ink-500);
+            color: var(--ink-100);
+        }
+
+        /* Back-link hover (replaces onmouseover/onmouseout) */
+        .back-link { color: var(--ink-400); transition: color 0.15s ease; }
+        .back-link:hover { color: var(--ink-200); }
+
+        /* Table row hover */
+        .ink-tr-hover { transition: background-color 0.12s ease; }
+        .ink-tr-hover:hover { background: rgba(255, 255, 255, 0.03); }
+
+        /* Ink form input */
+        .ink-input {
+            background-color: var(--ink-700);
+            border: 1px solid var(--ink-600);
+            border-radius: 0.5rem;
+            color: var(--ink-100);
+            width: 100%;
+            padding: 0.625rem 0.875rem;
+            font-size: 0.875rem;
+            transition: border-color 0.15s ease, box-shadow 0.15s ease;
+            outline: none;
+        }
+        .ink-input::placeholder { color: var(--ink-500); }
+        .ink-input:focus {
+            border-color: var(--accent);
+            box-shadow: 0 0 0 3px var(--accent-glow);
+        }
+
+        /* Wishlist card */
+        .wish-card {
+            background-color: var(--ink-800);
+            border-radius: 0.75rem;
+            border: 1px solid rgba(42, 40, 38, 0.5);
+            transition: box-shadow 0.2s ease, border-color 0.2s ease;
+            position: relative;
+            overflow: hidden;
+        }
+        .wish-card:hover {
+            box-shadow: 0 4px 24px var(--accent-glow);
+            border-color: rgba(229, 91, 60, 0.2);
+        }
+        .wish-card::before {
+            content: '';
+            position: absolute;
+            left: 0; top: 0; bottom: 0;
+            width: 3px;
+            border-radius: 0.75rem 0 0 0.75rem;
+        }
+        .wish-card.has-target::before { background-color: var(--sage); }
+        .wish-card.no-target::before  { background-color: var(--ink-700); }
+        .wish-remove {
+            opacity: 0;
+            transition: opacity 0.15s ease, color 0.15s ease;
+        }
+        .wish-card:hover .wish-remove,
+        .wish-remove:focus { opacity: 1; }
+        .wish-remove:hover { color: var(--accent) !important; }
+
+        /* Title link hover in wishlist cards */
+        .wish-title-link { color: var(--ink-100); transition: color 0.15s ease; }
+        .wish-title-link:hover { color: var(--accent); }
     </style>
 </head>
 <body class="h-full">
 
 <!-- Mobile nav overlay -->
 <div id="mobile-overlay"
-     class="fixed inset-0 bg-black/50 backdrop-blur-sm z-30 hidden lg:hidden"
+     class="fixed inset-0 bg-black/60 backdrop-blur-sm z-30 hidden lg:hidden"
      onclick="toggleNav()"></div>
 
 <!-- Sidebar -->
 <aside id="sidebar"
-       class="fixed top-0 left-0 h-full w-64 bg-surface-900 z-40
+       class="fixed top-0 left-0 h-full w-64 bg-ink-950 border-r border-ink-800 z-40
               transform -translate-x-full lg:translate-x-0 transition-transform duration-200
               flex flex-col">
 
-    <div class="flex items-center gap-3 px-5 py-5 border-b border-white/[0.06] shrink-0">
-        <div class="w-9 h-9 rounded-lg bg-brand-500 flex items-center justify-center shadow-lg shadow-brand-900/40 shrink-0">
-            <svg class="w-[18px] h-[18px] text-surface-900" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
-                      d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13
-                         C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13
-                         C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13
-                         C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
-            </svg>
-        </div>
+    <!-- Logo -->
+    <div class="flex items-center gap-3 px-5 py-5 border-b border-ink-800 shrink-0">
         <div class="leading-tight min-w-0">
-            <span class="font-serif text-[17px] text-white block truncate">Audible Deals</span>
-            <span class="text-[10px] text-surface-500 tracking-wide uppercase">curated picks</span>
+            <span class="font-serif text-[22px] text-ink-50 block truncate tracking-tight">
+                Audible<span class="text-accent">.</span>
+            </span>
+            <span class="text-[10px] text-ink-500 tracking-[0.2em] uppercase font-sans">deals</span>
         </div>
     </div>
 
     <nav class="flex-1 px-3 py-4 overflow-y-auto space-y-0.5">
 
         <!-- DISCOVER -->
-        <p class="px-3 pt-1 pb-2 text-[10px] font-semibold text-brand-500/70 uppercase tracking-[0.14em]">Discover</p>
+        <p class="px-3 pt-1 pb-2 text-[10px] font-semibold text-ink-500 uppercase tracking-[0.2em]">Discover</p>
 
         <a href="{{ url_for('search.find_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'find' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'find' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'find' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -157,7 +327,7 @@
 
         <a href="{{ url_for('search.search_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'search' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'search' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'search' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -168,7 +338,7 @@
 
         <a href="{{ url_for('categories.categories_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'categories' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'categories' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'categories' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -179,11 +349,11 @@
         </a>
 
         <!-- LIBRARY -->
-        <p class="px-3 pt-5 pb-2 text-[10px] font-semibold text-brand-500/70 uppercase tracking-[0.14em]">Library</p>
+        <p class="px-3 pt-5 pb-2 text-[10px] font-semibold text-ink-500 uppercase tracking-[0.2em]">Library</p>
 
         <a href="{{ url_for('library.library_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'library' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'library' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'library' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -194,7 +364,7 @@
 
         <a href="{{ url_for('wishlist.wishlist_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'wishlist' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'wishlist' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'wishlist' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -206,7 +376,7 @@
 
         <a href="{{ url_for('watch.watch_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'watch' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'watch' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'watch' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -219,11 +389,11 @@
         </a>
 
         <!-- TRACKING -->
-        <p class="px-3 pt-5 pb-2 text-[10px] font-semibold text-brand-500/70 uppercase tracking-[0.14em]">Tracking</p>
+        <p class="px-3 pt-5 pb-2 text-[10px] font-semibold text-ink-500 uppercase tracking-[0.2em]">Tracking</p>
 
         <a href="{{ url_for('history.recap_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'recap' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'recap' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'recap' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -235,11 +405,11 @@
         </a>
 
         <!-- SETTINGS -->
-        <p class="px-3 pt-5 pb-2 text-[10px] font-semibold text-brand-500/70 uppercase tracking-[0.14em]">Settings</p>
+        <p class="px-3 pt-5 pb-2 text-[10px] font-semibold text-ink-500 uppercase tracking-[0.2em]">Settings</p>
 
         <a href="{{ url_for('profiles.profiles_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'profiles' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'profiles' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'profiles' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -250,7 +420,7 @@
 
         <a href="{{ url_for('config.config_page') }}"
            class="nav-link relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm font-medium transition-all duration-150
-                  {% if active_page == 'config' %}text-brand-300 bg-white/[0.07]{% else %}text-surface-400 hover:text-surface-100 hover:bg-white/[0.05]{% endif %}">
+                  {% if active_page == 'config' %}text-accent bg-accent/[0.08]{% else %}text-ink-400 hover:text-ink-100 hover:bg-ink-800/60{% endif %}">
             {% if active_page == 'config' %}<span class="nav-active-pip"></span>{% endif %}
             <svg class="w-[17px] h-[17px] shrink-0 opacity-80" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
@@ -270,25 +440,25 @@
 
     </nav>
 
-    <div class="px-5 py-4 border-t border-white/[0.06] shrink-0">
-        <p class="text-[11px] text-surface-600 leading-snug">Your shelf, your deals.</p>
+    <div class="px-5 py-4 border-t border-ink-800 shrink-0">
+        <p class="text-[11px] text-ink-600 leading-snug font-sans">Your shelf, your deals.</p>
     </div>
 </aside>
 
-<!-- Main content -->
+<!-- Main content wrapper -->
 <div class="lg:ml-64 min-h-full flex flex-col">
 
     <!-- Mobile top bar -->
-    <header class="sticky top-0 z-20 bg-[#faf8f5]/90 backdrop-blur border-b border-surface-200/60 lg:hidden">
+    <header class="sticky top-0 z-20 bg-ink-950/90 backdrop-blur-md border-b border-ink-800 lg:hidden">
         <div class="flex items-center justify-between px-4 py-3">
             <button onclick="toggleNav()"
-                    class="p-1.5 rounded-lg hover:bg-surface-100 transition-colors
-                           focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-1">
-                <svg class="w-6 h-6 text-surface-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    class="p-1.5 rounded-lg text-ink-400 hover:text-ink-100 hover:bg-ink-800/70 transition-colors
+                           focus:outline-none focus:ring-2 focus:ring-accent focus:ring-offset-1 focus:ring-offset-ink-950">
+                <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
                 </svg>
             </button>
-            <span class="font-serif text-[17px] text-surface-900">Audible Deals</span>
+            <span class="font-serif text-[19px] text-ink-50 tracking-tight">Audible<span class="text-accent">.</span></span>
             <div class="w-9"></div>
         </div>
     </header>
@@ -300,10 +470,11 @@
         {% with messages = get_flashed_messages(with_categories=true) %}
         {% if messages %}
             {% for category, message in messages %}
-            <div class="mb-5 px-4 py-3 rounded-xl text-sm animate-fade-in border
-                {% if category == 'success' %}bg-green-50 text-green-800 border-green-200
-                {% elif category == 'error' %}bg-red-50 text-red-800 border-red-200
-                {% else %}bg-brand-50 text-brand-800 border-brand-200{% endif %}">
+            <div class="mb-5 px-4 py-3.5 rounded-xl text-sm animate-fade-in
+                        bg-ink-800 border-l-4 text-ink-100
+                {% if category == 'success' %}border-sage
+                {% elif category == 'error' %}border-accent
+                {% else %}border-accent/60{% endif %}">
                 {{ message }}
             </div>
             {% endfor %}
@@ -336,8 +507,13 @@ document.querySelectorAll('.nav-link').forEach(link => {
 document.body.addEventListener('showToast', function(e) {
     const container = document.getElementById('toast-container');
     const toast = document.createElement('div');
-    toast.className = 'px-4 py-3 rounded-xl shadow-lg shadow-stone-900/10 text-sm text-white font-medium animate-slide-in ' +
-        (e.detail.type === 'error' ? 'bg-red-700' : 'bg-green-700');
+    const isError = e.detail.type === 'error';
+    toast.className = [
+        'px-4 py-3 rounded-xl text-sm font-medium animate-slide-in',
+        'bg-ink-800 border text-ink-50',
+        'shadow-xl shadow-ink-950/60',
+        isError ? 'border-accent' : 'border-sage',
+    ].join(' ');
     toast.textContent = e.detail.message;
     container.appendChild(toast);
     setTimeout(() => {

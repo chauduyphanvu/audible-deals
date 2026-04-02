@@ -2,13 +2,23 @@
 {% block title %}Wishlist — Audible Deals{% endblock %}
 
 {% block content %}
-<div class="space-y-8 animate-fade-in">
+<div class="space-y-10 animate-fade-in">
 
   <!-- Page header -->
   <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-4">
     <div>
-      <h1 class="font-serif text-4xl text-surface-900 leading-tight">Wishlist</h1>
-      <p class="text-sm text-surface-500 mt-1">
+      <div class="flex items-center gap-3">
+        <h1 class="ink-serif" style="font-size:2.5rem; color:var(--ink-50); line-height:1.05;">
+          Wishlist
+        </h1>
+        {% if items %}
+        <span class="inline-flex items-center justify-center text-xs font-semibold px-2.5 py-1 rounded-full ink-mono"
+              style="background:var(--ink-700); color:var(--ink-300); margin-top:0.25rem;">
+          {{ items | length }}
+        </span>
+        {% endif %}
+      </div>
+      <p class="text-sm mt-1" style="color:var(--ink-400);">
         {% if items %}
           Tracking {{ items | length }} title{{ 's' if items | length != 1 else '' }}
         {% else %}
@@ -17,20 +27,18 @@
       </p>
     </div>
 
-    <!-- Sync button -->
-    <button
-      hx-post="/hx/wishlist/sync"
-      hx-target="#wishlist-table"
-      hx-swap="outerHTML"
-      hx-indicator="#sync-indicator"
-      class="self-start sm:self-auto inline-flex items-center gap-2 px-4 py-2 bg-white border border-surface-300 hover:bg-surface-50 text-surface-600 hover:text-surface-900 text-sm font-medium rounded-lg transition-colors shadow-sm">
-      <svg class="w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <button class="btn-sync self-start sm:self-auto"
+            hx-post="/hx/wishlist/sync"
+            hx-target="#wishlist-table"
+            hx-swap="outerHTML"
+            hx-indicator="#sync-indicator">
+      <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
         <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
               d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
       </svg>
       Sync from Audible
       <span id="sync-indicator" class="htmx-indicator">
-        <svg class="w-4 h-4 animate-spin text-brand-500" fill="none" viewBox="0 0 24 24">
+        <svg class="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24" style="color:var(--accent);">
           <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
           <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
         </svg>
@@ -39,49 +47,52 @@
   </div>
 
   <!-- Add form -->
-  <div class="bg-white rounded-xl border border-surface-200 shadow-sm p-5 sm:p-6">
-    <h2 class="font-serif text-xl text-surface-900 mb-1">Track a new title</h2>
-    <p class="text-xs text-surface-400 mb-4">
-      Enter an ASIN or paste an Audible URL — the ASIN will be extracted automatically.
-      <span class="text-surface-300">(Find the ASIN in the URL: audible.com/pd/<strong class="font-mono text-surface-400">B00R6S1RCY</strong>)</span>
+  <div class="ink-card p-6 sm:p-8">
+    <h2 class="ink-serif text-2xl mb-1" style="color:var(--ink-50);">Track a new title</h2>
+    <p class="text-xs mb-6" style="color:var(--ink-400);">
+      Enter an ASIN or paste an Audible URL &mdash; the ASIN will be extracted automatically.
+      <span class="ink-mono" style="color:var(--ink-500);">
+        (audible.com/pd/<strong style="color:var(--ink-300);">B00R6S1RCY</strong>)
+      </span>
     </p>
 
-    <form
-      hx-post="/hx/wishlist/add"
-      hx-target="#wishlist-table"
-      hx-swap="outerHTML"
-      hx-indicator="#add-indicator"
-      hx-on::after-request="this.reset()"
-      class="flex flex-col sm:flex-row gap-3 items-start sm:items-end">
+    <form hx-post="/hx/wishlist/add"
+          hx-target="#wishlist-table"
+          hx-swap="outerHTML"
+          hx-indicator="#add-indicator"
+          hx-on::after-request="this.reset()"
+          class="flex flex-col sm:flex-row gap-4 items-start sm:items-end">
 
-      <!-- ASIN / URL input -->
       <div class="flex-1 min-w-0">
-        <label for="w-asin" class="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1.5">
+        <label for="w-asin"
+               class="block ink-mono text-[10px] font-medium tracking-widest uppercase mb-2"
+               style="color:var(--ink-400);">
           ASIN or Audible URL
         </label>
         <input id="w-asin" name="asin" type="text" required
                placeholder="B00R6S1RCY or https://www.audible.com/pd/…"
                autocomplete="off"
                oninput="extractAsin(this)"
-               class="w-full px-3 py-2.5 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300 font-mono bg-surface-50 focus:bg-white transition-colors">
+               class="ink-input ink-mono">
       </div>
 
-      <!-- Target price -->
       <div class="w-full sm:w-44">
-        <label for="w-max-price" class="block text-xs font-semibold text-surface-500 uppercase tracking-wider mb-1.5">
+        <label for="w-max-price"
+               class="block ink-mono text-[10px] font-medium tracking-widest uppercase mb-2"
+               style="color:var(--ink-400);">
           Alert below (optional)
         </label>
         <div class="relative">
-          <span class="absolute left-3 top-1/2 -translate-y-1/2 text-surface-400 text-sm font-mono">{{ currency }}</span>
+          <span class="absolute left-3 top-1/2 -translate-y-1/2 ink-mono text-sm pointer-events-none"
+                style="color:var(--ink-500);">{{ currency }}</span>
           <input id="w-max-price" name="max_price" type="number" min="0.01" step="0.01"
                  placeholder="5.99"
-                 class="w-full pl-7 pr-3 py-2.5 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300 bg-surface-50 focus:bg-white transition-colors">
+                 class="ink-input"
+                 style="padding-left:2rem;">
         </div>
       </div>
 
-      <!-- Submit -->
-      <button type="submit"
-              class="inline-flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 active:bg-brand-800 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm whitespace-nowrap">
+      <button type="submit" class="btn-accent">
         <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
                 d="M4.318 6.318a4.5 4.5 0 000 6.364L12 20.364l7.682-7.682a4.5 4.5 0 00-6.364-6.364L12 7.636l-1.318-1.318a4.5 4.5 0 00-6.364 0z"/>
@@ -94,19 +105,18 @@
           </svg>
         </span>
       </button>
+
     </form>
   </div>
 
-  <!-- Wishlist items (replaced by HTMX) -->
+  <!-- Wishlist items (HTMX target) -->
   {% include "partials/_wishlist_table.html" %}
 
 </div>
 
 <script>
-// Extract ASIN from Audible URL pasted into the input
 function extractAsin(input) {
   const val = input.value.trim();
-  // Match /pd/ASIN or /B0... in URL
   const urlMatch = val.match(/\/pd\/([A-Z0-9]{10})/i) || val.match(/asin[=\/]([A-Z0-9]{10})/i);
   if (urlMatch) {
     input.value = urlMatch[1].toUpperCase();
