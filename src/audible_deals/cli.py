@@ -2152,3 +2152,43 @@ def completions(shell):
         click.echo(result.stdout)
     else:
         click.echo(result.stderr, err=True)
+
+
+@cli.command("web")
+@click.option("--host", default="127.0.0.1", help="Host to bind to (default: 127.0.0.1)")
+@click.option("--port", "-p", type=int, default=8080, help="Port to bind to (default: 8080)")
+@click.option("--no-open", is_flag=True, default=False, help="Don't open browser automatically")
+@click.pass_context
+def web_cmd(ctx, host, port, no_open):
+    """Launch the web UI in your browser.
+
+    Starts a local web server for browsing deals, managing your
+    wishlist, and tracking prices — no terminal required.
+
+    \b
+    Examples:
+        deals web
+        deals web --port 9000
+        deals web --no-open
+    """
+    try:
+        from audible_deals.web import create_app
+    except ImportError:
+        raise click.ClickException(
+            "Web UI requires Flask. Install with:\n"
+            "  pip install audible-deals[web]"
+        )
+
+    app = create_app(locale=ctx.obj["locale"])
+    url = f"http://{host}:{port}"
+    console.print(f"\n  [bold]Audible Deals Web UI[/bold]")
+    console.print(f"  [dim]Running at[/dim] [link={url}]{url}[/link]")
+    if host not in ("127.0.0.1", "localhost", "::1"):
+        console.print(f"  [yellow]Warning:[/yellow] Binding to {host} exposes the web UI to your network.")
+    console.print(f"  [dim]Press Ctrl+C to stop.[/dim]\n")
+
+    if not no_open:
+        import webbrowser
+        webbrowser.open(url)
+
+    app.run(host=host, port=port, debug=False, use_reloader=False)

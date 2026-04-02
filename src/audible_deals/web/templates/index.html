@@ -1,0 +1,290 @@
+{% extends "base.html" %}
+
+{% block title %}Audible Deals — Dashboard{% endblock %}
+
+{% macro discount_badge_classes(pct) -%}
+    {%- if pct >= 70 %}bg-green-50 text-green-700
+    {%- elif pct >= 40 %}bg-brand-50 text-brand-700
+    {%- else %}bg-surface-100 text-surface-500{%- endif %}
+{%- endmacro %}
+
+{% macro discount_text_classes(pct) -%}
+    {%- if pct >= 70 %}text-green-600
+    {%- elif pct >= 40 %}text-brand-500
+    {%- else %}text-surface-400{%- endif %}
+{%- endmacro %}
+
+{% macro accent_bar_class(pct) -%}
+    {%- if pct and pct >= 70 %}bg-green-500
+    {%- elif pct and pct >= 40 %}bg-brand-400
+    {%- else %}bg-surface-200{%- endif %}
+{%- endmacro %}
+
+{% block content %}
+<div class="rounded-2xl overflow-hidden mb-8
+            bg-gradient-to-br from-surface-900 via-surface-800 to-surface-900
+            shadow-xl shadow-surface-900/20 relative">
+
+    <div class="absolute top-0 right-0 w-80 h-80 rounded-full
+                bg-brand-500/10 blur-3xl pointer-events-none"></div>
+
+    <div class="relative px-7 py-9 sm:px-10 sm:py-12">
+        <div class="flex flex-col sm:flex-row sm:items-end sm:justify-between gap-6">
+            <div class="max-w-xl">
+                <p class="text-brand-400 text-[11px] font-semibold uppercase tracking-[0.18em] mb-3">
+                    Your literary deal-finder
+                </p>
+                <h1 class="font-serif text-3xl sm:text-4xl lg:text-[42px] text-white leading-tight">
+                    Find Your Next<br class="hidden sm:block"> Great Listen
+                </h1>
+                <p class="mt-3 text-surface-400 text-sm sm:text-base leading-relaxed max-w-md">
+                    Browse Audible deals, search the catalog, and track prices — all in one curated place.
+                </p>
+            </div>
+
+            <div class="flex flex-wrap gap-2 shrink-0">
+                <a href="{{ url_for('search.find_page') }}"
+                   class="inline-flex items-center gap-1.5 rounded-full bg-brand-500 hover:bg-brand-400
+                          px-4 py-2 text-xs font-semibold text-surface-900 transition-colors shadow-md shadow-brand-900/30">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5"
+                              d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2
+                                 m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1
+                                 m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                    Find Deals
+                </a>
+                <a href="{{ url_for('library.library_page') }}"
+                   class="inline-flex items-center gap-1.5 rounded-full bg-white/10 hover:bg-white/15
+                          border border-white/10 px-4 py-2 text-xs font-semibold text-surface-200 transition-colors">
+                    <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                              d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/>
+                    </svg>
+                    My Library
+                </a>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Search bar -->
+<div class="mb-8">
+    <form action="{{ url_for('search.search_page') }}" method="get" class="relative group">
+        <div class="absolute inset-y-0 left-0 pl-4 flex items-center pointer-events-none">
+            <svg class="w-5 h-5 text-surface-400 group-focus-within:text-brand-500 transition-colors"
+                 fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.75"
+                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+        </div>
+        <input
+            type="text"
+            name="q"
+            autocomplete="off"
+            placeholder="What are you looking for? Title, author, keyword…"
+            class="w-full pl-12 pr-32 py-4 rounded-xl border border-surface-200/80 bg-white
+                   text-surface-900 placeholder-surface-400 text-sm sm:text-base
+                   shadow-sm shadow-surface-200/40
+                   focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-brand-400
+                   transition-all"
+        >
+        <div class="absolute inset-y-0 right-0 pr-2 flex items-center">
+            <button type="submit"
+                    class="h-[calc(100%-12px)] px-5 rounded-lg bg-surface-900 hover:bg-surface-800
+                           text-white text-xs font-semibold tracking-wide transition-colors
+                           focus:outline-none focus:ring-2 focus:ring-brand-400">
+                Search
+            </button>
+        </div>
+    </form>
+</div>
+
+<!-- Quick genre deals -->
+<div class="flex flex-wrap items-center gap-3 mb-10">
+        <span class="text-xs text-surface-400 font-medium uppercase tracking-widest mr-1 shrink-0">Quick finds:</span>
+
+        <a href="{{ url_for('search.find_page') }}?genre=Science+Fiction&max_price=5"
+           class="inline-flex items-center gap-1.5 rounded-full border border-surface-200 bg-white
+                  px-3.5 py-1.5 text-xs font-medium text-surface-600
+                  hover:border-brand-300 hover:text-brand-700 hover:bg-brand-50
+                  hover:shadow-sm hover:shadow-brand-100/60
+                  transition-all duration-150">
+            <span class="text-base leading-none">🚀</span>
+            Sci-Fi under $5
+        </a>
+
+        <a href="{{ url_for('search.find_page') }}?genre=Mystery&max_price=5"
+           class="inline-flex items-center gap-1.5 rounded-full border border-surface-200 bg-white
+                  px-3.5 py-1.5 text-xs font-medium text-surface-600
+                  hover:border-brand-300 hover:text-brand-700 hover:bg-brand-50
+                  hover:shadow-sm hover:shadow-brand-100/60
+                  transition-all duration-150">
+            <span class="text-base leading-none">🔍</span>
+            Mystery under $5
+        </a>
+
+        <a href="{{ url_for('search.find_page') }}?genre=Romance&max_price=5"
+           class="inline-flex items-center gap-1.5 rounded-full border border-surface-200 bg-white
+                  px-3.5 py-1.5 text-xs font-medium text-surface-600
+                  hover:border-brand-300 hover:text-brand-700 hover:bg-brand-50
+                  hover:shadow-sm hover:shadow-brand-100/60
+                  transition-all duration-150">
+            <span class="text-base leading-none">💛</span>
+            Romance under $5
+        </a>
+
+        <a href="{{ url_for('search.find_page') }}?genre=Fantasy&max_price=5"
+           class="inline-flex items-center gap-1.5 rounded-full border border-surface-200 bg-white
+                  px-3.5 py-1.5 text-xs font-medium text-surface-600
+                  hover:border-brand-300 hover:text-brand-700 hover:bg-brand-50
+                  hover:shadow-sm hover:shadow-brand-100/60
+                  transition-all duration-150">
+            <span class="text-base leading-none">🐉</span>
+            Fantasy under $5
+        </a>
+</div>
+
+<!-- Recent results -->
+{% if last_results %}
+<div>
+    <div class="flex items-center justify-between mb-5">
+        <div>
+            <h2 class="font-serif text-xl text-surface-900">Recent Results</h2>
+            {% if last_title %}
+            <p class="text-xs text-surface-400 mt-0.5 truncate max-w-xs sm:max-w-sm">{{ last_title }}</p>
+            {% endif %}
+        </div>
+        <a href="{{ url_for('search.hx_last') }}"
+           class="text-xs text-brand-600 hover:text-brand-700 font-medium hover:underline transition-colors shrink-0 ml-4">
+            View all &rarr;
+        </a>
+    </div>
+
+    <!-- Top 3 results as editorial cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 mb-4">
+        {% for p in last_results[:3] %}
+        <a href="{{ url_for('compare.detail_page', asin=p.asin) }}"
+           class="group flex flex-col rounded-xl bg-white border border-surface-200/60
+                  shadow-sm shadow-surface-200/50
+                  hover:shadow-md hover:shadow-amber-100/50 hover:border-brand-200/70
+                  transition-all duration-200 overflow-hidden">
+
+            <div class="h-1 w-full {{ accent_bar_class(p.discount_pct) }}"></div>
+
+            <div class="p-5 flex-1 flex flex-col gap-3">
+                <div class="flex items-start justify-between gap-2">
+                    <span class="font-mono text-[10px] text-surface-300 font-medium pt-0.5">#{{ loop.index }}</span>
+                    {% if p.discount_pct and p.discount_pct > 0 %}
+                    <span class="inline-flex items-center rounded-full px-2 py-0.5 text-[10px] font-semibold {{ discount_badge_classes(p.discount_pct) }}">
+                        &minus;{{ p.discount_pct }}%
+                    </span>
+                    {% endif %}
+                </div>
+
+                <div class="flex-1">
+                    <h3 class="font-serif text-base text-surface-900 leading-snug line-clamp-2
+                               group-hover:text-surface-700 transition-colors">{{ p.title }}</h3>
+                    <p class="text-xs text-surface-400 mt-1 truncate">{{ p.authors_str }}</p>
+                    {% if p.series_name %}
+                    <p class="text-[11px] text-brand-500 italic mt-1 truncate">
+                        {{ p.series_name }}{% if p.series_position %} &num;{{ p.series_position }}{% endif %}
+                    </p>
+                    {% endif %}
+                </div>
+
+                <div class="pt-2 border-t border-surface-100 flex items-end justify-between">
+                    {% if p.price is not none %}
+                    <span class="font-mono text-xl font-medium text-surface-900">{{ p.price | price(currency) }}</span>
+                    {% else %}
+                    <span class="font-mono text-sm text-surface-300">&mdash;</span>
+                    {% endif %}
+                    <span class="text-[10px] text-surface-300 group-hover:text-brand-400 transition-colors">Details &rarr;</span>
+                </div>
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+
+    <!-- Remaining results as compact list -->
+    {% if last_results[3:] %}
+    <div class="rounded-xl bg-white border border-surface-200/60 shadow-sm shadow-surface-200/40 divide-y divide-surface-100/80 overflow-hidden mb-4">
+        {% for p in last_results[3:] %}
+        <a href="{{ url_for('compare.detail_page', asin=p.asin) }}"
+           class="flex items-center gap-3 px-4 py-3 hover:bg-surface-50 transition-colors group">
+            <span class="font-mono text-[10px] text-surface-300 w-5 shrink-0">#{{ loop.index + 3 }}</span>
+            <div class="min-w-0 flex-1">
+                <p class="text-sm font-medium text-surface-800 truncate group-hover:text-surface-900">{{ p.title }}</p>
+                <p class="text-xs text-surface-400 truncate">{{ p.authors_str }}</p>
+            </div>
+            <div class="shrink-0 text-right">
+                {% if p.price is not none %}
+                <span class="font-mono text-sm font-medium text-surface-800">{{ p.price | price(currency) }}</span>
+                {% if p.discount_pct and p.discount_pct > 0 %}
+                <span class="block text-[10px] font-medium {{ discount_text_classes(p.discount_pct) }}">
+                    &minus;{{ p.discount_pct }}%
+                </span>
+                {% endif %}
+                {% else %}
+                <span class="font-mono text-sm text-surface-300">&mdash;</span>
+                {% endif %}
+            </div>
+        </a>
+        {% endfor %}
+    </div>
+    {% endif %}
+
+    <!-- Export row -->
+    <div class="flex items-center gap-4 px-1">
+        <span class="text-xs text-surface-400">Export last results:</span>
+        <a href="{{ url_for('search.export') }}?format=json"
+           class="text-xs text-surface-500 hover:text-surface-800 font-medium transition-colors">JSON</a>
+        <span class="text-surface-300 text-xs">&middot;</span>
+        <a href="{{ url_for('search.export') }}?format=csv"
+           class="text-xs text-surface-500 hover:text-surface-800 font-medium transition-colors">CSV</a>
+    </div>
+</div>
+
+{% else %}
+<!-- Empty state -->
+<div class="rounded-2xl border border-dashed border-surface-300/70 bg-white/50
+            px-8 py-14 text-center">
+    <svg class="mx-auto w-14 h-14 text-surface-200 mb-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.25"
+              d="M12 6.253v13m0-13C10.832 5.477 9.246 5 7.5 5S4.168 5.477 3 6.253v13
+                 C4.168 18.477 5.754 18 7.5 18s3.332.477 4.5 1.253m0-13
+                 C13.168 5.477 14.754 5 16.5 5c1.747 0 3.332.477 4.5 1.253v13
+                 C19.832 18.477 18.247 18 16.5 18c-1.746 0-3.332.477-4.5 1.253"/>
+    </svg>
+    <h3 class="font-serif text-xl text-surface-700 mb-2">Your shelf is empty</h3>
+    <p class="text-sm text-surface-400 max-w-xs mx-auto leading-relaxed">
+        Run a search or find deals to see your results here. Your most recent results will appear as a curated pick list.
+    </p>
+    <div class="mt-7 flex flex-col sm:flex-row items-center justify-center gap-3">
+        <a href="{{ url_for('search.find_page') }}"
+           class="inline-flex items-center gap-2 rounded-xl bg-surface-900 hover:bg-surface-800
+                  px-5 py-2.5 text-sm font-semibold text-white transition-colors shadow-md shadow-surface-900/20">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2
+                         m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1
+                         m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+            Find Deals
+        </a>
+        <a href="{{ url_for('search.search_page') }}"
+           class="inline-flex items-center gap-2 rounded-xl border border-surface-200 bg-white
+                  hover:border-brand-300 hover:bg-brand-50
+                  px-5 py-2.5 text-sm font-medium text-surface-600 hover:text-brand-700
+                  transition-all shadow-sm">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            Search Catalog
+        </a>
+    </div>
+</div>
+{% endif %}
+
+{% endblock %}

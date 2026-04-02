@@ -1,0 +1,401 @@
+{% extends "base.html" %}
+
+{% block title %}{{ "Find Deals" if mode == "find" else "Search Catalog" }} — Audible Deals{% endblock %}
+
+{% block content %}
+
+{# ---- Page header ---- #}
+<div class="mb-6">
+    <div class="flex flex-wrap items-start justify-between gap-3">
+        <div>
+            <h1 class="font-serif text-3xl text-surface-900 leading-tight">
+                {{ "Find Deals" if mode == "find" else "Search Catalog" }}
+            </h1>
+            <p class="mt-1 text-sm text-surface-500">
+                {% if mode == "find" %}
+                    Browse the Audible catalog for audiobooks at your price.
+                {% else %}
+                    Search by title, author, or keyword.
+                {% endif %}
+            </p>
+        </div>
+
+        {# Profile loader #}
+        {% if profiles %}
+        <div class="flex items-center gap-2 shrink-0">
+            <label class="text-xs font-medium text-surface-500">Profile:</label>
+            <select id="profile-select"
+                    class="text-xs rounded-lg border border-surface-200 bg-white px-3 py-1.5 text-surface-700 shadow-sm
+                           focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-200"
+                    onchange="loadProfile(this)">
+                <option value="">— none —</option>
+                {% for name in profiles %}
+                <option value="{{ name }}">{{ name }}</option>
+                {% endfor %}
+            </select>
+        </div>
+        {% endif %}
+    </div>
+</div>
+
+{# ---- Mobile filter toggle ---- #}
+<div class="lg:hidden mb-4">
+    <button type="button"
+            onclick="document.getElementById('filter-panel').classList.toggle('hidden')"
+            class="w-full flex items-center justify-between rounded-xl border border-surface-200 bg-white px-4 py-3
+                   text-sm font-medium text-surface-700 shadow-sm hover:bg-surface-50 transition-colors">
+        <span class="flex items-center gap-2">
+            <svg class="w-4 h-4 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                      d="M3 4a1 1 0 011-1h16a1 1 0 011 1v2a1 1 0 01-.293.707L13 13.414V19a1 1 0 01-.553.894l-4 2A1 1 0 017 21v-7.586L3.293 6.707A1 1 0 013 6V4z"/>
+            </svg>
+            Filters
+        </span>
+        <svg class="w-4 h-4 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+        </svg>
+    </button>
+</div>
+
+<div class="flex flex-col lg:flex-row gap-6 items-start">
+
+    {# ================================================================
+       FILTER SIDEBAR
+    ================================================================ #}
+    <aside id="filter-panel" class="hidden lg:block w-full lg:w-72 xl:w-80 shrink-0">
+        <form id="search-form"
+              hx-get="{{ url_for('search.hx_search_results') if mode == 'search' else url_for('search.hx_find_results') }}"
+              hx-target="#results"
+              hx-indicator="#search-btn"
+              hx-push-url="false"
+              class="rounded-2xl bg-white border border-surface-200 shadow-sm overflow-hidden"
+              style="box-shadow: 0 2px 12px 0 rgba(120,83,20,0.06);">
+
+            {# Sidebar header #}
+            <div class="px-5 py-3.5 border-b border-surface-100 bg-surface-50 flex items-center justify-between">
+                <span class="text-xs font-semibold text-surface-500 uppercase tracking-widest">Filters</span>
+                <button type="reset"
+                        onclick="document.getElementById('results').innerHTML = ''; return false;"
+                        class="text-xs text-surface-400 hover:text-brand-600 transition-colors">Reset</button>
+            </div>
+
+            <div class="p-5 space-y-5">
+
+                {# Query — search mode only #}
+                {% if mode == "search" %}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">Search</label>
+                    <input type="text" name="query" placeholder="Title, author, keyword…"
+                           hx-trigger="keyup changed delay:600ms"
+                           hx-get="{{ url_for('search.hx_search_results') }}"
+                           hx-target="#results"
+                           hx-include="#search-form"
+                           hx-indicator="#search-btn"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+                {% endif %}
+
+                {# Genre #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">Genre</label>
+                    <input type="text" name="genre" placeholder="sci-fi, mystery, romance…"
+                           hx-trigger="keyup changed delay:600ms"
+                           hx-get="{{ url_for('search.hx_search_results') if mode == 'search' else url_for('search.hx_find_results') }}"
+                           hx-target="#results"
+                           hx-include="#search-form"
+                           hx-indicator="#search-btn"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Max price #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">
+                        Max price
+                        <span class="font-normal text-surface-400">({{ currency }})</span>
+                    </label>
+                    <input type="number" name="max_price" min="0" step="0.01"
+                           value="{{ defaults.max_price if defaults.max_price else '' }}"
+                           placeholder="e.g. 5.00"
+                           hx-trigger="change delay:400ms"
+                           hx-get="{{ url_for('search.hx_search_results') if mode == 'search' else url_for('search.hx_find_results') }}"
+                           hx-target="#results"
+                           hx-include="#search-form"
+                           hx-indicator="#search-btn"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Min rating #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">Min rating</label>
+                    <input type="number" name="min_rating" min="0" max="5" step="0.1"
+                           value="{{ defaults.min_rating if defaults.min_rating else '' }}"
+                           placeholder="e.g. 4.0"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Min hours #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">Min length (hours)</label>
+                    <input type="number" name="min_hours" min="0" step="0.5"
+                           value="{{ defaults.min_hours if defaults.min_hours else '' }}"
+                           placeholder="e.g. 6"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Author #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">Author contains</label>
+                    <input type="text" name="author" placeholder="e.g. Andy Weir"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Narrator #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">Narrator contains</label>
+                    <input type="text" name="narrator" placeholder="e.g. R.C. Bray"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Limit #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">Max results</label>
+                    <input type="number" name="limit" min="0" step="10"
+                           placeholder="No limit"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Sort — visual pill tabs #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-2 tracking-wide">Sort by</label>
+                    {# Hidden select keeps the real form value #}
+                    <select name="sort" id="sort-select" class="sr-only">
+                        {% for value, label in sort_choices %}
+                        <option value="{{ value }}" {% if defaults.sort == value %}selected{% endif %}>{{ label }}</option>
+                        {% endfor %}
+                    </select>
+                    {# Visual pills #}
+                    <div class="flex flex-wrap gap-1.5" id="sort-pills">
+                        {% for value, label in sort_choices %}
+                        <button type="button"
+                                data-sort="{{ value }}"
+                                onclick="setSortValue('{{ value }}')"
+                                class="sort-pill px-2.5 py-1 rounded-lg text-xs font-medium border transition-colors
+                                       {% if defaults.sort == value %}
+                                           bg-brand-600 text-white border-brand-600
+                                       {% else %}
+                                           bg-white text-surface-600 border-surface-200 hover:border-brand-300 hover:text-brand-700
+                                       {% endif %}">
+                            {{ label }}
+                        </button>
+                        {% endfor %}
+                    </div>
+                </div>
+
+                {# Pages #}
+                <div>
+                    <label class="block text-xs font-semibold text-surface-600 mb-1.5 tracking-wide">
+                        Pages to scan
+                        <span class="font-normal text-surface-400">(50 items/page)</span>
+                    </label>
+                    <input type="number" name="pages" min="1" max="20"
+                           value="{{ defaults.pages }}"
+                           class="w-full rounded-xl border border-surface-200 px-3.5 py-2.5 text-sm text-surface-800
+                                  placeholder-surface-400 bg-white shadow-sm
+                                  focus:border-brand-400 focus:outline-none focus:ring-2 focus:ring-brand-100
+                                  transition-shadow">
+                </div>
+
+                {# Toggle checkboxes — warm custom style #}
+                {%- macro warm_checkbox(name, label, hint=none) %}
+                <label class="flex items-start gap-3 cursor-pointer group">
+                    <span class="relative mt-0.5 shrink-0">
+                        <input type="checkbox" name="{{ name }}" value="1" class="peer sr-only">
+                        <span class="block w-4 h-4 rounded border-2 border-surface-300 bg-white
+                                     peer-checked:bg-brand-500 peer-checked:border-brand-500
+                                     peer-focus:ring-2 peer-focus:ring-brand-200
+                                     transition-colors group-hover:border-brand-400
+                                     after:hidden peer-checked:after:block
+                                     after:content-['✓'] after:text-white after:text-[9px] after:font-bold
+                                     after:absolute after:inset-0 after:flex after:items-center after:justify-center"></span>
+                    </span>
+                    <span class="text-sm text-surface-700 group-hover:text-surface-900 leading-snug">
+                        {{ label }}
+                        {% if hint %}<span class="text-xs text-surface-400">{{ hint }}</span>{% endif %}
+                    </span>
+                </label>
+                {%- endmacro %}
+                <div class="space-y-3 pt-1">
+                    {{ warm_checkbox('on_sale',        'On sale only') }}
+                    {{ warm_checkbox('deep',           'Deep scan', '(3× API calls)') }}
+                    {{ warm_checkbox('first_in_series','First in series only') }}
+                    {{ warm_checkbox('skip_owned',     'Skip owned books') }}
+                </div>
+            </div>
+
+            {# Submit button #}
+            <div class="px-5 pb-5">
+                <button type="submit" id="search-btn"
+                        class="w-full flex items-center justify-center gap-2 rounded-xl px-4 py-3
+                               bg-brand-600 text-white text-sm font-semibold shadow
+                               hover:bg-brand-700 active:bg-brand-800
+                               focus:outline-none focus:ring-2 focus:ring-brand-400 focus:ring-offset-2
+                               transition-all">
+                    {# Loading state #}
+                    <span class="htmx-indicator hidden items-center gap-2">
+                        <svg class="animate-spin w-4 h-4" fill="none" viewBox="0 0 24 24">
+                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                        </svg>
+                        Scanning…
+                    </span>
+                    {# Idle state #}
+                    <span class="not-loading flex items-center gap-2">
+                        {% if mode == "find" %}
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                        </svg>
+                        Find Deals
+                        {% else %}
+                        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                                  d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                        </svg>
+                        Search
+                        {% endif %}
+                    </span>
+                </button>
+            </div>
+
+        </form>
+    </aside>
+
+    {# ================================================================
+       RESULTS AREA
+    ================================================================ #}
+    <div class="flex-1 min-w-0">
+
+        {# Loading progress bar — shown while HTMX request is in flight #}
+        <div id="results-loading"
+             class="htmx-indicator hidden mb-4 h-1 w-full rounded-full overflow-hidden bg-brand-100">
+            <div class="h-full bg-brand-500 animate-pulse rounded-full" style="width:60%"></div>
+        </div>
+
+        <div id="results" class="animate-fade-in">
+            {# ---- Placeholder / empty state ---- #}
+            <div class="flex flex-col items-center justify-center rounded-2xl border border-dashed border-surface-300
+                        bg-white py-20 text-center px-8"
+                 style="box-shadow: 0 2px 12px 0 rgba(120,83,20,0.04);">
+                {% if mode == "find" %}
+                <div class="w-16 h-16 rounded-2xl bg-brand-50 flex items-center justify-center mb-5">
+                    <svg class="w-8 h-8 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                              d="M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/>
+                    </svg>
+                </div>
+                <p class="font-serif text-xl text-surface-800">Ready to find deals</p>
+                <p class="mt-2 text-sm text-surface-500 max-w-xs">
+                    Set your filters and click <strong class="text-surface-700">Find Deals</strong>.
+                    Try genre "sci-fi" with max price {{ currency }}5.00.
+                </p>
+                {% else %}
+                <div class="w-16 h-16 rounded-2xl bg-brand-50 flex items-center justify-center mb-5">
+                    <svg class="w-8 h-8 text-brand-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5"
+                              d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+                    </svg>
+                </div>
+                <p class="font-serif text-xl text-surface-800">Search the catalog</p>
+                <p class="mt-2 text-sm text-surface-500 max-w-xs">
+                    Enter a query or genre and click <strong class="text-surface-700">Search</strong>.
+                    Try an author name, book title, or topic.
+                </p>
+                {% endif %}
+            </div>
+        </div>
+
+    </div>
+</div>
+
+<script>
+// ---- Shared references ----
+const form      = document.getElementById('search-form');
+const loadingBar = document.getElementById('results-loading');
+
+// ---- Profile loader ----
+const profiles = {{ profiles | tojson }};
+function loadProfile(sel) {
+    const name = sel.value;
+    if (!name || !profiles[name]) return;
+    const p = profiles[name];
+    const set   = (n, v) => { const el = form.elements[n]; if (el && v !== undefined) el.value = v; };
+    const check = (n, v) => { const el = form.elements[n]; if (el) el.checked = !!v; };
+    set('genre',      p.genre      || '');
+    set('max_price',  p.max_price  !== undefined ? p.max_price : '');
+    set('min_rating', p.min_rating || '');
+    set('min_hours',  p.min_hours  || '');
+    set('narrator',   p.narrator   || '');
+    set('author',     p.author     || '');
+    set('pages',      p.pages      || '');
+    check('on_sale',         p.on_sale);
+    check('deep',            p.deep);
+    check('first_in_series', p.first_in_series);
+    check('skip_owned',      p.skip_owned);
+    if (p.sort) setSortValue(p.sort);
+}
+
+// ---- Sort pills ----
+function setSortValue(value) {
+    document.getElementById('sort-select').value = value;
+    document.querySelectorAll('.sort-pill').forEach(btn => {
+        const active = btn.dataset.sort === value;
+        btn.classList.toggle('bg-brand-600',       active);
+        btn.classList.toggle('text-white',         active);
+        btn.classList.toggle('border-brand-600',   active);
+        btn.classList.toggle('bg-white',           !active);
+        btn.classList.toggle('text-surface-600',   !active);
+        btn.classList.toggle('border-surface-200', !active);
+    });
+}
+
+// ---- Loading progress bar ----
+// The submit button's .htmx-indicator is handled automatically by HTMX CSS.
+// We only need JS to drive the separate top progress bar and collapse the
+// mobile filter panel on request start.
+form.addEventListener('htmx:beforeRequest', () => {
+    if (window.innerWidth < 1024) {
+        document.getElementById('filter-panel').classList.add('hidden');
+    }
+    loadingBar.classList.remove('hidden');
+});
+
+form.addEventListener('htmx:afterRequest', () => {
+    loadingBar.classList.add('hidden');
+});
+</script>
+
+{% endblock %}

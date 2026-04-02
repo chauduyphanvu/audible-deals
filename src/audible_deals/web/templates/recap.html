@@ -1,0 +1,170 @@
+{% extends "base.html" %}
+{% block title %}Price Recap — Audible Deals{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Page header -->
+  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-bold text-surface-900">Price Recap</h1>
+      <p class="text-sm text-surface-500 mt-0.5">Summary of price activity across tracked items</p>
+    </div>
+
+    <!-- Days selector -->
+    <form method="get" action="{{ url_for('history.recap_page') }}" class="flex items-center gap-2">
+      <label for="recap-days" class="text-sm text-surface-500 whitespace-nowrap">Look back</label>
+      <select id="recap-days" name="days"
+              onchange="this.form.submit()"
+              class="px-3 py-2 text-sm border border-surface-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent">
+        {% for d in [1, 3, 7, 14, 30] %}
+        <option value="{{ d }}" {{ 'selected' if d == days else '' }}>{{ d }} day{{ 's' if d != 1 else '' }}</option>
+        {% endfor %}
+      </select>
+    </form>
+  </div>
+
+  <!-- Wishlist at target — most urgent, shown first if any -->
+  {% if wishlist_hits %}
+  <div class="bg-white rounded-xl border-2 border-green-300 shadow-sm overflow-hidden">
+    <div class="px-5 py-4 border-b border-green-100 bg-green-50 flex items-center gap-2">
+      <svg class="w-5 h-5 text-green-600" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+      </svg>
+      <h2 class="text-sm font-bold text-green-800 uppercase tracking-wider">Wishlist at Target</h2>
+      <span class="ml-auto inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-bold bg-green-600 text-white">
+        {{ wishlist_hits | length }}
+      </span>
+    </div>
+    <ul class="divide-y divide-surface-100">
+      {% for item in wishlist_hits %}
+      <li class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-5 py-3 hover:bg-surface-50 transition-colors">
+        <div class="flex-1 min-w-0">
+          <a href="{{ url_for('compare.detail_page', asin=item.asin) }}"
+             class="font-semibold text-surface-800 hover:text-brand-600 hover:underline truncate block">
+            {{ item.title or item.asin }}
+          </a>
+          <span class="text-xs font-mono text-surface-400">{{ item.asin }}</span>
+        </div>
+        <div class="flex items-center gap-3 flex-shrink-0">
+          <span class="text-sm font-bold text-green-700">
+            {{ currency }}{{ "%.2f" | format(item.price) }}
+          </span>
+          <span class="text-xs text-surface-400">target {{ currency }}{{ "%.2f" | format(item.target) }}</span>
+          <span class="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-bold bg-green-100 text-green-800 border border-green-300">BUY</span>
+          <a href="{{ url_for('history.history_page', asin=item.asin) }}"
+             class="text-xs text-surface-400 hover:text-brand-600 hover:underline">history</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+  </div>
+  {% endif %}
+
+  <!-- Price Drops -->
+  <div class="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+    <div class="px-5 py-4 border-b border-surface-100 bg-surface-50 flex items-center gap-2">
+      <svg class="w-5 h-5 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M13 17h8m0 0V9m0 8l-8-8-4 4-6-6"/>
+      </svg>
+      <h2 class="text-sm font-semibold text-surface-700 uppercase tracking-wider">Price Drops</h2>
+      <span class="ml-auto inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold
+                   {{ 'bg-green-100 text-green-700' if drops else 'bg-surface-100 text-surface-400' }}">
+        {{ drops | length }}
+      </span>
+    </div>
+    {% if drops %}
+    <ul class="divide-y divide-surface-100">
+      {% for item in drops %}
+      <li class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-5 py-3 hover:bg-surface-50 transition-colors">
+        <div class="flex-1 min-w-0">
+          <a href="{{ url_for('compare.detail_page', asin=item.asin) }}"
+             class="font-medium text-surface-800 hover:text-brand-600 hover:underline truncate block">
+            {{ item.title or item.asin }}
+          </a>
+          <span class="text-xs font-mono text-surface-400">{{ item.asin }}</span>
+        </div>
+        <div class="flex items-center gap-3 flex-shrink-0">
+          <span class="text-sm text-surface-400 line-through">{{ currency }}{{ "%.2f" | format(item.old_price) }}</span>
+          <svg class="w-4 h-4 text-green-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7l5 5m0 0l-5 5m5-5H6"/>
+          </svg>
+          <span class="text-sm font-semibold text-green-600">{{ currency }}{{ "%.2f" | format(item.new_price) }}</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-green-50 text-green-700 border border-green-200">
+            -{{ currency }}{{ "%.2f" | format(item.savings) }}
+          </span>
+          <a href="{{ url_for('history.history_page', asin=item.asin) }}"
+             class="text-xs text-surface-400 hover:text-brand-600 hover:underline">history</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="flex items-center gap-3 px-5 py-8 text-surface-400 text-sm">
+      <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+      </svg>
+      No price drops in the last {{ days }} day{{ 's' if days != 1 else '' }}.
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Newly Tracked -->
+  <div class="bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+    <div class="px-5 py-4 border-b border-surface-100 bg-surface-50 flex items-center gap-2">
+      <svg class="w-5 h-5 text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M12 4v16m8-8H4"/>
+      </svg>
+      <h2 class="text-sm font-semibold text-surface-700 uppercase tracking-wider">Newly Tracked</h2>
+      <span class="ml-auto inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-semibold
+                   {{ 'bg-blue-100 text-blue-700' if new_items else 'bg-surface-100 text-surface-400' }}">
+        {{ new_items | length }}
+      </span>
+    </div>
+    {% if new_items %}
+    <ul class="divide-y divide-surface-100">
+      {% for item in new_items %}
+      <li class="flex flex-col sm:flex-row sm:items-center justify-between gap-2 px-5 py-3 hover:bg-surface-50 transition-colors">
+        <div class="flex-1 min-w-0">
+          <a href="{{ url_for('compare.detail_page', asin=item.asin) }}"
+             class="font-medium text-surface-800 hover:text-brand-600 hover:underline truncate block">
+            {{ item.title or item.asin }}
+          </a>
+          <span class="text-xs font-mono text-surface-400">{{ item.asin }}</span>
+        </div>
+        <div class="flex items-center gap-3 flex-shrink-0">
+          <span class="text-sm font-medium text-surface-700">{{ currency }}{{ "%.2f" | format(item.price) }}</span>
+          <span class="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200">new</span>
+          <a href="{{ url_for('history.history_page', asin=item.asin) }}"
+             class="text-xs text-surface-400 hover:text-brand-600 hover:underline">history</a>
+        </div>
+      </li>
+      {% endfor %}
+    </ul>
+    {% else %}
+    <div class="flex items-center gap-3 px-5 py-8 text-surface-400 text-sm">
+      <svg class="w-5 h-5 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+              d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+      </svg>
+      No newly tracked items in the last {{ days }} day{{ 's' if days != 1 else '' }}.
+    </div>
+    {% endif %}
+  </div>
+
+  {% if not drops and not new_items and not wishlist_hits %}
+  <div class="flex flex-col items-center justify-center py-12 text-center rounded-xl border border-dashed border-surface-200 bg-white">
+    <p class="text-surface-600 font-medium">Nothing to report for the last {{ days }} day{{ 's' if days != 1 else '' }}.</p>
+    <p class="text-surface-400 text-sm mt-1">
+      Run <code class="font-mono bg-surface-100 px-1 py-0.5 rounded">deals find</code> or
+      <code class="font-mono bg-surface-100 px-1 py-0.5 rounded">deals search</code>
+      from the CLI to start recording price history.
+    </p>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

@@ -1,0 +1,274 @@
+{% extends "base.html" %}
+{% block title %}My Library — Audible Deals{% endblock %}
+
+{% block content %}
+<div class="space-y-6">
+
+  <!-- Page header -->
+  <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+    <div>
+      <h1 class="text-2xl font-bold text-surface-900">My Library</h1>
+      <p class="text-sm text-surface-500 mt-0.5">All audiobooks in your Audible library</p>
+    </div>
+    <!-- Export buttons (shown after load) -->
+    <div id="export-bar" class="hidden flex items-center gap-2">
+      <a id="export-json-btn"
+         href="#"
+         class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-200 bg-white hover:bg-surface-50 text-surface-700 transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        Export JSON
+      </a>
+      <a id="export-csv-btn"
+         href="#"
+         class="inline-flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium rounded-lg border border-surface-200 bg-white hover:bg-surface-50 text-surface-700 transition-colors">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M9 17v-2m3 2v-4m3 4v-6m2 10H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+        </svg>
+        Export CSV
+      </a>
+    </div>
+  </div>
+
+  <!-- Filter bar -->
+  <form id="library-form"
+        class="bg-white rounded-xl border border-surface-200 p-4 shadow-sm">
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+
+      <div>
+        <label for="lib-author" class="block text-xs font-medium text-surface-500 mb-1">Author</label>
+        <input id="lib-author" name="author" type="text" placeholder="e.g. Brandon Sanderson"
+               class="w-full px-3 py-2 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300">
+      </div>
+
+      <div>
+        <label for="lib-narrator" class="block text-xs font-medium text-surface-500 mb-1">Narrator</label>
+        <input id="lib-narrator" name="narrator" type="text" placeholder="e.g. Michael Kramer"
+               class="w-full px-3 py-2 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300">
+      </div>
+
+      <div>
+        <label for="lib-genre" class="block text-xs font-medium text-surface-500 mb-1">Genre</label>
+        <input id="lib-genre" name="genre" type="text" placeholder="e.g. sci-fi, fantasy"
+               class="w-full px-3 py-2 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300">
+      </div>
+
+      <div class="grid grid-cols-2 gap-2">
+        <div>
+          <label for="lib-min-rating" class="block text-xs font-medium text-surface-500 mb-1">Min rating</label>
+          <input id="lib-min-rating" name="min_rating" type="number" step="0.5" min="0" max="5" placeholder="0"
+                 class="w-full px-3 py-2 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300">
+        </div>
+        <div>
+          <label for="lib-min-hours" class="block text-xs font-medium text-surface-500 mb-1">Min hours</label>
+          <input id="lib-min-hours" name="min_hours" type="number" step="0.5" min="0" placeholder="0"
+                 class="w-full px-3 py-2 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300">
+        </div>
+      </div>
+
+      <div>
+        <label for="lib-sort" class="block text-xs font-medium text-surface-500 mb-1">Sort by</label>
+        <select id="lib-sort" name="sort"
+                class="w-full px-3 py-2 text-sm border border-surface-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent">
+          <option value="date">Date added (newest)</option>
+          <option value="title">Title A–Z</option>
+          <option value="rating">Rating (highest)</option>
+          <option value="length">Length (longest)</option>
+          <option value="price">Price (lowest)</option>
+          <option value="-price">Price (highest)</option>
+          <option value="price-per-hour">$/hr (best value)</option>
+        </select>
+      </div>
+
+      <div>
+        <label for="lib-limit" class="block text-xs font-medium text-surface-500 mb-1">Limit results</label>
+        <input id="lib-limit" name="limit" type="number" min="1" placeholder="All"
+               class="w-full px-3 py-2 text-sm border border-surface-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-brand-400 focus:border-transparent placeholder-surface-300">
+      </div>
+
+    </div>
+
+    <div class="flex items-center gap-3 mt-4">
+      <button id="load-btn"
+              type="button"
+              onclick="loadLibrary()"
+              class="inline-flex items-center gap-2 px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm">
+        <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/>
+        </svg>
+        Load Library
+      </button>
+      <button type="button"
+              onclick="resetFilters()"
+              class="px-4 py-2.5 text-sm font-medium text-surface-600 hover:text-surface-900 hover:bg-surface-100 rounded-lg transition-colors">
+        Reset filters
+      </button>
+      <!-- Spinner shown during load -->
+      <span id="lib-spinner" class="hidden items-center gap-2 text-sm text-surface-500">
+        <svg class="w-4 h-4 animate-spin text-brand-500" fill="none" viewBox="0 0 24 24">
+          <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+          <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"/>
+        </svg>
+        <span id="lib-progress-text">Loading…</span>
+      </span>
+    </div>
+  </form>
+
+  <!-- Results area -->
+  <div id="library-results">
+    <!-- Initial empty-state prompt -->
+    <div id="lib-prompt"
+         class="flex flex-col items-center justify-center py-20 text-center rounded-xl border border-dashed border-surface-200 bg-white">
+      <div class="w-14 h-14 rounded-full bg-brand-50 flex items-center justify-center mb-4">
+        <svg class="w-7 h-7 text-brand-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+                d="M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z"/>
+        </svg>
+      </div>
+      <p class="text-surface-700 font-semibold text-lg">Your library is one click away</p>
+      <p class="text-surface-400 text-sm mt-1 max-w-sm">
+        Click <strong>Load Library</strong> to fetch all your audiobooks from Audible.
+        This may take a moment for large libraries.
+      </p>
+    </div>
+  </div>
+
+</div>
+
+<script>
+// ---------- Library loading ----------
+
+let _allProducts = null;   // cached serialized list for export
+let _isLoading   = false;
+
+function loadLibrary() {
+  if (_isLoading) return;
+  _isLoading = true;
+
+  document.getElementById('lib-prompt')?.remove();
+  document.getElementById('load-btn').disabled = true;
+  document.getElementById('lib-spinner').classList.remove('hidden');
+  document.getElementById('lib-spinner').classList.add('inline-flex');
+  document.getElementById('export-bar').classList.add('hidden');
+
+  const params = new URLSearchParams(collectFilters()).toString();
+
+  // Try SSE first; fall back to simple HTMX fetch
+  if (typeof EventSource !== 'undefined') {
+    loadViaSSE(params);
+  } else {
+    loadViaHtmx(params);
+  }
+}
+
+function collectFilters() {
+  return {
+    author:      document.getElementById('lib-author').value.trim(),
+    narrator:    document.getElementById('lib-narrator').value.trim(),
+    genre:       document.getElementById('lib-genre').value.trim(),
+    min_rating:  document.getElementById('lib-min-rating').value || '0',
+    min_hours:   document.getElementById('lib-min-hours').value || '0',
+    sort:        document.getElementById('lib-sort').value,
+    limit:       document.getElementById('lib-limit').value || '0',
+  };
+}
+
+function loadViaSSE(params) {
+  const es = new EventSource(`/library/stream?${params}`);
+
+  es.addEventListener('progress', function(e) {
+    const d = JSON.parse(e.data);
+    document.getElementById('lib-progress-text').textContent =
+      `Page ${d.page} — ${d.count} books fetched…`;
+  });
+
+  es.addEventListener('results', function(e) {
+    es.close();
+    onResultsReady(e.data.replace(/\\n/g, '\n'));
+  });
+
+  es.onerror = function() {
+    es.close();
+    _isLoading = false;
+    // Fall back to regular fetch
+    loadViaHtmx(params);
+  };
+}
+
+function loadViaHtmx(params) {
+  fetch(`/hx/library/results?${params}`)
+    .then(r => r.text())
+    .then(html => onResultsReady(html))
+    .catch(err => {
+      onLoadDone();
+      document.getElementById('library-results').innerHTML =
+        `<div class="p-4 bg-red-50 text-red-700 rounded-lg text-sm">Error loading library: ${err}</div>`;
+    });
+}
+
+function onResultsReady(html) {
+  document.getElementById('library-results').innerHTML = html;
+  onLoadDone();
+  // Cache data for export
+  const dataEl = document.getElementById('lib-data-json');
+  if (dataEl) {
+    _allProducts = JSON.parse(dataEl.textContent || '[]');
+    showExportBar();
+  }
+}
+
+function onLoadDone() {
+  _isLoading = false;
+  document.getElementById('load-btn').disabled = false;
+  document.getElementById('lib-spinner').classList.add('hidden');
+  document.getElementById('lib-spinner').classList.remove('inline-flex');
+}
+
+function showExportBar() {
+  const bar = document.getElementById('export-bar');
+  bar.classList.remove('hidden');
+  bar.classList.add('flex');
+}
+
+function resetFilters() {
+  ['lib-author','lib-narrator','lib-genre','lib-min-rating','lib-min-hours','lib-limit']
+    .forEach(id => { document.getElementById(id).value = ''; });
+  document.getElementById('lib-sort').value = 'date';
+}
+
+// ---------- Client-side export ----------
+
+document.getElementById('export-json-btn').addEventListener('click', function(e) {
+  e.preventDefault();
+  if (!_allProducts) return;
+  downloadBlob(JSON.stringify(_allProducts, null, 2), 'library.json', 'application/json');
+});
+
+document.getElementById('export-csv-btn').addEventListener('click', function(e) {
+  e.preventDefault();
+  if (!_allProducts || !_allProducts.length) return;
+  const keys = ['asin','title','authors_str','narrators_str','price','list_price',
+                 'hours','rating','num_ratings','series_name','release_date','language'];
+  const header = keys.join(',');
+  const rows = _allProducts.map(p =>
+    keys.map(k => {
+      const v = p[k] ?? '';
+      return typeof v === 'string' && v.includes(',') ? `"${v.replace(/"/g,'""')}"` : v;
+    }).join(',')
+  );
+  downloadBlob([header, ...rows].join('\n'), 'library.csv', 'text/csv');
+});
+
+function downloadBlob(content, filename, type) {
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([content], {type}));
+  a.download = filename;
+  a.click();
+  URL.revokeObjectURL(a.href);
+}
+</script>
+{% endblock %}

@@ -1,0 +1,74 @@
+{% extends "base.html" %}
+{% block title %}Global Defaults — Audible Deals{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Page header -->
+    <div>
+        <h1 class="text-2xl font-bold text-surface-900">Global Defaults</h1>
+        <p class="text-surface-500 text-sm mt-1">Set default values applied to every command run — overridable by CLI flags.</p>
+    </div>
+
+    <!-- How it works -->
+    <div class="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
+        <p class="font-semibold mb-1">How global defaults work</p>
+        <p class="text-blue-700">
+            Values set here act as fallback defaults for all <code class="bg-blue-100 px-1 rounded font-mono text-xs">deals</code> commands.
+            They override built-in CLI defaults, but are in turn overridden by any flag you pass on the command line or in a profile.
+            For example, setting <code class="bg-blue-100 px-1 rounded font-mono text-xs">max-price = 5</code> means every
+            <code class="bg-blue-100 px-1 rounded font-mono text-xs">deals find</code> run will default to $5 max, unless you pass <code class="bg-blue-100 px-1 rounded font-mono text-xs">--max-price</code> explicitly.
+        </p>
+    </div>
+
+    <!-- Add setting form -->
+    <div class="bg-white border border-surface-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="px-6 py-4 border-b border-surface-200">
+            <h2 class="text-base font-semibold text-surface-900">Add Setting</h2>
+        </div>
+        <form
+            hx-post="{{ url_for('config.config_set') }}"
+            hx-target="#config-list"
+            hx-swap="outerHTML"
+            class="p-6 flex flex-col sm:flex-row gap-3 items-end"
+        >
+            <div class="flex-1 min-w-0">
+                <label class="block text-xs font-medium text-surface-600 mb-1.5" for="cfg-key">Key</label>
+                <select
+                    id="cfg-key"
+                    name="key"
+                    required
+                    class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white text-surface-800"
+                >
+                    <option value="">— select a key —</option>
+                    {% for key in schema | sort %}
+                    <option value="{{ key }}" {{ 'selected' if key in config }}>{{ key.replace('_', '-') }}</option>
+                    {% endfor %}
+                </select>
+            </div>
+            <div class="flex-1 min-w-0">
+                <label class="block text-xs font-medium text-surface-600 mb-1.5" for="cfg-value">Value</label>
+                <input
+                    id="cfg-value"
+                    name="value"
+                    type="text"
+                    required
+                    placeholder="e.g. 5.00, true, english"
+                    class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400"
+                >
+            </div>
+            <button
+                type="submit"
+                class="px-5 py-2 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm whitespace-nowrap"
+            >
+                Save
+            </button>
+        </form>
+    </div>
+
+    <!-- Current settings -->
+    <div>
+        <h2 class="text-base font-semibold text-surface-900 mb-4">Current Settings</h2>
+        {% include "partials/_config_list.html" %}
+    </div>
+</div>
+{% endblock %}

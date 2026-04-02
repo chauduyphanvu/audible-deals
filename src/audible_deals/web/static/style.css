@@ -1,0 +1,21 @@
+/* Minimal custom overrides — mostly Tailwind utility classes are used */
+
+/* Smooth page transitions */
+main { animation: fade-in 0.15s ease-out; }
+
+/* Table hover rows */
+.result-row:hover { background-color: #f8fafc; }
+
+/* Price drop animation */
+@keyframes price-flash {
+    0%, 100% { background-color: transparent; }
+    50% { background-color: #dcfce7; }
+}
+.price-drop { animation: price-flash 1s ease-in-out; }
+
+/* Progress bar animation */
+@keyframes progress-pulse {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.6; }
+}
+.progress-pulse { animation: progress-pulse 1.5s ease-in-out infinite; }

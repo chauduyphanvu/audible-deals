@@ -31,6 +31,7 @@ Changelog = "https://github.com/chauduyphanvu/audible-deals/blob/main/CHANGELOG.
 
 [project.optional-dependencies]
 dev = ["pytest>=8.0"]
+web = ["flask>=3.0"]
 
 [build-system]
 requires = ["hatchling"]

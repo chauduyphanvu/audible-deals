@@ -1,0 +1,136 @@
+{% extends "base.html" %}
+{% block title %}Search Profiles — Audible Deals{% endblock %}
+
+{% block content %}
+<div class="space-y-8">
+    <!-- Page header -->
+    <div>
+        <h1 class="text-2xl font-bold text-surface-900">Search Profiles</h1>
+        <p class="text-surface-500 text-sm mt-1">Save filter combinations as named profiles for quick reuse.</p>
+    </div>
+
+    <!-- Create / Edit Profile form -->
+    <div class="bg-white border border-surface-200 rounded-2xl shadow-sm overflow-hidden">
+        <div class="px-6 py-4 border-b border-surface-200">
+            <h2 class="text-base font-semibold text-surface-900">Create Profile</h2>
+            <p class="text-sm text-surface-500 mt-0.5">Only filled-in fields are saved. Leave others blank to use global defaults.</p>
+        </div>
+        <form
+            hx-post="{{ url_for('profiles.profiles_save') }}"
+            hx-target="#profile-list"
+            hx-swap="outerHTML"
+            class="p-6 space-y-6"
+        >
+            <!-- Name -->
+            <div>
+                <label class="block text-sm font-medium text-surface-700 mb-1.5" for="profile-name">Profile name <span class="text-red-500">*</span></label>
+                <input
+                    id="profile-name"
+                    name="name"
+                    type="text"
+                    required
+                    placeholder="e.g. cheap-scifi, my-favorites"
+                    class="w-full sm:max-w-xs px-3.5 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400"
+                >
+            </div>
+
+            <!-- Filters grid -->
+            <div>
+                <p class="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-3">Filters</p>
+                <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-genre">Genre</label>
+                        <input id="p-genre" name="genre" type="text" placeholder="e.g. sci-fi, mystery"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-max-price">Max price ($)</label>
+                        <input id="p-max-price" name="max_price" type="number" min="0" step="0.50" placeholder="e.g. 5.00"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-min-rating">Min rating</label>
+                        <input id="p-min-rating" name="min_rating" type="number" min="0" max="5" step="0.1" placeholder="e.g. 4.0"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-min-ratings">Min # of ratings</label>
+                        <input id="p-min-ratings" name="min_ratings" type="number" min="0" placeholder="e.g. 100"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-min-hours">Min length (hours)</label>
+                        <input id="p-min-hours" name="min_hours" type="number" min="0" step="0.5" placeholder="e.g. 6"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-sort">Sort order</label>
+                        <select id="p-sort" name="sort"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 bg-white text-surface-800">
+                            <option value="">— default —</option>
+                            <option value="price">Price (low to high)</option>
+                            <option value="-price">Price (high to low)</option>
+                            <option value="discount">Discount</option>
+                            <option value="price-per-hour">Price per hour</option>
+                            <option value="rating">Rating</option>
+                            <option value="bestsellers">Bestsellers</option>
+                            <option value="length">Length</option>
+                            <option value="date">Release date</option>
+                            <option value="relevance">Relevance</option>
+                            <option value="title">Title</option>
+                        </select>
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-pages">Pages to scan</label>
+                        <input id="p-pages" name="pages" type="number" min="1" placeholder="e.g. 3"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-narrator">Narrator</label>
+                        <input id="p-narrator" name="narrator" type="text" placeholder="e.g. Scott Brick"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                    <div>
+                        <label class="block text-xs font-medium text-surface-600 mb-1" for="p-author">Author</label>
+                        <input id="p-author" name="author" type="text" placeholder="e.g. Brandon Sanderson"
+                            class="w-full px-3 py-2 rounded-lg border border-surface-300 text-sm focus:outline-none focus:ring-2 focus:ring-brand-500 focus:border-brand-500 placeholder-surface-400">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Checkbox options -->
+            <div>
+                <p class="text-xs font-semibold text-surface-400 uppercase tracking-wider mb-3">Options</p>
+                <div class="grid grid-cols-2 sm:grid-cols-4 gap-3">
+                    {% for field, label in [('on_sale', 'On sale only'), ('deep', 'Deep scan'), ('first_in_series', 'First in series'), ('skip_owned', 'Skip owned')] %}
+                    <label class="flex items-center gap-2 cursor-pointer group">
+                        <input
+                            type="checkbox"
+                            name="{{ field }}"
+                            value="true"
+                            class="w-4 h-4 rounded border-surface-300 text-brand-600 focus:ring-brand-500"
+                        >
+                        <span class="text-sm text-surface-700 group-hover:text-surface-900">{{ label }}</span>
+                    </label>
+                    {% endfor %}
+                </div>
+            </div>
+
+            <div class="pt-2">
+                <button
+                    type="submit"
+                    class="px-5 py-2.5 bg-brand-600 hover:bg-brand-700 text-white text-sm font-semibold rounded-lg transition-colors shadow-sm"
+                >
+                    Save Profile
+                </button>
+            </div>
+        </form>
+    </div>
+
+    <!-- Profile list -->
+    <div>
+        <h2 class="text-base font-semibold text-surface-900 mb-4">Saved Profiles</h2>
+        {% include "partials/_profile_list.html" %}
+    </div>
+</div>
+{% endblock %}

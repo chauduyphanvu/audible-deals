@@ -1,0 +1,38 @@
+{# Progress indicator partial.
+   Variables: page, total_pages, items
+#}
+<div class="rounded-xl bg-white border border-surface-200 shadow-sm p-5 animate-fade-in">
+    <div class="flex items-center justify-between mb-3">
+        <div class="flex items-center gap-2.5">
+            <div class="w-5 h-5 shrink-0">
+                <svg class="animate-spin text-brand-500 w-5 h-5" fill="none" viewBox="0 0 24 24">
+                    <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"/>
+                    <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"/>
+                </svg>
+            </div>
+            <span class="text-sm font-semibold text-surface-800">
+                Scanning… page {{ page }} of {{ total_pages }}
+            </span>
+        </div>
+        <span class="text-xs text-surface-500 font-medium bg-surface-100 rounded-full px-2.5 py-0.5">
+            {{ items }} found
+        </span>
+    </div>
+
+    {# Progress bar #}
+    {% if total_pages > 0 %}
+    {% set pct = [((page / total_pages) * 100) | round | int, 100] | min %}
+    <div class="w-full bg-surface-100 rounded-full h-2 overflow-hidden">
+        <div class="progress-pulse h-2 rounded-full bg-gradient-to-r from-brand-500 to-brand-600 transition-all duration-300"
+             style="width: {{ pct }}%"></div>
+    </div>
+    <div class="flex items-center justify-between mt-1.5">
+        <span class="text-xs text-surface-400">{{ pct }}% complete</span>
+        <span class="text-xs text-surface-400">{{ (total_pages - page) }} page{{ "s" if total_pages - page != 1 else "" }} remaining</span>
+    </div>
+    {% else %}
+    <div class="w-full bg-surface-100 rounded-full h-2 overflow-hidden">
+        <div class="progress-pulse h-2 rounded-full bg-gradient-to-r from-brand-500 to-brand-600 w-1/3"></div>
+    </div>
+    {% endif %}
+</div>

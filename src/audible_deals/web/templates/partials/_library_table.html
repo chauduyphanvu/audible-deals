@@ -1,0 +1,193 @@
+{% set cur = locale_currency.get(locale or 'us', '$') %}
+
+{% if error %}
+<div class="px-4 py-4 bg-red-50 border border-red-200 rounded-xl text-red-700 text-sm flex items-start gap-3">
+  <svg class="w-5 h-5 text-red-400 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+          d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-2.5L13.732 4c-.77-.833-1.964-.833-2.732 0L3.732 16.5c-.77.833.192 2.5 1.732 2.5z"/>
+  </svg>
+  <div>
+    <p class="font-semibold">Failed to load library</p>
+    <p class="mt-0.5 text-red-600">{{ error }}</p>
+  </div>
+</div>
+
+{% elif not products %}
+<div class="flex flex-col items-center justify-center py-16 text-center rounded-xl border border-surface-200 bg-white">
+  <div class="w-12 h-12 rounded-full bg-surface-100 flex items-center justify-center mb-3">
+    <svg class="w-6 h-6 text-surface-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2"
+            d="M9 13h6m-3-3v6m-9 1V7a2 2 0 012-2h6l2 2h6a2 2 0 012 2v8a2 2 0 01-2 2H5a2 2 0 01-2-2z"/>
+    </svg>
+  </div>
+  <p class="text-surface-600 font-medium">No books match your filters</p>
+  <p class="text-surface-400 text-sm mt-1">Try adjusting or clearing the filter options above.</p>
+</div>
+
+{% else %}
+
+<!-- Summary bar -->
+<div class="flex items-center justify-between px-1 mb-3">
+  <p class="text-sm text-surface-500">
+    {% if total_before_limit is defined and total_before_limit != products | length %}
+      Showing <strong class="text-surface-900">{{ products | length }}</strong>
+      of <strong class="text-surface-900">{{ total_before_limit }}</strong> books
+      {% if total and total != total_before_limit %}
+        ({{ total }} total in library)
+      {% endif %}
+    {% elif total and total != products | length %}
+      <strong class="text-surface-900">{{ products | length }}</strong> books shown
+      ({{ total }} total in library)
+    {% else %}
+      <strong class="text-surface-900">{{ products | length }}</strong>
+      {{ 'book' if products | length == 1 else 'books' }} in library
+    {% endif %}
+  </p>
+</div>
+
+<!-- Desktop: table view -->
+<div class="hidden sm:block bg-white rounded-xl border border-surface-200 shadow-sm overflow-hidden">
+  <div class="overflow-x-auto">
+    <table class="w-full text-sm">
+      <thead>
+        <tr class="bg-surface-50 border-b border-surface-200 text-left">
+          <th class="px-4 py-3 text-xs font-semibold text-surface-400 uppercase tracking-wider w-10 text-right">#</th>
+          <th class="px-4 py-3 text-xs font-semibold text-surface-400 uppercase tracking-wider">Title / Author</th>
+          <th class="px-4 py-3 text-xs font-semibold text-surface-400 uppercase tracking-wider text-right">Rating</th>
+          <th class="px-4 py-3 text-xs font-semibold text-surface-400 uppercase tracking-wider text-right">Hours</th>
+          <th class="px-4 py-3 text-xs font-semibold text-surface-400 uppercase tracking-wider text-right hidden md:table-cell">Added</th>
+        </tr>
+      </thead>
+      <tbody class="divide-y divide-surface-100">
+        {% for p in products %}
+        <tr class="hover:bg-brand-50/30 cursor-pointer transition-colors group"
+            onclick="window.location.href='{{ url_for('compare.detail_page', asin=p.asin) }}'">
+          <td class="px-4 py-3 text-surface-400 text-right font-mono text-xs align-top pt-4">
+            {{ loop.index }}
+          </td>
+          <td class="px-4 py-3 max-w-xs sm:max-w-sm lg:max-w-md">
+            <a href="{{ url_for('compare.detail_page', asin=p.asin) }}"
+               class="block font-semibold text-surface-900 group-hover:text-brand-600 transition-colors leading-snug line-clamp-2">
+              {{ p.title }}
+              {% if p.subtitle %}<span class="font-normal text-surface-500">: {{ p.subtitle }}</span>{% endif %}
+              {% if p.in_plus_catalog %}
+              <span class="ml-1 align-middle inline-block px-1.5 py-0.5 text-xs bg-purple-100 text-purple-600 font-bold rounded">+</span>
+              {% endif %}
+            </a>
+            {% if p.series_name %}
+            <p class="text-xs text-surface-400 mt-0.5 italic">
+              {{ p.series_name }}{% if p.series_position %} #{{ p.series_position }}{% endif %}
+            </p>
+            {% endif %}
+            <p class="text-xs text-surface-500 mt-0.5">
+              {{ p.authors_str }}
+              {% if p.narrators_str %}
+              <span class="text-surface-300 mx-1">·</span>
+              <span class="text-surface-400">narr. {{ p.narrators_str }}</span>
+              {% endif %}
+            </p>
+            <!-- Genre chips (first 2) -->
+            {% if p.categories %}
+            <div class="flex flex-wrap gap-1 mt-1.5">
+              {% for cat in p.categories[:2] %}
+              <span class="px-1.5 py-0.5 text-xs bg-surface-100 text-surface-500 rounded">{{ cat }}</span>
+              {% endfor %}
+            </div>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right align-top pt-4 whitespace-nowrap">
+            {% if p.rating %}
+            <span class="text-surface-700 font-medium">{{ p.rating | rating(p.num_ratings) }}</span>
+            {% else %}
+            <span class="text-surface-300">—</span>
+            {% endif %}
+          </td>
+          <td class="px-4 py-3 text-right align-top pt-4 whitespace-nowrap text-surface-700">
+            {% if p.hours %}{{ p.hours }} hrs{% else %}<span class="text-surface-300">—</span>{% endif %}
+          </td>
+          <td class="px-4 py-3 text-right align-top pt-4 whitespace-nowrap text-surface-400 text-xs hidden md:table-cell">
+            {{ p.release_date or '—' }}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- Mobile: card grid -->
+<div class="sm:hidden space-y-3">
+  {% for p in products %}
+  <a href="{{ url_for('compare.detail_page', asin=p.asin) }}"
+     class="block bg-white rounded-xl border border-surface-200 shadow-sm p-4 hover:border-brand-300 hover:shadow-md transition-all active:scale-[0.99]">
+    <div class="flex items-start gap-3">
+      <span class="flex-shrink-0 w-6 h-6 mt-0.5 rounded-full bg-surface-100 flex items-center justify-center text-xs font-bold text-surface-400">
+        {{ loop.index }}
+      </span>
+      <div class="flex-1 min-w-0">
+        <p class="font-semibold text-surface-900 leading-snug line-clamp-2 text-sm">
+          {{ p.title }}
+          {% if p.in_plus_catalog %}
+          <span class="ml-1 inline-block px-1 py-0.5 text-xs bg-purple-100 text-purple-600 font-bold rounded">+</span>
+          {% endif %}
+        </p>
+        {% if p.series_name %}
+        <p class="text-xs text-surface-400 italic mt-0.5">
+          {{ p.series_name }}{% if p.series_position %} #{{ p.series_position }}{% endif %}
+        </p>
+        {% endif %}
+        <p class="text-xs text-surface-500 mt-1">{{ p.authors_str }}</p>
+        <div class="flex items-center gap-3 mt-2 text-xs text-surface-500">
+          {% if p.rating %}
+          <span class="flex items-center gap-1">
+            <svg class="w-3 h-3 text-yellow-400" fill="currentColor" viewBox="0 0 20 20">
+              <path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"/>
+            </svg>
+            {{ p.rating }}
+          </span>
+          {% endif %}
+          {% if p.hours %}
+          <span>{{ p.hours }} hrs</span>
+          {% endif %}
+          {% if p.release_date %}
+          <span>{{ p.release_date }}</span>
+          {% endif %}
+        </div>
+      </div>
+      <!-- Chevron -->
+      <svg class="w-4 h-4 text-surface-300 flex-shrink-0 mt-0.5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+      </svg>
+    </div>
+  </a>
+  {% endfor %}
+</div>
+
+<!-- Hidden JSON data blob for client-side export -->
+<script id="lib-data-json" type="application/json">
+[
+  {% for p in products %}
+  {
+    "asin": {{ p.asin | tojson }},
+    "title": {{ p.title | tojson }},
+    "subtitle": {{ (p.subtitle or '') | tojson }},
+    "authors_str": {{ p.authors_str | tojson }},
+    "narrators_str": {{ p.narrators_str | tojson }},
+    "publisher": {{ (p.publisher or '') | tojson }},
+    "price": {{ p.price | tojson }},
+    "list_price": {{ p.list_price | tojson }},
+    "hours": {{ p.hours | tojson }},
+    "rating": {{ p.rating | tojson }},
+    "num_ratings": {{ p.num_ratings | tojson }},
+    "series_name": {{ (p.series_name or '') | tojson }},
+    "series_position": {{ (p.series_position or '') | tojson }},
+    "language": {{ (p.language or '') | tojson }},
+    "release_date": {{ (p.release_date or '') | tojson }},
+    "in_plus_catalog": {{ p.in_plus_catalog | tojson }},
+    "url": {{ p.url | tojson }}
+  }{{ ',' if not loop.last else '' }}
+  {% endfor %}
+]
+</script>
+
+{% endif %}
