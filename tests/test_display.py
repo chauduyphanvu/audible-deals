@@ -250,16 +250,24 @@ class TestDisplayComparison:
 
 
 class TestDisplaySummary:
-    def test_basic(self):
-        out = _capture(display_summary, 10, 5)
+    def test_basic_breakdown(self):
+        out = _capture(display_summary, 10, {"language": 3, "narrator": 2})
         assert "10" in out
-        assert "5 filtered out" in out
+        assert "5 filtered out: 3 by language, 2 by narrator" in out
+
+    def test_single_filter_breakdown(self):
+        out = _capture(display_summary, 10, {"language": 5})
+        assert "5 filtered out: 5 by language" in out
+
+    def test_empty_breakdown(self):
+        out = _capture(display_summary, 10, {})
+        assert "filtered out" not in out
 
     def test_with_max_price(self):
-        out = _capture(display_summary, 10, 0, max_price=5.0)
+        out = _capture(display_summary, 10, {}, max_price=5.0)
         assert "$5.00" in out
 
     def test_editions_and_series(self):
-        out = _capture(display_summary, 10, 0, editions_removed=3, series_collapsed=2)
+        out = _capture(display_summary, 10, {}, editions_removed=3, series_collapsed=2)
         assert "3 duplicate editions removed" in out
         assert "2 series collapsed" in out

@@ -34,9 +34,9 @@ from tests.conftest import make_product
 
 class TestFilterProducts:
     def test_max_price(self, products_for_filtering):
-        filtered, excluded = _filter_products(products_for_filtering, max_price=5.0)
+        filtered, breakdown = _filter_products(products_for_filtering, max_price=5.0)
         assert all(p.price is not None and p.price <= 5.0 for p in filtered)
-        assert excluded > 0
+        assert breakdown.get("max price", 0) > 0
 
     def test_min_rating(self, products_for_filtering):
         filtered, _ = _filter_products(products_for_filtering, min_rating=4.0)
@@ -66,9 +66,9 @@ class TestFilterProducts:
         assert not any(p.asin == "EROTICA" for p in filtered)
 
     def test_no_filters(self, products_for_filtering):
-        filtered, excluded = _filter_products(products_for_filtering)
+        filtered, breakdown = _filter_products(products_for_filtering)
         assert len(filtered) == len(products_for_filtering)
-        assert excluded == 0
+        assert breakdown == {}
 
     def test_combined_filters(self, products_for_filtering):
         filtered, _ = _filter_products(
@@ -1362,11 +1362,11 @@ class TestExcludeAuthorFilter:
             make_product(asin="EA1", authors=["Andy Weir"]),
             make_product(asin="EA2", authors=["Brandon Sanderson"]),
         ]
-        filtered, excluded = _filter_products(products, exclude_authors=("Andy Weir",))
+        filtered, breakdown = _filter_products(products, exclude_authors=("Andy Weir",))
         asins = [p.asin for p in filtered]
         assert "EA1" not in asins
         assert "EA2" in asins
-        assert excluded == 1
+        assert breakdown == {"excluded authors": 1}
 
     def test_exclude_author_multiple(self):
         """Multiple --exclude-author values are all applied."""
@@ -1375,14 +1375,14 @@ class TestExcludeAuthorFilter:
             make_product(asin="EAM2", authors=["Brandon Sanderson"]),
             make_product(asin="EAM3", authors=["Terry Pratchett"]),
         ]
-        filtered, excluded = _filter_products(
+        filtered, breakdown = _filter_products(
             products, exclude_authors=("andy", "sanderson")
         )
         asins = [p.asin for p in filtered]
         assert "EAM1" not in asins
         assert "EAM2" not in asins
         assert "EAM3" in asins
-        assert excluded == 2
+        assert breakdown == {"excluded authors": 2}
 
     def test_exclude_author_case_insensitive(self):
         products = [make_product(asin="EAC1", authors=["Andy Weir"])]
@@ -1391,9 +1391,9 @@ class TestExcludeAuthorFilter:
 
     def test_exclude_author_empty_tuple_no_filter(self):
         products = [make_product(asin="EAE1", authors=["Anyone"])]
-        filtered, excluded = _filter_products(products, exclude_authors=())
+        filtered, breakdown = _filter_products(products, exclude_authors=())
         assert len(filtered) == 1
-        assert excluded == 0
+        assert breakdown == {}
 
     def test_find_exclude_author_flag(self, mock_client, tmp_config):
         """deals find --exclude-author filters out matching authors."""
@@ -1488,12 +1488,12 @@ class TestAuthorFilter:
             make_product(asin="A2", authors=["Brandon Sanderson"]),
             make_product(asin="A3", authors=["andy waters"]),  # Different "andy"
         ]
-        filtered, excluded = _filter_products(products, author="andy")
+        filtered, breakdown = _filter_products(products, author="andy")
         asins = [p.asin for p in filtered]
         assert "A1" in asins
         assert "A3" in asins
         assert "A2" not in asins
-        assert excluded == 1
+        assert breakdown == {"author": 1}
 
     def test_author_case_insensitive(self):
         products = [make_product(asin="CI1", authors=["Andy Weir"])]
@@ -1507,9 +1507,9 @@ class TestAuthorFilter:
 
     def test_author_empty_string_no_filter(self):
         products = [make_product(asin="EF1", authors=["Anyone"])]
-        filtered, excluded = _filter_products(products, author="")
+        filtered, breakdown = _filter_products(products, author="")
         assert len(filtered) == 1
-        assert excluded == 0
+        assert breakdown == {}
 
     def test_find_author_flag(self, mock_client, tmp_config):
         """deals find --author filters by author name."""

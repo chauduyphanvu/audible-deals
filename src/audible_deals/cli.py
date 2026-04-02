@@ -146,45 +146,70 @@ def _filter_products(
     on_sale: bool = False,
     skip_asins: set[str] | None = None,
     exclude_category_ids: set[str] | None = None,
-) -> tuple[list[Product], int]:
-    """Apply client-side filters. Returns (filtered, num_excluded)."""
-    original = len(products)
+) -> tuple[list[Product], dict[str, int]]:
+    """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
+    breakdown: dict[str, int] = {}
 
     if skip_asins:
+        before = len(filtered)
         filtered = [p for p in filtered if p.asin not in skip_asins]
+        if (removed := before - len(filtered)):
+            breakdown["owned"] = removed
 
     if max_price is not None:
+        before = len(filtered)
         filtered = [p for p in filtered if p.price is not None and p.price <= max_price]
+        if (removed := before - len(filtered)):
+            breakdown["max price"] = removed
 
     if min_rating > 0:
+        before = len(filtered)
         filtered = [p for p in filtered if p.rating >= min_rating]
+        if (removed := before - len(filtered)):
+            breakdown["min rating"] = removed
 
     if min_ratings > 0:
+        before = len(filtered)
         filtered = [p for p in filtered if p.num_ratings >= min_ratings]
+        if (removed := before - len(filtered)):
+            breakdown["min ratings"] = removed
 
     if min_hours > 0:
+        before = len(filtered)
         filtered = [p for p in filtered if p.hours >= min_hours]
+        if (removed := before - len(filtered)):
+            breakdown["min hours"] = removed
 
     if language:
+        before = len(filtered)
         lang_lower = language.lower()
         filtered = [p for p in filtered if p.language.lower() == lang_lower]
+        if (removed := before - len(filtered)):
+            breakdown["language"] = removed
 
     if narrator:
+        before = len(filtered)
         narrator_lower = narrator.lower()
         filtered = [
             p for p in filtered
             if any(narrator_lower in n.lower() for n in p.narrators)
         ]
+        if (removed := before - len(filtered)):
+            breakdown["narrator"] = removed
 
     if author:
+        before = len(filtered)
         author_lower = author.lower()
         filtered = [
             p for p in filtered
             if any(author_lower in a.lower() for a in p.authors)
         ]
+        if (removed := before - len(filtered)):
+            breakdown["author"] = removed
 
     if exclude_authors:
+        before = len(filtered)
         exclude_lower = [a.lower() for a in exclude_authors]
         filtered = [
             p for p in filtered
@@ -194,17 +219,25 @@ def _filter_products(
                 for ex in exclude_lower
             )
         ]
+        if (removed := before - len(filtered)):
+            breakdown["excluded authors"] = removed
 
     if on_sale:
+        before = len(filtered)
         filtered = [p for p in filtered if p.discount_pct is not None and p.discount_pct > 0]
+        if (removed := before - len(filtered)):
+            breakdown["on sale"] = removed
 
     if exclude_category_ids:
+        before = len(filtered)
         filtered = [
             p for p in filtered
             if not any(cid in exclude_category_ids for cid in p.category_ids)
         ]
+        if (removed := before - len(filtered)):
+            breakdown["excluded genres"] = removed
 
-    return filtered, original - len(filtered)
+    return filtered, breakdown
 
 
 def _price_per_hour(p: Product) -> float:
@@ -465,7 +498,7 @@ def _postprocess_and_output(
     write_cache: bool = True,
 ) -> None:
     """Shared post-processing pipeline for search and find commands."""
-    filtered, excluded = _filter_products(
+    filtered, filter_breakdown = _filter_products(
         all_products,
         max_price=max_price,
         min_rating=min_rating,
@@ -507,7 +540,7 @@ def _postprocess_and_output(
     if not json_flag and not quiet:
         console.print()
         display_products(filtered, max_price=max_price, title=title, currency=currency)
-        display_summary(len(filtered), excluded, max_price=max_price,
+        display_summary(len(filtered), filter_breakdown, max_price=max_price,
                         editions_removed=editions_removed, series_collapsed=series_collapsed,
                         currency=currency, total_before_limit=total_before_limit)
 

@@ -253,7 +253,7 @@ def create_scan_progress() -> Progress:
 
 def display_summary(
     shown: int,
-    filtered_out: int,
+    filtered_out: dict[str, int],
     max_price: float | None = None,
     editions_removed: int = 0,
     series_collapsed: int = 0,
@@ -267,9 +267,14 @@ def display_summary(
         parts = [f"[bold]{shown}[/bold] deals found"]
     if max_price is not None:
         parts[0] += f" under [green]{currency}{max_price:.2f}[/green]"
-    detail_parts = []
-    if filtered_out > 0:
-        detail_parts.append(f"{filtered_out} filtered out")
+    detail_parts: list[str] = []
+    total_filtered = sum(filtered_out.values())
+    if total_filtered > 0:
+        reasons = ", ".join(
+            f"{count} by {label}"
+            for label, count in sorted(filtered_out.items(), key=lambda x: -x[1])
+        )
+        detail_parts.append(f"{total_filtered} filtered out: {reasons}")
     if editions_removed > 0:
         detail_parts.append(f"{editions_removed} duplicate editions removed")
     if series_collapsed > 0:
