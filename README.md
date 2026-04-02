@@ -46,7 +46,21 @@ chmod +x deals-macos-arm64
 sudo mv deals-macos-arm64 /usr/local/bin/deals
 ```
 
-**From source (requires Python 3.11+):**
+**Windows (recommended — install from source):**
+
+The pre-built Windows binary may not work on all systems. Install from source instead (requires [Python 3.11+](https://www.python.org/downloads/)):
+
+```
+git clone https://github.com/chauduyphanvu/audible-deals.git
+cd audible-deals
+pip install -e .
+```
+
+Then open **Command Prompt**, **PowerShell**, or **Windows Terminal** and run `deals` from there.
+
+> **Note:** `deals` is a command-line tool. Do not double-click it — always run it from a terminal, or the window will open and immediately close.
+
+**From source on macOS / Linux (requires Python 3.11+):**
 
 ```bash
 git clone https://github.com/chauduyphanvu/audible-deals.git
@@ -56,7 +70,7 @@ pip install -e .
 
 ### Authenticate
 
-You need an Audible account. The easiest method on macOS:
+You need an Audible account. The easiest method:
 
 ```bash
 deals login --external --via-file /tmp/url.txt
