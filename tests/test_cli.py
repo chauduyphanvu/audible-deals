@@ -1838,3 +1838,482 @@ class TestWatchEveryFlag:
         result = runner.invoke(cli, ["watch"])
         assert result.exit_code == 0, result.output
         assert "BUY" in result.output
+
+
+# ===================================================================
+# Change #1: --version flag
+# ===================================================================
+
+class TestVersionFlag:
+    def test_version_flag(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["--version"])
+        assert result.exit_code == 0
+        assert "deals" in result.output
+        # version string should be present (e.g. "deals, version X.Y.Z")
+        assert "version" in result.output.lower()
+
+
+# ===================================================================
+# Change #2: bare invocation shows help + hint
+# ===================================================================
+
+class TestBareInvocation:
+    def test_bare_invocation_exits_zero(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, [])
+        assert result.exit_code == 0
+
+    def test_bare_invocation_shows_help(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, [])
+        assert "find" in result.output
+        assert "search" in result.output
+
+    def test_bare_invocation_shows_hint(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, [])
+        assert "Quick start" in result.output
+
+
+# ===================================================================
+# Change #3: find title includes genre/category name
+# ===================================================================
+
+class TestFindTitleIncludesGenre:
+    def test_find_title_with_genre(self, mock_client, tmp_config):
+        """find --genre shows category name in the table title."""
+        products = [make_product(asin="GT1", price=3.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        mock_client.resolve_genre.return_value = ("cat42", "Science Fiction")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--genre", "sci-fi", "--max-price", "10", "--pages", "1",
+            "--all-languages", "-n", "0",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Science Fiction" in result.output
+
+    def test_find_title_without_genre(self, mock_client, tmp_config):
+        """find without --genre does not include a category in title."""
+        products = [make_product(asin="NT1", price=3.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "--all-languages", "-n", "0",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Deals under $10.00" in result.output
+
+
+# ===================================================================
+# Change #4: --clear flag on last command
+# ===================================================================
+
+class TestLastClearFlag:
+    def test_clear_existing_cache(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([]))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--clear"])
+        assert result.exit_code == 0
+        assert "cleared" in result.output.lower()
+        assert not cli_mod.LAST_RESULTS_FILE.exists()
+
+    def test_clear_no_cache(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--clear"])
+        assert result.exit_code == 0
+        assert "No cached results" in result.output
+
+    def test_clear_exits_without_display(self, tmp_config):
+        """--clear should not attempt to read or display any results."""
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([]))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--clear"])
+        assert result.exit_code == 0
+        # Should show clear confirmation, not a product table
+        assert "cleared" in result.output.lower()
+        assert "deals found" not in result.output
+
+
+# ===================================================================
+# Change #6: find default limit=25 and -n 0 means unlimited
+# ===================================================================
+
+class TestFindDefaultLimit:
+    def test_find_default_limit_25(self, mock_client, tmp_config):
+        """find without --limit defaults to 25 results."""
+        products = [
+            make_product(asin=f"DL{i:02d}", price=float(i), series_name="", series_position="",
+                         num_ratings=10)
+            for i in range(1, 36)
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 35)])
+        out_file = tmp_config / "default_limit.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "100", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 25
+
+    def test_find_limit_zero_means_unlimited(self, mock_client, tmp_config):
+        """find -n 0 shows all results (unlimited)."""
+        products = [
+            make_product(asin=f"UL{i:02d}", price=float(i), series_name="", series_position="",
+                         num_ratings=10)
+            for i in range(1, 36)
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 35)])
+        out_file = tmp_config / "unlimited.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "100", "--pages", "1", "-n", "0",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 35
+
+    def test_search_limit_still_none_by_default(self, mock_client, tmp_config):
+        """search --limit is still None by default (no truncation)."""
+        products = [
+            make_product(asin=f"SL{i:02d}", price=float(i), series_name="", series_position="")
+            for i in range(1, 36)
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 35)])
+        out_file = tmp_config / "search_no_limit.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 35
+
+
+# ===================================================================
+# Change #7: find default sort is price-per-hour, min-ratings=1
+# ===================================================================
+
+class TestFindDefaults:
+    def test_find_default_sort_price_per_hour(self, mock_client, tmp_config):
+        """find without --sort uses price-per-hour ordering."""
+        products = [
+            # A: $10 / 2hrs = $5/hr
+            make_product(asin="PPH_A", price=10.0, length_minutes=120,
+                         series_name="", series_position="", num_ratings=10),
+            # B: $3 / 10hrs = $0.30/hr (better value)
+            make_product(asin="PPH_B", price=3.0, length_minutes=600,
+                         series_name="", series_position="", num_ratings=10),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "pph_sort.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "100", "--pages", "1", "-n", "0",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        # PPH_B has lower price-per-hour and should appear first
+        assert data[0]["asin"] == "PPH_B"
+        assert data[1]["asin"] == "PPH_A"
+
+    def test_find_default_min_ratings_filters_unreviewed(self, mock_client, tmp_config):
+        """find with default min-ratings=1 filters out items with 0 ratings."""
+        products = [
+            make_product(asin="MR1", price=3.0, num_ratings=0,
+                         series_name="", series_position=""),
+            make_product(asin="MR2", price=3.0, num_ratings=5,
+                         series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "min_ratings.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "-n", "0",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "MR1" not in asins
+        assert "MR2" in asins
+
+
+# ===================================================================
+# Change #8: --exclude-narrator flag
+# ===================================================================
+
+class TestExcludeNarratorFilter:
+    def test_exclude_narrator_single(self):
+        products = [
+            make_product(asin="EN1", narrators=["R.C. Bray"]),
+            make_product(asin="EN2", narrators=["Scott Brick"]),
+        ]
+        filtered, breakdown = _filter_products(products, exclude_narrators=("R.C. Bray",))
+        asins = [p.asin for p in filtered]
+        assert "EN1" not in asins
+        assert "EN2" in asins
+        assert breakdown == {"excluded narrators": 1}
+
+    def test_exclude_narrator_substring(self):
+        products = [
+            make_product(asin="ENS1", narrators=["R.C. Bray"]),
+            make_product(asin="ENS2", narrators=["Scott Brick"]),
+        ]
+        filtered, _ = _filter_products(products, exclude_narrators=("bray",))
+        asins = [p.asin for p in filtered]
+        assert "ENS1" not in asins
+        assert "ENS2" in asins
+
+    def test_exclude_narrator_case_insensitive(self):
+        products = [make_product(asin="ENC1", narrators=["R.C. Bray"])]
+        filtered, _ = _filter_products(products, exclude_narrators=("BRAY",))
+        assert len(filtered) == 0
+
+    def test_exclude_narrator_multiple(self):
+        products = [
+            make_product(asin="ENM1", narrators=["R.C. Bray"]),
+            make_product(asin="ENM2", narrators=["Scott Brick"]),
+            make_product(asin="ENM3", narrators=["Kate Reading"]),
+        ]
+        filtered, breakdown = _filter_products(
+            products, exclude_narrators=("bray", "brick")
+        )
+        asins = [p.asin for p in filtered]
+        assert "ENM1" not in asins
+        assert "ENM2" not in asins
+        assert "ENM3" in asins
+        assert breakdown == {"excluded narrators": 2}
+
+    def test_exclude_narrator_empty_no_filter(self):
+        products = [make_product(asin="ENE1", narrators=["Anyone"])]
+        filtered, breakdown = _filter_products(products, exclude_narrators=())
+        assert len(filtered) == 1
+        assert breakdown == {}
+
+    def test_find_exclude_narrator_flag(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="FEN1", price=3.0, narrators=["R.C. Bray"],
+                         series_name="", series_position="", num_ratings=10),
+            make_product(asin="FEN2", price=3.0, narrators=["Scott Brick"],
+                         series_name="", series_position="", num_ratings=10),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "find_excl_narrator.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1",
+            "--exclude-narrator", "bray",
+            "--all-languages", "-q", "-n", "0", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "FEN1" not in asins
+        assert "FEN2" in asins
+
+    def test_last_exclude_narrator_flag(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        products = [
+            make_product(asin="LEN1", price=3.0, narrators=["R.C. Bray"],
+                         series_name="", series_position=""),
+            make_product(asin="LEN2", price=3.0, narrators=["Scott Brick"],
+                         series_name="", series_position=""),
+        ]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([_serialize_product(p) for p in products]))
+        out_file = tmp_config / "last_excl_narrator.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--exclude-narrator", "bray", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LEN1" not in asins
+        assert "LEN2" in asins
+
+    def test_exclude_narrator_in_profile(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "profile", "save", "no-bray",
+            "--exclude-narrator", "R.C. Bray",
+        ])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        profiles = cli_mod._load_profiles()
+        assert "no-bray" in profiles
+        excluded = profiles["no-bray"]["exclude_narrators"]
+        assert "R.C. Bray" in excluded
+
+
+# ===================================================================
+# Change #9: search QUERY optional
+# ===================================================================
+
+class TestSearchQueryOptional:
+    def test_search_no_query_no_genre_raises(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search"])
+        assert result.exit_code != 0
+
+    def test_search_with_genre_no_query(self, mock_client, tmp_config):
+        products = [make_product(asin="SG1", price=5.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        mock_client.resolve_genre.return_value = ("cat99", "Mystery")
+        out_file = tmp_config / "search_genre.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "--genre", "mystery", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 1
+
+    def test_search_with_category_no_query(self, mock_client, tmp_config):
+        products = [make_product(asin="SC1", price=5.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        mock_client.get_category_name.return_value = "Thriller"
+        out_file = tmp_config / "search_cat.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "--category", "123456", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 1
+
+    def test_search_with_query_still_works(self, mock_client, tmp_config):
+        products = [make_product(asin="SQ1", price=5.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "search_q.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test query", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 1
+
+
+# ===================================================================
+# Change #10: profile show command
+# ===================================================================
+
+class TestProfileShow:
+    def test_profile_show_displays_flags(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({
+            "myprofile": {
+                "genre": "sci-fi",
+                "max_price": 5.0,
+                "min_rating": 4.0,
+                "on_sale": True,
+            }
+        })
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "myprofile"])
+        assert result.exit_code == 0, result.output
+        assert "myprofile" in result.output
+        assert "sci-fi" in result.output
+        assert "5.0" in result.output
+
+    def test_profile_show_not_found(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "nonexistent"])
+        assert result.exit_code != 0
+        assert "not found" in result.output.lower()
+
+    def test_profile_show_list_values(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({
+            "multi": {
+                "exclude_authors": ["Andy Weir", "Brandon Sanderson"],
+            }
+        })
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "multi"])
+        assert result.exit_code == 0, result.output
+        assert "Andy Weir" in result.output
+        assert "Brandon Sanderson" in result.output
+
+    def test_profile_show_bool_true_displayed(self, tmp_config):
+        """Boolean True values should show as --flag."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({
+            "booltest": {
+                "deep": True,
+            }
+        })
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "booltest"])
+        assert result.exit_code == 0, result.output
+        assert "deep" in result.output
+
+    def test_profile_show_bool_false_not_displayed(self, tmp_config):
+        """Boolean False values should be omitted — not printed as '--flag False'."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({
+            "falsetest": {
+                "deep": False,
+                "on_sale": False,
+            }
+        })
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "falsetest"])
+        assert result.exit_code == 0, result.output
+        assert "False" not in result.output
+
+
+# ===================================================================
+# Change #11: dynamic title column width in display_products
+# ===================================================================
+
+class TestDynamicTitleColumnWidth:
+    def test_narrow_terminal_uses_minimum(self):
+        """On a narrow terminal (e.g. 80 chars), title_max >= 30."""
+        from io import StringIO
+        from rich.console import Console
+        import audible_deals.display as display_mod
+
+        buf = StringIO()
+        narrow_console = Console(file=buf, width=80, force_terminal=False)
+        original = display_mod.console
+        display_mod.console = narrow_console
+        try:
+            products = [make_product(asin="TW1", title="A Book", price=3.0)]
+            display_mod.display_products(products, title="Test")
+        finally:
+            display_mod.console = original
+        out = buf.getvalue()
+        assert "A Book" in out
+
+    def test_wide_terminal_uses_larger_width(self):
+        """On a wide terminal (e.g. 200 chars), title column should be wider."""
+        from io import StringIO
+        from rich.console import Console
+        import audible_deals.display as display_mod
+
+        buf = StringIO()
+        wide_console = Console(file=buf, width=200, force_terminal=False)
+        original = display_mod.console
+        display_mod.console = wide_console
+        try:
+            long_title = "A" * 70
+            products = [make_product(asin="TW2", title=long_title, price=3.0)]
+            display_mod.display_products(products, title="Test")
+        finally:
+            display_mod.console = original
+        out = buf.getvalue()
+        # The output should contain at least part of the long title
+        assert "TW2" in out

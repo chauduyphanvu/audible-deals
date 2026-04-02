@@ -83,8 +83,8 @@ deals find --genre thriller --sort discount --on-sale
 # Deep scan romance for maximum coverage
 deals find --genre romance --max-price 3 --deep
 
-# Cheap long listens (great $/hr value)
-deals find --sort price-per-hour --min-hours 10 --max-price 5
+# Cheap long listens (sorted by $/hr value by default)
+deals find --min-hours 10 --max-price 5
 
 # Only well-reviewed books narrated by a specific person
 deals find --narrator "Tim Gerard Reynolds" --min-ratings 1000 --max-price 5
@@ -106,6 +106,9 @@ deals search "Red Rising" --first-in-series
 
 # Deep scan for broader coverage
 deals search "Sanderson" --deep --max-price 5
+
+# Browse a genre without a keyword (QUERY is optional with --genre)
+deals search --genre romance --max-price 3
 ```
 
 ## Commands
@@ -113,7 +116,7 @@ deals search "Sanderson" --deep --max-price 5
 | Command | Description |
 |---------|-------------|
 | `deals find` | Browse and filter deals (the main command) |
-| `deals search QUERY` | Search by keyword with filters |
+| `deals search [QUERY]` | Search by keyword with filters (QUERY optional if `--genre`/`--category` is given) |
 | `deals last` | Re-display results from the last search or find (no API call) |
 | `deals detail ASIN` | Detailed info for a single audiobook |
 | `deals open ASIN` | Open the Audible page in your browser |
@@ -123,7 +126,7 @@ deals search "Sanderson" --deep --max-price 5
 | `deals wishlist sync` | Pull your Audible account wishlist for local price tracking and alerts |
 | `deals watch` | Check wishlist prices — highlights items at/below target |
 | `deals notify` | Send deal notifications via webhook or JSON stdout |
-| `deals profile save/list/delete` | Manage saved search profiles |
+| `deals profile save/list/show/delete` | Manage saved search profiles |
 | `deals config set/get/list/reset` | Manage global defaults applied to all commands |
 | `deals history ASIN` | View price history with sparkline chart |
 | `deals recap` | Summary of recent price drops across tracked items |
@@ -145,15 +148,16 @@ deals search "Sanderson" --deep --max-price 5
 | `--narrator "Reynolds"` | Filter by narrator name (case-insensitive substring match) |
 | `--author "Andy Weir"` | Filter by author name (case-insensitive substring match) |
 | `--exclude-author "Maas"` | Exclude books by a matching author (repeatable) |
+| `--exclude-narrator "Bray"` | Exclude books by a matching narrator (repeatable) |
 | `--min-rating 4.0` | Minimum star rating |
-| `--min-ratings 100` | Minimum number of ratings — filters out unreviewed books |
+| `--min-ratings 100` | Minimum number of ratings (default: 1 for `find`, filters unreviewed books) |
 | `--min-hours 5` | Minimum audio length |
 | `--on-sale` | Only discounted items |
 | `--language english` | Filter by language (default: locale language) |
 | `--all-languages` | Include all languages |
 | `--first-in-series` | Only show book 1 of each series |
 | `--skip-owned` | Exclude books already in your library |
-| `-n, --limit 20` | Cap the number of results |
+| `-n, --limit 20` | Cap the number of results (default: 25 for `find`; use `-n 0` for unlimited) |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
 | `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` and `search`) |
 | `-i, --interactive` | Browse results interactively after the table is shown |
@@ -165,10 +169,10 @@ deals search "Sanderson" --deep --max-price 5
 
 | Sort | Description |
 |------|-------------|
-| `price` | Cheapest first (default for `find`) |
+| `price` | Cheapest first |
 | `-price` | Most expensive first |
 | `discount` | Biggest discount percentage first |
-| `price-per-hour` | Best value — lowest cost per hour of audio |
+| `price-per-hour` | Best value — lowest cost per hour of audio (default for `find`) |
 | `rating` | Highest rated first |
 | `bestsellers` | Audible's bestseller ranking |
 | `length` | Longest first |
@@ -196,10 +200,11 @@ deals find --profile my-scifi --max-price 3
 
 # List and manage
 deals profile list
+deals profile show my-scifi
 deals profile delete my-scifi
 ```
 
-Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, `--author`, `--exclude-author`, and `--deep`.
+Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, `--author`, `--exclude-author`, `--exclude-narrator`, and `--deep`.
 
 ## Last results
 
@@ -225,6 +230,9 @@ deals last --language english
 
 # Export the cached results
 deals last -o last.csv
+
+# Clear the cached results
+deals last --clear
 ```
 
 You can also reference items from the last results by position number in other commands:
@@ -294,7 +302,7 @@ deals find --genre sci-fi --max-price 5 -i
 After the table displays, you can:
 - Type a **number** to view detailed info (e.g. `3`)
 - Type **`o 3`** to open that book's Audible page in your browser
-- Type **`w 3`** to add it to your wishlist
+- Type **`w 3`** to add it to your wishlist (you'll be prompted for an optional target price)
 - Type **`q`** to quit
 
 ## Wishlist & price tracking
@@ -386,6 +394,8 @@ deals find --genre mystery --max-price 5 -o deals.csv
 # JSON to stdout (for piping)
 deals find --genre mystery --max-price 5 --json | jq '.[0]'
 ```
+
+> **Note:** In CSV exports, multi-value fields (authors, narrators, categories) are joined with `; ` (semicolon-space) to avoid breaking CSV column parsing.
 
 Using `-o` automatically suppresses the table display (same as adding `-q`). This makes scripted exports cleaner — no need to remember to add `-q` when writing to a file.
 

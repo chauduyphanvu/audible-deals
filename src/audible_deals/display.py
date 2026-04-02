@@ -64,6 +64,9 @@ def display_products(
         console.print("[dim]No products found.[/dim]")
         return
 
+    term_width = console.width or 80
+    title_max = max(30, min(term_width - 55, 80))
+
     table = Table(
         title=title,
         show_lines=False,
@@ -72,7 +75,7 @@ def display_products(
         expand=False,
     )
     table.add_column("#", style="dim", width=5, justify="right")
-    table.add_column("Title / Author", no_wrap=True, max_width=38)
+    table.add_column("Title / Author", no_wrap=True, max_width=title_max)
     table.add_column("Price", justify="right", width=12)
     table.add_column("Hrs", justify="right", width=7)
     table.add_column(f"{currency}/hr", justify="right", width=9)
