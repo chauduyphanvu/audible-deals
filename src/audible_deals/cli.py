@@ -1030,6 +1030,61 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
     )
 
 
+@cli.command()
+@click.option("--sort", type=click.Choice(["title", "rating", "length", "date", "price", "-price", "price-per-hour"]), default="date", help="Sort order (default: date — newest first)")
+@click.option("-n", "--limit", type=int, default=None, help="Show only the top N results")
+@click.option("-o", "--output", type=click.Path(path_type=Path), default=None, help="Export to file (.json or .csv)")
+@click.option("--json", "json_flag", is_flag=True, default=False, help="Output as JSON to stdout")
+@click.option("-q", "--quiet", is_flag=True, default=False, help="Suppress table output")
+@click.pass_context
+def library(ctx, sort, limit, output, json_flag, quiet):
+    """List all audiobooks in your Audible library.
+
+    Fetches your full library with metadata — useful for exporting to
+    a file for analysis or feeding to other tools.
+
+    \b
+    Examples:
+        deals library
+        deals library --json > my-books.json
+        deals library -o library.csv
+        deals library --sort rating -n 20
+    """
+    if output and ctx.get_parameter_source("quiet") != _CL:
+        quiet = True
+    if json_flag:
+        console.file = sys.stderr
+
+    dc = _get_client(ctx.obj["locale"])
+    with dc:
+        with create_scan_progress() as progress:
+            task = progress.add_task("Fetching library", total=None, items=0)
+            products = dc.get_library()
+            progress.update(task, completed=1, total=1, items=len(products))
+
+    products = _sort_local(products, sort)
+    total_before_limit = len(products)
+    if limit is not None and limit > 0:
+        products = products[:limit]
+
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+
+    if output:
+        _export_products(products, output)
+        console.print(f"[green]Exported {len(products)} items to {output}[/green]")
+    if json_flag:
+        serialized = [_serialize_product(p) for p in products]
+        click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
+    if not json_flag and not quiet:
+        console.print()
+        title = "Your Library"
+        display_products(products, title=title, currency=cur)
+        if total_before_limit > len(products):
+            console.print(f"  [bold]{len(products)}[/bold] of {total_before_limit} books shown")
+        else:
+            console.print(f"  [bold]{len(products)}[/bold] books in library")
+
+
 @cli.command("last")
 @click.option("--sort", type=click.Choice(["price", "-price", "discount", "price-per-hour", "rating", "length", "date", "relevance"]), default=None, help="Re-sort results")
 @click.option("--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter")

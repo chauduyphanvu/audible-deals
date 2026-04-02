@@ -117,6 +117,7 @@ deals search --genre romance --max-price 3
 |---------|-------------|
 | `deals find` | Browse and filter deals (the main command) |
 | `deals search [QUERY]` | Search by keyword with filters (QUERY optional if `--genre`/`--category` is given) |
+| `deals library` | List all books in your Audible library (exportable) |
 | `deals last` | Re-display results from the last search or find (no API call) |
 | `deals detail ASIN` | Detailed info for a single audiobook |
 | `deals open ASIN` | Open the Audible page in your browser |
@@ -304,6 +305,24 @@ After the table displays, you can:
 - Type **`o 3`** to open that book's Audible page in your browser
 - Type **`w 3`** to add it to your wishlist (you'll be prompted for an optional target price)
 - Type **`q`** to quit
+
+## Library export
+
+List everything you own on Audible — useful for feeding to other tools, tracking what you have, or analyzing your collection:
+
+```bash
+# Show your library (newest first by default)
+deals library
+
+# Export as JSON (great for feeding to AI tools or scripts)
+deals library --json > my-books.json
+
+# Export as CSV for spreadsheets
+deals library -o library.csv
+
+# Top 20 by rating
+deals library --sort rating -n 20
+```
 
 ## Wishlist & price tracking
 

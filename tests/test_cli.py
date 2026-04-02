@@ -629,6 +629,64 @@ class TestWishlistSyncCommand:
         assert "WS4" in result.output
 
 
+class TestLibraryCommand:
+    def test_library_basic(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="LIB1", title="My Book One", price=10.0),
+            make_product(asin="LIB2", title="My Book Two", price=15.0),
+        ]
+        mock_client.get_library.return_value = products
+        out_file = tmp_config / "library.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 2
+        asins = {d["asin"] for d in data}
+        assert asins == {"LIB1", "LIB2"}
+
+    def test_library_json_export(self, mock_client, tmp_config):
+        """--json with -o exports valid JSON to the file."""
+        products = [make_product(asin="LIB3", title="JSON Book")]
+        mock_client.get_library.return_value = products
+        out_file = tmp_config / "library_json.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 1
+        assert data[0]["asin"] == "LIB3"
+        assert data[0]["title"] == "JSON Book"
+
+    def test_library_limit(self, mock_client, tmp_config):
+        products = [make_product(asin=f"LL{i}", title=f"Book {i}") for i in range(10)]
+        mock_client.get_library.return_value = products
+        out_file = tmp_config / "library_limit.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "-n", "3", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 3
+
+    def test_library_csv_export(self, mock_client, tmp_config):
+        products = [make_product(asin="LCSV1", title="CSV Book")]
+        mock_client.get_library.return_value = products
+        out_file = tmp_config / "library.csv"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        content = out_file.read_text()
+        assert "LCSV1" in content
+        assert "CSV Book" in content
+
+    def test_library_empty(self, mock_client, tmp_config):
+        mock_client.get_library.return_value = []
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library"])
+        assert result.exit_code == 0, result.output
+        assert "0" in result.output
+
+
 class TestWatchCommand:
     def test_watch_empty(self, tmp_config, mock_client):
         runner = CliRunner()
