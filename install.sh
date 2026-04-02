@@ -115,18 +115,35 @@ main() {
     echo ""
     echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
 
-    # Check if INSTALL_DIR is in PATH
+    # Ensure INSTALL_DIR is in PATH
     if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then
-        echo ""
-        echo "Note: ${INSTALL_DIR} is not in your PATH. Add it with:"
-        echo ""
-        local shell_name
+        local shell_name rc_file export_line
         shell_name="$(basename "${SHELL:-/bin/bash}")"
         case "$shell_name" in
-            zsh)  echo "  echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ~/.zshrc && source ~/.zshrc" ;;
-            fish) echo "  fish_add_path ${INSTALL_DIR}" ;;
-            *)    echo "  echo 'export PATH=\"${INSTALL_DIR}:\$PATH\"' >> ~/.bashrc && source ~/.bashrc" ;;
+            zsh)  rc_file="$HOME/.zshrc" ;;
+            fish) rc_file="$HOME/.config/fish/config.fish" ;;
+            *)    rc_file="$HOME/.bashrc" ;;
         esac
+
+        if [ "$shell_name" = "fish" ]; then
+            export_line="fish_add_path ${INSTALL_DIR}"
+        else
+            export_line="export PATH=\"${INSTALL_DIR}:\$PATH\""
+        fi
+
+        # Only add if not already present in the rc file
+        if [ -f "$rc_file" ] && grep -qF "$INSTALL_DIR" "$rc_file"; then
+            echo ""
+            echo "PATH entry already in ${rc_file} — restart your terminal or run:"
+            echo "  source ${rc_file}"
+        else
+            echo "$export_line" >> "$rc_file"
+            echo ""
+            echo "Added ${INSTALL_DIR} to PATH in ${rc_file}"
+            echo ""
+            echo "To use 'deals' right now, run:"
+            echo "  source ${rc_file}"
+        fi
     fi
 
     echo ""

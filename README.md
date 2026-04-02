@@ -28,7 +28,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 curl -fsSL https://raw.githubusercontent.com/chauduyphanvu/audible-deals/main/install.sh | bash
 ```
 
-This detects your OS and architecture, downloads the right binary, and installs it to `~/.local/bin`.
+This detects your OS and architecture, downloads the right binary, and installs it to `~/.local/bin`. If that directory isn't in your PATH, the script adds it automatically. You may need to restart your terminal (or run `source ~/.zshrc`) for the `deals` command to become available.
 
 **Manual download:**
 
