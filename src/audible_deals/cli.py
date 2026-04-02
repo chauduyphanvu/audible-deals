@@ -148,6 +148,7 @@ def _filter_products(
     on_sale: bool = False,
     skip_asins: set[str] | None = None,
     exclude_category_ids: set[str] | None = None,
+    genre: str = "",
 ) -> tuple[list[Product], dict[str, int]]:
     """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
@@ -253,6 +254,16 @@ def _filter_products(
         if (removed := before - len(filtered)):
             breakdown["excluded genres"] = removed
 
+    if genre:
+        before = len(filtered)
+        genre_lower = genre.lower()
+        filtered = [
+            p for p in filtered
+            if any(genre_lower in cat.lower() for cat in p.categories)
+        ]
+        if (removed := before - len(filtered)):
+            breakdown["genre"] = removed
+
     return filtered, breakdown
 
 
@@ -321,32 +332,30 @@ def _dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
     return result, removed
 
 
-def _first_in_series(products: list[Product]) -> tuple[list[Product], int]:
-    """Keep only the lowest-position item per series.
+def _series_pos(p: Product) -> float:
+    try:
+        return float(p.series_position) if p.series_position else float("inf")
+    except ValueError:
+        return float("inf")
 
-    Non-series items pass through unchanged.
+
+def _first_in_series(products: list[Product]) -> tuple[list[Product], int]:
+    """Keep only the lowest-position item per series (must be <= 1.0).
+
+    Non-series items pass through unchanged. Series whose lowest-available
+    position is > 1.0 are excluded entirely (Book 1 wasn't in the result set).
     """
-    best: dict[str, Product] = {}
+    best: dict[str, tuple[Product, float]] = {}  # key -> (product, position)
     for p in products:
         if not p.series_name:
             continue
         key = p.series_name.lower()
-        try:
-            pos = float(p.series_position) if p.series_position else float("inf")
-        except ValueError:
-            pos = float("inf")
+        pos = _series_pos(p)
         existing = best.get(key)
-        if existing is None:
-            best[key] = p
-        else:
-            try:
-                existing_pos = float(existing.series_position) if existing.series_position else float("inf")
-            except ValueError:
-                existing_pos = float("inf")
-            if pos < existing_pos:
-                best[key] = p
+        if existing is None or pos < existing[1]:
+            best[key] = (p, pos)
 
-    best_asins = {p.asin for p in best.values()}
+    best_asins = {p.asin for p, pos in best.values() if pos <= 1.0}
     result = []
     collapsed = 0
     for p in products:
@@ -451,17 +460,21 @@ def _load_last_results() -> tuple[str, list[dict]]:
     raise click.ClickException("Last results cache is corrupt.")
 
 
-def _resolve_last_references(refs: tuple[int, ...]) -> list[str]:
-    """Convert 1-indexed position references to ASINs from the last results cache."""
-    _, data = _load_last_results()
-    asins: list[str] = []
+def _resolve_last_references(refs: tuple[int, ...]) -> list[tuple[str, str]]:
+    """Convert 1-indexed position references to (asin, description) tuples from the last results cache."""
+    title, data = _load_last_results()
+    results: list[tuple[str, str]] = []
     for ref in refs:
         if ref < 1 or ref > len(data):
             raise click.ClickException(
                 f"--last {ref} is out of range (cache has {len(data)} result(s))."
             )
-        asins.append(data[ref - 1]["asin"])
-    return asins
+        item = data[ref - 1]
+        asin = item["asin"]
+        item_title = item.get("title", asin)
+        desc = f"Result #{ref} from '{title}': {item_title} ({asin})"
+        results.append((asin, desc))
+    return results
 
 
 def _export_products(products: list[Product], path: Path) -> None:
@@ -712,6 +725,22 @@ def categories(ctx, parent):
     )
 
 
+_NAME_STOPWORDS = frozenset({
+    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "my",
+    "no", "not", "how", "why", "what", "all", "new", "old", "red", "dark",
+})
+
+
+def _looks_like_person_name(query: str) -> bool:
+    """Return True if query looks like a 2-3 word person name (each word Title-cased)."""
+    words = query.strip().split()
+    if len(words) < 2 or len(words) > 3:
+        return False
+    if any(w.lower() in _NAME_STOPWORDS for w in words):
+        return False
+    return all(w[0].isupper() for w in words)
+
+
 @cli.command()
 @click.argument("query", required=False, default="")
 @click.option("--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter (e.g. 5.00)")
@@ -722,7 +751,7 @@ def categories(ctx, parent):
 @click.option("--min-rating", type=float, default=0.0, help="Minimum rating (e.g. 4.0)")
 @click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings (e.g. 100)")
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
-@click.option("--narrator", default="", help="Filter by narrator name (substring match)")
+@click.option("--narrator", default="", help="Filter by narrator name (substring match, client-side)")
 @click.option("--author", default="", help="Filter by author name (substring match)")
 @click.option("--exclude-author", "exclude_authors", multiple=True, help="Exclude author (substring match, repeatable)")
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True, help="Exclude narrator (substring match, repeatable)")
@@ -733,7 +762,7 @@ def categories(ctx, parent):
 @click.option("--all-languages", is_flag=True, default=False, help="Include all languages (default: locale language only)")
 @click.option("--first-in-series", is_flag=True, default=False, help="Show only the first book per series")
 @click.option("--skip-owned", is_flag=True, default=False, help="Exclude books already in your library")
-@click.option("--limit", "-n", type=int, default=None, help="Show only the top N results")
+@click.option("--limit", "-n", type=int, default=25, help="Show only the top N results (0 for unlimited, default: 25)")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)")
 @click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)")
@@ -841,6 +870,8 @@ def search(ctx, query, max_price, category, genre, exclude_genre, sort, min_rati
         output=output, json_flag=json_flag, quiet=quiet,
         currency=cur, interactive=interactive,
     )
+    if query and not author and not json_flag and not quiet and _looks_like_person_name(query):
+        console.print(f"\n  [dim]Tip: Use --author '{query}' for exact author filtering.[/dim]")
 
 
 def _fetch_with_progress(
@@ -897,7 +928,7 @@ def _fetch_with_progress(
 @click.option("--min-rating", type=float, default=0.0, help="Minimum rating (e.g. 4.0)")
 @click.option("--min-ratings", type=int, default=1, help="Minimum number of ratings (default: 1, filters unreviewed)")
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours (filters out shorts)")
-@click.option("--narrator", default="", help="Filter by narrator name (substring match)")
+@click.option("--narrator", default="", help="Filter by narrator name (substring match, client-side)")
 @click.option("--author", default="", help="Filter by author name (substring match)")
 @click.option("--exclude-author", "exclude_authors", multiple=True, help="Exclude author (substring match, repeatable)")
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True, help="Exclude narrator (substring match, repeatable)")
@@ -1038,8 +1069,14 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
 @click.option("-o", "--output", type=click.Path(path_type=Path), default=None, help="Export to file (.json or .csv)")
 @click.option("--json", "json_flag", is_flag=True, default=False, help="Output as JSON to stdout")
 @click.option("-q", "--quiet", is_flag=True, default=False, help="Suppress table output")
+@click.option("--author", default="", help="Filter by author name (substring match)")
+@click.option("--narrator", default="", help="Filter by narrator name (substring match, client-side)")
+@click.option("--genre", default="", help="Filter by genre/category (substring match on categories)")
+@click.option("--min-rating", type=float, default=0.0, help="Minimum rating")
+@click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
+@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
 @click.pass_context
-def library(ctx, sort, limit, output, json_flag, quiet):
+def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre, min_rating, min_ratings, min_hours):
     """List all audiobooks in your Audible library.
 
     Fetches your full library with metadata — useful for exporting to
@@ -1051,6 +1088,8 @@ def library(ctx, sort, limit, output, json_flag, quiet):
         deals library --json > my-books.json
         deals library -o library.csv
         deals library --sort rating -n 20
+        deals library --author "Andy Weir"
+        deals library --genre sci-fi --min-rating 4.0
     """
     if output and ctx.get_parameter_source("quiet") != _CL:
         quiet = True
@@ -1058,33 +1097,51 @@ def library(ctx, sort, limit, output, json_flag, quiet):
         console.file = sys.stderr
 
     dc = _get_client(ctx.obj["locale"])
+    all_products: list[Product] = []
     with dc:
         with create_scan_progress() as progress:
             task = progress.add_task("Fetching library", total=None, items=0)
-            products = dc.get_library()
-            progress.update(task, completed=1, total=1, items=len(products))
+            page_count = 0
+            for page_products, page_num in dc.get_library_pages():
+                all_products.extend(page_products)
+                page_count = page_num
+                progress.update(task, completed=page_num, items=len(all_products))
+            progress.update(task, total=page_count, completed=page_count)
 
-    products = _sort_local(products, sort)
-    total_before_limit = len(products)
+    filtered, filter_breakdown = _filter_products(
+        all_products,
+        author=author,
+        narrator=narrator,
+        min_rating=min_rating,
+        min_ratings=min_ratings,
+        min_hours=min_hours,
+        genre=genre,
+    )
+
+    filtered = _sort_local(filtered, sort)
+    total_before_limit = len(filtered)
     if limit is not None and limit > 0:
-        products = products[:limit]
+        filtered = filtered[:limit]
 
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
 
     if output:
-        _export_products(products, output)
-        console.print(f"[green]Exported {len(products)} items to {output}[/green]")
+        _export_products(filtered, output)
+        console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
     if json_flag:
-        serialized = [_serialize_product(p) for p in products]
+        serialized = [_serialize_product(p) for p in filtered]
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
         console.print()
         title = "Your Library"
-        display_products(products, title=title, currency=cur)
-        if total_before_limit > len(products):
-            console.print(f"  [bold]{len(products)}[/bold] of {total_before_limit} books shown")
+        display_products(filtered, title=title, currency=cur)
+        if filter_breakdown:
+            display_summary(len(filtered), filter_breakdown, currency=cur,
+                            total_before_limit=total_before_limit, noun="books")
+        elif total_before_limit > len(filtered):
+            console.print(f"  [bold]{len(filtered)}[/bold] of {total_before_limit} books shown")
         else:
-            console.print(f"  [bold]{len(products)}[/bold] books in library")
+            console.print(f"  [bold]{len(filtered)}[/bold] books in library")
 
 
 @cli.command("last")
@@ -1093,7 +1150,7 @@ def library(ctx, sort, limit, output, json_flag, quiet):
 @click.option("--min-rating", type=float, default=0.0, help="Minimum rating")
 @click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
-@click.option("--narrator", default="", help="Filter by narrator name (substring match)")
+@click.option("--narrator", default="", help="Filter by narrator name (substring match, client-side)")
 @click.option("--author", default="", help="Filter by author name (substring match)")
 @click.option("--exclude-author", "exclude_authors", multiple=True, help="Exclude author (substring match, repeatable)")
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True, help="Exclude narrator (substring match, repeatable)")
@@ -1159,7 +1216,8 @@ def detail(ctx, asin, last_ref):
     """Show detailed info for a product by ASIN."""
     if last_ref is not None:
         resolved = _resolve_last_references((last_ref,))
-        asin = resolved[0]
+        asin, desc = resolved[0]
+        console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
     _validate_asin(asin)
@@ -1181,7 +1239,8 @@ def open_cmd(ctx, asin, last_ref):
     """Open an audiobook's Audible page in your browser."""
     if last_ref is not None:
         resolved = _resolve_last_references((last_ref,))
-        asin = resolved[0]
+        asin, desc = resolved[0]
+        console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
     _validate_asin(asin)
@@ -1206,7 +1265,10 @@ def compare(ctx, asins, last_refs):
     """
     all_asins = list(asins)
     if last_refs:
-        all_asins.extend(_resolve_last_references(last_refs))
+        resolved = _resolve_last_references(last_refs)
+        for ref_asin, desc in resolved:
+            console.print(f"[dim]{desc}[/dim]")
+            all_asins.append(ref_asin)
 
     if len(all_asins) < 2:
         raise click.UsageError("Provide at least 2 ASINs to compare.")
@@ -1282,7 +1344,10 @@ def wishlist_add(ctx, asins, max_price, last_refs):
     """
     all_asins = list(asins)
     if last_refs:
-        all_asins.extend(_resolve_last_references(last_refs))
+        resolved = _resolve_last_references(last_refs)
+        for ref_asin, desc in resolved:
+            console.print(f"[dim]{desc}[/dim]")
+            all_asins.append(ref_asin)
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or use --last N.")
 
@@ -1710,6 +1775,12 @@ def profile_delete(name):
     console.print(f"[green]Profile '{name}' deleted[/green]")
 
 
+_KEY_TO_FLAG: dict[str, str] = {
+    "exclude_authors": "exclude-author",
+    "exclude_narrators": "exclude-narrator",
+}
+
+
 @profile.command("show")
 @click.argument("name")
 def profile_show(name):
@@ -1720,7 +1791,7 @@ def profile_show(name):
     opts = profiles[name]
     console.print(f"\n[bold]Profile: {name}[/bold]\n")
     for key, value in sorted(opts.items()):
-        display_key = key.replace("_", "-")
+        display_key = _KEY_TO_FLAG.get(key, key.replace("_", "-"))
         if isinstance(value, bool) and value:
             console.print(f"  --{display_key}")
         elif isinstance(value, (list, tuple)):
@@ -1976,6 +2047,7 @@ def notify(ctx, webhook):
 
     items = _load_wishlist()
     if not items:
+        console.print("[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]")
         return
 
     dc = _get_client(ctx.obj["locale"])

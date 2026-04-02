@@ -146,7 +146,7 @@ deals search --genre romance --max-price 3
 | `--category ID` | Filter by category ID (alternative to `--genre` — use `deals categories` to find IDs) |
 | `--exclude-genre erotica` | Remove genres from results (repeatable) |
 | `--keywords "space opera"` | Keyword filter within a category browse (`find` only) |
-| `--narrator "Reynolds"` | Filter by narrator name (case-insensitive substring match) |
+| `--narrator "Reynolds"` | Filter by narrator name (case-insensitive substring match, client-side) |
 | `--author "Andy Weir"` | Filter by author name (case-insensitive substring match) |
 | `--exclude-author "Maas"` | Exclude books by a matching author (repeatable) |
 | `--exclude-narrator "Bray"` | Exclude books by a matching narrator (repeatable) |
@@ -158,7 +158,7 @@ deals search --genre romance --max-price 3
 | `--all-languages` | Include all languages |
 | `--first-in-series` | Only show book 1 of each series |
 | `--skip-owned` | Exclude books already in your library |
-| `-n, --limit 20` | Cap the number of results (default: 25 for `find`; use `-n 0` for unlimited) |
+| `-n, --limit 20` | Cap the number of results (default: 25; use `-n 0` for unlimited) |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
 | `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` and `search`) |
 | `-i, --interactive` | Browse results interactively after the table is shown |

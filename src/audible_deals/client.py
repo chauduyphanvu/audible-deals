@@ -531,13 +531,12 @@ class DealsClient:
         self._library_cache = asins
         return asins
 
-    def get_library(self) -> list[Product]:
-        """Fetch all products in the user's Audible library with full metadata.
+    def get_library_pages(self) -> Iterator[tuple[list[Product], int]]:
+        """Yield (products, page_num) for each page of the user's library.
 
         Paginates through the library endpoint using MAX_PAGE_SIZE per page
         and the same response groups as catalog queries.
         """
-        all_products: list[Product] = []
         page = 1  # library API uses 1-indexed pages
         while True:
             resp = self.client.get(
@@ -549,13 +548,24 @@ class DealsClient:
             if isinstance(resp, tuple):
                 resp = resp[0]
             items = resp.get("items", [])
-            for raw in items:
-                product = parse_product(raw, locale=self.locale)
-                if product.asin and product.title:
-                    all_products.append(product)
+            products = [
+                parse_product(raw, locale=self.locale)
+                for raw in items
+                if raw.get("asin") and raw.get("title")
+            ]
+            yield products, page
             if len(items) < MAX_PAGE_SIZE:
                 break
             page += 1
+
+    def get_library(self) -> list[Product]:
+        """Fetch all products in the user's Audible library with full metadata.
+
+        Delegates to get_library_pages for pagination.
+        """
+        all_products: list[Product] = []
+        for page_products, _ in self.get_library_pages():
+            all_products.extend(page_products)
         return all_products
 
     def get_wishlist(self) -> list[Product]:

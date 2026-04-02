@@ -262,12 +262,13 @@ def display_summary(
     series_collapsed: int = 0,
     currency: str = "$",
     total_before_limit: int | None = None,
+    noun: str = "deals",
 ) -> None:
     """Print a summary line after filtering."""
     if total_before_limit is not None and total_before_limit > shown:
-        parts = [f"[bold]{shown}[/bold] of {total_before_limit} deals shown"]
+        parts = [f"[bold]{shown}[/bold] of {total_before_limit} {noun} shown"]
     else:
-        parts = [f"[bold]{shown}[/bold] deals found"]
+        parts = [f"[bold]{shown}[/bold] {noun} found"]
     if max_price is not None:
         parts[0] += f" under [green]{currency}{max_price:.2f}[/green]"
     detail_parts: list[str] = []

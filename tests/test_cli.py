@@ -17,6 +17,7 @@ from audible_deals.cli import (
     _fetch_with_progress,
     _filter_products,
     _first_in_series,
+    _looks_like_person_name,
     _parse_interval,
     _price_per_hour,
     _resolve_last_references,
@@ -26,6 +27,11 @@ from audible_deals.cli import (
 )
 from audible_deals.client import Product
 from tests.conftest import make_product
+
+
+def _mock_library_pages(mock_client, products):
+    """Set up get_library_pages mock yielding a single page."""
+    mock_client.get_library_pages.return_value = iter([(products, 1)])
 
 
 # ===================================================================
@@ -232,9 +238,21 @@ class TestFirstInSeries:
         assert len(result) == 2
 
     def test_different_series(self):
+        # Both series have their lowest position > 1.0, so both are excluded
+        # (Book 1 wasn't in the result set for either series).
         products = [
             make_product(asin="A", series_name="S1", series_position="2"),
             make_product(asin="B", series_name="S2", series_position="3"),
+        ]
+        result, collapsed = _first_in_series(products)
+        assert collapsed == 2
+        assert len(result) == 0
+
+    def test_different_series_with_book1(self):
+        # Each series has a Book 1, so both are kept.
+        products = [
+            make_product(asin="A", series_name="S1", series_position="1"),
+            make_product(asin="B", series_name="S2", series_position="1"),
         ]
         result, collapsed = _first_in_series(products)
         assert collapsed == 0
@@ -630,12 +648,13 @@ class TestWishlistSyncCommand:
 
 
 class TestLibraryCommand:
+
     def test_library_basic(self, mock_client, tmp_config):
         products = [
             make_product(asin="LIB1", title="My Book One", price=10.0),
             make_product(asin="LIB2", title="My Book Two", price=15.0),
         ]
-        mock_client.get_library.return_value = products
+        _mock_library_pages(mock_client, products)
         out_file = tmp_config / "library.json"
         runner = CliRunner()
         result = runner.invoke(cli, ["library", "-q", "-o", str(out_file)])
@@ -648,7 +667,7 @@ class TestLibraryCommand:
     def test_library_json_export(self, mock_client, tmp_config):
         """--json with -o exports valid JSON to the file."""
         products = [make_product(asin="LIB3", title="JSON Book")]
-        mock_client.get_library.return_value = products
+        _mock_library_pages(mock_client, products)
         out_file = tmp_config / "library_json.json"
         runner = CliRunner()
         result = runner.invoke(cli, ["library", "-q", "-o", str(out_file)])
@@ -660,7 +679,7 @@ class TestLibraryCommand:
 
     def test_library_limit(self, mock_client, tmp_config):
         products = [make_product(asin=f"LL{i}", title=f"Book {i}") for i in range(10)]
-        mock_client.get_library.return_value = products
+        _mock_library_pages(mock_client, products)
         out_file = tmp_config / "library_limit.json"
         runner = CliRunner()
         result = runner.invoke(cli, ["library", "-n", "3", "-q", "-o", str(out_file)])
@@ -670,7 +689,7 @@ class TestLibraryCommand:
 
     def test_library_csv_export(self, mock_client, tmp_config):
         products = [make_product(asin="LCSV1", title="CSV Book")]
-        mock_client.get_library.return_value = products
+        _mock_library_pages(mock_client, products)
         out_file = tmp_config / "library.csv"
         runner = CliRunner()
         result = runner.invoke(cli, ["library", "-o", str(out_file)])
@@ -680,7 +699,7 @@ class TestLibraryCommand:
         assert "CSV Book" in content
 
     def test_library_empty(self, mock_client, tmp_config):
-        mock_client.get_library.return_value = []
+        _mock_library_pages(mock_client, [])
         runner = CliRunner()
         result = runner.invoke(cli, ["library"])
         assert result.exit_code == 0, result.output
@@ -909,15 +928,20 @@ class TestResolveLastReferences:
         p = make_product(asin="REF1")
         data = [_serialize_product(p)]
         cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
-        asins = _resolve_last_references((1,))
-        assert asins == ["REF1"]
+        results = _resolve_last_references((1,))
+        assert len(results) == 1
+        asin, desc = results[0]
+        assert asin == "REF1"
+        assert "REF1" in desc
+        assert "Result #1" in desc
 
     def test_multiple_references(self, tmp_config):
         import audible_deals.cli as cli_mod
         products = [make_product(asin=f"R{i}") for i in range(1, 4)]
         data = [_serialize_product(p) for p in products]
         cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
-        asins = _resolve_last_references((1, 3))
+        results = _resolve_last_references((1, 3))
+        asins = [r[0] for r in results]
         assert asins == ["R1", "R3"]
 
     def test_out_of_range(self, tmp_config):
@@ -1690,8 +1714,11 @@ class TestLastQueryContext:
         p = make_product(asin="NF1")
         cache_obj = {"title": "Test", "results": [_serialize_product(p)]}
         cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
-        asins = _resolve_last_references((1,))
-        assert asins == ["NF1"]
+        results = _resolve_last_references((1,))
+        asin, desc = results[0]
+        assert asin == "NF1"
+        assert "NF1" in desc
+        assert "Test" in desc
 
 
 # ===================================================================
@@ -2039,17 +2066,34 @@ class TestFindDefaultLimit:
         data = json.loads(out_file.read_text())
         assert len(data) == 35
 
-    def test_search_limit_still_none_by_default(self, mock_client, tmp_config):
-        """search --limit is still None by default (no truncation)."""
+    def test_search_default_limit_25(self, mock_client, tmp_config):
+        """search defaults to limit=25 (same as find)."""
         products = [
             make_product(asin=f"SL{i:02d}", price=float(i), series_name="", series_position="")
             for i in range(1, 36)
         ]
         mock_client.search_pages.return_value = iter([(products, 1, 35)])
-        out_file = tmp_config / "search_no_limit.json"
+        out_file = tmp_config / "search_default_limit.json"
         runner = CliRunner()
         result = runner.invoke(cli, [
             "search", "test", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 25
+
+    def test_search_limit_zero_means_unlimited(self, mock_client, tmp_config):
+        """search -n 0 shows all results (unlimited)."""
+        products = [
+            make_product(asin=f"SL{i:02d}", price=float(i), series_name="", series_position="")
+            for i in range(1, 36)
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 35)])
+        out_file = tmp_config / "search_unlimited.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--pages", "1", "-n", "0",
             "--all-languages", "-q", "--output", str(out_file),
         ])
         assert result.exit_code == 0, result.output
@@ -2375,3 +2419,448 @@ class TestDynamicTitleColumnWidth:
         out = buf.getvalue()
         # The output should contain at least part of the long title
         assert "TW2" in out
+
+
+# ===================================================================
+# Fix #1: notify silent on empty wishlist
+# ===================================================================
+
+class TestNotifyEmptyWishlist:
+    def test_notify_empty_wishlist(self, mock_client, tmp_config):
+        """notify with an empty wishlist prints a helpful message."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        assert "empty" in result.output.lower()
+        assert "wishlist add" in result.output
+
+    def test_notify_nonempty_wishlist_does_not_print_empty_msg(self, mock_client, tmp_config):
+        """notify with items on wishlist does NOT print empty message."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "NT1", "title": "Some Book", "max_price": 5.0, "added": ""},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="NT1", price=10.0),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        assert "wishlist add" not in result.output
+
+
+# ===================================================================
+# Fix #2: search default limit 25
+# ===================================================================
+
+class TestSearchDefaultLimit:
+    def test_search_default_limit_is_25(self):
+        """search --help shows default 25 in help text."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "--help"])
+        assert result.exit_code == 0
+        assert "25" in result.output
+
+    def test_search_returns_25_by_default(self, mock_client, tmp_config):
+        """search without -n returns at most 25 results."""
+        products = [
+            make_product(asin=f"SQ{i:02d}", price=float(i), series_name="", series_position="")
+            for i in range(1, 41)
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 40)])
+        out_file = tmp_config / "search_def.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 25
+
+
+# ===================================================================
+# Fix #3: profile show singular flag names
+# ===================================================================
+
+class TestProfileShowSingularFlags:
+    def test_exclude_authors_shows_as_exclude_author(self, tmp_config):
+        """profile show renders exclude_authors as --exclude-author (singular)."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"myp": {"exclude_authors": ["Andy Weir", "Terry Brooks"]}})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "myp"])
+        assert result.exit_code == 0, result.output
+        assert "--exclude-author" in result.output
+        assert "--exclude-authors" not in result.output
+
+    def test_exclude_narrators_shows_as_exclude_narrator(self, tmp_config):
+        """profile show renders exclude_narrators as --exclude-narrator (singular)."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"myp2": {"exclude_narrators": ["R.C. Bray"]}})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "myp2"])
+        assert result.exit_code == 0, result.output
+        assert "--exclude-narrator" in result.output
+        assert "--exclude-narrators" not in result.output
+
+    def test_other_keys_still_hyphenated(self, tmp_config):
+        """profile show still hyphenates other underscore keys correctly."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"myp3": {"min_rating": 4.0, "first_in_series": True}})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "show", "myp3"])
+        assert result.exit_code == 0, result.output
+        assert "--min-rating" in result.output
+        assert "--first-in-series" in result.output
+
+
+# ===================================================================
+# Fix #4: --last N shows context description
+# ===================================================================
+
+class TestLastRefDescription:
+    def test_detail_last_shows_description(self, mock_client, tmp_config):
+        """detail --last N prints a dim description of the resolved result."""
+        import audible_deals.cli as cli_mod
+        p = make_product(asin="DESC1", title="The Martian")
+        cache_obj = {"title": "Search: Andy Weir", "results": [_serialize_product(p)]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        mock_client.get_product.return_value = make_product(asin="DESC1", title="The Martian")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["detail", "--last", "1"])
+        assert result.exit_code == 0, result.output
+        assert "Result #1" in result.output
+        assert "The Martian" in result.output
+        assert "DESC1" in result.output
+
+    def test_open_last_shows_description(self, mock_client, tmp_config):
+        """open --last N prints a dim description of the resolved result."""
+        import audible_deals.cli as cli_mod
+        p = make_product(asin="OPEN1", title="Some Book")
+        cache_obj = {"title": "Search: test", "results": [_serialize_product(p)]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["open", "--last", "1"])
+        assert result.exit_code == 0, result.output
+        assert "Result #1" in result.output
+        assert "OPEN1" in result.output
+
+    def test_compare_last_shows_description(self, mock_client, tmp_config):
+        """compare --last N prints a dim description for each resolved result."""
+        import audible_deals.cli as cli_mod
+        products = [
+            make_product(asin="CMP1", title="Book Alpha"),
+            make_product(asin="CMP2", title="Book Beta"),
+        ]
+        cache_obj = {"title": "Search: test", "results": [_serialize_product(p) for p in products]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="CMP1", title="Book Alpha", price=5.0, length_minutes=600),
+            make_product(asin="CMP2", title="Book Beta", price=8.0, length_minutes=600),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["compare", "--last", "1", "--last", "2"])
+        assert result.exit_code == 0, result.output
+        assert "Result #1" in result.output
+        assert "Result #2" in result.output
+
+    def test_wishlist_add_last_shows_description(self, mock_client, tmp_config):
+        """wishlist add --last N prints a dim description of the resolved result."""
+        import audible_deals.cli as cli_mod
+        p = make_product(asin="WADD1", title="Wishlist Book")
+        cache_obj = {"title": "Search: test", "results": [_serialize_product(p)]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        mock_client.get_product.return_value = make_product(asin="WADD1", title="Wishlist Book")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "add", "--last", "1"])
+        assert result.exit_code == 0, result.output
+        assert "Result #1" in result.output
+        assert "WADD1" in result.output
+
+
+# ===================================================================
+# Fix #5: --first-in-series strict (only Book 1 passes)
+# ===================================================================
+
+class TestFirstInSeriesStrict:
+    def test_book3_only_gets_filtered_out(self):
+        """A series with only Book 3 should be excluded (no Book 1)."""
+        products = [
+            make_product(asin="FIS1", series_name="Epic Series", series_position="3"),
+        ]
+        result, collapsed = _first_in_series(products)
+        assert collapsed == 1
+        assert len(result) == 0
+
+    def test_prequel_at_half_passes(self):
+        """Position 0.5 (prequel) is <= 1.0 so it passes through."""
+        products = [
+            make_product(asin="FIS2", series_name="Epic Series", series_position="0.5"),
+        ]
+        result, collapsed = _first_in_series(products)
+        assert collapsed == 0
+        assert len(result) == 1
+        assert result[0].asin == "FIS2"
+
+    def test_position_one_point_zero_passes(self):
+        """Position '1.0' is exactly <= 1.0 so it passes."""
+        products = [
+            make_product(asin="FIS3", series_name="Epic Series", series_position="1.0"),
+        ]
+        result, collapsed = _first_in_series(products)
+        assert collapsed == 0
+        assert len(result) == 1
+        assert result[0].asin == "FIS3"
+
+    def test_book1_in_series_passes(self):
+        """Position '1' passes through."""
+        products = [
+            make_product(asin="FIS4", series_name="A Series", series_position="1"),
+            make_product(asin="FIS5", series_name="A Series", series_position="2"),
+        ]
+        result, collapsed = _first_in_series(products)
+        assert collapsed == 1
+        assert result[0].asin == "FIS4"
+
+    def test_non_series_pass_through_unchanged(self):
+        """Non-series items are never affected by the strict check."""
+        products = [
+            make_product(asin="FIS6", series_name=""),
+            make_product(asin="FIS7", series_name=""),
+        ]
+        result, collapsed = _first_in_series(products)
+        assert collapsed == 0
+        assert len(result) == 2
+
+    def test_mixed_book1_and_no_book1(self):
+        """Series with Book 1 keeps it; series without Book 1 is excluded."""
+        products = [
+            make_product(asin="FIS8", series_name="HasBook1", series_position="1"),
+            make_product(asin="FIS9", series_name="NoBook1", series_position="3"),
+        ]
+        result, collapsed = _first_in_series(products)
+        asins = [p.asin for p in result]
+        assert "FIS8" in asins
+        assert "FIS9" not in asins
+        assert collapsed == 1
+
+
+# ===================================================================
+# Fix #6: search suggests --author for person name queries
+# ===================================================================
+
+class TestLooksLikePersonName:
+    def test_two_words_title_case(self):
+        assert _looks_like_person_name("Andy Weir") is True
+
+    def test_three_words_title_case(self):
+        assert _looks_like_person_name("Brandon Scott Sanderson") is True
+
+    def test_one_word_not_a_name(self):
+        assert _looks_like_person_name("Dune") is False
+
+    def test_four_words_not_a_name(self):
+        assert _looks_like_person_name("One Two Three Four") is False
+
+    def test_lowercase_not_a_name(self):
+        assert _looks_like_person_name("andy weir") is False
+
+    def test_mixed_case_not_all_upper(self):
+        assert _looks_like_person_name("Andy weir") is False
+
+    def test_empty_string(self):
+        assert _looks_like_person_name("") is False
+
+
+class TestSearchAuthorHint:
+    def test_hint_shown_for_person_name_query(self, mock_client, tmp_config):
+        """search shows --author tip when query looks like a person name."""
+        products = [make_product(asin="AH1", price=5.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "Andy Weir", "--pages", "1", "--all-languages", "-n", "0",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "--author" in result.output
+        assert "Andy Weir" in result.output
+
+    def test_hint_not_shown_when_author_already_set(self, mock_client, tmp_config):
+        """search does NOT show tip when --author is already used."""
+        products = [make_product(asin="AH2", price=5.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "Andy Weir", "--author", "Andy Weir", "--pages", "1",
+            "--all-languages", "-n", "0",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Tip:" not in result.output
+
+    def test_hint_not_shown_for_non_name_query(self, mock_client, tmp_config):
+        """search does NOT show tip for a single-word query."""
+        products = [make_product(asin="AH3", price=5.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "Dune", "--pages", "1", "--all-languages", "-n", "0",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Tip:" not in result.output
+
+    def test_hint_not_shown_with_quiet(self, mock_client, tmp_config):
+        """search does NOT show tip in quiet mode."""
+        products = [make_product(asin="AH4", price=5.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "Andy Weir", "--pages", "1", "--all-languages", "-q",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Tip:" not in result.output
+
+
+# ===================================================================
+# Fix #7: library filters
+# ===================================================================
+
+class TestLibraryFilters:
+
+    def test_library_author_filter(self, mock_client, tmp_config):
+        """library --author filters by author substring."""
+        products = [
+            make_product(asin="LA1", authors=["Andy Weir"]),
+            make_product(asin="LA2", authors=["Brandon Sanderson"]),
+        ]
+        _mock_library_pages(mock_client, products)
+        out_file = tmp_config / "lib_auth.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "--author", "weir", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LA1" in asins
+        assert "LA2" not in asins
+
+    def test_library_narrator_filter(self, mock_client, tmp_config):
+        """library --narrator filters by narrator substring."""
+        products = [
+            make_product(asin="LN1", narrators=["R.C. Bray"]),
+            make_product(asin="LN2", narrators=["Scott Brick"]),
+        ]
+        _mock_library_pages(mock_client, products)
+        out_file = tmp_config / "lib_narr.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "--narrator", "bray", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LN1" in asins
+        assert "LN2" not in asins
+
+    def test_library_genre_filter(self, mock_client, tmp_config):
+        """library --genre filters by category substring."""
+        products = [
+            make_product(asin="LG1", categories=["Science Fiction & Fantasy", "Fantasy"]),
+            make_product(asin="LG2", categories=["Mystery, Thriller & Suspense"]),
+        ]
+        _mock_library_pages(mock_client, products)
+        out_file = tmp_config / "lib_genre.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "--genre", "science fiction", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LG1" in asins
+        assert "LG2" not in asins
+
+    def test_library_min_rating_filter(self, mock_client, tmp_config):
+        """library --min-rating filters by rating."""
+        products = [
+            make_product(asin="LR1", rating=4.5),
+            make_product(asin="LR2", rating=3.0),
+        ]
+        _mock_library_pages(mock_client, products)
+        out_file = tmp_config / "lib_rating.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "--min-rating", "4.0", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LR1" in asins
+        assert "LR2" not in asins
+
+    def test_library_min_ratings_filter(self, mock_client, tmp_config):
+        """library --min-ratings filters by number of ratings."""
+        products = [
+            make_product(asin="LC1", num_ratings=500),
+            make_product(asin="LC2", num_ratings=20),
+        ]
+        _mock_library_pages(mock_client, products)
+        out_file = tmp_config / "lib_count.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "--min-ratings", "100", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LC1" in asins
+        assert "LC2" not in asins
+
+    def test_library_min_hours_filter(self, mock_client, tmp_config):
+        """library --min-hours filters by length."""
+        products = [
+            make_product(asin="LH1", length_minutes=600),  # 10hrs
+            make_product(asin="LH2", length_minutes=60),   # 1hr
+        ]
+        _mock_library_pages(mock_client, products)
+        out_file = tmp_config / "lib_hours.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "--min-hours", "5", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LH1" in asins
+        assert "LH2" not in asins
+
+
+# ===================================================================
+# Fix #8: library page-level progress (get_library_pages)
+# ===================================================================
+
+class TestLibraryPages:
+    def test_get_library_pages_multi_page(self, mock_client, tmp_config):
+        """library accumulates products across multiple pages."""
+        page1 = [make_product(asin=f"MP{i}") for i in range(1, 4)]
+        page2 = [make_product(asin=f"MP{i}") for i in range(4, 7)]
+        mock_client.get_library_pages.return_value = iter([(page1, 1), (page2, 2)])
+        out_file = tmp_config / "lib_pages.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "-q", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert len(data) == 6
+
+
+# ===================================================================
+# Fix #9: narrator help text note in find, search, last
+# ===================================================================
+
+class TestNarratorHelpText:
+    def test_find_narrator_help_says_client_side(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--help"])
+        assert result.exit_code == 0
+        assert "client-side" in result.output
+
+    def test_search_narrator_help_says_client_side(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "--help"])
+        assert result.exit_code == 0
+        assert "client-side" in result.output
+
+    def test_last_narrator_help_says_client_side(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--help"])
+        assert result.exit_code == 0
+        assert "client-side" in result.output
