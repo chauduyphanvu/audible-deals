@@ -17,6 +17,7 @@ from audible_deals.cli import (
     _fetch_with_progress,
     _filter_products,
     _first_in_series,
+    _parse_interval,
     _price_per_hour,
     _resolve_last_references,
     _serialize_product,
@@ -555,6 +556,77 @@ class TestWishlistCommands:
         runner = CliRunner()
         result = runner.invoke(cli, ["wishlist", "add", "BAD"])
         assert "Not found" in result.output
+
+
+class TestWishlistSyncCommand:
+    def test_sync_adds_new_items(self, mock_client, tmp_config):
+        """Items from Audible wishlist not in local are added."""
+        mock_client.get_wishlist.return_value = [
+            make_product(asin="WS1", title="Sync Book One"),
+            make_product(asin="WS2", title="Sync Book Two"),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "sync"])
+        assert result.exit_code == 0, result.output
+        assert "Sync Book One" in result.output
+        assert "Sync Book Two" in result.output
+        assert "2 synced" in result.output
+        assert "0 already tracked" in result.output
+
+    def test_sync_skips_existing(self, mock_client, tmp_config):
+        """Items already in local wishlist are counted as skipped, not re-added."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "WS1", "title": "Already Here", "max_price": None, "added": ""},
+        ])
+        mock_client.get_wishlist.return_value = [
+            make_product(asin="WS1", title="Already Here"),
+            make_product(asin="WS2", title="New Book"),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "sync"])
+        assert result.exit_code == 0, result.output
+        assert "Already Here" not in result.output
+        assert "New Book" in result.output
+        assert "1 synced" in result.output
+        assert "1 already tracked" in result.output
+
+    def test_sync_empty_wishlist(self, mock_client, tmp_config):
+        """Empty Audible wishlist syncs zero items."""
+        mock_client.get_wishlist.return_value = []
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "sync"])
+        assert result.exit_code == 0, result.output
+        assert "0 synced" in result.output
+
+    def test_sync_max_price_applied(self, mock_client, tmp_config):
+        """--max-price sets the target price on all synced items."""
+        mock_client.get_wishlist.return_value = [
+            make_product(asin="WS3", title="Price Book"),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "sync", "--max-price", "7.99"])
+        assert result.exit_code == 0, result.output
+
+        # Verify the saved item has max_price set
+        import audible_deals.cli as cli_mod
+        items = cli_mod._load_wishlist()
+        assert len(items) == 1
+        assert items[0]["asin"] == "WS3"
+        assert items[0]["max_price"] == 7.99
+
+    def test_sync_persists_to_wishlist_file(self, mock_client, tmp_config):
+        """Synced items are persisted so wishlist list can show them."""
+        mock_client.get_wishlist.return_value = [
+            make_product(asin="WS4", title="Persistent Book"),
+        ]
+        runner = CliRunner()
+        sync_result = runner.invoke(cli, ["wishlist", "sync"])
+        assert sync_result.exit_code == 0, sync_result.output
+
+        result = runner.invoke(cli, ["wishlist", "list"])
+        assert result.exit_code == 0, result.output
+        assert "WS4" in result.output
 
 
 class TestWatchCommand:
@@ -1703,3 +1775,66 @@ class TestRecapWithTitles:
         assert result.exit_code == 0, result.output
         assert "Brand New Book" in result.output
         assert "NEWBOOK1" in result.output
+
+
+# ===================================================================
+# _parse_interval + watch --every
+# ===================================================================
+
+class TestParseInterval:
+    def test_minutes(self):
+        assert _parse_interval("30m") == 1800
+
+    def test_hours(self):
+        assert _parse_interval("2h") == 7200
+
+    def test_combined(self):
+        assert _parse_interval("1h30m") == 5400
+
+    def test_seconds(self):
+        assert _parse_interval("90s") == 90
+
+    def test_plain_number_treated_as_minutes(self):
+        assert _parse_interval("5") == 300
+
+    def test_invalid_raises(self):
+        with pytest.raises(click.BadParameter, match="Cannot parse"):
+            _parse_interval("abc")
+
+    def test_whitespace_stripped(self):
+        assert _parse_interval("  30m  ") == 1800
+
+    def test_zero_raises(self):
+        with pytest.raises(click.BadParameter, match="positive"):
+            _parse_interval("0")
+
+    def test_zero_minutes_raises(self):
+        with pytest.raises(click.BadParameter, match="positive"):
+            _parse_interval("0m")
+
+    def test_negative_raises(self):
+        with pytest.raises(click.BadParameter, match="Cannot parse"):
+            _parse_interval("-5m")
+
+    def test_trailing_garbage_raises(self):
+        with pytest.raises(click.BadParameter, match="Cannot parse"):
+            _parse_interval("10h15x")
+
+
+class TestWatchEveryFlag:
+    def test_watch_help_shows_every(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch", "--help"])
+        assert "--every" in result.output
+
+    def test_watch_without_every_runs_once(self, mock_client, tmp_config):
+        """watch without --every does a single check and exits."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([{"asin": "W1", "title": "Test", "max_price": 10.0, "added": ""}])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="W1", price=5.0, title="Test"),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch"])
+        assert result.exit_code == 0, result.output
+        assert "BUY" in result.output

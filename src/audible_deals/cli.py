@@ -9,7 +9,7 @@ Usage:
     deals detail ASIN              Show detailed product info
     deals open ASIN                Open Audible page in browser
     deals compare ASIN ASIN ...    Side-by-side comparison
-    deals wishlist add/remove/list Manage your watchlist
+    deals wishlist add/remove/list/sync Manage your watchlist
     deals watch                    Check wishlist for price drops
     deals notify [--webhook URL]   Send notifications for deals at target
     deals profile save/list/delete Manage saved search profiles
@@ -34,6 +34,7 @@ except ImportError:
 import socket
 import sys
 import tempfile
+import time
 import urllib.parse
 import urllib.request
 import dataclasses
@@ -1099,6 +1100,16 @@ def _save_wishlist(items: list[dict]) -> None:
     _atomic_write(WISHLIST_FILE, json_mod.dumps(items, indent=2, ensure_ascii=False))
 
 
+def _wishlist_entry(product: Product, max_price: float | None) -> dict:
+    """Build a wishlist dict from a Product."""
+    return {
+        "asin": product.asin,
+        "title": product.title,
+        "max_price": max_price,
+        "added": product.release_date or "",
+    }
+
+
 @cli.group()
 def wishlist():
     """Manage your audiobook wishlist."""
@@ -1141,12 +1152,7 @@ def wishlist_add(ctx, asins, max_price, last_refs):
             except ValueError:
                 console.print(f"[red]Not found: {asin}[/red]")
                 continue
-            items.append({
-                "asin": p.asin,
-                "title": p.title,
-                "max_price": max_price,
-                "added": p.release_date or "",
-            })
+            items.append(_wishlist_entry(p, max_price))
             existing.add(p.asin)
             added += 1
             console.print(f"[green]+[/green] {p.title} ({p.asin})")
@@ -1188,22 +1194,79 @@ def wishlist_list():
     console.print(table)
 
 
-@cli.command()
+@wishlist.command("sync")
+@click.option("--max-price", type=float, default=None, help="Set target price for all synced items")
 @click.pass_context
-def watch(ctx):
-    """Check wishlist prices and highlight deals.
+def wishlist_sync(ctx, max_price):
+    """Sync your Audible account wishlist into the local watchlist.
 
-    Fetches current prices for all wishlist items and shows which ones
-    are at or below your target price.
+    Fetches all items from your Audible account wishlist and adds any that
+    are not already tracked locally. Existing local items are never removed.
+
+    \b
+    Examples:
+        deals wishlist sync
+        deals wishlist sync --max-price 5
     """
+    dc = _get_client(ctx.obj["locale"])
+    with dc:
+        audible_items = dc.get_wishlist()
+
+    local_items = _load_wishlist()
+    existing_asins = {item["asin"] for item in local_items}
+
+    added = 0
+    skipped = 0
+    for product in audible_items:
+        if product.asin in existing_asins:
+            skipped += 1
+            continue
+        local_items.append(_wishlist_entry(product, max_price))
+        added += 1
+        console.print(f"[green]+[/green] {product.title} ({product.asin})")
+
+    _save_wishlist(local_items)
+    console.print(
+        f"\n[bold]{added}[/bold] synced, "
+        f"{skipped} already tracked, "
+        f"{len(local_items)} total on wishlist"
+    )
+
+
+def _parse_interval(value: str) -> int:
+    """Parse an interval string into seconds. Accepts '30m', '2h', '1h30m', '90s', or a plain number (minutes)."""
+    raw = value
+    value = value.strip().lower()
+    if value.isdigit():
+        total = int(value) * 60
+    else:
+        total = 0
+        for match in re.finditer(r"(\d+)\s*(h|m|s)", value):
+            n, unit = int(match.group(1)), match.group(2)
+            if unit == "h":
+                total += n * 3600
+            elif unit == "m":
+                total += n * 60
+            else:
+                total += n
+        # Reject input with unrecognized characters
+        remainder = re.sub(r"\d+\s*(h|m|s)", "", value).strip()
+        if remainder:
+            raise click.BadParameter(f"Cannot parse interval '{raw}'. Use e.g. '30m', '2h', '1h30m'.")
+    if total <= 0:
+        raise click.BadParameter(f"Interval must be positive. Use e.g. '30m', '2h', '1h30m'.")
+    return total
+
+
+def _watch_once(ctx: click.Context) -> int:
+    """Run a single wishlist price check. Returns the number of BUY hits."""
     items = _load_wishlist()
     if not items:
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]")
-        return
+        return 0
 
     dc = _get_client(ctx.obj["locale"])
     targets: dict[str, float | None] = {item["asin"]: item.get("max_price") for item in items}
-    item_titles: dict[str, str] = {item["asin"]: item.get("title", "") for item in items}
 
     with dc:
         products = dc.get_products_batch([item["asin"] for item in items])
@@ -1214,7 +1277,7 @@ def watch(ctx):
             console.print(f"[red]Not found: {item['asin']} ({item['title']})[/red]")
 
     if not products:
-        return
+        return 0
 
     table = Table(title="Wishlist Price Check", show_lines=False, padding=(0, 1), title_style="bold")
     table.add_column("Title", max_width=35)
@@ -1248,6 +1311,40 @@ def watch(ctx):
         console.print(f"\n  [bold green]{hits} item(s) at or below target price![/bold green]")
     else:
         console.print(f"\n  [dim]No items at target price yet. {len(products)} watched.[/dim]")
+    return hits
+
+
+@cli.command()
+@click.option("--every", default=None, help="Re-check on an interval (e.g. '30m', '2h', '1h30m'). Runs until interrupted.")
+@click.pass_context
+def watch(ctx, every):
+    """Check wishlist prices and highlight deals.
+
+    Fetches current prices for all wishlist items and shows which ones
+    are at or below your target price.
+
+    Use --every to keep checking on an interval instead of exiting after
+    one check. Press Ctrl+C to stop.
+
+    \b
+    Examples:
+        deals watch
+        deals watch --every 30m
+        deals watch --every 2h
+    """
+    if not every:
+        _watch_once(ctx)
+        return
+
+    interval = _parse_interval(every)
+    console.print(f"[dim]Watching every {every} (Ctrl+C to stop)...[/dim]\n")
+    try:
+        while True:
+            _watch_once(ctx)
+            console.print(f"\n  [dim]Next check in {every}... (Ctrl+C to stop)[/dim]\n")
+            time.sleep(interval)
+    except KeyboardInterrupt:
+        console.print("\n[dim]Stopped.[/dim]")
 
 
 # ---------------------------------------------------------------------------

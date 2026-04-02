@@ -120,6 +120,7 @@ deals search "Sanderson" --deep --max-price 5
 | `deals compare ASIN ASIN ...` | Side-by-side comparison |
 | `deals categories` | List genres (use `--parent ID` to drill in) |
 | `deals wishlist add/list/remove` | Manage your watchlist |
+| `deals wishlist sync` | Pull your Audible account wishlist for local price tracking and alerts |
 | `deals watch` | Check wishlist prices — highlights items at/below target |
 | `deals notify` | Send deal notifications via webhook or JSON stdout |
 | `deals profile save/list/delete` | Manage saved search profiles |
@@ -298,18 +299,42 @@ After the table displays, you can:
 
 ## Wishlist & price tracking
 
+The CLI maintains a local watchlist with target prices. You add books, set your price, and then `watch` or `notify` tells you when they hit your target. The watchlist persists between sessions in `~/.config/audible-deals/wishlist.json`.
+
 ```bash
-# Add books to your wishlist with a target price
+# Add books manually with a target price
 deals wishlist add B00R6S1RCY B00I2VWW5U --max-price 5
 
-# Check current prices against your targets
+# Or import everything from your Audible account wishlist at once
+deals wishlist sync --max-price 5
+
+# Check current prices — shows BUY for items at/below target
 deals watch
+
+# Set up automated alerts (e.g. via cron)
+deals notify --webhook https://hooks.slack.com/services/...
 
 # View price history (recorded automatically during find/search)
 deals history B00R6S1RCY
 ```
 
-The `watch` command shows a status for each item: **BUY** (at or below your target price), the current discount percentage (if it's on sale but still above target), or "waiting" (no discount detected).
+`wishlist sync` pulls books you've already saved on Audible's website into the local watchlist. This is useful if you've been saving books on Audible and want to start tracking their prices without manually adding each ASIN. Items already tracked locally are skipped — re-running sync is safe.
+
+`watch` shows a status for each item: **BUY** (at or below target), the current discount percentage (on sale but above target), or "waiting" (no discount). By default it checks once and exits. Use `--every` to keep it running:
+
+```bash
+# Check once
+deals watch
+
+# Re-check every 30 minutes (runs until Ctrl+C)
+deals watch --every 30m
+
+# Also accepts hours, seconds, or combinations
+deals watch --every 2h
+deals watch --every 1h30m
+```
+
+For fully automated alerts without a terminal, schedule `notify` on a cron job (see [Recap & notifications](#recap--notifications)).
 
 Price history is recorded automatically every time an ASIN appears in `find` or `search` results — one entry per day, kept for up to 365 days. The `history` command shows a table with relative dates ("3d ago", "1w ago") and a sparkline chart of the price trend.
 

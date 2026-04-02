@@ -169,6 +169,13 @@ class TestParseProduct:
         assert p.rating == 0.0
         assert p.num_ratings == 0
 
+    def test_null_narrators_and_authors(self):
+        """Wishlist API can return null for narrators/authors instead of []."""
+        raw = {"asin": "X", "title": "X", "narrators": None, "authors": None}
+        p = parse_product(raw)
+        assert p.narrators == []
+        assert p.authors == []
+
 
 # ===================================================================
 # Category caching (disk)

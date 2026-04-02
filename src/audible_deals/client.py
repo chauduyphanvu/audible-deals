@@ -190,8 +190,8 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     price = _extract_price(raw)
     list_price = _extract_list_price(raw)
 
-    authors = [a.get("name", "") for a in raw.get("authors", []) if a.get("name")]
-    narrators = [n.get("name", "") for n in raw.get("narrators", []) if n.get("name")]
+    authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
+    narrators = [n.get("name", "") for n in (raw.get("narrators") or []) if n.get("name")]
 
     # Rating - nested in overall_distribution
     rating_data = raw.get("rating", {})
@@ -530,6 +530,31 @@ class DealsClient:
 
         self._library_cache = asins
         return asins
+
+    def get_wishlist(self) -> list[Product]:
+        """Fetch the user's Audible account wishlist (all pages).
+
+        The wishlist API uses 0-indexed pages and returns up to MAX_PAGE_SIZE
+        products per page in the same format as the catalog.
+        """
+        all_products: list[Product] = []
+        page = 0  # wishlist API uses 0-indexed pages
+        while True:
+            resp = self.client.get(
+                "1.0/wishlist",
+                num_results=MAX_PAGE_SIZE,
+                page=page,
+                response_groups=CATALOG_RESPONSE_GROUPS,
+                sort_by="-DateAdded",
+            )
+            if isinstance(resp, tuple):
+                resp = resp[0]
+            products = [parse_product(p, locale=self.locale) for p in resp.get("products", [])]
+            all_products.extend(products)
+            if len(products) < MAX_PAGE_SIZE:
+                break
+            page += 1
+        return all_products
 
     def resolve_genre(self, query: str) -> tuple[str, str]:
         """Fuzzy-match a genre name to a category (id, name).

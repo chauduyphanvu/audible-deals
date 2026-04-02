@@ -130,6 +130,54 @@ class TestClientIntegration:
         dc.get_library_asins()
         assert api.get_mock.call_count == 1
 
+    def test_get_wishlist_single_page(self, api):
+        """get_wishlist() parses products and stops when page is under max."""
+        api.get_mock.return_value = {
+            "products": [make_raw("WL1"), make_raw("WL2")],
+        }
+        dc = self._make_client(api)
+        products = dc.get_wishlist()
+        assert len(products) == 2
+        assert {p.asin for p in products} == {"WL1", "WL2"}
+        assert api.get_mock.call_count == 1
+        # Verify correct endpoint and params
+        call_args = api.get_mock.call_args
+        assert "wishlist" in call_args[0][0]
+        assert call_args[1]["page"] == 0
+
+    def test_get_wishlist_multi_page(self, api):
+        """get_wishlist() paginates until a page has fewer than MAX_PAGE_SIZE items."""
+        page1 = [make_raw(f"WP{i}") for i in range(50)]
+        page2 = [make_raw(f"WQ{i}") for i in range(10)]
+
+        api.get_mock.side_effect = [
+            {"products": page1},
+            {"products": page2},
+        ]
+        dc = self._make_client(api)
+        products = dc.get_wishlist()
+        assert len(products) == 60
+        assert api.get_mock.call_count == 2
+
+    def test_get_wishlist_empty(self, api):
+        """get_wishlist() returns empty list when Audible wishlist is empty."""
+        api.get_mock.return_value = {"products": []}
+        dc = self._make_client(api)
+        products = dc.get_wishlist()
+        assert products == []
+        assert api.get_mock.call_count == 1
+
+    def test_get_wishlist_tuple_response(self, api):
+        """Tuple responses are unwrapped correctly in get_wishlist()."""
+        api.get_mock.return_value = (
+            {"products": [make_raw("WT1")]},
+            {},
+        )
+        dc = self._make_client(api)
+        products = dc.get_wishlist()
+        assert len(products) == 1
+        assert products[0].asin == "WT1"
+
     def test_import_auth_libation(self, api):
         """Libation AccountsSettings.json format is extracted correctly."""
         libation_data = {
