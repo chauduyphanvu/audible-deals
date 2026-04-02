@@ -12,10 +12,13 @@ from click.testing import CliRunner
 from audible_deals.cli import (
     _validate_webhook_url,
     _dedupe_editions,
+    _deserialize_product,
     _export_products,
+    _fetch_with_progress,
     _filter_products,
     _first_in_series,
     _price_per_hour,
+    _resolve_last_references,
     _serialize_product,
     _sort_local,
     cli,
@@ -400,6 +403,32 @@ class TestFindCommand:
         assert result.exit_code != 0
         assert "not both" in result.output
 
+    def test_output_implies_quiet(self, mock_client, tmp_config):
+        """When -o is set without -q, quiet should be implied (no table in stdout)."""
+        products = [make_product(price=3.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "implied.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        # Table header should NOT appear in console output
+        assert "Deals under" not in result.output
+
+    def test_output_explicit_no_quiet_override(self, mock_client, tmp_config):
+        """Explicitly passing --no-quiet (or just not passing -q) with -o does imply quiet."""
+        products = [make_product(price=3.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "noquiet.json"
+        runner = CliRunner()
+        # Passing -q explicitly should still suppress table
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "--output", str(out_file), "-q",
+        ])
+        assert result.exit_code == 0, result.output
+        assert "Deals under" not in result.output
+
 
 class TestSearchCommand:
     def test_search_basic(self, mock_client, tmp_config):
@@ -415,6 +444,32 @@ class TestSearchCommand:
         data = json.loads(out_file.read_text())
         assert len(data) == 1
         assert data[0]["asin"] == "S1"
+
+    def test_output_implies_quiet(self, mock_client, tmp_config):
+        """When -o is set without -q, quiet should be implied (no table in stdout)."""
+        products = [make_product(asin="S2", price=5.0)]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "search_implied.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--pages", "1", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        # Table should not appear; export message should appear
+        assert 'Search: "test"' not in result.output
+        assert "Exported" in result.output
+
+    def test_output_with_explicit_quiet(self, mock_client, tmp_config):
+        """Explicit -q with -o also suppresses table."""
+        products = [make_product(asin="S3", price=5.0)]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "search_explicit.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--pages", "1", "--output", str(out_file), "-q",
+        ])
+        assert result.exit_code == 0, result.output
+        assert 'Search: "test"' not in result.output
 
 
 class TestDetailCommand:
@@ -667,3 +722,558 @@ class TestWebhookValidation:
         )
         with pytest.raises(click.BadParameter, match="Cannot resolve"):
             _validate_webhook_url("https://nonexistent.invalid/hook")
+
+
+# ===================================================================
+# Improvement #2: _deserialize_product, _resolve_last_references,
+# deals last, --last flag
+# ===================================================================
+
+class TestDeserializeProduct:
+    def test_round_trip(self):
+        p = make_product(asin="RT1", price=4.99, list_price=12.99)
+        d = _serialize_product(p)
+        p2 = _deserialize_product(d)
+        assert p2.asin == p.asin
+        assert p2.price == p.price
+        assert p2.title == p.title
+        assert p2.authors == p.authors
+
+    def test_extra_keys_ignored(self):
+        """Extra keys from serialization (computed fields) are silently ignored."""
+        p = make_product(asin="EK1")
+        d = _serialize_product(p)
+        # d has extra keys like full_title, hours, discount_pct, price_per_hour, url
+        p2 = _deserialize_product(d)
+        assert p2.asin == "EK1"
+
+    def test_missing_optional_fields(self):
+        """Minimal dict with only required fields works."""
+        d = {
+            "asin": "MIN1",
+            "title": "Minimal",
+            "subtitle": "",
+            "authors": ["A"],
+            "narrators": [],
+            "publisher": "",
+            "price": None,
+            "list_price": None,
+            "length_minutes": 0,
+            "rating": 0.0,
+            "num_ratings": 0,
+            "categories": [],
+            "category_ids": [],
+            "series_name": "",
+            "series_position": "",
+            "language": "english",
+            "release_date": "",
+            "in_plus_catalog": False,
+        }
+        p = _deserialize_product(d)
+        assert p.asin == "MIN1"
+
+
+class TestResolveLastReferences:
+    def test_valid_reference(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        p = make_product(asin="REF1")
+        data = [_serialize_product(p)]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        asins = _resolve_last_references((1,))
+        assert asins == ["REF1"]
+
+    def test_multiple_references(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        products = [make_product(asin=f"R{i}") for i in range(1, 4)]
+        data = [_serialize_product(p) for p in products]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        asins = _resolve_last_references((1, 3))
+        assert asins == ["R1", "R3"]
+
+    def test_out_of_range(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        data = [_serialize_product(make_product(asin="ONLY1"))]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        with pytest.raises(click.ClickException, match="out of range"):
+            _resolve_last_references((5,))
+
+    def test_missing_file(self, tmp_config):
+        with pytest.raises(click.ClickException, match="No cached results"):
+            _resolve_last_references((1,))
+
+    def test_corrupt_file(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text("not-json{{{{")
+        with pytest.raises(click.ClickException, match="Could not read"):
+            _resolve_last_references((1,))
+
+
+class TestLastCommand:
+    def _seed_cache(self, tmp_config, products):
+        import audible_deals.cli as cli_mod
+        data = [_serialize_product(p) for p in products]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+
+    def test_no_cache(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last"])
+        assert result.exit_code != 0
+        assert "No cached results" in result.output
+
+    def test_last_basic(self, tmp_config):
+        products = [
+            make_product(asin="L1", price=3.0, series_name="", series_position=""),
+            make_product(asin="L2", price=5.0, series_name="", series_position=""),
+        ]
+        self._seed_cache(tmp_config, products)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last"])
+        assert result.exit_code == 0, result.output
+        assert "Last results" in result.output
+
+    def test_last_resort(self, tmp_config):
+        """deals last --sort discount re-sorts without API call."""
+        products = [
+            make_product(asin="LS1", price=5.0, list_price=10.0,
+                         series_name="", series_position=""),
+            make_product(asin="LS2", price=3.0, list_price=3.0,
+                         series_name="", series_position=""),  # 0% discount
+        ]
+        self._seed_cache(tmp_config, products)
+        out_file = tmp_config / "last_sort.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--sort", "discount", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        # LS1 has 50% discount, LS2 has 0%
+        assert data[0]["asin"] == "LS1"
+
+    def test_last_max_price_filter(self, tmp_config):
+        """deals last --max-price filters the cached results."""
+        products = [
+            make_product(asin="LF1", price=2.0, series_name="", series_position=""),
+            make_product(asin="LF2", price=8.0, series_name="", series_position=""),
+        ]
+        self._seed_cache(tmp_config, products)
+        out_file = tmp_config / "last_filter.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--max-price", "5", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LF1" in asins
+        assert "LF2" not in asins
+
+    def test_last_output_implies_quiet(self, tmp_config):
+        products = [make_product(asin="LQ1", price=3.0, series_name="", series_position="")]
+        self._seed_cache(tmp_config, products)
+        out_file = tmp_config / "last_quiet.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        assert "Last results" not in result.output
+
+    def test_last_does_not_overwrite_cache(self, tmp_config):
+        """deals last should NOT shrink the cache when filtering."""
+        products = [
+            make_product(asin="NC1", price=2.0, series_name="", series_position=""),
+            make_product(asin="NC2", price=8.0, series_name="", series_position=""),
+        ]
+        self._seed_cache(tmp_config, products)
+        import audible_deals.cli as cli_mod
+        original = cli_mod.LAST_RESULTS_FILE.read_text()
+        runner = CliRunner()
+        # Filter to only NC1 — cache should still have both
+        result = runner.invoke(cli, ["last", "--max-price", "5"])
+        assert result.exit_code == 0, result.output
+        after = cli_mod.LAST_RESULTS_FILE.read_text()
+        assert original == after
+
+
+class TestDetailLastFlag:
+    def test_detail_last(self, mock_client, tmp_config):
+        products = [make_product(asin="DL1")]
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([_serialize_product(p) for p in products]))
+        mock_client.get_product.return_value = make_product(asin="DL1", title="Detail Last")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["detail", "--last", "1"])
+        assert result.exit_code == 0, result.output
+        mock_client.get_product.assert_called_once_with("DL1")
+
+    def test_detail_no_asin_no_last(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["detail"])
+        assert result.exit_code != 0
+        assert "Provide an ASIN" in result.output
+
+
+class TestCompareLastFlag:
+    def test_compare_last(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="CL1"),
+            make_product(asin="CL2"),
+        ]
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([_serialize_product(p) for p in products]))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="CL1", title="Book 1", price=5.0, length_minutes=600),
+            make_product(asin="CL2", title="Book 2", price=8.0, length_minutes=600),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["compare", "--last", "1", "--last", "2"])
+        assert result.exit_code == 0, result.output
+        mock_client.get_products_batch.assert_called_once_with(["CL1", "CL2"])
+
+    def test_compare_mixed(self, mock_client, tmp_config):
+        """Mix positional ASIN with --last ref."""
+        products = [make_product(asin="CM2")]
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([_serialize_product(p) for p in products]))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="CM1", title="Book 1", price=5.0, length_minutes=600),
+            make_product(asin="CM2", title="Book 2", price=8.0, length_minutes=600),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["compare", "CM1", "--last", "1"])
+        assert result.exit_code == 0, result.output
+
+
+# ===================================================================
+# Improvement #3: --skip-owned / --language / --interactive in profiles
+# + --profile on search
+# ===================================================================
+
+class TestProfileSaveNewFlags:
+    def test_skip_owned_in_profile(self, tmp_config):
+        """profile save accepts --skip-owned and persists it."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "myprofile", "--skip-owned"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        profiles = cli_mod._load_profiles()
+        assert profiles["myprofile"]["skip_owned"] is True
+
+    def test_language_in_profile(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "langprofile", "--language", "french"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        profiles = cli_mod._load_profiles()
+        assert profiles["langprofile"]["language"] == "french"
+
+    def test_interactive_in_profile(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "iprofile", "--interactive"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        profiles = cli_mod._load_profiles()
+        assert profiles["iprofile"]["interactive"] is True
+
+
+class TestFindProfileSkipOwned:
+    def test_find_profile_skip_owned(self, mock_client, tmp_config):
+        """find --profile loads skip_owned from profile and calls get_library_asins."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"myp": {"skip_owned": True}})
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        mock_client.get_library_asins.return_value = set()
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--profile", "myp", "--pages", "1"])
+        assert result.exit_code == 0, result.output
+        mock_client.get_library_asins.assert_called_once()
+
+    def test_find_backward_compat(self, mock_client, tmp_config):
+        """Old profiles without new keys still work fine."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"oldp": {"max_price": 5.0}})
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--profile", "oldp", "--pages", "1"])
+        assert result.exit_code == 0, result.output
+
+
+class TestSearchWithProfile:
+    def test_search_profile_applies_settings(self, mock_client, tmp_config):
+        """search --profile X applies profile settings."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"stest": {"min_rating": 4.5}})
+        products = [
+            make_product(asin="SP1", price=5.0, rating=4.8),
+            make_product(asin="SP2", price=5.0, rating=3.0),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "search_profile.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--profile", "stest", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "SP1" in asins
+        assert "SP2" not in asins
+
+    def test_search_profile_not_found(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "test", "--profile", "noexist"])
+        assert result.exit_code != 0
+        assert "not found" in result.output
+
+    def test_search_profile_skip_owned(self, mock_client, tmp_config):
+        """search --profile with skip_owned calls get_library_asins."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"owned_profile": {"skip_owned": True}})
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        mock_client.get_library_asins.return_value = set()
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--profile", "owned_profile", "--pages", "1",
+        ])
+        assert result.exit_code == 0, result.output
+        mock_client.get_library_asins.assert_called_once()
+
+
+# ===================================================================
+# Improvement #4: Global defaults config
+# ===================================================================
+
+class TestConfigCommands:
+    def test_set_and_get(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "max-price", "5.0"])
+        assert result.exit_code == 0, result.output
+        assert "max_price" in result.output
+
+        result = runner.invoke(cli, ["config", "get", "max-price"])
+        assert result.exit_code == 0, result.output
+        assert "5.0" in result.output
+
+    def test_set_bool(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "skip-owned", "true"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        cfg = cli_mod._load_config()
+        assert cfg["skip_owned"] is True
+
+    def test_set_invalid_bool(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "skip-owned", "maybe"])
+        assert result.exit_code != 0
+        assert "Invalid boolean" in result.output
+
+    def test_set_invalid_key(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "nonexistent-key", "val"])
+        assert result.exit_code != 0
+        assert "Unknown config key" in result.output
+
+    def test_list_empty(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "list"])
+        assert result.exit_code == 0, result.output
+        assert "No global defaults" in result.output
+
+    def test_list_with_values(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 5.0, "skip_owned": True})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "list"])
+        assert result.exit_code == 0, result.output
+        assert "max_price" in result.output
+        assert "skip_owned" in result.output
+
+    def test_reset_key(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "reset", "max-price"])
+        assert result.exit_code == 0, result.output
+        cfg = cli_mod._load_config()
+        assert "max_price" not in cfg
+        assert "min_rating" in cfg
+
+    def test_reset_all(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "reset"])
+        assert result.exit_code == 0, result.output
+        cfg = cli_mod._load_config()
+        assert cfg == {}
+
+    def test_reset_invalid_key(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "reset", "bad-key"])
+        assert result.exit_code != 0
+        assert "Unknown config key" in result.output
+
+    def test_type_coercion_int(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "pages", "5"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        cfg = cli_mod._load_config()
+        assert cfg["pages"] == 5
+        assert isinstance(cfg["pages"], int)
+
+    def test_type_coercion_float(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "min-rating", "4.5"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        cfg = cli_mod._load_config()
+        assert cfg["min_rating"] == 4.5
+
+
+class TestConfigAppliedToFind:
+    def test_config_max_price_applies(self, mock_client, tmp_config):
+        """Config max_price is applied when not passed on CLI."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 3.0})
+        products = [
+            make_product(asin="CF1", price=2.0, series_name="", series_position=""),
+            make_product(asin="CF2", price=6.0, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "cfg_find.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--pages", "1", "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "CF1" in asins
+        assert "CF2" not in asins
+
+    def test_cli_flag_overrides_config(self, mock_client, tmp_config):
+        """CLI --max-price overrides config max_price."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 2.0})
+        products = [
+            make_product(asin="CO1", price=4.0, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "cfg_override.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        # With config max_price=2, CO1 at 4.0 would be excluded. CLI overrides to 10, so included.
+        asins = [d["asin"] for d in data]
+        assert "CO1" in asins
+
+    def test_profile_overrides_config(self, mock_client, tmp_config):
+        """Profile min_rating overrides config min_rating."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"min_rating": 4.0})
+        cli_mod._save_profiles({"p": {"min_rating": 3.0}})
+        products = [
+            make_product(asin="PO1", price=3.0, rating=3.5, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "cfg_prof.json"
+        runner = CliRunner()
+        # With config only, PO1 (3.5) would be excluded. Profile sets 3.0, so included.
+        result = runner.invoke(cli, [
+            "find", "--profile", "p", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "PO1" in asins
+
+
+# ===================================================================
+# Improvement #5: --deep for search + _fetch_with_progress helper
+# ===================================================================
+
+class TestFetchWithProgress:
+    def test_single_sort_no_dedup(self, mock_client, tmp_config):
+        """Single sort order returns all products."""
+        products = [
+            make_product(asin="FP1"),
+            make_product(asin="FP2"),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+
+        result = _fetch_with_progress(
+            mock_client,
+            keywords="",
+            category_id="",
+            sort_orders=["BestSellers"],
+            pages=1,
+            description="Test",
+        )
+        assert {p.asin for p in result} == {"FP1", "FP2"}
+
+    def test_multi_sort_deduplicates(self, mock_client, tmp_config):
+        """Multiple sort orders deduplicate overlapping ASINs."""
+        pass1 = [make_product(asin="MD1"), make_product(asin="MD2")]
+        pass2 = [make_product(asin="MD2"), make_product(asin="MD3")]  # MD2 overlaps
+
+        call_count = 0
+        def fake_search_pages(**kwargs):
+            nonlocal call_count
+            data = [pass1, pass2][call_count]
+            call_count += 1
+            yield data, 1, len(data)
+
+        mock_client.search_pages.side_effect = fake_search_pages
+
+        result = _fetch_with_progress(
+            mock_client,
+            keywords="",
+            category_id="",
+            sort_orders=["BestSellers", "AvgRating"],
+            pages=1,
+            description="Test",
+        )
+        asins = [p.asin for p in result]
+        assert sorted(asins) == ["MD1", "MD2", "MD3"]
+
+
+class TestSearchDeepFlag:
+    def test_search_deep_flag_exists(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "--help"])
+        assert result.exit_code == 0
+        assert "--deep" in result.output
+
+    def test_search_deep_deduplicates(self, mock_client, tmp_config):
+        """search --deep fetches 3 sort orders and deduplicates."""
+        pass1 = [make_product(asin="SD1", price=3.0, series_name="", series_position=""),
+                 make_product(asin="SD2", price=4.0, series_name="", series_position="")]
+        pass2 = [make_product(asin="SD2", price=4.0, series_name="", series_position=""),
+                 make_product(asin="SD3", price=5.0, series_name="", series_position="")]
+        pass3 = [make_product(asin="SD1", price=3.0, series_name="", series_position=""),
+                 make_product(asin="SD4", price=2.0, series_name="", series_position="")]
+
+        call_count = 0
+        def fake_search_pages(**kwargs):
+            nonlocal call_count
+            data = [pass1, pass2, pass3][call_count]
+            call_count += 1
+            yield data, 1, len(data)
+
+        mock_client.search_pages.side_effect = fake_search_pages
+        out_file = tmp_config / "search_deep.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "search", "test", "--deep", "--pages", "1", "--all-languages",
+            "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = sorted(d["asin"] for d in data)
+        assert asins == ["SD1", "SD2", "SD3", "SD4"]

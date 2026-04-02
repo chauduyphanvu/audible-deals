@@ -6,15 +6,17 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 
 - **Find deals** — scan hundreds of catalog pages and surface audiobooks under your price threshold
 - **Search** — keyword search with filters for genre, rating, length, narrator, language, and more
-- **Deep scan** — hit the catalog from multiple angles (bestsellers, newest, highest-rated) to maximize coverage
+- **Deep scan** — hit the catalog from multiple angles (bestsellers, newest, highest-rated) to maximize coverage (works on `find` and `search`)
+- **Last results** — re-sort and re-filter your most recent results without any API calls; reference items by number in other commands
 - **Compare** — side-by-side comparison of multiple audiobooks, with a $/hr value calculation
 - **Interactive mode** — browse results, view details, open in browser, or add to wishlist without leaving the CLI
 - **Wishlist & watch** — save ASINs you're eyeing and check back for price drops
 - **Price history** — automatically tracks prices over time with sparkline charts and relative dates
-- **Saved profiles** — save your favorite search configurations and reuse them with `--profile`
+- **Saved profiles** — save your favorite search configurations and reuse them with `--profile` (works on `find` and `search`)
+- **Global config** — set persistent defaults (max price, skip-owned, locale, etc.) applied to every command
 - **Recap & notify** — get a summary of recent price drops, or send webhook notifications for deals at target
 - **Locale support** — correct currency symbols and Audible URLs for all 9 marketplaces
-- **Export** — dump results to JSON or CSV for spreadsheets, scripts, or further analysis
+- **Export** — dump results to JSON or CSV; using `-o` automatically suppresses the table display
 
 ## Quick start
 
@@ -101,6 +103,9 @@ deals search "Brandon Sanderson" --sort price --min-hours 5
 
 # Only show the first book in each series
 deals search "Red Rising" --first-in-series
+
+# Deep scan for broader coverage
+deals search "Sanderson" --deep --max-price 5
 ```
 
 ## Commands
@@ -109,6 +114,7 @@ deals search "Red Rising" --first-in-series
 |---------|-------------|
 | `deals find` | Browse and filter deals (the main command) |
 | `deals search QUERY` | Search by keyword with filters |
+| `deals last` | Re-display results from the last search or find (no API call) |
 | `deals detail ASIN` | Detailed info for a single audiobook |
 | `deals open ASIN` | Open the Audible page in your browser |
 | `deals compare ASIN ASIN ...` | Side-by-side comparison |
@@ -117,6 +123,7 @@ deals search "Red Rising" --first-in-series
 | `deals watch` | Check wishlist prices — highlights items at/below target |
 | `deals notify` | Send deal notifications via webhook or JSON stdout |
 | `deals profile save/list/delete` | Manage saved search profiles |
+| `deals config set/get/list/reset` | Manage global defaults applied to all commands |
 | `deals history ASIN` | View price history with sparkline chart |
 | `deals recap` | Summary of recent price drops across tracked items |
 | `deals login` | Authenticate with Audible |
@@ -145,9 +152,9 @@ deals search "Red Rising" --first-in-series
 | `--skip-owned` | Exclude books already in your library |
 | `-n, --limit 20` | Cap the number of results |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
-| `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` only) |
+| `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` and `search`) |
 | `-i, --interactive` | Browse results interactively after the table is shown |
-| `--profile NAME` | Load a saved search profile (`find` only — see note below) |
+| `--profile NAME` | Load a saved search profile (`find` and `search`) |
 
 ### Sort options
 
@@ -174,8 +181,12 @@ Save frequently-used search configurations and replay them with `--profile`:
 # Save a profile
 deals profile save my-scifi --genre sci-fi --max-price 5 --min-rating 4 --min-hours 8 --first-in-series --deep
 
-# Use it
+# Include skip-owned, language filter, and interactive mode in the profile
+deals profile save my-scifi-owned --genre sci-fi --max-price 5 --skip-owned --language english --interactive
+
+# Use it — works on both find and search
 deals find --profile my-scifi
+deals search "Brandon Sanderson" --profile my-scifi
 
 # CLI flags override profile values
 deals find --profile my-scifi --max-price 3
@@ -185,7 +196,81 @@ deals profile list
 deals profile delete my-scifi
 ```
 
-Profiles support most filter and sort flags. Flags like `--skip-owned`, `--language`, and `--interactive` are session-specific and cannot be saved to a profile.
+Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, and `--deep`.
+
+## Last results
+
+`deals last` re-displays results from your most recent `find` or `search` without making any API calls. You can re-filter and re-sort the cached results:
+
+```bash
+# Show the last results
+deals last
+
+# Re-sort by discount
+deals last --sort discount
+
+# Apply new filters
+deals last --max-price 3 --min-rating 4.5
+
+# Export the cached results
+deals last -o last.csv
+```
+
+You can also reference items from the last results by position number in other commands:
+
+```bash
+# View details for result #1
+deals detail --last 1
+
+# Open result #3 in your browser
+deals open --last 3
+
+# Compare results #1 and #2
+deals compare --last 1 --last 2
+
+# Mix positional ASINs with --last references
+deals compare B00EXAMPLE --last 2
+
+# Add results #1 and #4 to your wishlist
+deals wishlist add --last 1 --last 4 --max-price 5
+```
+
+The cache is updated every time you run `deals find` or `deals search`.
+
+## Global defaults config
+
+Set persistent defaults that apply to all `find` and `search` commands. Useful for things you always want, like skipping owned books or setting a maximum price:
+
+```bash
+# Set a global max price
+deals config set max-price 5
+
+# Always skip owned books
+deals config set skip-owned true
+
+# Set default sort order
+deals config set sort discount
+
+# View a specific setting
+deals config get max-price
+
+# List all set defaults
+deals config list
+
+# Remove a specific default
+deals config reset max-price
+
+# Clear all defaults
+deals config reset
+```
+
+**Precedence:** `CLI flag > profile > global config`. A `--profile` overrides config; an explicit CLI flag overrides both.
+
+You can also set a default locale:
+
+```bash
+deals config set locale uk    # always use the UK store
+```
 
 ## Interactive mode
 
@@ -252,12 +337,12 @@ deals notify --webhook https://hooks.slack.com/services/...
 
 | Flag | What it does |
 |------|-------------|
-| `-o, --output FILE` | Export results to a file (`.json` or `.csv`) |
+| `-o, --output FILE` | Export results to a file (`.json` or `.csv`) — implies `-q` |
 | `--json` | Print results as JSON to stdout (for piping) |
 | `-q, --quiet` | Suppress the table display |
 
 ```bash
-# JSON file (-o is short for --output)
+# JSON file (-o is short for --output) — table is suppressed automatically
 deals find --genre mystery --max-price 5 -o deals.json
 
 # CSV for spreadsheets
@@ -265,10 +350,9 @@ deals find --genre mystery --max-price 5 -o deals.csv
 
 # JSON to stdout (for piping)
 deals find --genre mystery --max-price 5 --json | jq '.[0]'
-
-# Export without the table display (-q is short for --quiet)
-deals find --genre mystery --max-price 5 -o deals.json -q
 ```
+
+Using `-o` automatically suppresses the table display (same as adding `-q`). This makes scripted exports cleaner — no need to remember to add `-q` when writing to a file.
 
 ## Marketplace support
 
@@ -320,12 +404,38 @@ Only book 1s, only stuff you don't own, only narrated by that person.
 ### Profiles for different moods
 
 ```bash
-deals profile save long-cheap --max-price 3 --min-hours 15 --sort price-per-hour --deep
+deals profile save long-cheap --max-price 3 --min-hours 15 --sort price-per-hour --deep --skip-owned
 deals profile save hidden-gems --max-price 5 --min-rating 4.5 --min-ratings 50 --first-in-series
 deals profile save binge-series --max-price 5 --min-hours 20 --sort price-per-hour
 
 # Then just:
-deals find --profile long-cheap --skip-owned
+deals find --profile long-cheap
+deals search "fantasy epic" --profile long-cheap
+```
+
+### Always apply your preferences globally
+
+```bash
+# Set it once, never type it again
+deals config set skip-owned true
+deals config set max-price 5
+deals config set min-rating 3.5
+
+# Now every find/search uses these defaults
+deals find --genre sci-fi
+deals search "Stephen King"
+```
+
+### Re-examine results without a new API call
+
+```bash
+# Run a search, then slice and dice the results without hitting the API again
+deals find --genre mystery --max-price 5
+deals last --sort discount           # what's the biggest discount?
+deals last --min-rating 4.5 -n 5    # top 5 by quality
+deals last -o mystery-deals.csv     # export a copy
+deals detail --last 1               # full details on result #1
+deals compare --last 1 --last 3     # compare two results
 ```
 
 ### Cross-locale price comparison
@@ -382,7 +492,7 @@ Without `--webhook`, `notify` prints JSON to stdout — useful for piping into o
 # Install with dev dependencies
 pip install -e ".[dev]"
 
-# Run tests (178 tests, ~0.2s)
+# Run tests
 pytest tests/ -v
 
 # Run only integration tests
@@ -397,8 +507,10 @@ Genre matching is flexible — common abbreviations like `sci-fi`, `ya`, `bio`, 
 
 All data is stored locally in `~/.config/audible-deals/`:
 - `auth.json` — Audible auth tokens
+- `config.json` — global defaults (set via `deals config set`)
 - `wishlist.json` — your watchlist
 - `profiles.json` — saved search profiles
+- `last_results.json` — cached results from the most recent `find` or `search`
 - `history/` — per-ASIN price history (one JSON file per book)
 - `categories_cache.*.json` — cached category listings per locale
 

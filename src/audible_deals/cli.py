@@ -36,6 +36,7 @@ import sys
 import tempfile
 import urllib.parse
 import urllib.request
+import dataclasses
 from dataclasses import asdict
 from pathlib import Path
 
@@ -303,6 +304,92 @@ def _serialize_product(p: Product) -> dict:
     return d
 
 
+_PRODUCT_FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Product))
+
+
+def _deserialize_product(d: dict) -> Product:
+    """Reconstruct a Product from a serialized dict, ignoring computed fields."""
+    return Product(**{k: v for k, v in d.items() if k in _PRODUCT_FIELDS})
+
+
+_CL = click.core.ParameterSource.COMMANDLINE
+
+
+def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
+    """Apply global config values to the command namespace for keys not set on the CLI.
+
+    ``ns`` is mutated in place. Uses ``ctx.get_parameter_source`` to detect CLI flags.
+    Handles ``max_price`` specially (falsy 0.0 is a valid price).
+    """
+    if cfg.get("max_price") is not None and ctx.get_parameter_source("max_price") != _CL:
+        ns["max_price"] = cfg["max_price"]
+    for key in ("sort", "pages"):
+        if cfg.get(key) and ctx.get_parameter_source(key) != _CL:
+            ns[key] = cfg[key]
+    for key in ("min_rating", "min_ratings", "min_hours", "limit"):
+        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
+            ns[key] = cfg[key]
+    for key in ("language", "narrator"):
+        if cfg.get(key) and not ns.get(key):
+            ns[key] = cfg[key]
+    for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
+        if cfg.get(flag) and not ns.get(flag):
+            ns[flag] = True
+
+
+def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
+    """Apply profile values to the command namespace for keys not set on the CLI.
+
+    ``ns`` is mutated in place. Profile values override config but not CLI flags.
+    """
+    for key in ("genre", "exclude_genre", "keywords", "narrator"):
+        if not ns.get(key) and p.get(key):
+            ns[key] = p[key]
+    for key in ("max_price", "min_rating", "min_ratings", "min_hours", "limit"):
+        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
+            ns[key] = p[key]
+    for key in ("sort", "pages"):
+        if ctx.get_parameter_source(key) != _CL and p.get(key):
+            ns[key] = p[key]
+    for key in ("language",):
+        if not ns.get(key) and p.get(key):
+            ns[key] = p[key]
+    for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
+        if not ns.get(flag) and p.get(flag):
+            ns[flag] = True
+
+
+def _load_last_results() -> list[dict]:
+    """Load the last results cache from disk.
+
+    Raises click.ClickException if the cache is missing or corrupt.
+    """
+    if not LAST_RESULTS_FILE.exists():
+        raise click.ClickException(
+            "No cached results found. Run 'deals find' or 'deals search' first."
+        )
+    try:
+        data = json_mod.loads(LAST_RESULTS_FILE.read_text())
+    except (json_mod.JSONDecodeError, OSError) as e:
+        raise click.ClickException(f"Could not read last results cache: {e}")
+    if not isinstance(data, list):
+        raise click.ClickException("Last results cache is corrupt.")
+    return data
+
+
+def _resolve_last_references(refs: tuple[int, ...]) -> list[str]:
+    """Convert 1-indexed position references to ASINs from the last results cache."""
+    data = _load_last_results()
+    asins: list[str] = []
+    for ref in refs:
+        if ref < 1 or ref > len(data):
+            raise click.ClickException(
+                f"--last {ref} is out of range (cache has {len(data)} result(s))."
+            )
+        asins.append(data[ref - 1]["asin"])
+    return asins
+
+
 def _export_products(products: list[Product], path: Path) -> None:
     """Export products to file, detecting format from extension."""
     suffix = path.suffix.lower()
@@ -350,6 +437,7 @@ def _postprocess_and_output(
     quiet: bool,
     currency: str = "$",
     interactive: bool = False,
+    write_cache: bool = True,
 ) -> None:
     """Shared post-processing pipeline for search and find commands."""
     filtered, excluded = _filter_products(
@@ -370,15 +458,24 @@ def _postprocess_and_output(
         filtered, series_collapsed = _first_in_series(filtered)
     filtered = _sort_local(filtered, sort)
     _record_prices(filtered)
+    serialized_all = [_serialize_product(p) for p in filtered]
+    if write_cache:
+        try:
+            _atomic_write(LAST_RESULTS_FILE, json_mod.dumps(serialized_all, ensure_ascii=False))
+        except Exception:
+            pass
     total_before_limit = len(filtered)
     if limit:
         filtered = filtered[:limit]
+        serialized = serialized_all[:limit]
+    else:
+        serialized = serialized_all
 
     if output:
         _export_products(filtered, output)
         console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
     if json_flag:
-        click.echo(json_mod.dumps([_serialize_product(p) for p in filtered], indent=2, ensure_ascii=False))
+        click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
         console.print()
         display_products(filtered, max_price=max_price, title=title)
@@ -453,6 +550,12 @@ class _HandleAuthErrors(click.Group):
 def cli(ctx, locale):
     """Audible deal finder - find cheap audiobooks during sales."""
     ctx.ensure_object(dict)
+    cfg = _load_config()
+    ctx.obj["config"] = cfg
+    if ctx.get_parameter_source("locale") != _CL:
+        cfg_locale = cfg.get("locale")
+        if cfg_locale:
+            locale = cfg_locale
     ctx.obj["locale"] = locale
 
 
@@ -528,6 +631,7 @@ def categories(ctx, parent):
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
 @click.option("--narrator", default="", help="Filter by narrator name (substring match)")
 @click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
+@click.option("--deep", is_flag=True, default=False, help="Scan with 3 sort orders for better coverage (3x API calls)")
 @click.option("--pages", type=click.IntRange(min=1), default=3, help="Number of pages to scan (50 items/page)")
 @click.option("--language", default="", help="Language filter (e.g. english)")
 @click.option("--all-languages", is_flag=True, default=False, help="Include all languages (default: locale language only)")
@@ -538,9 +642,33 @@ def categories(ctx, parent):
 @click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)")
 @click.option("--interactive", "-i", is_flag=True, default=False, help="Browse results interactively")
+@click.option("--profile", "profile_name", default=None, help="Load a saved search profile (overrides defaults, CLI flags take precedence)")
 @click.pass_context
-def search(ctx, query, max_price, category, genre, exclude_genre, sort, min_rating, min_ratings, min_hours, narrator, on_sale, pages, language, all_languages, first_in_series, skip_owned, limit, output, json_flag, quiet, interactive):
+def search(ctx, query, max_price, category, genre, exclude_genre, sort, min_rating, min_ratings, min_hours, narrator, on_sale, deep, pages, language, all_languages, first_in_series, skip_owned, limit, output, json_flag, quiet, interactive, profile_name):
     """Search the Audible catalog by keyword."""
+    ns = dict(
+        max_price=max_price, sort=sort, min_rating=min_rating, min_ratings=min_ratings,
+        min_hours=min_hours, language=language, narrator=narrator, pages=pages, limit=limit,
+        on_sale=on_sale, deep=deep, first_in_series=first_in_series,
+        all_languages=all_languages, skip_owned=skip_owned, interactive=interactive,
+        genre=genre, exclude_genre=exclude_genre, keywords="",
+    )
+    _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
+    if profile_name:
+        profiles = _load_profiles()
+        if profile_name not in profiles:
+            raise click.ClickException(f"Profile '{profile_name}' not found. Use 'deals profile list' to see available profiles.")
+        _apply_profile_defaults(ctx, ns, profiles[profile_name])
+    (max_price, sort, min_rating, min_ratings, min_hours, language, narrator,
+     pages, limit, on_sale, deep, first_in_series, all_languages, skip_owned,
+     interactive, genre, exclude_genre) = (
+        ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"], ns["min_hours"],
+        ns["language"], ns["narrator"], ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
+        ns["first_in_series"], ns["all_languages"], ns["skip_owned"], ns["interactive"],
+        ns["genre"], ns["exclude_genre"],
+    )
+    if output and ctx.get_parameter_source("quiet") != _CL:
+        quiet = True
     if genre and category:
         raise click.UsageError("Use --genre or --category, not both.")
     if json_flag:
@@ -550,7 +678,7 @@ def search(ctx, query, max_price, category, genre, exclude_genre, sort, min_rati
 
     dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(sort, "Relevance")
-    all_products: list[Product] = []
+    sort_orders = DEEP_SORT_ORDERS if deep else [server_sort]
     skip_asins: set[str] | None = None
     category_name = ""
     exclude_category_ids: set[str] = set()
@@ -579,19 +707,14 @@ def search(ctx, query, max_price, category, genre, exclude_genre, sort, min_rati
         if category_name:
             scope += f" in {category_name}"
 
-        with create_scan_progress() as progress:
-            task = progress.add_task(f"Searching {scope}", total=pages, items=0)
-            for products, page_num, total in dc.search_pages(
-                keywords=query,
-                category_id=category,
-                sort_by=server_sort,
-                max_pages=pages,
-            ):
-                all_products.extend(products)
-                if page_num == 1:
-                    actual = min(pages, math.ceil(total / 50)) if total else 1
-                    progress.update(task, total=actual)
-                progress.update(task, completed=page_num, items=len(all_products))
+        all_products = _fetch_with_progress(
+            dc,
+            keywords=query,
+            category_id=category,
+            sort_orders=sort_orders,
+            pages=pages,
+            description=f"Searching {scope}",
+        )
 
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     _postprocess_and_output(
@@ -605,6 +728,50 @@ def search(ctx, query, max_price, category, genre, exclude_genre, sort, min_rati
         output=output, json_flag=json_flag, quiet=quiet,
         currency=cur, interactive=interactive,
     )
+
+
+def _fetch_with_progress(
+    dc: DealsClient,
+    *,
+    keywords: str,
+    category_id: str,
+    sort_orders: list[str],
+    pages: int,
+    description: str,
+) -> list[Product]:
+    """Fetch products across one or more sort orders with a progress bar.
+
+    Deduplicates by ASIN across sort orders. Returns a flat list.
+    """
+    all_products: list[Product] = []
+    seen_asins: set[str] = set()
+    total_pages = pages * len(sort_orders)
+
+    with create_scan_progress() as progress:
+        task = progress.add_task(description, total=total_pages, items=0)
+        pages_done = 0
+
+        for sort_idx, sort_order in enumerate(sort_orders):
+            for products, page_num, total in dc.search_pages(
+                keywords=keywords,
+                category_id=category_id,
+                sort_by=sort_order,
+                max_pages=pages,
+            ):
+                new_products = [p for p in products if p.asin not in seen_asins]
+                seen_asins.update(p.asin for p in new_products)
+                all_products.extend(new_products)
+                pages_done += 1
+
+                if page_num == 1:
+                    actual = min(pages, math.ceil(total / 50)) if total else 1
+                    remaining_sorts = len(sort_orders) - sort_idx - 1
+                    total_pages = (pages_done - 1) + actual + remaining_sorts * pages
+                    progress.update(task, total=total_pages)
+
+                progress.update(task, completed=pages_done, items=len(all_products))
+
+    return all_products
 
 
 @cli.command()
@@ -648,44 +815,29 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
         deals find --genre thriller --sort discount --on-sale --deep
         deals find --profile my-scifi
     """
-    # Apply saved profile as defaults (CLI flags override)
+    ns = dict(
+        max_price=max_price, sort=sort, min_rating=min_rating, min_ratings=min_ratings,
+        min_hours=min_hours, language=language, narrator=narrator, pages=pages, limit=limit,
+        on_sale=on_sale, deep=deep, first_in_series=first_in_series,
+        all_languages=all_languages, skip_owned=skip_owned, interactive=interactive,
+        genre=genre, exclude_genre=exclude_genre, keywords=keywords,
+    )
+    _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
     if profile_name:
         profiles = _load_profiles()
         if profile_name not in profiles:
             raise click.ClickException(f"Profile '{profile_name}' not found. Use 'deals profile list' to see available profiles.")
-        p = profiles[profile_name]
-        # Only apply profile values for options that weren't explicitly set by the user
-        source = ctx.get_parameter_source("genre")
-        if not genre and p.get("genre"):
-            genre = p["genre"]
-        if not exclude_genre and p.get("exclude_genre"):
-            exclude_genre = p["exclude_genre"]
-        if not keywords and p.get("keywords"):
-            keywords = p["keywords"]
-        if ctx.get_parameter_source("max_price") != click.core.ParameterSource.COMMANDLINE and p.get("max_price"):
-            max_price = p["max_price"]
-        if ctx.get_parameter_source("sort") != click.core.ParameterSource.COMMANDLINE and p.get("sort"):
-            sort = p["sort"]
-        if not min_rating and p.get("min_rating"):
-            min_rating = p["min_rating"]
-        if not min_ratings and p.get("min_ratings"):
-            min_ratings = p["min_ratings"]
-        if not min_hours and p.get("min_hours"):
-            min_hours = p["min_hours"]
-        if not narrator and p.get("narrator"):
-            narrator = p["narrator"]
-        if not on_sale and p.get("on_sale"):
-            on_sale = True
-        if not deep and p.get("deep"):
-            deep = True
-        if ctx.get_parameter_source("pages") != click.core.ParameterSource.COMMANDLINE and p.get("pages"):
-            pages = p["pages"]
-        if not first_in_series and p.get("first_in_series"):
-            first_in_series = True
-        if not all_languages and p.get("all_languages"):
-            all_languages = True
-        if not limit and p.get("limit"):
-            limit = p["limit"]
+        _apply_profile_defaults(ctx, ns, profiles[profile_name])
+    (max_price, sort, min_rating, min_ratings, min_hours, language, narrator,
+     pages, limit, on_sale, deep, first_in_series, all_languages, skip_owned,
+     interactive, genre, exclude_genre, keywords) = (
+        ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"], ns["min_hours"],
+        ns["language"], ns["narrator"], ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
+        ns["first_in_series"], ns["all_languages"], ns["skip_owned"], ns["interactive"],
+        ns["genre"], ns["exclude_genre"], ns["keywords"],
+    )
+    if output and ctx.get_parameter_source("quiet") != _CL:
+        quiet = True
     if genre and category:
         raise click.UsageError("Use --genre or --category, not both.")
     if json_flag:
@@ -695,14 +847,11 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
 
     dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(sort, "BestSellers")
-    all_products: list[Product] = []
-    seen_asins: set[str] = set()
     category_name = ""
     skip_asins: set[str] | None = None
     exclude_category_ids: set[str] = set()
 
     sort_orders = DEEP_SORT_ORDERS if deep else [server_sort]
-    total_pages = pages * len(sort_orders)
 
     with dc:
         if skip_owned:
@@ -733,32 +882,14 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
             desc_parts.append("entire catalog")
         desc_str = ", ".join(desc_parts)
 
-        with create_scan_progress() as progress:
-            task = progress.add_task(
-                f"Scanning {desc_str}", total=total_pages, items=0,
-            )
-            pages_done = 0
-
-            for sort_order in sort_orders:
-                for products, page_num, total in dc.search_pages(
-                    keywords=keywords,
-                    category_id=category,
-                    sort_by=sort_order,
-                    max_pages=pages,
-                ):
-                    new_products = [p for p in products if p.asin not in seen_asins]
-                    seen_asins.update(p.asin for p in new_products)
-                    all_products.extend(new_products)
-                    pages_done += 1
-
-                    # Refine total on first page of each sort pass
-                    if page_num == 1:
-                        actual = min(pages, math.ceil(total / 50)) if total else 1
-                        remaining_sorts = len(sort_orders) - sort_orders.index(sort_order) - 1
-                        total_pages = (pages_done - 1) + actual + remaining_sorts * pages
-                        progress.update(task, total=total_pages)
-
-                    progress.update(task, completed=pages_done, items=len(all_products))
+        all_products = _fetch_with_progress(
+            dc,
+            keywords=keywords,
+            category_id=category,
+            sort_orders=sort_orders,
+            pages=pages,
+            description=f"Scanning {desc_str}",
+        )
 
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     find_title = f"Deals under {cur}{max_price:.2f}"
@@ -777,11 +908,63 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, sort, min_rat
     )
 
 
-@cli.command()
-@click.argument("asin")
+@cli.command("last")
+@click.option("--sort", type=click.Choice(["price", "-price", "discount", "price-per-hour", "rating", "length", "date", "relevance"]), default=None, help="Re-sort results")
+@click.option("--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter")
+@click.option("--min-rating", type=float, default=0.0, help="Minimum rating")
+@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
+@click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
+@click.option("--first-in-series", is_flag=True, default=False, help="Show only first book per series")
+@click.option("--limit", "-n", type=int, default=None, help="Show only the top N results")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)")
+@click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout")
+@click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output")
+@click.option("--interactive", "-i", is_flag=True, default=False, help="Browse results interactively")
 @click.pass_context
-def detail(ctx, asin):
+def last_cmd(ctx, sort, max_price, min_rating, min_hours, on_sale, first_in_series, limit, output, json_flag, quiet, interactive):
+    """Re-display results from the last search or find, with optional re-filtering.
+
+    No API calls are made — results are read from the local cache.
+
+    \b
+    Examples:
+        deals last
+        deals last --sort discount
+        deals last --max-price 3 --min-rating 4
+    """
+    if output and ctx.get_parameter_source("quiet") != _CL:
+        quiet = True
+    data = _load_last_results()
+    products = [_deserialize_product(d) for d in data]
+    if json_flag:
+        console.file = sys.stderr
+
+    effective_sort = sort or "price"  # default re-sort by price
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    _postprocess_and_output(
+        products,
+        title="Last results",
+        max_price=max_price, min_rating=min_rating, min_ratings=0,
+        min_hours=min_hours, narrator="",
+        language="", on_sale=on_sale, skip_asins=None,
+        exclude_category_ids=set(),
+        first_in_series=first_in_series, sort=effective_sort, limit=limit,
+        output=output, json_flag=json_flag, quiet=quiet,
+        currency=cur, interactive=interactive, write_cache=False,
+    )
+
+
+@cli.command()
+@click.argument("asin", required=False, default=None)
+@click.option("--last", "last_ref", type=int, default=None, help="Use result #N from last search/find")
+@click.pass_context
+def detail(ctx, asin, last_ref):
     """Show detailed info for a product by ASIN."""
+    if last_ref is not None:
+        resolved = _resolve_last_references((last_ref,))
+        asin = resolved[0]
+    if not asin:
+        raise click.UsageError("Provide an ASIN or use --last N.")
     _validate_asin(asin)
     dc = _get_client(ctx.obj["locale"])
     with dc:
@@ -794,10 +977,16 @@ def detail(ctx, asin):
 
 
 @cli.command("open")
-@click.argument("asin")
+@click.argument("asin", required=False, default=None)
+@click.option("--last", "last_ref", type=int, default=None, help="Use result #N from last search/find")
 @click.pass_context
-def open_cmd(ctx, asin):
+def open_cmd(ctx, asin, last_ref):
     """Open an audiobook's Audible page in your browser."""
+    if last_ref is not None:
+        resolved = _resolve_last_references((last_ref,))
+        asin = resolved[0]
+    if not asin:
+        raise click.UsageError("Provide an ASIN or use --last N.")
     _validate_asin(asin)
     from audible_deals.client import LOCALE_DOMAIN
     domain = LOCALE_DOMAIN.get(ctx.obj["locale"], "www.audible.com")
@@ -807,27 +996,33 @@ def open_cmd(ctx, asin):
 
 
 @cli.command()
-@click.argument("asins", nargs=-1, required=True)
+@click.argument("asins", nargs=-1, required=False)
+@click.option("--last", "last_refs", type=int, multiple=True, help="Use result #N from last search/find (repeatable)")
 @click.pass_context
-def compare(ctx, asins):
+def compare(ctx, asins, last_refs):
     """Compare multiple products side-by-side.
 
     \b
     Example:
         deals compare B00R6S1RCY B00I2VWW5U B019NMZ6FE
+        deals compare --last 1 --last 3
     """
-    if len(asins) < 2:
+    all_asins = list(asins)
+    if last_refs:
+        all_asins.extend(_resolve_last_references(last_refs))
+
+    if len(all_asins) < 2:
         raise click.UsageError("Provide at least 2 ASINs to compare.")
 
-    for asin in asins:
+    for asin in all_asins:
         _validate_asin(asin)
 
     dc = _get_client(ctx.obj["locale"])
     with dc:
-        products = dc.get_products_batch(list(asins))
+        products = dc.get_products_batch(all_asins)
 
     found_asins = {p.asin for p in products}
-    for asin in asins:
+    for asin in all_asins:
         if asin not in found_asins:
             console.print(f"[red]Not found: {asin}[/red]")
 
@@ -835,7 +1030,7 @@ def compare(ctx, asins):
         raise click.ClickException("Need at least 2 valid products to compare.")
 
     # Preserve the order the user specified
-    asin_order = {asin: i for i, asin in enumerate(asins)}
+    asin_order = {asin: i for i, asin in enumerate(all_asins)}
     products.sort(key=lambda p: asin_order.get(p.asin, 999))
 
     display_comparison(products)
@@ -866,26 +1061,34 @@ def wishlist():
 
 
 @wishlist.command("add")
-@click.argument("asins", nargs=-1, required=True)
+@click.argument("asins", nargs=-1, required=False)
 @click.option("--max-price", type=float, default=None, help="Alert when price drops below this")
+@click.option("--last", "last_refs", type=int, multiple=True, help="Use result #N from last search/find (repeatable)")
 @click.pass_context
-def wishlist_add(ctx, asins, max_price):
+def wishlist_add(ctx, asins, max_price, last_refs):
     """Add ASINs to your wishlist.
 
     \b
     Example:
         deals wishlist add B00R6S1RCY B00I2VWW5U --max-price 5
+        deals wishlist add --last 1 --last 2 --max-price 5
     """
+    all_asins = list(asins)
+    if last_refs:
+        all_asins.extend(_resolve_last_references(last_refs))
+    if not all_asins:
+        raise click.UsageError("Provide at least one ASIN or use --last N.")
+
     items = _load_wishlist()
     existing = {item["asin"] for item in items}
 
-    for asin in asins:
+    for asin in all_asins:
         _validate_asin(asin)
 
     dc = _get_client(ctx.obj["locale"])
     added = 0
     with dc:
-        for asin in asins:
+        for asin in all_asins:
             if asin in existing:
                 console.print(f"[dim]{asin} already on wishlist[/dim]")
                 continue
@@ -1007,6 +1210,8 @@ def watch(ctx):
 # Saved search profiles
 # ---------------------------------------------------------------------------
 PROFILES_FILE = CONFIG_DIR / "profiles.json"
+LAST_RESULTS_FILE = CONFIG_DIR / "last_results.json"
+CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
 def _load_profiles() -> dict[str, dict]:
@@ -1020,6 +1225,124 @@ def _load_profiles() -> dict[str, dict]:
 
 def _save_profiles(profiles: dict[str, dict]) -> None:
     _atomic_write(PROFILES_FILE, json_mod.dumps(profiles, indent=2, ensure_ascii=False))
+
+
+# ---------------------------------------------------------------------------
+# Global defaults config
+# ---------------------------------------------------------------------------
+
+_CONFIG_SCHEMA: dict[str, type] = {
+    "skip_owned": bool, "max_price": float, "min_rating": float,
+    "min_ratings": int, "min_hours": float, "language": str,
+    "locale": str, "sort": str, "pages": int, "on_sale": bool,
+    "deep": bool, "first_in_series": bool, "all_languages": bool,
+    "interactive": bool, "limit": int, "narrator": str,
+}
+
+
+def _load_config() -> dict:
+    if CONFIG_FILE.exists():
+        try:
+            return json_mod.loads(CONFIG_FILE.read_text())
+        except (json_mod.JSONDecodeError, KeyError, OSError):
+            pass
+    return {}
+
+
+def _save_config(cfg: dict) -> None:
+    _atomic_write(CONFIG_FILE, json_mod.dumps(cfg, indent=2, ensure_ascii=False))
+
+
+def _coerce_config_value(key: str, raw: str):
+    """Coerce a raw string value to the type declared in _CONFIG_SCHEMA."""
+    typ = _CONFIG_SCHEMA[key]
+    if typ is bool:
+        if raw.lower() in ("true", "1", "yes"):
+            return True
+        elif raw.lower() in ("false", "0", "no"):
+            return False
+        raise click.ClickException(f"Invalid boolean value for '{key}': {raw!r}. Use true/false.")
+    try:
+        return typ(raw)
+    except (ValueError, TypeError) as e:
+        raise click.ClickException(f"Invalid value for '{key}' (expected {typ.__name__}): {e}")
+
+
+@cli.group("config")
+def config_cmd():
+    """Manage global defaults for deals commands."""
+
+
+def _validate_config_key(key: str) -> str:
+    """Normalize and validate a config key. Returns the snake_case key or raises."""
+    norm = key.replace("-", "_")
+    if norm not in _CONFIG_SCHEMA:
+        valid = ", ".join(sorted(k.replace("_", "-") for k in _CONFIG_SCHEMA))
+        raise click.ClickException(f"Unknown config key '{key}'. Valid keys: {valid}")
+    return norm
+
+
+@config_cmd.command("set")
+@click.argument("key")
+@click.argument("value")
+def config_set(key, value):
+    """Set a global default. KEY uses hyphens or underscores.
+
+    \b
+    Valid keys: skip-owned, max-price, min-rating, min-ratings, min-hours,
+                language, locale, sort, pages, on-sale, deep, first-in-series,
+                all-languages, interactive, limit, narrator
+    Example:
+        deals config set max-price 5
+        deals config set skip-owned true
+    """
+    norm_key = _validate_config_key(key)
+    coerced = _coerce_config_value(norm_key, value)
+    cfg = _load_config()
+    cfg[norm_key] = coerced
+    _save_config(cfg)
+    console.print(f"[green]Config set:[/green] {norm_key} = {coerced!r}")
+
+
+@config_cmd.command("get")
+@click.argument("key")
+def config_get(key):
+    """Get a global default value."""
+    norm_key = _validate_config_key(key)
+    cfg = _load_config()
+    if norm_key not in cfg:
+        console.print(f"[dim]{norm_key} is not set[/dim]")
+    else:
+        console.print(f"{norm_key} = {cfg[norm_key]!r}")
+
+
+@config_cmd.command("list")
+def config_list():
+    """List all set global defaults."""
+    cfg = _load_config()
+    if not cfg:
+        console.print("[dim]No global defaults set. Use 'deals config set KEY VALUE' to set one.[/dim]")
+        return
+    for k, v in sorted(cfg.items()):
+        console.print(f"  {k} = {v!r}")
+
+
+@config_cmd.command("reset")
+@click.argument("key", required=False, default=None)
+def config_reset(key):
+    """Remove a key from global defaults, or clear all if no key given."""
+    cfg = _load_config()
+    if key is None:
+        _save_config({})
+        console.print("[green]All global defaults cleared.[/green]")
+        return
+    norm_key = _validate_config_key(key)
+    if norm_key in cfg:
+        del cfg[norm_key]
+        _save_config(cfg)
+        console.print(f"[green]Config key '{norm_key}' removed.[/green]")
+    else:
+        console.print(f"[dim]Config key '{norm_key}' was not set.[/dim]")
 
 
 @cli.group()
@@ -1044,13 +1367,18 @@ def profile():
 @click.option("--first-in-series", is_flag=True, default=False)
 @click.option("--all-languages", is_flag=True, default=False)
 @click.option("--limit", "-n", type=int, default=None)
+@click.option("--skip-owned", is_flag=True, default=False)
+@click.option("--language", default="")
+@click.option("--interactive", "-i", is_flag=True, default=False)
 def profile_save(name, **kwargs):
     """Save a search profile.
 
     \b
     Example:
         deals profile save my-scifi --genre sci-fi --max-price 5 --min-rating 4 --first-in-series
+        deals profile save work --skip-owned --language english --interactive
         deals find --profile my-scifi
+        deals search "Brandon Sanderson" --profile my-scifi
     """
     profiles = _load_profiles()
     # Only save non-default values
