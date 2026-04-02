@@ -153,6 +153,12 @@ class TestDisplayProducts:
         out = _capture(display_products, products)
         assert "[+]" in out
 
+    def test_locale_aware_pph_header(self):
+        products = [make_product(price=10.0, length_minutes=600)]
+        out = _capture(display_products, products, currency="£")
+        assert "£/hr" in out
+        assert "$/hr" not in out
+
 
 class TestDisplayCategories:
     def test_empty(self):
@@ -221,6 +227,26 @@ class TestDisplayComparison:
         p2 = make_product(asin="A2", price=None)
         out = _capture(display_comparison, [p1, p2])
         assert "Best value" not in out
+
+    def test_empty_list(self):
+        """display_comparison with empty list should not crash."""
+        out = _capture(display_comparison, [])
+        assert "Comparison" in out
+
+    def test_locale_aware_pph_row(self):
+        """display_comparison uses the first product's currency for the $/hr row label."""
+        p1 = make_product(asin="A1", title="Book A", price=5.0, length_minutes=600)
+        p2 = make_product(asin="A2", title="Book B", price=10.0, length_minutes=600)
+        # make_product defaults to locale="us" which gives "$"
+        out = _capture(display_comparison, [p1, p2])
+        assert "$/hr" in out
+
+    def test_locale_aware_pph_row_uk(self):
+        """display_comparison uses £/hr when products have uk locale."""
+        p1 = make_product(asin="A1", title="Book A", price=5.0, length_minutes=600, locale="uk")
+        p2 = make_product(asin="A2", title="Book B", price=10.0, length_minutes=600, locale="uk")
+        out = _capture(display_comparison, [p1, p2])
+        assert "£/hr" in out
 
 
 class TestDisplaySummary:

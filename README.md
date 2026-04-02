@@ -142,6 +142,8 @@ deals search "Sanderson" --deep --max-price 5
 | `--exclude-genre erotica` | Remove genres from results (repeatable) |
 | `--keywords "space opera"` | Keyword filter within a category browse (`find` only) |
 | `--narrator "Reynolds"` | Filter by narrator name (case-insensitive substring match) |
+| `--author "Andy Weir"` | Filter by author name (case-insensitive substring match) |
+| `--exclude-author "Maas"` | Exclude books by a matching author (repeatable) |
 | `--min-rating 4.0` | Minimum star rating |
 | `--min-ratings 100` | Minimum number of ratings — filters out unreviewed books |
 | `--min-hours 5` | Minimum audio length |
@@ -196,14 +198,14 @@ deals profile list
 deals profile delete my-scifi
 ```
 
-Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, and `--deep`.
+Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, `--author`, `--exclude-author`, and `--deep`.
 
 ## Last results
 
-`deals last` re-displays results from your most recent `find` or `search` without making any API calls. You can re-filter and re-sort the cached results:
+`deals last` re-displays results from your most recent `find` or `search` without making any API calls. The table title shows the original query context. You can re-filter and re-sort the cached results:
 
 ```bash
-# Show the last results
+# Show the last results (title shows the original query)
 deals last
 
 # Re-sort by discount
@@ -211,6 +213,14 @@ deals last --sort discount
 
 # Apply new filters
 deals last --max-price 3 --min-rating 4.5
+
+# Filter by narrator or author
+deals last --narrator "R.C. Bray" --min-ratings 100
+deals last --author "Andy Weir"
+deals last --exclude-author "Sarah J. Maas"
+
+# Filter by language
+deals last --language english
 
 # Export the cached results
 deals last -o last.csv
@@ -319,7 +329,7 @@ deals recap
 deals recap --days 30
 ```
 
-The recap shows up to 10 biggest price drops, newly tracked items, and wishlist items currently at target.
+The recap shows up to 10 biggest price drops (with book titles when available), newly tracked items, and wishlist items currently at target.
 
 For automation (cron jobs, CI, monitoring):
 
@@ -356,12 +366,12 @@ Using `-o` automatically suppresses the table display (same as adding `-q`). Thi
 
 ## Marketplace support
 
-Use `--locale` to switch Audible marketplaces. Prices, currency symbols, and URLs automatically adjust:
+Use `--locale` to switch Audible marketplaces. Prices, currency symbols, URLs, and the `$/hr` column header all automatically adjust to the locale's currency:
 
 ```bash
-deals --locale uk find --genre fantasy --max-price 3    # shows £, links to audible.co.uk
-deals --locale de find --genre thriller                  # shows €, links to audible.de
-deals --locale jp find --genre sci-fi                    # shows ¥, links to audible.co.jp
+deals --locale uk find --genre fantasy --max-price 3    # shows £/hr, links to audible.co.uk
+deals --locale de find --genre thriller                  # shows €/hr, links to audible.de
+deals --locale jp find --genre sci-fi                    # shows ¥/hr, links to audible.co.jp
 ```
 
 | Locale | Currency | Domain |

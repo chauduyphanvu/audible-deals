@@ -1277,3 +1277,429 @@ class TestSearchDeepFlag:
         data = json.loads(out_file.read_text())
         asins = sorted(d["asin"] for d in data)
         assert asins == ["SD1", "SD2", "SD3", "SD4"]
+
+
+# ===================================================================
+# Improvement #6: --exclude-author flag
+# ===================================================================
+
+class TestExcludeAuthorFilter:
+    def test_exclude_author_single(self):
+        """_filter_products excludes products whose authors match the exclude substring."""
+        products = [
+            make_product(asin="EA1", authors=["Andy Weir"]),
+            make_product(asin="EA2", authors=["Brandon Sanderson"]),
+        ]
+        filtered, excluded = _filter_products(products, exclude_authors=("Andy Weir",))
+        asins = [p.asin for p in filtered]
+        assert "EA1" not in asins
+        assert "EA2" in asins
+        assert excluded == 1
+
+    def test_exclude_author_multiple(self):
+        """Multiple --exclude-author values are all applied."""
+        products = [
+            make_product(asin="EAM1", authors=["Andy Weir"]),
+            make_product(asin="EAM2", authors=["Brandon Sanderson"]),
+            make_product(asin="EAM3", authors=["Terry Pratchett"]),
+        ]
+        filtered, excluded = _filter_products(
+            products, exclude_authors=("andy", "sanderson")
+        )
+        asins = [p.asin for p in filtered]
+        assert "EAM1" not in asins
+        assert "EAM2" not in asins
+        assert "EAM3" in asins
+        assert excluded == 2
+
+    def test_exclude_author_case_insensitive(self):
+        products = [make_product(asin="EAC1", authors=["Andy Weir"])]
+        filtered, _ = _filter_products(products, exclude_authors=("ANDY WEIR",))
+        assert len(filtered) == 0
+
+    def test_exclude_author_empty_tuple_no_filter(self):
+        products = [make_product(asin="EAE1", authors=["Anyone"])]
+        filtered, excluded = _filter_products(products, exclude_authors=())
+        assert len(filtered) == 1
+        assert excluded == 0
+
+    def test_find_exclude_author_flag(self, mock_client, tmp_config):
+        """deals find --exclude-author filters out matching authors."""
+        products = [
+            make_product(asin="FEA1", price=3.0, authors=["Andy Weir"],
+                         series_name="", series_position=""),
+            make_product(asin="FEA2", price=4.0, authors=["Brandon Sanderson"],
+                         series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "find_excl_author.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1",
+            "--exclude-author", "andy weir",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "FEA1" not in asins
+        assert "FEA2" in asins
+
+    def test_last_exclude_author_flag(self, tmp_config):
+        """deals last --exclude-author filters from cache."""
+        import audible_deals.cli as cli_mod
+        products = [
+            make_product(asin="LEA1", price=3.0, authors=["Andy Weir"],
+                         series_name="", series_position=""),
+            make_product(asin="LEA2", price=4.0, authors=["Brandon Sanderson"],
+                         series_name="", series_position=""),
+        ]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([_serialize_product(p) for p in products]))
+        out_file = tmp_config / "last_excl_author.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "last", "--exclude-author", "weir", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LEA1" not in asins
+        assert "LEA2" in asins
+
+    def test_exclude_author_in_profile(self, tmp_config):
+        """profile save --exclude-author persists the exclusion."""
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "profile", "save", "no-weir",
+            "--exclude-author", "Andy Weir",
+            "--exclude-author", "Brandon Sanderson",
+        ])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        profiles = cli_mod._load_profiles()
+        assert "no-weir" in profiles
+        excluded = profiles["no-weir"]["exclude_authors"]
+        assert "Andy Weir" in excluded
+        assert "Brandon Sanderson" in excluded
+
+    def test_find_profile_exclude_author_applied(self, mock_client, tmp_config):
+        """find --profile with exclude_authors actually filters out the author."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_profiles({"no-weir": {"exclude_authors": ["Andy Weir"]}})
+        products = [
+            make_product(asin="EA1", price=3.0, authors=["Andy Weir"], series_name="", series_position=""),
+            make_product(asin="EA2", price=3.0, authors=["Pierce Brown"], series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "profile_excl.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--profile", "no-weir", "--pages", "1",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "EA1" not in asins  # Andy Weir excluded
+        assert "EA2" in asins      # Pierce Brown kept
+
+
+# ===================================================================
+# Improvement #5: --author filter
+# ===================================================================
+
+class TestAuthorFilter:
+    def test_author_substring_match(self):
+        """_filter_products filters by author substring (case-insensitive)."""
+        products = [
+            make_product(asin="A1", authors=["Andy Weir"]),
+            make_product(asin="A2", authors=["Brandon Sanderson"]),
+            make_product(asin="A3", authors=["andy waters"]),  # Different "andy"
+        ]
+        filtered, excluded = _filter_products(products, author="andy")
+        asins = [p.asin for p in filtered]
+        assert "A1" in asins
+        assert "A3" in asins
+        assert "A2" not in asins
+        assert excluded == 1
+
+    def test_author_case_insensitive(self):
+        products = [make_product(asin="CI1", authors=["Andy Weir"])]
+        filtered, _ = _filter_products(products, author="ANDY WEIR")
+        assert len(filtered) == 1
+
+    def test_author_no_match(self):
+        products = [make_product(asin="NM1", authors=["Brandon Sanderson"])]
+        filtered, _ = _filter_products(products, author="tolkien")
+        assert len(filtered) == 0
+
+    def test_author_empty_string_no_filter(self):
+        products = [make_product(asin="EF1", authors=["Anyone"])]
+        filtered, excluded = _filter_products(products, author="")
+        assert len(filtered) == 1
+        assert excluded == 0
+
+    def test_find_author_flag(self, mock_client, tmp_config):
+        """deals find --author filters by author name."""
+        products = [
+            make_product(asin="FA1", price=3.0, authors=["Andy Weir"],
+                         series_name="", series_position=""),
+            make_product(asin="FA2", price=4.0, authors=["Brandon Sanderson"],
+                         series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "find_author.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "--author", "weir",
+            "--all-languages", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "FA1" in asins
+        assert "FA2" not in asins
+
+    def test_last_author_filter(self, tmp_config):
+        """deals last --author filters by author."""
+        import audible_deals.cli as cli_mod
+        products = [
+            make_product(asin="LA1", price=3.0, authors=["Andy Weir"],
+                         series_name="", series_position=""),
+            make_product(asin="LA2", price=4.0, authors=["Brandon Sanderson"],
+                         series_name="", series_position=""),
+        ]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([_serialize_product(p) for p in products]))
+        out_file = tmp_config / "last_author.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--author", "weir", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LA1" in asins
+        assert "LA2" not in asins
+
+    def test_author_in_profile(self, tmp_config):
+        """profile save --author persists the author filter."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "weir-profile", "--author", "Andy Weir"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        profiles = cli_mod._load_profiles()
+        assert profiles["weir-profile"]["author"] == "Andy Weir"
+
+    def test_author_in_config(self, tmp_config):
+        """config set author saves and retrieves the author filter."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "author", "Andy Weir"])
+        assert result.exit_code == 0, result.output
+        result = runner.invoke(cli, ["config", "get", "author"])
+        assert result.exit_code == 0, result.output
+        assert "Andy Weir" in result.output
+
+
+# ===================================================================
+# Improvement #4: deals last shows original query context
+# ===================================================================
+
+class TestLastQueryContext:
+    def test_new_cache_format_stores_title(self, mock_client, tmp_config):
+        """find writes new-format cache with title and results."""
+        products = [make_product(asin="QC1", price=3.0, series_name="", series_position="")]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "-q",
+        ])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+        raw = json.loads(cli_mod.LAST_RESULTS_FILE.read_text())
+        assert isinstance(raw, dict)
+        assert "title" in raw
+        assert "results" in raw
+        assert isinstance(raw["results"], list)
+        assert raw["title"] != ""
+
+    def test_last_shows_original_title(self, mock_client, tmp_config):
+        """deals last shows the title from the cached query."""
+        import audible_deals.cli as cli_mod
+        products = [make_product(asin="QT1", price=3.0, series_name="", series_position="")]
+        cache_obj = {
+            "title": "Deals under $5.00 in Sci-Fi",
+            "results": [_serialize_product(p) for p in products],
+        }
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last"])
+        assert result.exit_code == 0, result.output
+        assert "Deals under $5.00 in Sci-Fi" in result.output
+
+    def test_backward_compat_plain_list(self, tmp_config):
+        """deals last handles old plain-list cache format gracefully."""
+        import audible_deals.cli as cli_mod
+        products = [make_product(asin="BC1", price=3.0, series_name="", series_position="")]
+        # Old format: plain list
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps([_serialize_product(p) for p in products]))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last"])
+        assert result.exit_code == 0, result.output
+        assert "Last results" in result.output
+
+    def test_corrupt_cache_raises(self, tmp_config):
+        """deals last raises ClickException for a corrupt (non-list, non-dict) cache."""
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text('"just a string"')
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last"])
+        assert result.exit_code != 0
+        assert "corrupt" in result.output.lower()
+
+    def test_resolve_last_refs_with_new_format(self, tmp_config):
+        """_resolve_last_references works with new cache format."""
+        import audible_deals.cli as cli_mod
+        p = make_product(asin="NF1")
+        cache_obj = {"title": "Test", "results": [_serialize_product(p)]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        asins = _resolve_last_references((1,))
+        assert asins == ["NF1"]
+
+
+# ===================================================================
+# Improvement #3: Missing filters on deals last
+# ===================================================================
+
+class TestLastFilters:
+    def _seed_cache(self, tmp_config, products):
+        import audible_deals.cli as cli_mod
+        data = [_serialize_product(p) for p in products]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+
+    def test_last_narrator_filter(self, tmp_config):
+        """deals last --narrator filters by narrator substring match."""
+        products = [
+            make_product(asin="LN1", price=3.0, narrators=["R.C. Bray"],
+                         series_name="", series_position=""),
+            make_product(asin="LN2", price=4.0, narrators=["Scott Brick"],
+                         series_name="", series_position=""),
+        ]
+        self._seed_cache(tmp_config, products)
+        out_file = tmp_config / "last_narrator.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--narrator", "bray", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LN1" in asins
+        assert "LN2" not in asins
+
+    def test_last_min_ratings_filter(self, tmp_config):
+        """deals last --min-ratings filters by number of ratings."""
+        products = [
+            make_product(asin="LR1", price=3.0, num_ratings=500,
+                         series_name="", series_position=""),
+            make_product(asin="LR2", price=4.0, num_ratings=50,
+                         series_name="", series_position=""),
+        ]
+        self._seed_cache(tmp_config, products)
+        out_file = tmp_config / "last_ratings.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--min-ratings", "100", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LR1" in asins
+        assert "LR2" not in asins
+
+    def test_last_language_filter(self, tmp_config):
+        """deals last --language filters by language."""
+        products = [
+            make_product(asin="LL1", price=3.0, language="english",
+                         series_name="", series_position=""),
+            make_product(asin="LL2", price=4.0, language="french",
+                         series_name="", series_position=""),
+        ]
+        self._seed_cache(tmp_config, products)
+        out_file = tmp_config / "last_lang.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--language", "english", "--output", str(out_file)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "LL1" in asins
+        assert "LL2" not in asins
+
+    def test_last_help_shows_new_flags(self):
+        """deals last --help should show new filter flags."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--help"])
+        assert result.exit_code == 0
+        assert "--min-ratings" in result.output
+        assert "--narrator" in result.output
+        assert "--language" in result.output
+
+
+# ===================================================================
+# Improvement #2: Recap shows titles
+# ===================================================================
+
+class TestRecapWithTitles:
+    def _write_history(self, tmp_config, asin: str, entries: list[dict]) -> None:
+        import audible_deals.cli as cli_mod
+        hist_dir = cli_mod.HISTORY_DIR
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+
+    def test_recap_shows_title_in_price_drop(self, tmp_config):
+        """recap displays the book title alongside the ASIN for price drops."""
+        import datetime
+        today = datetime.date.today().isoformat()
+        old_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        self._write_history(tmp_config, "DROPTITLE", [
+            {"date": old_date, "price": 12.00, "title": "The Drop Book"},
+            {"date": today, "price": 4.00, "title": "The Drop Book"},
+        ])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7"])
+        assert result.exit_code == 0, result.output
+        assert "The Drop Book" in result.output
+        assert "DROPTITLE" in result.output
+
+    def test_recap_fallback_no_title(self, tmp_config):
+        """recap gracefully shows just the ASIN when history entries lack a title."""
+        import datetime
+        today = datetime.date.today().isoformat()
+        old_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        # Old-format entries without "title" key
+        self._write_history(tmp_config, "NOTITLE1", [
+            {"date": old_date, "price": 10.00},
+            {"date": today, "price": 3.00},
+        ])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7"])
+        assert result.exit_code == 0, result.output
+        assert "NOTITLE1" in result.output
+
+    def test_recap_title_stored_in_record_prices(self, tmp_config):
+        """_record_prices stores the title in history entries."""
+        from audible_deals.cli import _record_prices
+        p = make_product(asin="RC01", price=5.99, title="My Title Book")
+        _record_prices([p])
+
+        import audible_deals.cli as cli_mod
+        hist_file = cli_mod.HISTORY_DIR / "RC01.json"
+        entries = json.loads(hist_file.read_text())
+        assert len(entries) == 1
+        assert entries[0]["title"] == "My Title Book"
+
+    def test_recap_shows_title_for_new_items(self, tmp_config):
+        """recap displays title for newly tracked items."""
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write_history(tmp_config, "NEWBOOK1", [
+            {"date": today, "price": 4.99, "title": "Brand New Book"},
+        ])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7"])
+        assert result.exit_code == 0, result.output
+        assert "Brand New Book" in result.output
+        assert "NEWBOOK1" in result.output

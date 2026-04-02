@@ -57,6 +57,7 @@ def display_products(
     *,
     max_price: float | None = None,
     title: str = "Results",
+    currency: str = "$",
 ) -> None:
     """Display products in a compact rich table."""
     if not products:
@@ -74,7 +75,7 @@ def display_products(
     table.add_column("Title / Author", no_wrap=True, max_width=38)
     table.add_column("Price", justify="right", width=12)
     table.add_column("Hrs", justify="right", width=7)
-    table.add_column("$/hr", justify="right", width=9)
+    table.add_column(f"{currency}/hr", justify="right", width=9)
     table.add_column("Rating", justify="right", width=10)
 
     for i, p in enumerate(products, 1):
@@ -191,6 +192,8 @@ def display_product_detail(p: Product) -> None:
 
 def display_comparison(products: list[Product]) -> None:
     """Display a side-by-side comparison of multiple products."""
+    cur = products[0].currency if products else "$"
+
     table = Table(
         title="Comparison",
         show_lines=True,
@@ -210,7 +213,7 @@ def display_comparison(products: list[Product]) -> None:
         ("List Price", [price_str(p.list_price, p.currency) for p in products]),
         ("Discount", [discount_str(p.discount_pct) or "-" for p in products]),
         ("Hours", [str(p.hours) if p.hours else "-" for p in products]),
-        ("$/hr", [_pph_str(p.price, p.hours, p.currency) for p in products]),
+        (f"{cur}/hr", [_pph_str(p.price, p.hours, p.currency) for p in products]),
         ("Rating", [rating_str(p.rating, p.num_ratings) for p in products]),
         ("Series", [
             f"{p.series_name} #{p.series_position}" if p.series_name else "-"

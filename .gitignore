@@ -21,6 +21,9 @@ htmlcov/
 # macOS
 .DS_Store
 
+# AI agents
+.claude/
+
 # Environment
 .env
 .env.*
