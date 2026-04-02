@@ -1379,11 +1379,20 @@ def wishlist_add(ctx, asins, max_price, last_refs):
 
 
 @wishlist.command("remove")
-@click.argument("asins", nargs=-1, required=True)
-def wishlist_remove(asins):
+@click.argument("asins", nargs=-1, required=False)
+@click.option("--last", "last_refs", type=int, multiple=True, help="Use result #N from last search/find (repeatable)")
+def wishlist_remove(asins, last_refs):
     """Remove ASINs from your wishlist."""
+    all_asins = list(asins)
+    if last_refs:
+        resolved = _resolve_last_references(last_refs)
+        for ref_asin, desc in resolved:
+            console.print(f"[dim]{desc}[/dim]")
+            all_asins.append(ref_asin)
+    if not all_asins:
+        raise click.UsageError("Provide at least one ASIN or use --last N.")
     items = _load_wishlist()
-    remove_set = set(asins)
+    remove_set = set(all_asins)
     before = len(items)
     items = [i for i in items if i["asin"] not in remove_set]
     _save_wishlist(items)
@@ -1392,8 +1401,10 @@ def wishlist_remove(asins):
 
 
 @wishlist.command("list")
-def wishlist_list():
+@click.pass_context
+def wishlist_list(ctx):
     """Show your wishlist."""
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     items = _load_wishlist()
     if not items:
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]")
@@ -1405,7 +1416,7 @@ def wishlist_list():
     table.add_column("Target", justify="right", width=10)
 
     for item in items:
-        target = f"${item['max_price']:.2f}" if item.get("max_price") else "-"
+        target = f"{cur}{item['max_price']:.2f}" if item.get("max_price") else "-"
         table.add_row(item["asin"], item["title"], target)
 
     console.print(table)
@@ -1691,6 +1702,9 @@ def config_reset(key):
     """Remove a key from global defaults, or clear all if no key given."""
     cfg = _load_config()
     if key is None:
+        if not click.confirm("Remove all global defaults?"):
+            console.print("[dim]Cancelled.[/dim]")
+            return
         _save_config({})
         console.print("[green]All global defaults cleared.[/green]")
         return
@@ -1848,14 +1862,21 @@ def _record_prices(products: list[Product]) -> None:
 
 
 @cli.command()
-@click.argument("asin")
+@click.argument("asin", required=False, default=None)
+@click.option("--last", "last_ref", type=int, default=None, help="Use result #N from last search/find")
 @click.pass_context
-def history(ctx, asin):
+def history(ctx, asin, last_ref):
     """Show price history for an ASIN.
 
     History is recorded automatically each time an ASIN appears in
     search/find results. Use 'deals history ASIN' to view past prices.
     """
+    if last_ref is not None:
+        resolved = _resolve_last_references((last_ref,))
+        asin, desc = resolved[0]
+        console.print(f"[dim]{desc}[/dim]")
+    if not asin:
+        raise click.UsageError("Provide an ASIN or use --last N.")
     _validate_asin(asin)
     hist_file = HISTORY_DIR / f"{asin}.json"
     if not hist_file.exists():
@@ -1938,13 +1959,15 @@ def history(ctx, asin):
 
 
 @cli.command()
-@click.option("--days", type=int, default=7, help="Look back this many days (default: 7)")
-def recap(days):
+@click.option("--days", type=click.IntRange(min=1), default=7, help="Look back this many days (default: 7)")
+@click.pass_context
+def recap(ctx, days):
     """Show a recap of price changes across tracked items.
 
     Scans price history files and reports items that dropped in price,
     new items tracked, and wishlist items at target.
     """
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     if not HISTORY_DIR.exists():
         console.print("[dim]No price history yet. Run 'deals find' or 'deals search' to start tracking.[/dim]")
         return
@@ -2013,14 +2036,14 @@ def recap(days):
     if drops:
         console.print(f"  [green]Price drops: {len(drops)}[/green]")
         for asin, title, old, new in sorted(drops, key=lambda x: x[2] - x[3], reverse=True)[:10]:
-            console.print(f"    {_label(asin, title)}  ${old:.2f} -> [green]${new:.2f}[/green]  ([green]-${old - new:.2f}[/green])")
+            console.print(f"    {_label(asin, title)}  {cur}{old:.2f} -> [green]{cur}{new:.2f}[/green]  ([green]-{cur}{old - new:.2f}[/green])")
     else:
         console.print("  [dim]No price drops[/dim]")
 
     if new_items:
         console.print(f"\n  [cyan]Newly tracked: {len(new_items)}[/cyan]")
         for asin, title, price in new_items[:10]:
-            console.print(f"    [dim]{_label(asin, title)}  ${price:.2f}[/dim]")
+            console.print(f"    [dim]{_label(asin, title)}  {cur}{price:.2f}[/dim]")
     if wishlist_hits:
         console.print(f"\n  [bold green]Wishlist items at target: {len(wishlist_hits)}[/bold green]")
         for item in wishlist_hits:

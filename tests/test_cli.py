@@ -1256,7 +1256,7 @@ class TestConfigCommands:
         import audible_deals.cli as cli_mod
         cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
         runner = CliRunner()
-        result = runner.invoke(cli, ["config", "reset"])
+        result = runner.invoke(cli, ["config", "reset"], input="y\n")
         assert result.exit_code == 0, result.output
         cfg = cli_mod._load_config()
         assert cfg == {}
@@ -2864,3 +2864,136 @@ class TestNarratorHelpText:
         result = runner.invoke(cli, ["last", "--help"])
         assert result.exit_code == 0
         assert "client-side" in result.output
+
+
+# ===================================================================
+# UX fixes: config reset confirmation, recap --days validation,
+# wishlist remove --last, history --last
+# ===================================================================
+
+class TestConfigResetConfirmation:
+    def test_reset_all_confirmed(self, tmp_config):
+        """config reset with no key clears config when user confirms."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "reset"], input="y\n")
+        assert result.exit_code == 0, result.output
+        assert "All global defaults cleared" in result.output
+        assert cli_mod._load_config() == {}
+
+    def test_reset_all_cancelled(self, tmp_config):
+        """config reset with no key leaves config intact when user cancels."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 5.0})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "reset"], input="n\n")
+        assert result.exit_code == 0, result.output
+        assert "Cancelled" in result.output
+        assert cli_mod._load_config() == {"max_price": 5.0}
+
+    def test_reset_key_no_confirmation_needed(self, tmp_config):
+        """config reset KEY skips the confirmation prompt."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "reset", "max-price"])
+        assert result.exit_code == 0, result.output
+        cfg = cli_mod._load_config()
+        assert "max_price" not in cfg
+        assert "min_rating" in cfg
+
+
+class TestRecapDaysValidation:
+    def test_days_zero_rejected(self, tmp_config):
+        """recap --days 0 is rejected as out of range."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "0"])
+        assert result.exit_code != 0
+
+    def test_days_negative_rejected(self, tmp_config):
+        """recap --days -1 is rejected as out of range."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "-1"])
+        assert result.exit_code != 0
+
+    def test_days_one_accepted(self, tmp_config):
+        """recap --days 1 is accepted (minimum valid value)."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "1"])
+        assert result.exit_code == 0, result.output
+
+    def test_days_default_accepted(self, tmp_config):
+        """recap with no --days uses default of 7 and succeeds."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap"])
+        assert result.exit_code == 0, result.output
+
+
+class TestWishlistRemoveLast:
+    def _seed_cache(self, tmp_config, products):
+        import audible_deals.cli as cli_mod
+        cache_obj = {"title": "Search: test", "results": [_serialize_product(p) for p in products]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+
+    def test_remove_last_resolves_from_cache(self, tmp_config):
+        """wishlist remove --last N resolves the ASIN from the last results cache."""
+        import audible_deals.cli as cli_mod
+        p = make_product(asin="WRL1", title="Remove Me")
+        self._seed_cache(tmp_config, [p])
+        cli_mod._save_wishlist([{"asin": "WRL1", "title": "Remove Me", "max_price": None, "added": ""}])
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "remove", "--last", "1"])
+        assert result.exit_code == 0, result.output
+        assert "Result #1" in result.output
+        assert "1 removed" in result.output
+
+    def test_remove_last_and_asin_combined(self, tmp_config):
+        """wishlist remove supports mixing positional ASINs and --last refs."""
+        import audible_deals.cli as cli_mod
+        p = make_product(asin="WRL2", title="Cache Book")
+        self._seed_cache(tmp_config, [p])
+        cli_mod._save_wishlist([
+            {"asin": "WRL2", "title": "Cache Book", "max_price": None, "added": ""},
+            {"asin": "WRL3", "title": "Direct Book", "max_price": None, "added": ""},
+        ])
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "remove", "WRL3", "--last", "1"])
+        assert result.exit_code == 0, result.output
+        assert "2 removed" in result.output
+
+    def test_remove_no_args_raises_usage_error(self, tmp_config):
+        """wishlist remove with no arguments and no --last raises a UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "remove"])
+        assert result.exit_code != 0
+        assert "ASIN" in result.output or "Usage" in result.output
+
+
+class TestHistoryLast:
+    def _seed_cache(self, tmp_config, products):
+        import audible_deals.cli as cli_mod
+        cache_obj = {"title": "Search: test", "results": [_serialize_product(p) for p in products]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+
+    def test_history_last_resolves_from_cache(self, tmp_config):
+        """history --last N resolves the ASIN from the last results cache."""
+        import audible_deals.cli as cli_mod
+        from audible_deals.cli import _record_prices
+        p = make_product(asin="HL1", price=4.99, title="Cache History Book")
+        self._seed_cache(tmp_config, [p])
+        _record_prices([p])
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["history", "--last", "1"])
+        assert result.exit_code == 0, result.output
+        assert "Result #1" in result.output
+        assert "HL1" in result.output
+
+    def test_history_no_asin_no_last_raises(self, tmp_config):
+        """history with no ASIN and no --last raises a UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["history"])
+        assert result.exit_code != 0
