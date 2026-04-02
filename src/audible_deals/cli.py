@@ -28,6 +28,11 @@ import math
 import os
 import re
 from importlib.metadata import version as _pkg_version
+
+try:
+    _VERSION = _pkg_version("audible-deals")
+except Exception:
+    _VERSION = "0.3.0"  # fallback for PyInstaller frozen builds
 try:
     import readline  # noqa: F401 — required on macOS for input() with long strings
 except ImportError:
@@ -647,7 +652,7 @@ class _HandleAuthErrors(click.Group):
 
 
 @click.group(cls=_HandleAuthErrors, invoke_without_command=True)
-@click.version_option(version=_pkg_version("audible-deals"), prog_name="deals")
+@click.version_option(version=_VERSION, prog_name="deals")
 @click.option("--locale", default="us", help="Audible marketplace (us, uk, ca, de, fr, au, jp, in, es)")
 @click.pass_context
 def cli(ctx, locale):
