@@ -283,6 +283,8 @@ def _sort_local(products: list[Product], sort: str) -> list[Product]:
         )
     elif sort == "price-per-hour":
         return sorted(products, key=_price_per_hour)
+    elif sort == "title":
+        return sorted(products, key=lambda p: p.title.lower())
     return products
 
 
