@@ -107,8 +107,13 @@ jobs:
           pip install pyinstaller
 
       - name: Build binary
+        shell: bash
         run: |
-          pyinstaller --onefile --name "${{ matrix.artifact }}" --strip --noconfirm src/audible_deals/__main__.py
+          STRIP_FLAG=""
+          if [ "$RUNNER_OS" != "Windows" ]; then
+            STRIP_FLAG="--strip"
+          fi
+          pyinstaller --onefile --name "${{ matrix.artifact }}" $STRIP_FLAG --noconfirm src/audible_deals/__main__.py
 
       - name: Upload binary
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
