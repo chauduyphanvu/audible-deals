@@ -176,6 +176,20 @@ class TestParseProduct:
         assert p.narrators == []
         assert p.authors == []
 
+    def test_null_plans_and_category_ladders(self):
+        """Library API can return null for plans/category_ladders instead of []."""
+        raw = {
+            "asin": "X", "title": "X",
+            "plans": None, "category_ladders": None,
+            "series": None, "rating": None,
+        }
+        p = parse_product(raw)
+        assert p.in_plus_catalog is False
+        assert p.categories == []
+        assert p.category_ids == []
+        assert p.series_name == ""
+        assert p.rating == 0.0
+
 
 # ===================================================================
 # Category caching (disk)
