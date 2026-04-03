@@ -144,6 +144,7 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(cli_mod, "HISTORY_DIR", tmp_path / "history")
     monkeypatch.setattr(cli_mod, "_history_dir_created", False)
     monkeypatch.setattr(cli_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json")
+    monkeypatch.setattr(cli_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
     monkeypatch.setattr(cli_mod, "CONFIG_FILE", tmp_path / "config.json")
 
     # Replace the Rich console with one that writes to a fresh stderr-like

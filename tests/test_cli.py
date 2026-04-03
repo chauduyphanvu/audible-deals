@@ -18,6 +18,7 @@ from audible_deals.cli import (
     _filter_products,
     _first_in_series,
     _load_seen_asins,
+    _save_seen_asins,
     _looks_like_person_name,
     _parse_interval,
     _price_per_hour,
@@ -3182,27 +3183,99 @@ class TestValueSort:
 # ===================================================================
 
 class TestLoadSeenAsins:
-    def test_loads_from_cache(self, tmp_config):
+    def test_loads_from_seen_file(self, tmp_config):
         import audible_deals.cli as cli_mod
-        cache = {"title": "test", "results": [{"asin": "A1"}, {"asin": "A2"}]}
-        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache))
+        cli_mod.SEEN_ASINS_FILE.write_text(json.dumps(["A1", "A2"]))
         seen = _load_seen_asins()
         assert seen == {"A1", "A2"}
 
-    def test_empty_when_no_cache(self, tmp_config):
+    def test_empty_when_no_file(self, tmp_config):
         seen = _load_seen_asins()
         assert seen == set()
 
-    def test_loads_from_legacy_list_format(self, tmp_config):
+    def test_returns_set_from_list(self, tmp_config):
         import audible_deals.cli as cli_mod
-        data = [{"asin": "B1"}, {"asin": "B2"}]
-        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        cli_mod.SEEN_ASINS_FILE.write_text(json.dumps(["B1", "B2", "B1"]))
         seen = _load_seen_asins()
         assert seen == {"B1", "B2"}
 
-    def test_skips_entries_without_asin(self, tmp_config):
+    def test_empty_on_corrupt_file(self, tmp_config):
         import audible_deals.cli as cli_mod
-        cache = {"title": "test", "results": [{"asin": "A1"}, {"title": "no asin"}]}
-        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache))
+        cli_mod.SEEN_ASINS_FILE.write_text("not valid json")
         seen = _load_seen_asins()
-        assert seen == {"A1"}
+        assert seen == set()
+
+
+# ===================================================================
+# Fix: --min-discount filter
+# ===================================================================
+
+class TestMinDiscount:
+    def test_filters_low_discount(self):
+        products = [
+            make_product(asin="HIGH", price=3.0, list_price=20.0),   # 85% off
+            make_product(asin="LOW", price=8.0, list_price=10.0),    # 20% off
+            make_product(asin="NONE", price=5.0, list_price=5.0),    # 0% off
+        ]
+        filtered, breakdown = _filter_products(products, min_discount=50)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "HIGH"
+        assert "min discount" in breakdown
+
+    def test_no_filter_when_zero(self):
+        products = [make_product(price=5.0, list_price=5.0)]
+        filtered, breakdown = _filter_products(products, min_discount=0)
+        assert len(filtered) == 1
+
+
+# ===================================================================
+# Fix: value sort tiebreaker
+# ===================================================================
+
+class TestValueSortTiebreaker:
+    def test_tiebreaker_by_rating(self):
+        """Items with same value score should sort by rating."""
+        # score 0.0 because rating == 0
+        unrated = make_product(asin="UNRATED", price=5.0, length_minutes=600, rating=0.0)
+        # score 0.0 because hours == 0
+        zero_hrs = make_product(asin="ZEROHRS", price=5.0, length_minutes=0, rating=4.5)
+        result = _sort_local([unrated, zero_hrs], "value")
+        # zero_hrs has rating 4.5 > 0.0, so it should come first
+        assert result[0].asin == "ZEROHRS"
+        assert result[1].asin == "UNRATED"
+
+
+# ===================================================================
+# Fix: cumulative seen ASINs
+# ===================================================================
+
+class TestCumulativeSeenAsins:
+    def test_save_and_load(self, tmp_config):
+        _save_seen_asins({"A1", "A2"})
+        assert _load_seen_asins() == {"A1", "A2"}
+
+    def test_cumulative_append(self, tmp_config):
+        _save_seen_asins({"A1", "A2"})
+        _save_seen_asins({"A3", "A4"})
+        assert _load_seen_asins() == {"A1", "A2", "A3", "A4"}
+
+    def test_no_duplicates(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        _save_seen_asins({"A1", "A2"})
+        _save_seen_asins({"A2", "A3"})
+        seen = _load_seen_asins()
+        assert seen == {"A1", "A2", "A3"}
+        # Verify file is a clean sorted list
+        data = json.loads(cli_mod.SEEN_ASINS_FILE.read_text())
+        assert data == sorted(data)
+
+    def test_empty_when_no_file(self, tmp_config):
+        assert _load_seen_asins() == set()
+
+    def test_clear_seen_command(self, tmp_config, mock_client):
+        _save_seen_asins({"A1", "A2"})
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--clear-seen"])
+        assert result.exit_code == 0
+        assert "cleared" in result.output.lower()
+        assert _load_seen_asins() == set()

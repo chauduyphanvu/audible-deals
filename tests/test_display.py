@@ -254,12 +254,21 @@ class TestDisplayProductsShowUrl:
         products = [make_product(asin="B001", title="URL Book", price=3.99)]
         out = _capture(display_products, products, width=200, show_url=True)
         assert "URL" in out
-        assert "audible.com/pd/B001" in out
+        assert "/pd/B001" in out
 
     def test_show_url_false_no_column(self):
         products = [make_product(asin="B001", title="No URL Book", price=3.99)]
         out = _capture(display_products, products, show_url=False)
-        assert "audible.com/pd/B001" not in out
+        assert "/pd/B001" not in out
+
+
+class TestDisplayProductsShortUrl:
+    def test_show_url_shows_short_path(self):
+        products = [make_product(asin="B001TEST", title="URL Book", price=3.99)]
+        out = _capture(display_products, products, width=200, show_url=True)
+        assert "/pd/B001TEST" in out
+        # Should NOT contain the full https:// URL
+        assert "https://" not in out
 
 
 class TestDisplaySummary:

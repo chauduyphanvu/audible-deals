@@ -174,12 +174,13 @@ deals search "Dune" --max-price 5 --show-url
 | `--min-ratings 100` | Minimum number of ratings (default: 1 for `find`, filters unreviewed books) |
 | `--min-hours 5` | Minimum audio length |
 | `--on-sale` | Only discounted items |
+| `--min-discount 70` | Only items with at least this discount percentage |
 | `--language english` | Filter by language (default: locale language) |
 | `--all-languages` | Include all languages |
 | `--first-in-series` | Only show book 1 of each series |
 | `--max-price-per-hour 0.50` | Only items under this $/hr threshold (e.g. `0.35` for heavy value filtering) |
 | `--skip-owned` | Exclude books already in your library |
-| `--exclude-seen` | Exclude ASINs from your most recent `find`/`search` results (resets each run — not cumulative) |
+| `--exclude-seen` | Exclude previously-seen ASINs (cumulative across runs; clear with `deals last --clear-seen`) |
 | `-n, --limit 20` | Cap the number of results (default: 25; use `-n 0` for unlimited) |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
 | `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` and `search`) |
@@ -541,7 +542,7 @@ deals last --max-price-per-hour 0.25 --show-url
 
 ### Explore related genres without overlap
 
-`--exclude-seen` filters out ASINs from your most recent search. It's useful for browsing adjacent genres back-to-back without seeing the same cross-listed titles twice:
+`--exclude-seen` filters out ASINs from searches you've already done. It's useful for browsing adjacent genres back-to-back without seeing the same cross-listed titles twice:
 
 ```bash
 # Browse sci-fi deals
@@ -551,7 +552,7 @@ deals find --genre sci-fi --max-price 5 --skip-owned --sort value
 deals find --genre fantasy --max-price 5 --skip-owned --exclude-seen
 ```
 
-Note: the exclusion set resets each run (it reads from the last results cache, not a cumulative log). For covering multiple keyword variations of the same topic, OR search (`|`) is the better fit.
+The seen list accumulates across runs — each search/find appends its results. Use `deals last --clear-seen` to start fresh.
 
 ### Re-examine results without a new API call
 

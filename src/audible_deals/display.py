@@ -82,7 +82,7 @@ def display_products(
     table.add_column(f"{currency}/hr", justify="right", width=9)
     table.add_column("Rating", justify="right", width=10)
     if show_url:
-        table.add_column("URL", no_wrap=True, style="dim", max_width=45)
+        table.add_column("URL", no_wrap=True, style="dim cyan", max_width=22)
 
     for i, p in enumerate(products, 1):
         cur = p.currency
@@ -125,7 +125,7 @@ def display_products(
             rating_str(p.rating, p.num_ratings),
         ]
         if show_url:
-            row.append(p.url)
+            row.append(f"/pd/{p.asin}")
         table.add_row(*row)
 
     console.print(table)

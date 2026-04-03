@@ -155,6 +155,7 @@ def _filter_products(
     exclude_category_ids: set[str] | None = None,
     genre: str = "",
     max_pph: float | None = None,
+    min_discount: int = 0,
 ) -> tuple[list[Product], dict[str, int]]:
     """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
@@ -251,11 +252,20 @@ def _filter_products(
         if (removed := before - len(filtered)):
             breakdown["excluded narrators"] = removed
 
-    if on_sale:
+    if on_sale and min_discount <= 0:
         before = len(filtered)
         filtered = [p for p in filtered if p.discount_pct is not None and p.discount_pct > 0]
         if (removed := before - len(filtered)):
             breakdown["on sale"] = removed
+
+    if min_discount > 0:
+        before = len(filtered)
+        filtered = [
+            p for p in filtered
+            if p.discount_pct is not None and p.discount_pct >= min_discount
+        ]
+        if (removed := before - len(filtered)):
+            breakdown["min discount"] = removed
 
     if exclude_category_ids:
         before = len(filtered)
@@ -314,7 +324,7 @@ def _sort_local(products: list[Product], sort: str) -> list[Product]:
     elif sort == "price-per-hour":
         return sorted(products, key=_price_per_hour)
     elif sort == "value":
-        return sorted(products, key=_value_score, reverse=True)
+        return sorted(products, key=lambda p: (_value_score(p), p.rating), reverse=True)
     elif sort == "title":
         return sorted(products, key=lambda p: p.title.lower())
     elif sort == "author":
@@ -432,7 +442,7 @@ def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
     for key in ("sort", "pages"):
         if cfg.get(key) and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
-    for key in ("min_rating", "min_ratings", "min_hours", "limit"):
+    for key in ("min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
         if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
     for key in ("language", "narrator", "author"):
@@ -451,7 +461,7 @@ def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
     for key in ("genre", "exclude_genre", "exclude_authors", "exclude_narrators", "keywords", "narrator", "author", "language"):
         if not ns.get(key) and p.get(key):
             ns[key] = p[key]
-    for key in ("max_price", "min_rating", "min_ratings", "min_hours", "limit"):
+    for key in ("max_price", "min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
         if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
             ns[key] = p[key]
     for key in ("sort", "pages"):
@@ -463,16 +473,28 @@ def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
 
 
 def _load_seen_asins() -> set[str]:
-    """Load ASINs from the last results cache for exclusion."""
+    """Load cumulative seen ASINs for exclusion."""
     try:
-        data = json_mod.loads(LAST_RESULTS_FILE.read_text())
-        if isinstance(data, dict) and "results" in data:
-            return {d["asin"] for d in data["results"] if isinstance(d, dict) and "asin" in d}
+        data = json_mod.loads(SEEN_ASINS_FILE.read_text())
         if isinstance(data, list):
-            return {d["asin"] for d in data if isinstance(d, dict) and "asin" in d}
+            return set(data)
     except (json_mod.JSONDecodeError, OSError, KeyError, TypeError):
         pass
     return set()
+
+
+def _save_seen_asins(new_asins: set[str]) -> None:
+    """Append ASINs to the cumulative seen-ASINs file."""
+    if not new_asins:
+        return
+    existing = _load_seen_asins()
+    if new_asins <= existing:
+        return
+    merged = sorted(existing | new_asins)
+    try:
+        _atomic_write(SEEN_ASINS_FILE, json_mod.dumps(merged))
+    except Exception:
+        pass
 
 
 def _merge_seen_asins(skip_asins: set[str] | None, exclude_seen: bool) -> set[str] | None:
@@ -578,6 +600,7 @@ def _postprocess_and_output(
     write_cache: bool = True,
     show_url: bool = False,
     max_pph: float | None = None,
+    min_discount: int = 0,
 ) -> None:
     """Shared post-processing pipeline for search and find commands."""
     filtered, filter_breakdown = _filter_products(
@@ -595,6 +618,7 @@ def _postprocess_and_output(
         skip_asins=skip_asins,
         exclude_category_ids=exclude_category_ids,
         max_pph=max_pph,
+        min_discount=min_discount,
     )
     filtered, editions_removed = _dedupe_editions(filtered)
     series_collapsed = 0
@@ -609,6 +633,7 @@ def _postprocess_and_output(
             _atomic_write(LAST_RESULTS_FILE, json_mod.dumps(cache_obj, ensure_ascii=False))
         except Exception:
             pass
+        _save_seen_asins({p.asin for p in filtered})
     total_before_limit = len(filtered)
     if limit is not None and limit > 0:
         filtered = filtered[:limit]
@@ -808,6 +833,7 @@ def _looks_like_person_name(query: str) -> bool:
 @click.option("--exclude-author", "exclude_authors", multiple=True, help="Exclude author (substring match, repeatable)")
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True, help="Exclude narrator (substring match, repeatable)")
 @click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
+@click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0, help="Minimum discount percentage (e.g. 70)")
 @click.option("--deep", is_flag=True, default=False, help="Scan with 3 sort orders for better coverage (3x API calls)")
 @click.option("--pages", type=click.IntRange(min=1), default=3, help="Number of pages to scan (50 items/page)")
 @click.option("--language", default="", help="Language filter (e.g. english)")
@@ -823,13 +849,14 @@ def _looks_like_person_name(query: str) -> bool:
 @click.option("--interactive", "-i", is_flag=True, default=False, help="Browse results interactively")
 @click.option("--profile", "profile_name", default=None, help="Load a saved search profile (overrides defaults, CLI flags take precedence)")
 @click.pass_context
-def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort, min_rating, min_ratings, min_hours, narrator, author, exclude_authors, exclude_narrators, on_sale, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, interactive, profile_name):
+def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort, min_rating, min_ratings, min_hours, narrator, author, exclude_authors, exclude_narrators, on_sale, min_discount, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, interactive, profile_name):
     """Search the Audible catalog by keyword."""
     if not query and not genre and not category:
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     ns = dict(
-        max_price=max_price, sort=sort, min_rating=min_rating, min_ratings=min_ratings,
-        min_hours=min_hours, language=language, narrator=narrator, author=author,
+        max_price=max_price, max_pph=max_pph, sort=sort, min_rating=min_rating,
+        min_ratings=min_ratings, min_hours=min_hours, min_discount=min_discount,
+        language=language, narrator=narrator, author=author,
         pages=pages, limit=limit,
         on_sale=on_sale, deep=deep, first_in_series=first_in_series,
         all_languages=all_languages, skip_owned=skip_owned, interactive=interactive,
@@ -842,12 +869,13 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
         if profile_name not in profiles:
             raise click.ClickException(f"Profile '{profile_name}' not found. Use 'deals profile list' to see available profiles.")
         _apply_profile_defaults(ctx, ns, profiles[profile_name])
-    (max_price, sort, min_rating, min_ratings, min_hours, language, narrator, author,
-     pages, limit, on_sale, deep, first_in_series, all_languages, skip_owned,
-     interactive, genre, exclude_genre, exclude_authors, exclude_narrators) = (
-        ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"], ns["min_hours"],
-        ns["language"], ns["narrator"], ns["author"], ns["pages"], ns["limit"],
-        ns["on_sale"], ns["deep"],
+    (max_price, max_pph, sort, min_rating, min_ratings, min_hours, min_discount,
+     language, narrator, author, pages, limit, on_sale, deep, first_in_series,
+     all_languages, skip_owned, interactive, genre, exclude_genre, exclude_authors,
+     exclude_narrators) = (
+        ns["max_price"], ns["max_pph"], ns["sort"], ns["min_rating"], ns["min_ratings"],
+        ns["min_hours"], ns["min_discount"], ns["language"], ns["narrator"], ns["author"],
+        ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
         ns["first_in_series"], ns["all_languages"], ns["skip_owned"], ns["interactive"],
         ns["genre"], ns["exclude_genre"], ns["exclude_authors"], ns["exclude_narrators"],
     )
@@ -912,8 +940,8 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
             if category_name:
                 scope += f" in {category_name}"
         else:
-            if query:
-                scope = f"'{query}'"
+            if queries[0]:
+                scope = f"'{queries[0]}'"
                 if category_name:
                     scope += f" in {category_name}"
             elif category_name:
@@ -936,8 +964,8 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
         search_title = f'Search: "{combined_query}"'
         if category_name:
             search_title += f" in {category_name}"
-    elif query:
-        search_title = f'Search: "{query}"'
+    elif queries[0]:
+        search_title = f'Search: "{queries[0]}"'
         if category_name:
             search_title += f" in {category_name}"
     else:
@@ -953,6 +981,7 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
         first_in_series=first_in_series, sort=sort, limit=limit,
         output=output, json_flag=json_flag, quiet=quiet,
         currency=cur, interactive=interactive, show_url=show_url, max_pph=max_pph,
+        min_discount=min_discount,
     )
     display_query = queries[0] if len(queries) == 1 else None
     if display_query and not author and not json_flag and not quiet and _looks_like_person_name(display_query):
@@ -1019,6 +1048,7 @@ def _fetch_with_progress(
 @click.option("--exclude-author", "exclude_authors", multiple=True, help="Exclude author (substring match, repeatable)")
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True, help="Exclude narrator (substring match, repeatable)")
 @click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
+@click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0, help="Minimum discount percentage (e.g. 70)")
 @click.option("--deep", is_flag=True, default=False, help="Scan with 3 sort orders for better coverage (3x API calls)")
 @click.option("--pages", type=click.IntRange(min=1), default=10, help="Pages to scan per sort order (50 items/page, default: 10)")
 @click.option("--language", default="", help="Language filter (e.g. english)")
@@ -1034,7 +1064,7 @@ def _fetch_with_progress(
 @click.option("--profile", "profile_name", default=None, help="Load a saved search profile (overrides defaults, CLI flags take precedence)")
 @click.option("--interactive", "-i", is_flag=True, default=False, help="Browse results interactively")
 @click.pass_context
-def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort, min_rating, min_ratings, min_hours, narrator, author, exclude_authors, exclude_narrators, on_sale, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, profile_name, interactive):
+def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort, min_rating, min_ratings, min_hours, narrator, author, exclude_authors, exclude_narrators, on_sale, min_discount, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, profile_name, interactive):
     """Find deals: browse the catalog filtered by price and genre.
 
     Scans multiple pages of the catalog, then filters client-side for
@@ -1053,8 +1083,9 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         deals find --genre sci-fi --exclude-author "Sarah J. Maas" --max-price 5
     """
     ns = dict(
-        max_price=max_price, sort=sort, min_rating=min_rating, min_ratings=min_ratings,
-        min_hours=min_hours, language=language, narrator=narrator, author=author,
+        max_price=max_price, max_pph=max_pph, sort=sort, min_rating=min_rating,
+        min_ratings=min_ratings, min_hours=min_hours, min_discount=min_discount,
+        language=language, narrator=narrator, author=author,
         pages=pages, limit=limit,
         on_sale=on_sale, deep=deep, first_in_series=first_in_series,
         all_languages=all_languages, skip_owned=skip_owned, interactive=interactive,
@@ -1067,12 +1098,13 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         if profile_name not in profiles:
             raise click.ClickException(f"Profile '{profile_name}' not found. Use 'deals profile list' to see available profiles.")
         _apply_profile_defaults(ctx, ns, profiles[profile_name])
-    (max_price, sort, min_rating, min_ratings, min_hours, language, narrator, author,
-     pages, limit, on_sale, deep, first_in_series, all_languages, skip_owned,
-     interactive, genre, exclude_genre, exclude_authors, exclude_narrators, keywords) = (
-        ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"], ns["min_hours"],
-        ns["language"], ns["narrator"], ns["author"], ns["pages"], ns["limit"],
-        ns["on_sale"], ns["deep"],
+    (max_price, max_pph, sort, min_rating, min_ratings, min_hours, min_discount,
+     language, narrator, author, pages, limit, on_sale, deep, first_in_series,
+     all_languages, skip_owned, interactive, genre, exclude_genre, exclude_authors,
+     exclude_narrators, keywords) = (
+        ns["max_price"], ns["max_pph"], ns["sort"], ns["min_rating"], ns["min_ratings"],
+        ns["min_hours"], ns["min_discount"], ns["language"], ns["narrator"], ns["author"],
+        ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
         ns["first_in_series"], ns["all_languages"], ns["skip_owned"], ns["interactive"],
         ns["genre"], ns["exclude_genre"], ns["exclude_authors"], ns["exclude_narrators"], ns["keywords"],
     )
@@ -1149,6 +1181,7 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         first_in_series=first_in_series, sort=sort, limit=limit,
         output=output, json_flag=json_flag, quiet=quiet,
         currency=cur, interactive=interactive, show_url=show_url, max_pph=max_pph,
+        min_discount=min_discount,
     )
 
 
@@ -1246,6 +1279,7 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True, help="Exclude narrator (substring match, repeatable)")
 @click.option("--language", default="", help="Language filter")
 @click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
+@click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0, help="Minimum discount percentage (e.g. 70)")
 @click.option("--first-in-series", is_flag=True, default=False, help="Show only first book per series")
 @click.option("--limit", "-n", type=int, default=None, help="Show only the top N results")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)")
@@ -1254,8 +1288,9 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
 @click.option("--show-url", is_flag=True, default=False, help="Show Audible URL for each item in the table")
 @click.option("--interactive", "-i", is_flag=True, default=False, help="Browse results interactively")
 @click.option("--clear", is_flag=True, default=False, help="Delete the cached results and exit")
+@click.option("--clear-seen", is_flag=True, default=False, help="Clear the cumulative seen-ASINs list and exit")
 @click.pass_context
-def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, narrator, author, exclude_authors, exclude_narrators, language, on_sale, first_in_series, limit, output, json_flag, quiet, show_url, interactive, clear):
+def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, narrator, author, exclude_authors, exclude_narrators, language, on_sale, min_discount, first_in_series, limit, output, json_flag, quiet, show_url, interactive, clear, clear_seen):
     """Re-display results from the last search or find, with optional re-filtering.
 
     No API calls are made — results are read from the local cache.
@@ -1268,13 +1303,24 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
         deals last --narrator "R.C. Bray" --min-ratings 100
         deals last --author "Andy Weir"
         deals last --clear
+        deals last --clear-seen
     """
+    did_clear = False
+    if clear_seen:
+        try:
+            SEEN_ASINS_FILE.unlink()
+            console.print("[green]Seen ASINs list cleared.[/green]")
+        except FileNotFoundError:
+            console.print("[dim]No seen ASINs to clear.[/dim]")
+        did_clear = True
     if clear:
         try:
             LAST_RESULTS_FILE.unlink()
             console.print("[green]Last results cache cleared.[/green]")
         except FileNotFoundError:
             console.print("[dim]No cached results to clear.[/dim]")
+        did_clear = True
+    if did_clear:
         return
     if output and ctx.get_parameter_source("quiet") != _CL:
         quiet = True
@@ -1296,7 +1342,7 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
         first_in_series=first_in_series, sort=effective_sort, limit=limit,
         output=output, json_flag=json_flag, quiet=quiet,
         currency=cur, interactive=interactive, write_cache=False,
-        show_url=show_url, max_pph=max_pph,
+        show_url=show_url, max_pph=max_pph, min_discount=min_discount,
     )
 
 
@@ -1702,6 +1748,7 @@ def watch(ctx, every, buy_only, sort_by, show_url):
 # ---------------------------------------------------------------------------
 PROFILES_FILE = CONFIG_DIR / "profiles.json"
 LAST_RESULTS_FILE = CONFIG_DIR / "last_results.json"
+SEEN_ASINS_FILE = CONFIG_DIR / "seen_asins.json"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 
 
@@ -1723,8 +1770,9 @@ def _save_profiles(profiles: dict[str, dict]) -> None:
 # ---------------------------------------------------------------------------
 
 _CONFIG_SCHEMA: dict[str, type] = {
-    "skip_owned": bool, "max_price": float, "min_rating": float,
-    "min_ratings": int, "min_hours": float, "language": str,
+    "skip_owned": bool, "max_price": float, "max_pph": float,
+    "min_rating": float, "min_ratings": int, "min_hours": float,
+    "min_discount": int, "language": str,
     "locale": str, "sort": str, "pages": int, "on_sale": bool,
     "deep": bool, "first_in_series": bool, "all_languages": bool,
     "interactive": bool, "limit": int, "narrator": str, "author": str,
