@@ -194,11 +194,11 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     narrators = [n.get("name", "") for n in (raw.get("narrators") or []) if n.get("name")]
 
     # Rating - nested in overall_distribution
-    rating_data = raw.get("rating", {})
+    rating_data = raw.get("rating") or {}
     rating = 0.0
     num_ratings = 0
     if isinstance(rating_data, dict):
-        dist = rating_data.get("overall_distribution", {})
+        dist = rating_data.get("overall_distribution") or {}
         try:
             rating = float(dist.get("display_average_rating", 0) or 0)
         except (ValueError, TypeError):
@@ -211,8 +211,8 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     # Categories - flatten ladder structure
     categories: list[str] = []
     category_ids: list[str] = []
-    for ladder in raw.get("category_ladders", []):
-        for cat in ladder.get("ladder", []):
+    for ladder in (raw.get("category_ladders") or []):
+        for cat in (ladder.get("ladder") or []):
             name = cat.get("name", "")
             cid = cat.get("id", "")
             if name and name not in categories:
@@ -223,7 +223,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     # Series info
     series_name = ""
     series_position = ""
-    series_list = raw.get("series", [])
+    series_list = raw.get("series") or []
     if series_list:
         s = series_list[0]
         series_name = s.get("title", "")
@@ -231,7 +231,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
 
     # Audible Plus detection
     in_plus = False
-    for plan in raw.get("plans", []):
+    for plan in (raw.get("plans") or []):
         pname = plan.get("plan_name", "")
         if "Plus" in pname or "AYCE" in pname:
             in_plus = True
