@@ -135,17 +135,23 @@ def tmp_config(tmp_path, monkeypatch):
     import audible_deals.client as client_mod
     import audible_deals.cli as cli_mod
     import audible_deals.display as display_mod
+    import audible_deals.state as state_mod
     from rich.console import Console
 
     monkeypatch.setattr(client_mod, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(client_mod, "AUTH_FILE", tmp_path / "auth.json")
     monkeypatch.setattr(client_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json")
-    monkeypatch.setattr(cli_mod, "WISHLIST_FILE", tmp_path / "wishlist.json")
     monkeypatch.setattr(cli_mod, "HISTORY_DIR", tmp_path / "history")
-    monkeypatch.setattr(cli_mod, "_history_dir_created", False)
     monkeypatch.setattr(cli_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json")
     monkeypatch.setattr(cli_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
-    monkeypatch.setattr(cli_mod, "CONFIG_FILE", tmp_path / "config.json")
+    # Patch state module where the implementations now live
+    monkeypatch.setattr(state_mod, "WISHLIST_FILE", tmp_path / "wishlist.json")
+    monkeypatch.setattr(state_mod, "HISTORY_DIR", tmp_path / "history")
+    monkeypatch.setattr(state_mod, "_history_dir_created", False)
+    monkeypatch.setattr(state_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json")
+    monkeypatch.setattr(state_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
+    monkeypatch.setattr(state_mod, "CONFIG_FILE", tmp_path / "config.json")
+    monkeypatch.setattr(state_mod, "PROFILES_FILE", tmp_path / "profiles.json")
 
     # Replace the Rich console with one that writes to a fresh stderr-like
     # stream, so it doesn't conflict with Click's CliRunner file handling.

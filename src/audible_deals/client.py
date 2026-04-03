@@ -15,50 +15,20 @@ from typing import Any, Iterator
 
 import audible
 
-# Response groups for catalog queries — comprehensive set for full product data.
-CATALOG_RESPONSE_GROUPS = ",".join([
-    "product_attrs",
-    "product_desc",
-    "contributors",
-    "rating",
-    "media",
-    "category_ladders",
-    "series",
-    "product_plan_details",
-    "product_plans",
-    "price",
-])
-
-# Locale → currency symbol and Audible domain
-LOCALE_CURRENCY: dict[str, str] = {
-    "us": "$", "uk": "£", "ca": "CA$", "au": "A$",
-    "in": "₹", "de": "€", "fr": "€", "jp": "¥", "es": "€",
-}
-LOCALE_DOMAIN: dict[str, str] = {
-    "us": "www.audible.com", "uk": "www.audible.co.uk",
-    "ca": "www.audible.ca", "au": "www.audible.com.au",
-    "in": "www.audible.in", "de": "www.audible.de",
-    "fr": "www.audible.fr", "jp": "www.audible.co.jp",
-    "es": "www.audible.es",
-}
-
-CONFIG_DIR = Path.home() / ".config" / "audible-deals"
-AUTH_FILE = CONFIG_DIR / "auth.json"
-CATEGORIES_CACHE_FILE = CONFIG_DIR / "categories_cache.json"
-CATEGORIES_CACHE_TTL = 86400 * 7  # 7 days
+from audible_deals.constants import (
+    AUTH_FILE,
+    CATALOG_RESPONSE_GROUPS,
+    CATEGORIES_CACHE_FILE,
+    CATEGORIES_CACHE_TTL,
+    CONFIG_DIR,
+    GENRE_ALIASES,
+    LOCALE_CURRENCY,
+    LOCALE_DOMAIN,
+    MAX_PAGE_SIZE,
+)
 
 
-def _atomic_write_simple(path: Path, content: str) -> None:
-    """Write content to path atomically via temp file + rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
+from audible_deals.constants import _atomic_write as _atomic_write_simple
 
 
 _CATEGORY_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,30}$")
@@ -81,51 +51,6 @@ def _restrictive_umask():
         yield
     finally:
         os.umask(old)
-
-
-MAX_PAGE_SIZE = 50
-
-# Common genre abbreviations for fuzzy matching
-GENRE_ALIASES: dict[str, str] = {
-    "sci-fi": "science fiction",
-    "scifi": "science fiction",
-    "sf": "science fiction",
-    "fantasy": "science fiction & fantasy",
-    "mystery": "mystery, thriller & suspense",
-    "thriller": "mystery, thriller & suspense",
-    "suspense": "mystery, thriller & suspense",
-    "bio": "biographies & memoirs",
-    "memoir": "biographies & memoirs",
-    "memoirs": "biographies & memoirs",
-    "ya": "teen & young adult",
-    "young adult": "teen & young adult",
-    "kids": "children's audiobooks",
-    "children": "children's audiobooks",
-    "biz": "business & careers",
-    "business": "business & careers",
-    "self-help": "relationships, parenting & personal development",
-    "selfhelp": "relationships, parenting & personal development",
-    "history": "history",
-    "romance": "romance",
-    "erotica": "erotica",
-    "comedy": "comedy & humor",
-    "humor": "comedy & humor",
-    "tech": "computers & technology",
-    "science": "science & engineering",
-    "religion": "religion & spirituality",
-    "politics": "politics & social sciences",
-    "sports": "sports & outdoors",
-    "finance": "money & finance",
-    "money": "money & finance",
-    "lgbtq": "lgbtq+",
-    "health": "health & wellness",
-    "fiction": "literature & fiction",
-    "lit": "literature & fiction",
-    "horror": "mystery, thriller & suspense",
-    "true crime": "mystery, thriller & suspense",
-    "historical fiction": "literature & fiction",
-    "historical": "history",
-}
 
 
 @dataclass

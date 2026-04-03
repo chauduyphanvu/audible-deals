@@ -800,17 +800,21 @@ class TestWatchCommand:
         mock_client.get_products_batch.return_value = [
             make_product(asin="W1", title="URL Book", price=5.0),
         ]
-        # Patch the cli console to use a wide fixed-width instance so Rich
+        # Patch the console to use a wide fixed-width instance so Rich
         # does not truncate the URL cell value in a narrow test environment
+        import audible_deals.display as display_mod
         buf = StringIO()
         wide_console = Console(file=buf, width=200, highlight=False)
-        original = cli_mod.console
+        original_cli = cli_mod.console
+        original_display = display_mod.console
         cli_mod.console = wide_console
+        display_mod.console = wide_console
         try:
             runner = CliRunner()
             result = runner.invoke(cli, ["watch", "--show-url"])
         finally:
-            cli_mod.console = original
+            cli_mod.console = original_cli
+            display_mod.console = original_display
         assert result.exit_code == 0, result.output
         captured = buf.getvalue()
         assert "URL" in captured
@@ -944,7 +948,7 @@ class TestWebhookValidation:
     def test_rejects_private_ip(self, monkeypatch):
         import socket
         monkeypatch.setattr(
-            "audible_deals.cli.socket.getaddrinfo",
+            "audible_deals.utils.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("10.0.0.1", 0))],
         )
         with pytest.raises(click.BadParameter, match="non-public"):
@@ -953,7 +957,7 @@ class TestWebhookValidation:
     def test_rejects_link_local(self, monkeypatch):
         import socket
         monkeypatch.setattr(
-            "audible_deals.cli.socket.getaddrinfo",
+            "audible_deals.utils.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("169.254.169.254", 0))],
         )
         with pytest.raises(click.BadParameter, match="non-public"):
@@ -962,7 +966,7 @@ class TestWebhookValidation:
     def test_accepts_public_ip(self, monkeypatch):
         import socket
         monkeypatch.setattr(
-            "audible_deals.cli.socket.getaddrinfo",
+            "audible_deals.utils.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
         )
         _validate_webhook_url("https://example.com/hook")  # should not raise
@@ -970,7 +974,7 @@ class TestWebhookValidation:
     def test_rejects_unresolvable_host(self, monkeypatch):
         import socket
         monkeypatch.setattr(
-            "audible_deals.cli.socket.getaddrinfo",
+            "audible_deals.utils.socket.getaddrinfo",
             lambda host, port: (_ for _ in ()).throw(socket.gaierror("Name not resolved")),
         )
         with pytest.raises(click.BadParameter, match="Cannot resolve"):
