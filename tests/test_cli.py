@@ -646,6 +646,29 @@ class TestWishlistSyncCommand:
         assert result.exit_code == 0, result.output
         assert "WS4" in result.output
 
+    def test_sync_update_changes_existing_price(self, mock_client, tmp_config):
+        """--update with --max-price updates target price for existing items."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "WS1", "title": "Old Price Book", "max_price": 20.0, "added": ""},
+        ])
+        mock_client.get_wishlist.return_value = [
+            make_product(asin="WS1", title="Old Price Book"),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "sync", "--max-price", "5", "--update"])
+        assert result.exit_code == 0, result.output
+        items = cli_mod._load_wishlist()
+        assert items[0]["max_price"] == 5.0
+        assert "1 updated" in result.output
+
+    def test_sync_update_without_max_price_errors(self, mock_client, tmp_config):
+        """--update without --max-price raises an error."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "sync", "--update"])
+        assert result.exit_code == 2
+        assert "requires --max-price" in result.output
+
 
 class TestLibraryCommand:
 
@@ -727,6 +750,84 @@ class TestWatchCommand:
         result = runner.invoke(cli, ["watch"])
         assert result.exit_code == 0, result.output
         assert "BUY" in result.output
+
+    def test_watch_buy_only(self, mock_client, tmp_config):
+        """--buy-only filters to only items at or below target."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "W1", "title": "Cheap Book", "max_price": 10.0},
+            {"asin": "W2", "title": "Expensive Book", "max_price": 3.0},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="W1", title="Cheap Book", price=5.0, list_price=20.0),
+            make_product(asin="W2", title="Expensive Book", price=15.0, list_price=20.0),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch", "--buy-only"])
+        assert result.exit_code == 0, result.output
+        assert "Cheap Book" in result.output
+        assert "Expensive Book" not in result.output
+
+    def test_watch_sort_by_title(self, mock_client, tmp_config):
+        """--sort title orders output alphabetically."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "W1", "title": "Zebra Book", "max_price": 10.0},
+            {"asin": "W2", "title": "Alpha Book", "max_price": 10.0},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="W1", title="Zebra Book", price=5.0),
+            make_product(asin="W2", title="Alpha Book", price=5.0),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch", "--sort", "title"])
+        assert result.exit_code == 0, result.output
+        alpha_pos = result.output.index("Alpha Book")
+        zebra_pos = result.output.index("Zebra Book")
+        assert alpha_pos < zebra_pos
+
+    def test_watch_show_url(self, mock_client, tmp_config):
+        """--show-url adds URL column to output."""
+        from io import StringIO
+        from rich.console import Console
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "W1", "title": "URL Book", "max_price": 10.0},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="W1", title="URL Book", price=5.0),
+        ]
+        # Patch the cli console to use a wide fixed-width instance so Rich
+        # does not truncate the URL cell value in a narrow test environment
+        buf = StringIO()
+        wide_console = Console(file=buf, width=200, highlight=False)
+        original = cli_mod.console
+        cli_mod.console = wide_console
+        try:
+            runner = CliRunner()
+            result = runner.invoke(cli, ["watch", "--show-url"])
+        finally:
+            cli_mod.console = original
+        assert result.exit_code == 0, result.output
+        captured = buf.getvalue()
+        assert "URL" in captured
+        assert "/pd/W1" in captured
+
+    @pytest.mark.parametrize("sort_key", ["author", "asin"])
+    def test_watch_sort_keys(self, mock_client, tmp_config, sort_key):
+        """--sort author and --sort asin run without error."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "W1", "title": "Book A", "max_price": 10.0},
+            {"asin": "W2", "title": "Book B", "max_price": 10.0},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="W1", title="Book A", price=5.0, authors=["Zeta Author"]),
+            make_product(asin="W2", title="Book B", price=5.0, authors=["Alpha Author"]),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch", "--sort", sort_key])
+        assert result.exit_code == 0, result.output
 
 
 class TestHistoryCommand:

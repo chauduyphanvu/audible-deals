@@ -289,7 +289,7 @@ def _sort_local(products: list[Product], sort: str) -> list[Product]:
         return sorted(products, key=lambda p: p.rating, reverse=True)
     elif sort == "length":
         return sorted(products, key=lambda p: p.length_minutes, reverse=True)
-    elif sort == "date":
+    elif sort in ("date", "release-date"):
         return sorted(products, key=lambda p: p.release_date or "", reverse=True)
     elif sort == "discount":
         return sorted(
@@ -301,6 +301,10 @@ def _sort_local(products: list[Product], sort: str) -> list[Product]:
         return sorted(products, key=_price_per_hour)
     elif sort == "title":
         return sorted(products, key=lambda p: p.title.lower())
+    elif sort == "author":
+        return sorted(products, key=lambda p: p.authors_str.lower())
+    elif sort == "asin":
+        return sorted(products, key=lambda p: p.asin)
     return products
 
 
@@ -1429,8 +1433,9 @@ def wishlist_list(ctx):
 
 @wishlist.command("sync")
 @click.option("--max-price", type=float, default=None, help="Set target price for all synced items")
+@click.option("--update", is_flag=True, default=False, help="Update target price for existing items too")
 @click.pass_context
-def wishlist_sync(ctx, max_price):
+def wishlist_sync(ctx, max_price, update):
     """Sync your Audible account wishlist into the local watchlist.
 
     Fetches all items from your Audible account wishlist and adds any that
@@ -1440,19 +1445,30 @@ def wishlist_sync(ctx, max_price):
     Examples:
         deals wishlist sync
         deals wishlist sync --max-price 5
+        deals wishlist sync --max-price 5 --update
     """
+    if update and max_price is None:
+        raise click.UsageError("--update requires --max-price to be set")
+
     dc = _get_client(ctx.obj["locale"])
     with dc:
         audible_items = dc.get_wishlist()
 
     local_items = _load_wishlist()
-    existing_asins = {item["asin"] for item in local_items}
+    local_by_asin = {item["asin"]: item for item in local_items}
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
 
     added = 0
     skipped = 0
+    updated = 0
     for product in audible_items:
-        if product.asin in existing_asins:
-            skipped += 1
+        if product.asin in local_by_asin:
+            if update:
+                local_by_asin[product.asin]["max_price"] = max_price
+                updated += 1
+                console.print(f"[yellow]~[/yellow] {product.title} ({product.asin}) → target {cur}{max_price:.2f}")
+            else:
+                skipped += 1
             continue
         local_items.append(_wishlist_entry(product, max_price))
         added += 1
@@ -1461,6 +1477,7 @@ def wishlist_sync(ctx, max_price):
     _save_wishlist(local_items)
     console.print(
         f"\n[bold]{added}[/bold] synced, "
+        f"{updated} updated, "
         f"{skipped} already tracked, "
         f"{len(local_items)} total on wishlist"
     )
@@ -1491,7 +1508,7 @@ def _parse_interval(value: str) -> int:
     return total
 
 
-def _watch_once(ctx: click.Context) -> int:
+def _watch_once(ctx: click.Context, buy_only: bool = False, sort_by: str | None = None, show_url: bool = False) -> int:
     """Run a single wishlist price check. Returns the number of BUY hits."""
     items = _load_wishlist()
     if not items:
@@ -1512,11 +1529,16 @@ def _watch_once(ctx: click.Context) -> int:
     if not products:
         return 0
 
+    if sort_by:
+        products = _sort_local(products, sort_by)
+
     table = Table(title="Wishlist Price Check", show_lines=False, padding=(0, 1), title_style="bold")
     table.add_column("Title", max_width=35)
     table.add_column("Price", justify="right", width=12)
     table.add_column("Target", justify="right", width=10)
     table.add_column("Status", width=10)
+    if show_url:
+        table.add_column("URL", max_width=50)
 
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     hits = 0
@@ -1524,7 +1546,8 @@ def _watch_once(ctx: click.Context) -> int:
         target = targets.get(p.asin)
         target_str = f"{cur}{target:.2f}" if target else "-"
         p_str = f"{cur}{p.price:.2f}" if p.price is not None else "-"
-        if target and p.price is not None and p.price <= target:
+        is_buy = target and p.price is not None and p.price <= target
+        if is_buy:
             status = "[bold green]BUY[/bold green]"
             p_str = f"[bold green]{p_str}[/bold green]"
             hits += 1
@@ -1532,12 +1555,17 @@ def _watch_once(ctx: click.Context) -> int:
             status = f"[yellow]-{p.discount_pct}%[/yellow]"
         else:
             status = "[dim]waiting[/dim]"
-        table.add_row(
+        if buy_only and not is_buy:
+            continue
+        row = [
             f"{p.title}\n[dim]{p.authors_str}  [cyan]{p.asin}[/cyan][/dim]",
             p_str,
             target_str,
             status,
-        )
+        ]
+        if show_url:
+            row.append(p.url)
+        table.add_row(*row)
 
     console.print(table)
     if hits:
@@ -1549,8 +1577,11 @@ def _watch_once(ctx: click.Context) -> int:
 
 @cli.command()
 @click.option("--every", default=None, help="Re-check on an interval (e.g. '30m', '2h', '1h30m'). Runs until interrupted.")
+@click.option("--buy-only", is_flag=True, default=False, help="Only show items at or below target price")
+@click.option("--sort", "sort_by", type=click.Choice(["title", "author", "price", "asin", "release-date"], case_sensitive=False), default=None, help="Sort results by field")
+@click.option("--show-url", is_flag=True, default=False, help="Show Audible URL for each item")
 @click.pass_context
-def watch(ctx, every):
+def watch(ctx, every, buy_only, sort_by, show_url):
     """Check wishlist prices and highlight deals.
 
     Fetches current prices for all wishlist items and shows which ones
@@ -1564,16 +1595,19 @@ def watch(ctx, every):
         deals watch
         deals watch --every 30m
         deals watch --every 2h
+        deals watch --buy-only
+        deals watch --sort title
+        deals watch --show-url
     """
     if not every:
-        _watch_once(ctx)
+        _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
         return
 
     interval = _parse_interval(every)
     console.print(f"[dim]Watching every {every} (Ctrl+C to stop)...[/dim]\n")
     try:
         while True:
-            _watch_once(ctx)
+            _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
             console.print(f"\n  [dim]Next check in {every}... (Ctrl+C to stop)[/dim]\n")
             time.sleep(interval)
     except KeyboardInterrupt:
