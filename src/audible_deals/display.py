@@ -58,6 +58,7 @@ def display_products(
     max_price: float | None = None,
     title: str = "Results",
     currency: str = "$",
+    show_url: bool = False,
 ) -> None:
     """Display products in a compact rich table."""
     if not products:
@@ -80,6 +81,8 @@ def display_products(
     table.add_column("Hrs", justify="right", width=7)
     table.add_column(f"{currency}/hr", justify="right", width=9)
     table.add_column("Rating", justify="right", width=10)
+    if show_url:
+        table.add_column("URL", no_wrap=True, style="dim", max_width=45)
 
     for i, p in enumerate(products, 1):
         cur = p.currency
@@ -113,14 +116,17 @@ def display_products(
             meta = f"[cyan]{p.asin}[/cyan]"
         title_line += f"\n[dim]{meta}[/dim]"
 
-        table.add_row(
+        row = [
             str(i),
             title_line,
             p_str,
             str(p.hours) if p.hours else "-",
             _pph_str(p.price, p.hours, cur),
             rating_str(p.rating, p.num_ratings),
-        )
+        ]
+        if show_url:
+            row.append(p.url)
+        table.add_row(*row)
 
     console.print(table)
 

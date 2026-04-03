@@ -17,12 +17,14 @@ from audible_deals.cli import (
     _fetch_with_progress,
     _filter_products,
     _first_in_series,
+    _load_seen_asins,
     _looks_like_person_name,
     _parse_interval,
     _price_per_hour,
     _resolve_last_references,
     _serialize_product,
     _sort_local,
+    _value_score,
     cli,
 )
 from audible_deals.client import Product
@@ -3098,3 +3100,109 @@ class TestHistoryLast:
         runner = CliRunner()
         result = runner.invoke(cli, ["history"])
         assert result.exit_code != 0
+
+
+# ===================================================================
+# Feature: --max-price-per-hour filter
+# ===================================================================
+
+class TestMaxPricePerHour:
+    def test_filters_high_pph(self):
+        products = [
+            make_product(asin="CHEAP", price=2.0, length_minutes=600),  # $0.20/hr
+            make_product(asin="EXPENSIVE", price=10.0, length_minutes=60),  # $10/hr
+        ]
+        filtered, breakdown = _filter_products(products, max_pph=1.0)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "CHEAP"
+        assert "max $/hr" in breakdown
+
+    def test_no_filter_when_none(self):
+        products = [make_product(price=10.0, length_minutes=60)]
+        filtered, breakdown = _filter_products(products, max_pph=None)
+        assert len(filtered) == 1
+
+    def test_excludes_items_with_no_price(self):
+        products = [
+            make_product(asin="NOPRICE", price=None, length_minutes=600),
+            make_product(asin="PRICED", price=2.0, length_minutes=600),
+        ]
+        filtered, breakdown = _filter_products(products, max_pph=1.0)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "PRICED"
+
+    def test_excludes_items_with_zero_hours(self):
+        products = [
+            make_product(asin="ZEROHRS", price=1.0, length_minutes=0),
+            make_product(asin="PRICED", price=2.0, length_minutes=600),
+        ]
+        filtered, breakdown = _filter_products(products, max_pph=1.0)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "PRICED"
+
+
+# ===================================================================
+# Feature: --sort value (composite sort)
+# ===================================================================
+
+class TestValueSort:
+    def test_value_sort(self):
+        high_value = make_product(asin="HV", price=2.0, length_minutes=1200, rating=4.8)
+        # score = (4.8 * 20) / 2 = 48
+        low_value = make_product(asin="LV", price=10.0, length_minutes=60, rating=3.0)
+        # score = (3.0 * 1) / 10 = 0.3
+        result = _sort_local([low_value, high_value], "value")
+        assert result[0].asin == "HV"
+        assert result[1].asin == "LV"
+
+    def test_value_score_zero_price(self):
+        p = make_product(price=0.0, length_minutes=600, rating=4.5)
+        assert _value_score(p) == 0.0
+
+    def test_value_score_none_price(self):
+        p = make_product(price=None, length_minutes=600, rating=4.5)
+        assert _value_score(p) == 0.0
+
+    def test_value_score_zero_hours(self):
+        p = make_product(price=5.0, length_minutes=0, rating=4.5)
+        assert _value_score(p) == 0.0
+
+    def test_value_score_zero_rating(self):
+        p = make_product(price=5.0, length_minutes=600, rating=0.0)
+        assert _value_score(p) == 0.0
+
+    def test_value_score_positive(self):
+        p = make_product(price=2.0, length_minutes=600, rating=4.0)
+        # (4.0 * 10) / 2 = 20
+        assert _value_score(p) == pytest.approx(20.0)
+
+
+# ===================================================================
+# Feature: _load_seen_asins
+# ===================================================================
+
+class TestLoadSeenAsins:
+    def test_loads_from_cache(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cache = {"title": "test", "results": [{"asin": "A1"}, {"asin": "A2"}]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache))
+        seen = _load_seen_asins()
+        assert seen == {"A1", "A2"}
+
+    def test_empty_when_no_cache(self, tmp_config):
+        seen = _load_seen_asins()
+        assert seen == set()
+
+    def test_loads_from_legacy_list_format(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        data = [{"asin": "B1"}, {"asin": "B2"}]
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        seen = _load_seen_asins()
+        assert seen == {"B1", "B2"}
+
+    def test_skips_entries_without_asin(self, tmp_config):
+        import audible_deals.cli as cli_mod
+        cache = {"title": "test", "results": [{"asin": "A1"}, {"title": "no asin"}]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache))
+        seen = _load_seen_asins()
+        assert seen == {"A1"}

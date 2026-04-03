@@ -121,8 +121,14 @@ deals search "Red Rising" --first-in-series
 # Deep scan for broader coverage
 deals search "Sanderson" --deep --max-price 5
 
+# OR search — combine keywords, deduplicate results automatically
+deals search "WWII | second world war | world war 2" --max-price 5 --on-sale
+
 # Browse a genre without a keyword (QUERY is optional with --genre)
 deals search --genre romance --max-price 3
+
+# Show Audible URLs in the table
+deals search "Dune" --max-price 5 --show-url
 ```
 
 ## Commands
@@ -171,10 +177,13 @@ deals search --genre romance --max-price 3
 | `--language english` | Filter by language (default: locale language) |
 | `--all-languages` | Include all languages |
 | `--first-in-series` | Only show book 1 of each series |
+| `--max-price-per-hour 0.50` | Only items under this $/hr threshold (e.g. `0.35` for heavy value filtering) |
 | `--skip-owned` | Exclude books already in your library |
+| `--exclude-seen` | Exclude ASINs from the last `find`/`search` results — keeps subsequent searches fresh |
 | `-n, --limit 20` | Cap the number of results (default: 25; use `-n 0` for unlimited) |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
 | `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` and `search`) |
+| `--show-url` | Add a URL column to the results table |
 | `-i, --interactive` | Browse results interactively after the table is shown |
 | `--profile NAME` | Load a saved search profile (`find` and `search`) |
 
@@ -188,6 +197,7 @@ deals search --genre romance --max-price 3
 | `-price` | Most expensive first |
 | `discount` | Biggest discount percentage first |
 | `price-per-hour` | Best value — lowest cost per hour of audio (default for `find`) |
+| `value` | Composite score: `(rating × hours) / price` — favors long, highly-rated, cheap books |
 | `rating` | Highest rated first |
 | `bestsellers` | Audible's bestseller ranking |
 | `length` | Longest first |
@@ -517,6 +527,19 @@ deals config set min-rating 3.5
 # Now every find/search uses these defaults
 deals find --genre sci-fi
 deals search "Stephen King"
+```
+
+### Value hunting across keyword variations
+
+```bash
+# OR search covers multiple phrasings in one pass, deduped automatically
+deals search "WWII | second world war" --max-price 5 --on-sale --skip-owned --sort value
+
+# Re-filter for only the best $/hr deals, with URLs for quick buying
+deals last --max-price-per-hour 0.25 --show-url
+
+# Next search: exclude everything you've already seen
+deals search "world war 2" --max-price 5 --on-sale --skip-owned --exclude-seen
 ```
 
 ### Re-examine results without a new API call

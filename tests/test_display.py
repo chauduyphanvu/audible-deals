@@ -106,10 +106,10 @@ class TestPphStr:
 # Table rendering (smoke tests — verify no crash and output contains key data)
 # ===================================================================
 
-def _capture(func, *args, **kwargs):
+def _capture(func, *args, width: int = 120, **kwargs):
     """Run a display function and capture its Rich output as plain text."""
     buf = StringIO()
-    console = Console(file=buf, force_terminal=False, width=120)
+    console = Console(file=buf, force_terminal=False, width=width)
     # Temporarily replace the module console
     import audible_deals.display as display_mod
     original = display_mod.console
@@ -247,6 +247,19 @@ class TestDisplayComparison:
         p2 = make_product(asin="A2", title="Book B", price=10.0, length_minutes=600, locale="uk")
         out = _capture(display_comparison, [p1, p2])
         assert "£/hr" in out
+
+
+class TestDisplayProductsShowUrl:
+    def test_show_url_adds_column(self):
+        products = [make_product(asin="B001", title="URL Book", price=3.99)]
+        out = _capture(display_products, products, width=200, show_url=True)
+        assert "URL" in out
+        assert "audible.com/pd/B001" in out
+
+    def test_show_url_false_no_column(self):
+        products = [make_product(asin="B001", title="No URL Book", price=3.99)]
+        out = _capture(display_products, products, show_url=False)
+        assert "audible.com/pd/B001" not in out
 
 
 class TestDisplaySummary:
