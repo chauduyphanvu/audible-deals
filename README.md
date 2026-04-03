@@ -349,6 +349,9 @@ deals wishlist add B00R6S1RCY B00I2VWW5U --max-price 5
 # Or import everything from your Audible account wishlist at once
 deals wishlist sync --max-price 5
 
+# Update the target price for all existing items
+deals wishlist sync --max-price 3 --update
+
 # Check current prices — shows BUY for items at/below target
 deals watch
 
@@ -359,7 +362,7 @@ deals notify --webhook https://hooks.slack.com/services/...
 deals history B00R6S1RCY
 ```
 
-`wishlist sync` pulls books you've already saved on Audible's website into the local watchlist. This is useful if you've been saving books on Audible and want to start tracking their prices without manually adding each ASIN. Items already tracked locally are skipped — re-running sync is safe.
+`wishlist sync` pulls books you've already saved on Audible's website into the local watchlist. This is useful if you've been saving books on Audible and want to start tracking their prices without manually adding each ASIN. Items already tracked locally are skipped — re-running sync is safe. Use `--update` with `--max-price` to bulk-change the target price for items already on the local watchlist.
 
 `watch` shows a status for each item: **BUY** (at or below target), the current discount percentage (on sale but above target), or "waiting" (no discount). By default it checks once and exits. Use `--every` to keep it running:
 
@@ -373,6 +376,18 @@ deals watch --every 30m
 # Also accepts hours, seconds, or combinations
 deals watch --every 2h
 deals watch --every 1h30m
+
+# Only show items at or below target price
+deals watch --buy-only
+
+# Sort by title, author, price, asin, or release-date
+deals watch --sort price
+
+# Show Audible URLs for each item
+deals watch --show-url
+
+# Combine flags
+deals watch --buy-only --sort price --show-url
 ```
 
 For fully automated alerts without a terminal, schedule `notify` on a cron job (see [Recap & notifications](#recap--notifications)).
