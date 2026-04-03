@@ -231,7 +231,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
 
     # Audible Plus detection
     in_plus = False
-    for plan in raw.get("plans", []):
+    for plan in (raw.get("plans") or []):
         pname = plan.get("plan_name", "")
         if "Plus" in pname or "AYCE" in pname:
             in_plus = True
