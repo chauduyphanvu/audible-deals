@@ -143,6 +143,7 @@ class Product:
     category_ids: list[str] = field(default_factory=list)
     series_name: str = ""
     series_position: str = ""
+    series_asin: str = ""
     language: str = ""
     release_date: str = ""
     in_plus_catalog: bool = False
@@ -223,11 +224,13 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     # Series info
     series_name = ""
     series_position = ""
+    series_asin = ""
     series_list = raw.get("series", [])
     if series_list:
         s = series_list[0]
         series_name = s.get("title", "")
         series_position = s.get("sequence", "")
+        series_asin = s.get("asin", "")
 
     # Audible Plus detection
     in_plus = False
@@ -253,6 +256,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
         category_ids=category_ids,
         series_name=series_name,
         series_position=series_position,
+        series_asin=series_asin,
         language=raw.get("language", ""),
         release_date=raw.get("release_date", ""),
         in_plus_catalog=in_plus,
