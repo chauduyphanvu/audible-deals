@@ -274,6 +274,31 @@ class TestResolveGenre:
         with pytest.raises(ValueError, match="No genre matching"):
             dc.resolve_genre("zzzznothing")
 
+    def test_alias_horror(self):
+        cats = [{"id": "1", "name": "Mystery, Thriller & Suspense"}]
+        dc = self._make_client_with_cats(cats)
+        cid, _ = dc.resolve_genre("horror")
+        assert cid == "1"
+
+
+    def test_alias_true_crime(self):
+        cats = [{"id": "1", "name": "Mystery, Thriller & Suspense"}]
+        dc = self._make_client_with_cats(cats)
+        cid, _ = dc.resolve_genre("true crime")
+        assert cid == "1"
+
+    def test_alias_historical_fiction(self):
+        cats = [{"id": "3", "name": "Literature & Fiction"}]
+        dc = self._make_client_with_cats(cats)
+        cid, _ = dc.resolve_genre("historical fiction")
+        assert cid == "3"
+
+    def test_alias_historical(self):
+        cats = [{"id": "4", "name": "History"}]
+        dc = self._make_client_with_cats(cats)
+        cid, _ = dc.resolve_genre("historical")
+        assert cid == "4"
+
 
 # ===================================================================
 # Category ID validation

@@ -162,12 +162,13 @@ deals search "Dune" --max-price 5 --show-url
 | Flag | What it does |
 |------|-------------|
 | `--max-price 5.00` | Only items under this price (default: $5 for `find`, no default for `search`) |
-| `--genre sci-fi` | Fuzzy genre match — `sci-fi`, `sf`, `scifi` all work |
+| `--genre sci-fi` | Fuzzy genre match — `sci-fi`, `sf`, `thriller`, `horror`, `true crime`, `historical`, `ya`, etc. |
 | `--category ID` | Filter by category ID (alternative to `--genre` — use `deals categories` to find IDs) |
 | `--exclude-genre erotica` | Remove genres from results (repeatable) |
 | `--keywords "space opera"` | Keyword filter within a category browse (`find` only) |
 | `--narrator "Reynolds"` | Filter by narrator name (case-insensitive substring match, client-side) |
 | `--author "Andy Weir"` | Filter by author name (case-insensitive substring match) |
+| `--series "Bobiverse"` | Filter by series name (case-insensitive substring match) |
 | `--exclude-author "Maas"` | Exclude books by a matching author (repeatable) |
 | `--exclude-narrator "Bray"` | Exclude books by a matching narrator (repeatable) |
 | `--min-rating 4.0` | Minimum star rating |
@@ -184,7 +185,8 @@ deals search "Dune" --max-price 5 --show-url
 | `-n, --limit 20` | Cap the number of results (default: 25; use `-n 0` for unlimited) |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
 | `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` and `search`) |
-| `--show-url` | Add a URL column to the results table |
+| `--dry-run` | Show what would be scanned (sort orders, pages, API calls) without fetching anything |
+| `--show-url` | Add a full Audible URL column to the results table |
 | `-i, --interactive` | Browse results interactively after the table is shown |
 | `--profile NAME` | Load a saved search profile (`find` and `search`) |
 
@@ -230,7 +232,7 @@ deals profile show my-scifi
 deals profile delete my-scifi
 ```
 
-Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, `--author`, `--exclude-author`, `--exclude-narrator`, and `--deep`.
+Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, `--author`, `--series`, `--exclude-author`, `--exclude-narrator`, and `--deep`.
 
 ## Last results
 
@@ -246,9 +248,10 @@ deals last --sort discount
 # Apply new filters
 deals last --max-price 3 --min-rating 4.5
 
-# Filter by narrator or author
+# Filter by narrator, author, or series
 deals last --narrator "R.C. Bray" --min-ratings 100
 deals last --author "Andy Weir"
+deals last --series "Bobiverse"
 deals last --exclude-author "Sarah J. Maas"
 
 # Filter by language
@@ -256,6 +259,9 @@ deals last --language english
 
 # Export the cached results
 deals last -o last.csv
+
+# Quick count of cached results (no table)
+deals last --count
 
 # Clear the cached results
 deals last --clear
@@ -421,7 +427,7 @@ deals recap
 deals recap --days 30
 ```
 
-The recap shows up to 10 biggest price drops (with book titles when available), newly tracked items, and wishlist items currently at target.
+The recap shows up to 10 biggest price drops (with book titles when available), a count of newly tracked items, and wishlist items currently at target. Use `--show-new` to include individual newly tracked item details.
 
 For automation (cron jobs, CI, monitoring):
 
@@ -433,7 +439,7 @@ deals notify
 deals notify --webhook https://hooks.slack.com/services/...
 ```
 
-`notify` checks your wishlist and only outputs items that are at or below your target price.
+`notify` checks your wishlist and outputs items at or below your target price as `{"deals": [...], "count": N}`. When there are no hits, it outputs `{"deals": [], "count": 0}` so automation consumers can distinguish "no deals" from a crash.
 
 ## Export
 
@@ -497,6 +503,14 @@ deals completions fish > ~/.config/fish/completions/deals.fish
 
 These combine flags and commands for power-user workflows.
 
+### Preview a deep scan before running it
+
+```bash
+# See how many API calls --deep would make
+deals find --genre sci-fi --deep --dry-run
+# Output: Sort orders: BestSellers, -ReleaseDate, AvgRating | Pages per sort: 10 | API calls: 30
+```
+
 ### Find new series by a favorite narrator
 
 ```bash
@@ -504,6 +518,16 @@ deals find --narrator "R.C. Bray" --max-price 5 --first-in-series --skip-owned
 ```
 
 Only book 1s, only stuff you don't own, only narrated by that person.
+
+### Find all books in a specific series
+
+```bash
+# All Bobiverse books under $5
+deals find --genre sci-fi --max-price 5 --series "Bobiverse"
+
+# Search and filter to a series
+deals search "Brandon Sanderson" --max-price 10 --series "Cosmere"
+```
 
 ### Profiles for different moods
 
@@ -631,7 +655,7 @@ pytest tests/test_integration.py -v
 
 The tool uses the [audible](https://github.com/mkb79/Audible) Python package to talk to Audible's catalog API. Since the API doesn't support sorting by price, `deals find` fetches multiple pages of results (sorted server-side by bestsellers, release date, etc.), then filters and re-sorts client-side. The `--deep` flag scans with three different sort orders to surface items that might be buried in any single ordering.
 
-Genre matching is flexible — common abbreviations like `sci-fi`, `ya`, `bio`, `thriller` are expanded via aliases, then unmatched queries fall through to substring matching and finally fuzzy matching (via `difflib`) against the full Audible category list. Top-level categories are cached locally for 7 days to avoid redundant API calls.
+Genre matching is flexible — common names and abbreviations like `sci-fi`, `ya`, `bio`, `thriller`, `horror`, `true crime`, `historical fiction`, and `historical` are expanded via aliases, then unmatched queries fall through to substring matching and finally fuzzy matching (via `difflib`) against the full Audible category list. Top-level categories are cached locally for 7 days to avoid redundant API calls.
 
 All data is stored locally in `~/.config/audible-deals/`:
 - `auth.json` — Audible auth tokens

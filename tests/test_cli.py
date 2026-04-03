@@ -1920,7 +1920,7 @@ class TestRecapWithTitles:
             {"date": today, "price": 4.00, "title": "The Drop Book"},
         ])
         runner = CliRunner()
-        result = runner.invoke(cli, ["recap", "--days", "7"])
+        result = runner.invoke(cli, ["recap", "--days", "7", "--show-new"])
         assert result.exit_code == 0, result.output
         assert "The Drop Book" in result.output
         assert "DROPTITLE" in result.output
@@ -1936,7 +1936,7 @@ class TestRecapWithTitles:
             {"date": today, "price": 3.00},
         ])
         runner = CliRunner()
-        result = runner.invoke(cli, ["recap", "--days", "7"])
+        result = runner.invoke(cli, ["recap", "--days", "7", "--show-new"])
         assert result.exit_code == 0, result.output
         assert "NOTITLE1" in result.output
 
@@ -1953,17 +1953,30 @@ class TestRecapWithTitles:
         assert entries[0]["title"] == "My Title Book"
 
     def test_recap_shows_title_for_new_items(self, tmp_config):
-        """recap displays title for newly tracked items."""
+        """recap displays title for newly tracked items when --show-new is passed."""
         import datetime
         today = datetime.date.today().isoformat()
         self._write_history(tmp_config, "NEWBOOK1", [
             {"date": today, "price": 4.99, "title": "Brand New Book"},
         ])
         runner = CliRunner()
-        result = runner.invoke(cli, ["recap", "--days", "7"])
+        result = runner.invoke(cli, ["recap", "--days", "7", "--show-new"])
         assert result.exit_code == 0, result.output
         assert "Brand New Book" in result.output
         assert "NEWBOOK1" in result.output
+
+    def test_recap_new_items_count_without_show_new(self, tmp_config):
+        """recap shows count but not details for new items when --show-new is omitted."""
+        import datetime
+        today = datetime.date.today().isoformat()
+        self._write_history(tmp_config, "NEWBOOK2", [
+            {"date": today, "price": 4.99, "title": "Hidden New Book"},
+        ])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7"])
+        assert result.exit_code == 0, result.output
+        assert "Newly tracked: 1" in result.output
+        assert "Hidden New Book" not in result.output
 
 
 # ===================================================================
@@ -2538,8 +2551,9 @@ class TestNotifyEmptyWishlist:
         assert "empty" in result.output.lower()
         assert "wishlist add" in result.output
 
-    def test_notify_nonempty_wishlist_does_not_print_empty_msg(self, mock_client, tmp_config):
-        """notify with items on wishlist does NOT print empty message."""
+    def test_notify_no_hits_outputs_empty_json(self, mock_client, tmp_config):
+        """notify with items on wishlist but no hits outputs empty JSON object."""
+        import json
         import audible_deals.cli as cli_mod
         cli_mod._save_wishlist([
             {"asin": "NT1", "title": "Some Book", "max_price": 5.0, "added": ""},
@@ -2551,6 +2565,8 @@ class TestNotifyEmptyWishlist:
         result = runner.invoke(cli, ["notify"])
         assert result.exit_code == 0, result.output
         assert "wishlist add" not in result.output
+        parsed = json.loads(result.output)
+        assert parsed == {"deals": [], "count": 0}
 
 
 # ===================================================================
@@ -3279,3 +3295,211 @@ class TestCumulativeSeenAsins:
         assert result.exit_code == 0
         assert "cleared" in result.output.lower()
         assert _load_seen_asins() == set()
+
+
+# ===================================================================
+# Fix 2: Profile save preserves falsy values (0, False)
+# ===================================================================
+
+class TestProfileSaveFalsy:
+    def test_profile_save_preserves_zero_max_price(self, tmp_config, monkeypatch):
+        """profile save preserves max_price=0.0 (falsy but valid)."""
+        import audible_deals.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "PROFILES_FILE", tmp_config / "profiles.json")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "zeroprofile", "--max-price", "0"])
+        assert result.exit_code == 0, result.output
+        profiles = cli_mod._load_profiles()
+        assert "max_price" in profiles["zeroprofile"]
+        assert profiles["zeroprofile"]["max_price"] == 0.0
+
+    def test_profile_save_drops_false_flags(self, tmp_config, monkeypatch):
+        """profile save drops False boolean flags (they are always defaults, not explicit choices)."""
+        import audible_deals.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "PROFILES_FILE", tmp_config / "profiles.json")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "falseprofile", "--genre", "sci-fi"])
+        assert result.exit_code == 0, result.output
+        profiles = cli_mod._load_profiles()
+        # on_sale=False is NOT stored — Click flags can't be explicitly set to False
+        assert "on_sale" not in profiles["falseprofile"]
+
+    def test_profile_save_drops_empty(self, tmp_config, monkeypatch):
+        """profile save drops empty strings and empty tuples but not zero."""
+        import audible_deals.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "PROFILES_FILE", tmp_config / "profiles.json")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "emptyprofile", "--max-price", "0"])
+        assert result.exit_code == 0, result.output
+        profiles = cli_mod._load_profiles()
+        # Empty string fields like genre, author etc. should not be saved
+        assert "genre" not in profiles["emptyprofile"]
+        assert "author" not in profiles["emptyprofile"]
+        assert "narrator" not in profiles["emptyprofile"]
+        # But max_price=0.0 should be saved
+        assert profiles["emptyprofile"]["max_price"] == 0.0
+
+
+# ===================================================================
+# Fix 5: Notify outputs empty JSON when no alerts
+# ===================================================================
+
+class TestNotifyEmpty:
+    def test_notify_no_hits_prints_empty_json(self, mock_client, tmp_config):
+        """notify with wishlist items above target prints '[]' to stdout."""
+        import audible_deals.cli as cli_mod
+        # Add a wishlist item with a low target (price above target = no hit)
+        cli_mod._save_wishlist([
+            {"asin": "NE01", "title": "Pricey Book", "max_price": 1.0, "added": "2024-01-01"},
+        ])
+        # Mock get_products_batch to return product with price above target
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="NE01", price=9.99),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        assert "[]" in result.output
+
+    def test_notify_no_hits_with_webhook_is_silent(self, mock_client, tmp_config, monkeypatch):
+        """notify with no hits and a webhook does not POST or print anything."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "NE02", "title": "Pricey Book", "max_price": 1.0, "added": "2024-01-01"},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="NE02", price=9.99),
+        ]
+        # Use a valid-looking but unreachable webhook; should never be called
+        monkeypatch.setattr("audible_deals.cli._validate_webhook_url", lambda url: None)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--webhook", "https://example.com/hook"])
+        assert result.exit_code == 0, result.output
+        assert "[]" not in result.output
+
+
+# ===================================================================
+# Fix 7: --dry-run for find and search
+# ===================================================================
+
+class TestDryRunFind:
+    def test_find_dry_run_shows_summary(self, mock_client, tmp_config):
+        """find --dry-run prints scan summary and does not call search_pages."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--dry-run", "--pages", "5"])
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert "Sort orders" in result.output
+        assert "Pages per sort" in result.output
+        assert "API calls" in result.output
+        mock_client.search_pages.assert_not_called()
+
+    def test_find_dry_run_shows_category(self, mock_client, tmp_config):
+        """find --dry-run with genre resolved shows category name."""
+        mock_client._categories_cache = [{"id": "cat1", "name": "Mystery, Thriller & Suspense"}]
+        mock_client.resolve_genre.return_value = ("cat1", "Mystery, Thriller & Suspense")
+        mock_client.__enter__ = lambda s: s
+        mock_client.__exit__ = lambda s, *a: False
+
+        # Bypass real genre resolution by using --category
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--dry-run", "--pages", "2", "--category", "cat1"])
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        mock_client.search_pages.assert_not_called()
+
+
+class TestDryRunSearch:
+    def test_search_dry_run_shows_summary(self, mock_client, tmp_config):
+        """search --dry-run prints scan summary and does not call search_pages."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "fantasy", "--dry-run", "--pages", "3"])
+        assert result.exit_code == 0, result.output
+        assert "Dry run" in result.output
+        assert "Query: fantasy" in result.output
+        assert "Sort orders" in result.output
+        assert "API calls" in result.output
+        mock_client.search_pages.assert_not_called()
+
+    def test_search_dry_run_does_not_call_catalog(self, mock_client, tmp_config):
+        """search --dry-run does not call search_catalog."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "test", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        mock_client.search_catalog.assert_not_called()
+
+
+# ===================================================================
+# Fix 8: deals last --count
+# ===================================================================
+
+class TestLastCount:
+    def _write_cache(self, tmp_config, products):
+        """Write a mock last results cache."""
+        import audible_deals.cli as cli_mod
+        data = [cli_mod._serialize_product(p) for p in products]
+        payload = json.dumps({"title": "Test Results", "results": data})
+        cli_mod.LAST_RESULTS_FILE.write_text(payload)
+
+    def test_last_count_outputs_integer(self, tmp_config):
+        """deals last --count prints the number of cached results."""
+        products = [make_product(asin=f"LC{i:02d}", price=float(i)) for i in range(1, 8)]
+        self._write_cache(tmp_config, products)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--count"])
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == "7"
+
+    def test_last_count_zero_when_empty_cache(self, tmp_config):
+        """deals last --count returns 0 for an empty result cache."""
+        import audible_deals.cli as cli_mod
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps({"title": "Empty", "results": []}))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["last", "--count"])
+        assert result.exit_code == 0, result.output
+        assert result.output.strip() == "0"
+
+
+# ===================================================================
+# Fix 9: --series filter
+# ===================================================================
+
+class TestFilterSeries:
+    def test_filter_series_match(self):
+        """Products with series_name containing the search string are kept."""
+        products = [
+            make_product(asin="S1", series_name="The Stormlight Archive"),
+            make_product(asin="S2", series_name="Mistborn"),
+            make_product(asin="S3", series_name="Stormlight Chronicles"),
+        ]
+        filtered, breakdown = _filter_products(products, series="stormlight")
+        assert len(filtered) == 2
+        assert all(p.asin in ("S1", "S3") for p in filtered)
+
+    def test_filter_series_no_match(self):
+        """Products without matching series are excluded."""
+        products = [
+            make_product(asin="S1", series_name="Mistborn"),
+            make_product(asin="S2", series_name="The Way of Kings"),
+        ]
+        filtered, breakdown = _filter_products(products, series="wheel of time")
+        assert len(filtered) == 0
+        assert breakdown.get("series") == 2
+
+    def test_filter_series_case_insensitive(self):
+        """Series filter is case-insensitive."""
+        products = [
+            make_product(asin="S1", series_name="The Dresden Files"),
+        ]
+        filtered, _ = _filter_products(products, series="DRESDEN")
+        assert len(filtered) == 1
+
+    def test_filter_series_empty_no_filter(self):
+        """Empty series string does not filter anything."""
+        products = [
+            make_product(asin="S1", series_name="Some Series"),
+            make_product(asin="S2", series_name=""),
+        ]
+        filtered, breakdown = _filter_products(products, series="")
+        assert len(filtered) == 2
+        assert "series" not in breakdown

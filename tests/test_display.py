@@ -78,14 +78,17 @@ class TestDiscountColor:
     def test_low(self):
         assert _discount_color(20) == "dim"
 
-    def test_boundary_70(self):
-        assert _discount_color(70) == "bold green"
+    def test_boundary_80(self):
+        assert _discount_color(80) == "bold green"
 
-    def test_boundary_40(self):
-        assert _discount_color(40) == "yellow"
+    def test_boundary_79(self):
+        assert _discount_color(79) == "yellow"
 
-    def test_boundary_39(self):
-        assert _discount_color(39) == "dim"
+    def test_boundary_50(self):
+        assert _discount_color(50) == "yellow"
+
+    def test_boundary_49(self):
+        assert _discount_color(49) == "dim"
 
 
 class TestPphStr:
@@ -254,7 +257,7 @@ class TestDisplayProductsShowUrl:
         products = [make_product(asin="B001", title="URL Book", price=3.99)]
         out = _capture(display_products, products, width=200, show_url=True)
         assert "URL" in out
-        assert "/pd/B001" in out
+        assert "https://www.audible.com/pd/B001" in out
 
     def test_show_url_false_no_column(self):
         products = [make_product(asin="B001", title="No URL Book", price=3.99)]
@@ -262,13 +265,11 @@ class TestDisplayProductsShowUrl:
         assert "/pd/B001" not in out
 
 
-class TestDisplayProductsShortUrl:
-    def test_show_url_shows_short_path(self):
+class TestDisplayProductsFullUrl:
+    def test_show_url_shows_full_url(self):
         products = [make_product(asin="B001TEST", title="URL Book", price=3.99)]
         out = _capture(display_products, products, width=200, show_url=True)
-        assert "/pd/B001TEST" in out
-        # Should NOT contain the full https:// URL
-        assert "https://" not in out
+        assert "https://www.audible.com/pd/B001TEST" in out
 
 
 class TestDisplaySummary:

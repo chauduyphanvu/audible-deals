@@ -121,6 +121,10 @@ GENRE_ALIASES: dict[str, str] = {
     "health": "health & wellness",
     "fiction": "literature & fiction",
     "lit": "literature & fiction",
+    "horror": "mystery, thriller & suspense",
+    "true crime": "mystery, thriller & suspense",
+    "historical fiction": "literature & fiction",
+    "historical": "history",
 }
 
 

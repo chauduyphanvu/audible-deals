@@ -38,9 +38,9 @@ def discount_str(pct: int | None) -> str:
 
 def _discount_color(pct: int) -> str:
     """Return Rich color markup based on discount tier."""
-    if pct >= 70:
+    if pct >= 80:
         return "bold green"
-    elif pct >= 40:
+    elif pct >= 50:
         return "yellow"
     return "dim"
 
@@ -82,7 +82,7 @@ def display_products(
     table.add_column(f"{currency}/hr", justify="right", width=9)
     table.add_column("Rating", justify="right", width=10)
     if show_url:
-        table.add_column("URL", no_wrap=True, style="dim cyan", max_width=22)
+        table.add_column("URL", no_wrap=True, style="dim cyan")
 
     for i, p in enumerate(products, 1):
         cur = p.currency
@@ -125,7 +125,7 @@ def display_products(
             rating_str(p.rating, p.num_ratings),
         ]
         if show_url:
-            row.append(f"/pd/{p.asin}")
+            row.append(p.url)
         table.add_row(*row)
 
     console.print(table)
