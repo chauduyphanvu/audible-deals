@@ -72,6 +72,7 @@ class Product:
     category_ids: list[str] = field(default_factory=list)
     series_name: str = ""
     series_position: str = ""
+    series_asin: str = ""
     language: str = ""
     release_date: str = ""
     in_plus_catalog: bool = False
@@ -152,11 +153,13 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     # Series info
     series_name = ""
     series_position = ""
+    series_asin = ""
     series_list = raw.get("series") or []
     if series_list:
         s = series_list[0]
         series_name = s.get("title", "")
         series_position = s.get("sequence", "")
+        series_asin = s.get("asin", "")
 
     # Audible Plus detection
     in_plus = False
@@ -182,6 +185,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
         category_ids=category_ids,
         series_name=series_name,
         series_position=series_position,
+        series_asin=series_asin,
         language=raw.get("language", ""),
         release_date=raw.get("release_date", ""),
         in_plus_catalog=in_plus,
@@ -636,6 +640,32 @@ class DealsClient:
         if not results:
             raise ValueError(f"Product not found: {asin}")
         return results[0]
+
+    def get_series_products(self, series_asin: str) -> list[Product]:
+        """Fetch all products in a series by its ASIN.
+
+        Returns an empty list if the series is not found.
+        """
+        try:
+            resp = self.client.get(
+                f"1.0/catalog/products/{series_asin}",
+                response_groups="relationships",
+            )
+        except Exception:
+            return []
+        if isinstance(resp, tuple):
+            resp = resp[0]
+        product_data = resp.get("product")
+        if not product_data:
+            return []
+        child_asins = [
+            r["asin"]
+            for r in product_data.get("relationships", [])
+            if r.get("relationship_to_product") == "child" and r.get("asin")
+        ]
+        if not child_asins:
+            return []
+        return self.get_products_batch(child_asins)
 
     def get_products_batch(self, asins: list[str]) -> list[Product]:
         """Fetch multiple products in batches of up to 50.

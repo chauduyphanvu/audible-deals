@@ -893,6 +893,162 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
             console.print(f"  [bold]{len(filtered)}[/bold] books in library")
 
 
+@cli.command()
+@click.option("--min-books", type=click.IntRange(min=1), default=2, help="Minimum books owned in a series to consider it 'invested' (default: 2)")
+@click.option("--max-series", type=click.IntRange(min=1), default=20, help="Maximum number of series to scan (default: 20, most-invested first)")
+@click.option("--series", "series_filter", default="", help="Filter to a specific series name (substring match)")
+@click.option("--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter")
+@click.option("--min-rating", type=float, default=0.0, help="Minimum rating (e.g. 4.0)")
+@click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
+@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
+@click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
+@click.option("--sort", type=click.Choice(["price", "-price", "discount", "price-per-hour", "rating", "length", "date", "title"]), default="price-per-hour", help="Sort order (default: price-per-hour)")
+@click.option("--limit", "-n", type=int, default=25, help="Show only the top N results (0 for unlimited, default: 25)")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)")
+@click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout")
+@click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)")
+@click.option("--interactive", "-i", is_flag=True, default=False, help="Browse results interactively")
+@click.option("--pages", type=click.IntRange(min=1), default=3, help="Pages to scan per series search (default: 3)")
+@click.pass_context
+def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min_ratings, min_hours, on_sale, sort, limit, output, json_flag, quiet, interactive, pages):
+    """Find continuation books in series you're invested in.
+
+    Scans your library for series where you own multiple books, then
+    searches the catalog for other books in those series that you don't
+    own yet. Great for catching up on series during sales.
+
+    \b
+    Examples:
+        deals series
+        deals series --min-books 3 --max-price 10
+        deals series --series "Expeditionary Force" --on-sale
+        deals series --sort discount -n 50
+        deals series --json -o series-deals.json
+    """
+    if output and ctx.get_parameter_source("quiet") != _CL:
+        quiet = True
+    if json_flag:
+        console.file = sys.stderr
+
+    dc = _get_client(ctx.obj["locale"])
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+
+    with dc:
+        # 1. Fetch library
+        if not quiet and not json_flag:
+            console.print("[dim]Fetching library...[/dim]")
+        lib_products = dc.get_library()
+        owned_asins = {p.asin for p in lib_products}
+
+        # 2. Identify invested series (user owns min_books+ books)
+        series_map: dict[str, list[Product]] = {}  # series_name -> [products]
+        for p in lib_products:
+            if not p.series_name:
+                continue
+            series_map.setdefault(p.series_name, []).append(p)
+
+        invested = {
+            name: books
+            for name, books in series_map.items()
+            if len(books) >= min_books
+        }
+
+        if series_filter:
+            filter_lower = series_filter.lower()
+            invested = {
+                name: books
+                for name, books in invested.items()
+                if filter_lower in name.lower()
+            }
+
+        if not invested:
+            if series_filter:
+                console.print(f"[dim]No invested series matching '{series_filter}' "
+                              f"(need {min_books}+ owned books).[/dim]")
+            else:
+                console.print(f"[dim]No series with {min_books}+ owned books found.[/dim]")
+            return
+
+        # Sort by most-invested (most owned books) first, then limit
+        invested_sorted = sorted(invested.items(), key=lambda x: len(x[1]), reverse=True)
+        if len(invested_sorted) > max_series:
+            if not quiet and not json_flag:
+                console.print(f"[dim]Found {len(invested_sorted)} invested series, scanning top {max_series} (use --max-series to adjust).[/dim]")
+            invested_sorted = invested_sorted[:max_series]
+        elif not quiet and not json_flag:
+            console.print(f"[dim]Found {len(invested_sorted)} invested series. Searching for continuation books...[/dim]")
+
+        # 3. Fetch catalog entries for each series
+        all_candidates: list[Product] = []
+        seen_asins: set[str] = set(owned_asins)
+
+        with create_scan_progress() as progress:
+            task = progress.add_task(
+                f"Scanning {len(invested_sorted)} series",
+                total=len(invested_sorted),
+                items=0,
+            )
+
+            for series_idx, (sname, owned_books) in enumerate(invested_sorted):
+                series_asin = next((ob.series_asin for ob in owned_books if ob.series_asin), "")
+
+                if series_asin:
+                    # Direct lookup via series ASIN
+                    series_products = dc.get_series_products(series_asin)
+                else:
+                    # Fallback: keyword search when no series ASIN available
+                    series_products = []
+                    author_hint = next((ob.authors[0] for ob in owned_books if ob.authors), "")
+                    keywords = f"{sname} {author_hint}".strip()
+                    sname_lower = sname.lower()
+                    for page_products, _, _ in dc.search_pages(
+                        keywords=keywords,
+                        sort_by="Relevance",
+                        max_pages=pages,
+                    ):
+                        for p in page_products:
+                            if p.series_name and p.series_name.lower() == sname_lower:
+                                series_products.append(p)
+
+                for p in series_products:
+                    if p.asin in seen_asins:
+                        continue
+                    seen_asins.add(p.asin)
+                    all_candidates.append(p)
+
+                progress.update(task, completed=series_idx + 1, items=len(all_candidates))
+
+                # Rate limit between series lookups
+                if series_idx < len(invested_sorted) - 1:
+                    time.sleep(0.3)
+
+    # 4. Post-process using shared pipeline
+    _postprocess_and_output(
+        all_candidates,
+        title=f"Series Continuation Books ({len(invested_sorted)} series)",
+        max_price=max_price,
+        min_rating=min_rating,
+        min_ratings=min_ratings,
+        min_hours=min_hours,
+        narrator="",
+        author="",
+        exclude_authors=(),
+        exclude_narrators=(),
+        language="",
+        on_sale=on_sale,
+        skip_asins=None,  # already filtered above
+        exclude_category_ids=set(),
+        first_in_series=False,
+        sort=sort,
+        limit=limit,
+        output=output,
+        json_flag=json_flag,
+        quiet=quiet,
+        currency=cur,
+        interactive=interactive,
+    )
+
+
 @cli.command("last")
 @click.option("--sort", type=click.Choice(["price", "-price", "discount", "price-per-hour", "value", "rating", "length", "date", "relevance"]), default=None, help="Re-sort results")
 @click.option("--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter")
