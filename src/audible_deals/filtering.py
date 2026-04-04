@@ -28,6 +28,7 @@ def _filter_products(
     max_pph: float | None = None,
     min_discount: int = 0,
     series: str = "",
+    publisher: str = "",
 ) -> tuple[list[Product], dict[str, int]]:
     """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
@@ -105,6 +106,16 @@ def _filter_products(
         ]
         if (removed := before - len(filtered)):
             breakdown["series"] = removed
+
+    if publisher:
+        before = len(filtered)
+        publisher_lower = publisher.lower()
+        filtered = [
+            p for p in filtered
+            if publisher_lower in p.publisher.lower()
+        ]
+        if (removed := before - len(filtered)):
+            breakdown["publisher"] = removed
 
     if exclude_authors:
         before = len(filtered)
