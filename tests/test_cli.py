@@ -2997,3 +2997,141 @@ class TestHistoryLast:
         runner = CliRunner()
         result = runner.invoke(cli, ["history"])
         assert result.exit_code != 0
+
+
+# ===================================================================
+# series command
+# ===================================================================
+
+class TestSeriesCommand:
+    @pytest.fixture(autouse=True)
+    def _no_sleep(self, monkeypatch):
+        monkeypatch.setattr("audible_deals.cli.time.sleep", lambda _: None)
+
+    def test_series_direct_lookup(self, tmp_config, mock_client):
+        """With series_asin, uses direct lookup via get_series_products."""
+        lib = [
+            make_product(asin="A1", title="Alpha Book 1", series_name="Alpha Series", series_asin="SER_ALPHA"),
+            make_product(asin="A2", title="Alpha Book 2", series_name="Alpha Series", series_asin="SER_ALPHA"),
+        ]
+        mock_client.get_library.return_value = lib
+
+        unowned = make_product(asin="A3", title="Alpha Book 3", series_name="Alpha Series")
+        mock_client.get_series_products.return_value = [lib[0], lib[1], unowned]
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series"])
+        assert result.exit_code == 0, result.output
+        assert "Alpha Book 3" in result.output
+        mock_client.get_series_products.assert_called_once_with("SER_ALPHA")
+        mock_client.search_pages.assert_not_called()
+
+    def test_series_keyword_fallback(self, tmp_config, mock_client):
+        """Without series_asin, falls back to keyword search."""
+        lib = [
+            make_product(asin="A1", title="Alpha Book 1", series_name="Alpha Series", series_asin=""),
+            make_product(asin="A2", title="Alpha Book 2", series_name="Alpha Series", series_asin=""),
+        ]
+        mock_client.get_library.return_value = lib
+
+        unowned = make_product(asin="A3", title="Alpha Book 3", series_name="Alpha Series")
+        mock_client.search_pages.return_value = iter([([unowned], 1, 1)])
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series"])
+        assert result.exit_code == 0, result.output
+        assert "Alpha Book 3" in result.output
+        mock_client.get_series_products.assert_not_called()
+        assert mock_client.search_pages.call_count == 1
+
+    def test_series_min_books_filters(self, tmp_config, mock_client):
+        """Library has only 1 book with a series name; should report no invested series."""
+        lib = [
+            make_product(asin="B1", title="Beta Book 1", series_name="Beta Series"),
+        ]
+        mock_client.get_library.return_value = lib
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series"])
+        assert result.exit_code == 0, result.output
+        assert "No series with 2+ owned books" in result.output
+
+    def test_series_filter_by_name(self, tmp_config, mock_client):
+        """--series Alpha filters to only Alpha Series."""
+        lib = [
+            make_product(asin="A1", title="Alpha Book 1", series_name="Alpha Series", series_asin="SER_ALPHA"),
+            make_product(asin="A2", title="Alpha Book 2", series_name="Alpha Series", series_asin="SER_ALPHA"),
+            make_product(asin="B1", title="Beta Book 1", series_name="Beta Series", series_asin="SER_BETA"),
+            make_product(asin="B2", title="Beta Book 2", series_name="Beta Series", series_asin="SER_BETA"),
+        ]
+        mock_client.get_library.return_value = lib
+
+        unowned_alpha = make_product(asin="A3", title="Alpha Book 3", series_name="Alpha Series")
+        mock_client.get_series_products.return_value = [lib[0], lib[1], unowned_alpha]
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series", "--series", "Alpha"])
+        assert result.exit_code == 0, result.output
+
+        mock_client.get_series_products.assert_called_once_with("SER_ALPHA")
+        assert "Alpha Book 3" in result.output
+
+    def test_series_skips_owned(self, tmp_config, mock_client):
+        """Owned books from series lookup are excluded from output."""
+        lib = [
+            make_product(asin="A1", title="Alpha Book 1", series_name="Alpha Series", series_asin="SER_ALPHA"),
+            make_product(asin="A2", title="Alpha Book 2", series_name="Alpha Series", series_asin="SER_ALPHA"),
+        ]
+        mock_client.get_library.return_value = lib
+
+        a1 = make_product(asin="A1", title="Alpha Book 1", series_name="Alpha Series")
+        a2 = make_product(asin="A2", title="Alpha Book 2", series_name="Alpha Series")
+        a3 = make_product(asin="A3", title="Alpha Book 3", series_name="Alpha Series")
+        mock_client.get_series_products.return_value = [a1, a2, a3]
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series"])
+        assert result.exit_code == 0, result.output
+        assert "Alpha Book 3" in result.output
+        assert "Alpha Book 1" not in result.output
+        assert "Alpha Book 2" not in result.output
+
+    def test_series_min_books_custom_threshold(self, tmp_config, mock_client):
+        """--min-books 3 requires 3+ owned; 2 owned should report nothing."""
+        lib = [
+            make_product(asin="A1", title="Alpha 1", series_name="Alpha Series"),
+            make_product(asin="A2", title="Alpha 2", series_name="Alpha Series"),
+        ]
+        mock_client.get_library.return_value = lib
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series", "--min-books", "3"])
+        assert result.exit_code == 0, result.output
+        assert "No series with 3+ owned books" in result.output
+
+    def test_series_empty_library(self, tmp_config, mock_client):
+        """Empty library reports no invested series."""
+        mock_client.get_library.return_value = []
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series"])
+        assert result.exit_code == 0, result.output
+        assert "No series with 2+ owned books" in result.output
+
+    def test_series_json_output(self, tmp_config, mock_client):
+        """--json flag outputs valid JSON list to stdout."""
+        lib = [
+            make_product(asin="A1", title="Alpha Book 1", series_name="Alpha Series", series_asin="SER_ALPHA"),
+            make_product(asin="A2", title="Alpha Book 2", series_name="Alpha Series", series_asin="SER_ALPHA"),
+        ]
+        mock_client.get_library.return_value = lib
+
+        unowned = make_product(asin="A3", title="Alpha Book 3", series_name="Alpha Series")
+        mock_client.get_series_products.return_value = [lib[0], lib[1], unowned]
+
+        runner = CliRunner(mix_stderr=False)
+        result = runner.invoke(cli, ["series", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert any(item["asin"] == "A3" for item in data)

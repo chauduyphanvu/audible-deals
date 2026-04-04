@@ -35,6 +35,7 @@ def make_product(**overrides) -> Product:
         category_ids=["18580606011", "18580607011"],
         series_name="Test Series",
         series_position="1",
+        series_asin="",
         language="english",
         release_date="2024-01-15",
         in_plus_catalog=False,
@@ -105,7 +106,7 @@ RAW_API_PRODUCT = {
             ]
         }
     ],
-    "series": [{"title": "Epic Series", "sequence": "3"}],
+    "series": [{"title": "Epic Series", "sequence": "3", "asin": "SER001"}],
     "plans": [{"plan_name": "Audible Plus"}],
 }
 
