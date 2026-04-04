@@ -132,6 +132,7 @@ class TestParseProduct:
         assert "cat1" in p.category_ids
         assert p.series_name == "Epic Series"
         assert p.series_position == "3"
+        assert p.series_asin == "SER001"
         assert p.language == "english"
         assert p.in_plus_catalog is True
 

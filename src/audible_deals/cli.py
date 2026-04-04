@@ -971,57 +971,54 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
 
         # Sort by most-invested (most owned books) first, then limit
         invested_sorted = sorted(invested.items(), key=lambda x: len(x[1]), reverse=True)
-        if max_series and len(invested_sorted) > max_series:
+        if len(invested_sorted) > max_series:
             if not quiet and not json_flag:
                 console.print(f"[dim]Found {len(invested_sorted)} invested series, scanning top {max_series} (use --max-series to adjust).[/dim]")
             invested_sorted = invested_sorted[:max_series]
         elif not quiet and not json_flag:
             console.print(f"[dim]Found {len(invested_sorted)} invested series. Searching for continuation books...[/dim]")
 
-        # 3. Search catalog for each series
+        # 3. Fetch catalog entries for each series
         all_candidates: list[Product] = []
-        seen_asins: set[str] = set()
+        seen_asins: set[str] = set(owned_asins)
 
         with create_scan_progress() as progress:
             task = progress.add_task(
-                f"Searching {len(invested_sorted)} series",
+                f"Scanning {len(invested_sorted)} series",
                 total=len(invested_sorted),
                 items=0,
             )
 
             for series_idx, (sname, owned_books) in enumerate(invested_sorted):
-                # Build search: prefer series ASIN if available, else keyword
-                series_asin = ""
-                author_hint = ""
-                for ob in owned_books:
-                    if ob.series_asin:
-                        series_asin = ob.series_asin
-                    if ob.authors:
-                        author_hint = ob.authors[0]
+                series_asin = next((ob.series_asin for ob in owned_books if ob.series_asin), "")
 
-                # Search by series name (+ primary author for relevance)
-                keywords = sname
-                if author_hint:
-                    keywords = f"{sname} {author_hint}"
+                if series_asin:
+                    # Direct lookup via series ASIN
+                    series_products = dc.get_series_products(series_asin)
+                else:
+                    # Fallback: keyword search when no series ASIN available
+                    series_products = []
+                    author_hint = next((ob.authors[0] for ob in owned_books if ob.authors), "")
+                    keywords = f"{sname} {author_hint}".strip()
+                    sname_lower = sname.lower()
+                    for page_products, _, _ in dc.search_pages(
+                        keywords=keywords,
+                        sort_by="Relevance",
+                        max_pages=pages,
+                    ):
+                        for p in page_products:
+                            if p.series_name and p.series_name.lower() == sname_lower:
+                                series_products.append(p)
 
-                for page_products, page_num, total in dc.search_pages(
-                    keywords=keywords,
-                    sort_by="Relevance",
-                    max_pages=pages,
-                ):
-                    for p in page_products:
-                        if p.asin in owned_asins:
-                            continue  # skip owned
-                        if p.asin in seen_asins:
-                            continue  # skip dupes across series searches
-                        # Must belong to the same series
-                        if p.series_name and p.series_name.lower() == sname.lower():
-                            seen_asins.add(p.asin)
-                            all_candidates.append(p)
+                for p in series_products:
+                    if p.asin in seen_asins:
+                        continue
+                    seen_asins.add(p.asin)
+                    all_candidates.append(p)
 
                 progress.update(task, completed=series_idx + 1, items=len(all_candidates))
 
-                # Rate limit: small delay between series searches
+                # Rate limit between series lookups
                 if series_idx < len(invested_sorted) - 1:
                     time.sleep(0.3)
 
