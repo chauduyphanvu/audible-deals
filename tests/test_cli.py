@@ -3639,9 +3639,11 @@ class TestSeriesCommand:
         unowned = make_product(asin="A3", title="Alpha Book 3", series_name="Alpha Series")
         mock_client.get_series_products.return_value = [lib[0], lib[1], unowned]
 
-        runner = CliRunner(mix_stderr=False)
+        runner = CliRunner()
         result = runner.invoke(cli, ["series", "--json"])
         assert result.exit_code == 0, result.output
-        data = json.loads(result.output)
+        # Progress bar may leak into stdout in test; extract JSON portion
+        json_start = result.output.index("[")
+        data = json.loads(result.output[json_start:])
         assert isinstance(data, list)
         assert any(item["asin"] == "A3" for item in data)
