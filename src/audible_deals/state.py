@@ -331,6 +331,12 @@ def _scan_price_changes(
             continue
 
         if entries[0]["date"] >= cutoff and len(entries) == len(recent):
+            if len(entries) >= 2:
+                old_price = entries[0]["price"]
+                new_price = entries[-1]["price"]
+                if new_price < old_price:
+                    drops.append((asin, title, old_price, new_price))
+                    continue
             new_items.append((asin, title, entries[-1]["price"]))
             continue
 

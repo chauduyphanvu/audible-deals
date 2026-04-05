@@ -28,7 +28,7 @@ from importlib.metadata import version as _pkg_version
 try:
     _VERSION = _pkg_version("audible-deals")
 except Exception:
-    _VERSION = "0.3.0"  # fallback for PyInstaller frozen builds
+    _VERSION = "0.5.0"  # fallback for PyInstaller frozen builds
 try:
     import readline  # noqa: F401 — required on macOS for input() with long strings
 except ImportError:
@@ -148,8 +148,8 @@ def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
         if cfg.get(key) and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if cfg.get(flag) and ctx.get_parameter_source(flag) != _CL:
-            ns[flag] = True
+        if cfg.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
+            ns[flag] = cfg[flag]
 
 
 def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
@@ -167,8 +167,8 @@ def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
         if ctx.get_parameter_source(key) != _CL and p.get(key):
             ns[key] = p[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if p.get(flag) and ctx.get_parameter_source(flag) != _CL:
-            ns[flag] = True
+        if p.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
+            ns[flag] = p[flag]
 
 
 def _resolve_defaults(ctx: click.Context, ns: dict, profile_name: str | None) -> None:
