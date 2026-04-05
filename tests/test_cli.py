@@ -1456,6 +1456,62 @@ class TestConfigAppliedToFind:
         assert "PO1" in asins
 
 
+class TestConfigBooleanOverride:
+    def test_config_bool_not_overridden_when_cli_explicit(self):
+        """Config booleans must not override when the user explicitly passed the flag."""
+        from unittest.mock import MagicMock
+        from audible_deals.cli import _apply_config_defaults, _CL
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = _CL  # Simulate CLI explicit
+        ns = {"on_sale": False, "deep": False}
+        cfg = {"on_sale": True, "deep": True}
+        _apply_config_defaults(ctx, ns, cfg)
+        assert ns["on_sale"] is False
+        assert ns["deep"] is False
+
+    def test_config_bool_applied_when_not_cli(self):
+        """Config booleans should apply when user did NOT pass the flag."""
+        from unittest.mock import MagicMock
+        import click
+        from audible_deals.cli import _apply_config_defaults
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
+        ns = {"on_sale": False, "deep": False}
+        cfg = {"on_sale": True, "deep": True}
+        _apply_config_defaults(ctx, ns, cfg)
+        assert ns["on_sale"] is True
+        assert ns["deep"] is True
+
+    def test_profile_bool_not_overridden_when_cli_explicit(self):
+        """Profile booleans must not override when the user explicitly passed the flag."""
+        from unittest.mock import MagicMock
+        from audible_deals.cli import _apply_profile_defaults, _CL
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = _CL
+        ns = {"on_sale": False, "deep": False}
+        profile = {"on_sale": True, "deep": True}
+        _apply_profile_defaults(ctx, ns, profile)
+        assert ns["on_sale"] is False
+        assert ns["deep"] is False
+
+    def test_profile_bool_applied_when_not_cli(self):
+        """Profile booleans should apply when user did NOT pass the flag."""
+        from unittest.mock import MagicMock
+        import click
+        from audible_deals.cli import _apply_profile_defaults
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
+        ns = {"on_sale": False, "deep": False}
+        profile = {"on_sale": True, "deep": True}
+        _apply_profile_defaults(ctx, ns, profile)
+        assert ns["on_sale"] is True
+        assert ns["deep"] is True
+
+
 # ===================================================================
 # Improvement #5: --deep for search + _fetch_with_progress helper
 # ===================================================================
@@ -3342,6 +3398,30 @@ class TestProfileSaveFalsy:
         assert "narrator" not in profiles["emptyprofile"]
         # But max_price=0.0 should be saved
         assert profiles["emptyprofile"]["max_price"] == 0.0
+
+
+class TestProfileSaveZeroDefaults:
+    def test_profile_save_omits_zero_defaults(self, tmp_config):
+        """profile save --genre sci-fi must NOT save min_rating=0.0 etc."""
+        from audible_deals.state import _load_profiles
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "zerotest", "--genre", "sci-fi"])
+        assert result.exit_code == 0, result.output
+        profiles = _load_profiles()
+        assert "genre" in profiles["zerotest"]
+        assert profiles["zerotest"]["genre"] == "sci-fi"
+        assert "min_rating" not in profiles["zerotest"]
+        assert "min_ratings" not in profiles["zerotest"]
+        assert "min_hours" not in profiles["zerotest"]
+
+    def test_profile_save_preserves_explicit_zero(self, tmp_config):
+        """profile save --max-price 0 must keep max_price=0.0."""
+        from audible_deals.state import _load_profiles
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "zeroexplicit", "--max-price", "0"])
+        assert result.exit_code == 0, result.output
+        profiles = _load_profiles()
+        assert profiles["zeroexplicit"]["max_price"] == 0.0
 
 
 # ===================================================================

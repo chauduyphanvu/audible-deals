@@ -15,6 +15,7 @@ from audible_deals.display import (
     display_product_detail,
     display_products,
     display_summary,
+    display_watch_table,
     price_str,
     rating_str,
 )
@@ -294,3 +295,19 @@ class TestDisplaySummary:
         out = _capture(display_summary, 10, {}, editions_removed=3, series_collapsed=2)
         assert "3 duplicate editions removed" in out
         assert "2 series collapsed" in out
+
+
+class TestDisplayWatchTableZeroTarget:
+    def test_zero_target_shows_price_and_buy(self):
+        """$0.00 target should display as '$0.00' and trigger BUY."""
+        p = make_product(asin="W1", title="Free Book", price=0.0, list_price=10.0)
+        out = _capture(display_watch_table, [p], {"W1": 0.0})
+        assert "$0.00" in out
+        assert "BUY" in out
+
+    def test_none_target_shows_dash(self):
+        """None target should display as '-' and not trigger BUY."""
+        p = make_product(asin="W1", title="Some Book", price=5.0, list_price=5.0)
+        out = _capture(display_watch_table, [p], {"W1": None})
+        assert "BUY" not in out
+        assert "-" in out

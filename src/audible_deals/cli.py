@@ -148,7 +148,7 @@ def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
         if cfg.get(key) and not ns.get(key):
             ns[key] = cfg[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if cfg.get(flag) and not ns.get(flag):
+        if cfg.get(flag) and ctx.get_parameter_source(flag) != _CL:
             ns[flag] = True
 
 
@@ -167,7 +167,7 @@ def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
         if ctx.get_parameter_source(key) != _CL and p.get(key):
             ns[key] = p[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if not ns.get(flag) and p.get(flag):
+        if p.get(flag) and ctx.get_parameter_source(flag) != _CL:
             ns[flag] = True
 
 
@@ -1543,7 +1543,8 @@ def profile():
 @click.option("--skip-owned", is_flag=True, default=False)
 @click.option("--language", default="")
 @click.option("--interactive", "-i", is_flag=True, default=False)
-def profile_save(name, **kwargs):
+@click.pass_context
+def profile_save(ctx, name, **kwargs):
     """Save a search profile.
 
     \b
@@ -1554,8 +1555,8 @@ def profile_save(name, **kwargs):
         deals search "Brandon Sanderson" --profile my-scifi
     """
     profiles = _load_profiles()
-    # Only save non-default values; preserve 0 and 0.0 but drop None, "", (), and False
-    saved = {k: v for k, v in kwargs.items() if v is not None and v != "" and v != () and v is not False}
+    # Only save values explicitly passed on the command line
+    saved = {k: v for k, v in kwargs.items() if ctx.get_parameter_source(k) == _CL}
     profiles[name] = saved
     _save_profiles(profiles)
     console.print(f"[green]Profile '{name}' saved[/green] ({len(saved)} options)")

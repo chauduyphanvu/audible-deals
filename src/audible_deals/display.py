@@ -414,9 +414,9 @@ def display_watch_table(
     hits = 0
     for p in products:
         target = targets.get(p.asin)
-        target_str = f"{currency}{target:.2f}" if target else "-"
+        target_str = f"{currency}{target:.2f}" if target is not None else "-"
         p_str = f"{currency}{p.price:.2f}" if p.price is not None else "-"
-        is_buy = target and p.price is not None and p.price <= target
+        is_buy = target is not None and p.price is not None and p.price <= target
         if is_buy:
             status = "[bold green]BUY[/bold green]"
             p_str = f"[bold green]{p_str}[/bold green]"
