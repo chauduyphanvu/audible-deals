@@ -145,7 +145,7 @@ def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
         if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
     for key in ("language", "narrator", "author", "series", "publisher"):
-        if cfg.get(key) and not ns.get(key):
+        if cfg.get(key) and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
         if cfg.get(flag) and ctx.get_parameter_source(flag) != _CL:
@@ -158,7 +158,7 @@ def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
     ``ns`` is mutated in place. Profile values override config but not CLI flags.
     """
     for key in ("genre", "exclude_genre", "exclude_authors", "exclude_narrators", "keywords", "narrator", "author", "language", "series", "publisher"):
-        if not ns.get(key) and p.get(key):
+        if ctx.get_parameter_source(key) != _CL and p.get(key):
             ns[key] = p[key]
     for key in ("max_price", "min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
         if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
@@ -1389,6 +1389,7 @@ def _watch_once(ctx: click.Context, buy_only: bool = False, sort_by: str | None 
     with dc:
         products = dc.get_products_batch([item["asin"] for item in items])
 
+    _record_prices(products)
     found_asins = {p.asin for p in products}
     for item in items:
         if item["asin"] not in found_asins:
@@ -1691,6 +1692,7 @@ def notify(ctx, webhook):
     with dc:
         products = dc.get_products_batch([item["asin"] for item in items])
 
+    _record_prices(products)
     hits = []
     for p in products:
         target = targets.get(p.asin)

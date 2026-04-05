@@ -3779,3 +3779,130 @@ class TestSeriesCommand:
         data = json.loads(result.output[json_start:])
         assert isinstance(data, list)
         assert any(item["asin"] == "A3" for item in data)
+
+
+# ===================================================================
+# Fix: Config/Profile string-key precedence
+# ===================================================================
+
+class TestStringKeyPrecedence:
+    """Profile string keys must override config string keys (CLI > Profile > Config)."""
+
+    def test_profile_string_overrides_config(self):
+        """When config set a string, profile must override it."""
+        from unittest.mock import MagicMock
+        import click
+        from audible_deals.cli import _apply_config_defaults, _apply_profile_defaults
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
+        ns = {"language": "", "narrator": "", "author": "", "series": "", "publisher": ""}
+        cfg = {"language": "english", "narrator": "Alice"}
+        profile = {"language": "french", "narrator": "Bob"}
+
+        _apply_config_defaults(ctx, ns, cfg)
+        assert ns["language"] == "english"
+        assert ns["narrator"] == "Alice"
+
+        _apply_profile_defaults(ctx, ns, profile)
+        assert ns["language"] == "french"
+        assert ns["narrator"] == "Bob"
+
+    def test_config_string_applied_when_no_profile(self):
+        """Config string fills ns when CLI absent and no profile override."""
+        from unittest.mock import MagicMock
+        import click
+        from audible_deals.cli import _apply_config_defaults
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
+        ns = {"language": "", "narrator": ""}
+        cfg = {"language": "french", "narrator": "Alice"}
+        _apply_config_defaults(ctx, ns, cfg)
+        assert ns["language"] == "french"
+        assert ns["narrator"] == "Alice"
+
+    def test_cli_string_overrides_both(self):
+        """CLI-supplied string must not be overridden by config or profile."""
+        from unittest.mock import MagicMock
+        from audible_deals.cli import _apply_config_defaults, _apply_profile_defaults, _CL
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = _CL
+        ns = {"language": "spanish", "narrator": "Carlos"}
+        cfg = {"language": "english", "narrator": "Alice"}
+        profile = {"language": "french", "narrator": "Bob"}
+
+        _apply_config_defaults(ctx, ns, cfg)
+        assert ns["language"] == "spanish"
+        assert ns["narrator"] == "Carlos"
+
+        _apply_profile_defaults(ctx, ns, profile)
+        assert ns["language"] == "spanish"
+        assert ns["narrator"] == "Carlos"
+
+    def test_profile_only_keys_applied(self):
+        """Profile-only string keys (genre, keywords) are applied when CLI absent."""
+        from unittest.mock import MagicMock
+        import click
+        from audible_deals.cli import _apply_profile_defaults
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
+        ns = {"genre": "", "keywords": "", "exclude_genre": (), "exclude_authors": ()}
+        profile = {"genre": "mystery", "keywords": "thriller"}
+        _apply_profile_defaults(ctx, ns, profile)
+        assert ns["genre"] == "mystery"
+        assert ns["keywords"] == "thriller"
+
+
+# ===================================================================
+# Fix: watch/notify record prices to history
+# ===================================================================
+
+class TestWatchRecordsPrices:
+    """watch command must persist fetched prices to history."""
+
+    def test_watch_records_prices(self, mock_client, tmp_config):
+        """After running watch, history should contain an entry for the watched ASIN."""
+        import audible_deals.cli as cli_mod
+        from audible_deals.state import _load_price_history
+
+        cli_mod._save_wishlist([
+            {"asin": "WR1", "title": "Record Me", "max_price": 10.0, "added": ""},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="WR1", price=7.99, title="Record Me"),
+        ]
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch"])
+        assert result.exit_code == 0, result.output
+
+        history = _load_price_history("WR1")
+        assert len(history) == 1
+        assert history[0]["price"] == 7.99
+
+
+class TestNotifyRecordsPrices:
+    """notify command must persist fetched prices to history."""
+
+    def test_notify_records_prices(self, mock_client, tmp_config):
+        """notify records prices for fetched items."""
+        import audible_deals.cli as cli_mod
+        from audible_deals.state import _load_price_history
+
+        cli_mod._save_wishlist([
+            {"asin": "NR1", "title": "Deal Book", "max_price": 5.0, "added": ""},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="NR1", price=3.99, title="Deal Book"),
+        ]
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+
+        history = _load_price_history("NR1")
+        assert len(history) == 1
+        assert history[0]["price"] == 3.99
