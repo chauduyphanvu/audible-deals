@@ -1484,6 +1484,20 @@ class TestConfigBooleanOverride:
         assert ns["on_sale"] is True
         assert ns["deep"] is True
 
+    def test_config_bool_false_applied_when_not_cli(self):
+        """Config with explicit False should set ns to False when source is DEFAULT."""
+        from unittest.mock import MagicMock
+        import click
+        from audible_deals.cli import _apply_config_defaults
+
+        ctx = MagicMock()
+        ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
+        ns = {"on_sale": True, "deep": True}
+        cfg = {"on_sale": False, "deep": False}
+        _apply_config_defaults(ctx, ns, cfg)
+        assert ns["on_sale"] is False
+        assert ns["deep"] is False
+
     def test_profile_bool_not_overridden_when_cli_explicit(self):
         """Profile booleans must not override when the user explicitly passed the flag."""
         from unittest.mock import MagicMock
@@ -2037,6 +2051,36 @@ class TestRecapWithTitles:
         assert result.exit_code == 0, result.output
         assert "Newly tracked: 1" in result.output
         assert "Hidden New Book" not in result.output
+
+    def test_recap_stable_price_not_classified_as_new(self, tmp_config):
+        """Items with 2+ entries and no price drop should not appear as newly tracked."""
+        import datetime
+        today = datetime.date.today().isoformat()
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        self._write_history(tmp_config, "STABLE01", [
+            {"date": yesterday, "price": 5.99, "title": "Stable Book"},
+            {"date": today, "price": 5.99, "title": "Stable Book"},
+        ])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7", "--show-new"])
+        assert result.exit_code == 0, result.output
+        assert "Stable Book" not in result.output
+        assert "STABLE01" not in result.output
+
+    def test_recap_price_increase_not_classified_as_new(self, tmp_config):
+        """Items with 2+ entries and a price increase should not appear as newly tracked."""
+        import datetime
+        today = datetime.date.today().isoformat()
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        self._write_history(tmp_config, "PRICEUP1", [
+            {"date": yesterday, "price": 5.00, "title": "Price Up Book"},
+            {"date": today, "price": 10.00, "title": "Price Up Book"},
+        ])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7", "--show-new"])
+        assert result.exit_code == 0, result.output
+        assert "Price Up Book" not in result.output
+        assert "PRICEUP1" not in result.output
 
 
 # ===================================================================
@@ -3381,7 +3425,7 @@ class TestProfileSaveFalsy:
         result = runner.invoke(cli, ["profile", "save", "falseprofile", "--genre", "sci-fi"])
         assert result.exit_code == 0, result.output
         profiles = cli_mod._load_profiles()
-        # on_sale=False is NOT stored — Click flags can't be explicitly set to False
+        # on_sale=False is NOT stored — profile save's is_flag options only capture True
         assert "on_sale" not in profiles["falseprofile"]
 
     def test_profile_save_drops_empty(self, tmp_config, monkeypatch):

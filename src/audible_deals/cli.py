@@ -28,7 +28,7 @@ from importlib.metadata import version as _pkg_version
 try:
     _VERSION = _pkg_version("audible-deals")
 except Exception:
-    _VERSION = "0.5.0"  # fallback for PyInstaller frozen builds
+    _VERSION = "0.5.1"  # fallback for PyInstaller frozen builds
 try:
     import readline  # noqa: F401 — required on macOS for input() with long strings
 except ImportError:
@@ -464,20 +464,20 @@ def _common_filter_options(func):
         click.option("--publisher", default="", help="Filter by publisher name (substring match)"),
         click.option("--exclude-author", "exclude_authors", multiple=True, help="Exclude author (substring match, repeatable)"),
         click.option("--exclude-narrator", "exclude_narrators", multiple=True, help="Exclude narrator (substring match, repeatable)"),
-        click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items"),
+        click.option("--on-sale/--no-on-sale", default=False, help="Only show discounted items"),
         click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0, help="Minimum discount percentage (e.g. 70)"),
-        click.option("--deep", is_flag=True, default=False, help="Scan with 3 sort orders for better coverage (3x API calls)"),
+        click.option("--deep/--no-deep", default=False, help="Scan with 3 sort orders for better coverage (3x API calls)"),
         click.option("--language", default="", help="Language filter (e.g. english)"),
-        click.option("--all-languages", is_flag=True, default=False, help="Include all languages (default: locale language only)"),
-        click.option("--first-in-series", is_flag=True, default=False, help="Show only the first book per series"),
-        click.option("--skip-owned", is_flag=True, default=False, help="Exclude books already in your library"),
+        click.option("--all-languages/--no-all-languages", default=False, help="Include all languages (default: locale language only)"),
+        click.option("--first-in-series/--no-first-in-series", default=False, help="Show only the first book per series"),
+        click.option("--skip-owned/--no-skip-owned", default=False, help="Exclude books already in your library"),
         click.option("--exclude-seen", is_flag=True, default=False, help="Exclude ASINs from last search/find results"),
         click.option("--limit", "-n", type=int, default=25, help="Show only the top N results (0 for unlimited, default: 25)"),
         click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)"),
         click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout"),
         click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)"),
         click.option("--show-url", is_flag=True, default=False, help="Show Audible URL for each item in the table"),
-        click.option("--interactive", "-i", is_flag=True, default=False, help="Browse results interactively"),
+        click.option("--interactive/--no-interactive", "-i", default=False, help="Browse results interactively"),
         click.option("--profile", "profile_name", default=None, help="Load a saved search profile (overrides defaults, CLI flags take precedence)"),
         click.option("--dry-run", is_flag=True, default=False, help="Show what would be scanned without making API calls"),
     ]

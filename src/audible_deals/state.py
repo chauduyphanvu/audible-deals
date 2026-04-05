@@ -336,7 +336,7 @@ def _scan_price_changes(
                 new_price = entries[-1]["price"]
                 if new_price < old_price:
                     drops.append((asin, title, old_price, new_price))
-                    continue
+                continue
             new_items.append((asin, title, entries[-1]["price"]))
             continue
 
