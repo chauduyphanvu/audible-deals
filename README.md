@@ -32,18 +32,20 @@ This detects your OS and architecture, downloads the right binary, and installs 
 
 **Manual download:**
 
-Grab the binary for your platform from [Releases](https://github.com/chauduyphanvu/audible-deals/releases/latest):
+Grab the archive for your platform from [Releases](https://github.com/chauduyphanvu/audible-deals/releases/latest):
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `deals-macos-arm64` |
-| Linux (x64) | `deals-linux-x64` |
-| Windows (x64) | `deals-windows-x64.exe` |
+| macOS (Apple Silicon) | `deals-macos-arm64.tar.gz` |
+| Linux (x64) | `deals-linux-x64.tar.gz` |
+| Windows (x64) | `deals-windows-x64.zip` |
 
 ```bash
 # Example: macOS Apple Silicon
-chmod +x deals-macos-arm64
-sudo mv deals-macos-arm64 /usr/local/bin/deals
+tar xzf deals-macos-arm64.tar.gz
+mkdir -p ~/.local/lib/deals
+mv deals-macos-arm64/* ~/.local/lib/deals/
+ln -sf ~/.local/lib/deals/deals ~/.local/bin/deals
 ```
 
 **Windows (recommended — install from source):**

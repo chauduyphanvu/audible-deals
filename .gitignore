@@ -5,6 +5,7 @@ __pycache__/
 dist/
 build/
 *.spec
+!deals.spec
 .pytest_cache/
 
 # Coverage

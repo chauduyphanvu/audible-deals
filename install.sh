@@ -5,13 +5,15 @@
 #   curl -fsSL https://raw.githubusercontent.com/chauduyphanvu/audible-deals/main/install.sh | bash
 #
 # Options (via env vars):
-#   INSTALL_DIR  — where to put the binary (default: ~/.local/bin)
+#   INSTALL_DIR  — where to put the symlink (default: ~/.local/bin)
+#   LIB_DIR      — where to extract the binary bundle (default: ~/.local/lib/deals)
 #   VERSION      — specific version to install (default: latest)
 
 set -euo pipefail
 
 REPO="chauduyphanvu/audible-deals"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
+LIB_DIR="${LIB_DIR:-$HOME/.local/lib/deals}"
 BINARY_NAME="deals"
 
 # --- Detect platform ---
@@ -25,7 +27,7 @@ detect_platform() {
         Linux)  os="linux" ;;
         Darwin) os="macos" ;;
         MINGW*|MSYS*|CYGWIN*)
-            echo "Error: On Windows, download the .exe manually from:" >&2
+            echo "Error: On Windows, download the .zip manually from:" >&2
             echo "  https://github.com/$REPO/releases/latest" >&2
             exit 1
             ;;
@@ -92,7 +94,7 @@ main() {
 
     echo "Installing audible-deals v${version} (${platform})..."
 
-    url="https://github.com/$REPO/releases/download/v${version}/${artifact}"
+    url="https://github.com/$REPO/releases/download/v${version}/${artifact}.tar.gz"
 
     # Download to temp file
     local tmpfile
@@ -107,13 +109,24 @@ main() {
         exit 1
     fi
 
-    # Install
+    # Remove previous installation if present
+    if [ -d "$LIB_DIR" ]; then
+        rm -rf "$LIB_DIR"
+    fi
+
+    # Extract archive to lib directory
+    mkdir -p "$LIB_DIR"
+    tar xzf "$tmpfile" -C "$LIB_DIR" --strip-components=1
+
+    chmod +x "${LIB_DIR}/${BINARY_NAME}"
+
+    # Create symlink in INSTALL_DIR
     mkdir -p "$INSTALL_DIR"
-    mv "$tmpfile" "${INSTALL_DIR}/${BINARY_NAME}"
-    chmod +x "${INSTALL_DIR}/${BINARY_NAME}"
+    ln -sf "${LIB_DIR}/${BINARY_NAME}" "${INSTALL_DIR}/${BINARY_NAME}"
 
     echo ""
-    echo "Installed to ${INSTALL_DIR}/${BINARY_NAME}"
+    echo "Installed to ${LIB_DIR}/"
+    echo "Symlinked ${INSTALL_DIR}/${BINARY_NAME} -> ${LIB_DIR}/${BINARY_NAME}"
 
     # Ensure INSTALL_DIR is in PATH
     if ! echo "$PATH" | tr ':' '\n' | grep -qx "$INSTALL_DIR"; then

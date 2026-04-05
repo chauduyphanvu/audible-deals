@@ -86,10 +86,13 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact: deals-linux-x64
+            archive_ext: tar.gz
           - os: macos-latest
             artifact: deals-macos-arm64
+            archive_ext: tar.gz
           - os: windows-latest
-            artifact: deals-windows-x64.exe
+            artifact: deals-windows-x64
+            archive_ext: zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683  # v4.2.2
@@ -106,20 +109,27 @@ jobs:
           pip install -e .
           pip install pyinstaller
 
-      - name: Build binary
+      - name: Build binary (onedir via spec)
+        shell: bash
+        env:
+          DEALS_ARTIFACT: ${{ matrix.artifact }}
+        run: pyinstaller deals.spec --noconfirm
+
+      - name: Package archive
         shell: bash
         run: |
-          STRIP_FLAG=""
-          if [ "$RUNNER_OS" != "Windows" ]; then
-            STRIP_FLAG="--strip"
+          cd dist
+          if [ "${{ matrix.archive_ext }}" = "tar.gz" ]; then
+            tar czf "${{ matrix.artifact }}.tar.gz" "${{ matrix.artifact }}"
+          else
+            7z a "${{ matrix.artifact }}.zip" "${{ matrix.artifact }}"
           fi
-          pyinstaller --onefile --name "${{ matrix.artifact }}" $STRIP_FLAG --noconfirm src/audible_deals/__main__.py
 
-      - name: Upload binary
+      - name: Upload archive
         uses: actions/upload-artifact@65c4c4a1ddee5b72f698fdd19549f0f0fb45cf08  # v4.6.0
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}.${{ matrix.archive_ext }}
 
   publish:
     needs: [validate-and-tag, build-binaries]
@@ -141,6 +151,6 @@ jobs:
           generate_release_notes: true
           files: |
             python-dist/*
-            deals-linux-x64/deals-linux-x64
-            deals-macos-arm64/deals-macos-arm64
-            deals-windows-x64.exe/deals-windows-x64.exe
+            deals-linux-x64/deals-linux-x64.tar.gz
+            deals-macos-arm64/deals-macos-arm64.tar.gz
+            deals-windows-x64/deals-windows-x64.zip
