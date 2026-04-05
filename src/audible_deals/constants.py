@@ -146,7 +146,7 @@ _CONFIG_SCHEMA: dict[str, type] = {
     "min_discount": int, "language": str,
     "locale": str, "sort": str, "pages": int, "on_sale": bool,
     "deep": bool, "first_in_series": bool, "all_languages": bool,
-    "interactive": bool, "limit": int, "narrator": str, "author": str, "series": str,
+    "interactive": bool, "limit": int, "narrator": str, "author": str, "series": str, "publisher": str,
 }
 
 

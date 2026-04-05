@@ -3463,6 +3463,58 @@ class TestNotifyEmpty:
 
 
 # ===================================================================
+# Bug fix: notify $0 target + profile save missing options
+# ===================================================================
+
+
+class TestNotifyZeroTarget:
+    def test_notify_zero_target_fires(self, mock_client, tmp_config):
+        """notify must fire when max_price=0 and product price is 0 (was falsy bug)."""
+        import audible_deals.cli as cli_mod
+        cli_mod._save_wishlist([
+            {"asin": "Z001", "title": "Free Book", "max_price": 0, "added": "2024-01-01"},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="Z001", price=0.0),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data["count"] == 1
+        assert data["deals"][0]["asin"] == "Z001"
+
+
+class TestProfileSaveNewOptions:
+    def test_profile_save_min_discount(self, tmp_config):
+        """profile save --min-discount should persist."""
+        from audible_deals.state import _load_profiles
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "disctest", "--min-discount", "50"])
+        assert result.exit_code == 0, result.output
+        profiles = _load_profiles()
+        assert profiles["disctest"]["min_discount"] == 50
+
+    def test_profile_save_max_pph(self, tmp_config):
+        """profile save --max-price-per-hour should persist."""
+        from audible_deals.state import _load_profiles
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "pphtest", "--max-price-per-hour", "0.5"])
+        assert result.exit_code == 0, result.output
+        profiles = _load_profiles()
+        assert profiles["pphtest"]["max_pph"] == 0.5
+
+    def test_profile_save_publisher(self, tmp_config):
+        """profile save --publisher should persist."""
+        from audible_deals.state import _load_profiles
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "pubtest", "--publisher", "Penguin"])
+        assert result.exit_code == 0, result.output
+        profiles = _load_profiles()
+        assert profiles["pubtest"]["publisher"] == "Penguin"
+
+
+# ===================================================================
 # Fix 7: --dry-run for find and search
 # ===================================================================
 

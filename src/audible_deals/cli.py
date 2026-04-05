@@ -144,7 +144,7 @@ def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
     for key in ("min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
         if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
-    for key in ("language", "narrator", "author", "series"):
+    for key in ("language", "narrator", "author", "series", "publisher"):
         if cfg.get(key) and not ns.get(key):
             ns[key] = cfg[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
@@ -157,7 +157,7 @@ def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
 
     ``ns`` is mutated in place. Profile values override config but not CLI flags.
     """
-    for key in ("genre", "exclude_genre", "exclude_authors", "exclude_narrators", "keywords", "narrator", "author", "language", "series"):
+    for key in ("genre", "exclude_genre", "exclude_authors", "exclude_narrators", "keywords", "narrator", "author", "language", "series", "publisher"):
         if not ns.get(key) and p.get(key):
             ns[key] = p[key]
     for key in ("max_price", "min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
@@ -355,7 +355,7 @@ def _interactive_browse(products: list[Product]) -> None:
                     pass
                 items.append(_wishlist_entry(p, target_price))
                 _save_wishlist(items)
-                target_note = f" (target: {p.currency}{target_price:.2f})" if target_price else ""
+                target_note = f" (target: {p.currency}{target_price:.2f})" if target_price is not None else ""
                 console.print(f"[green]+[/green] {p.title} added to wishlist{target_note}")
 
 
@@ -1535,6 +1535,9 @@ def profile():
 @click.option("--exclude-author", "exclude_authors", multiple=True)
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True)
 @click.option("--on-sale", is_flag=True, default=False)
+@click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0)
+@click.option("--max-price-per-hour", "max_pph", type=click.FloatRange(min=0), default=None)
+@click.option("--publisher", default="")
 @click.option("--deep", is_flag=True, default=False)
 @click.option("--pages", type=int, default=None)
 @click.option("--first-in-series", is_flag=True, default=False)
@@ -1691,7 +1694,7 @@ def notify(ctx, webhook):
     hits = []
     for p in products:
         target = targets.get(p.asin)
-        if target and p.price is not None and p.price <= target:
+        if target is not None and p.price is not None and p.price <= target:
             hits.append({
                 "asin": p.asin,
                 "title": p.title,
