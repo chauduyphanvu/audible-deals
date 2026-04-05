@@ -17,9 +17,11 @@ from audible_deals.constants import (
     _ASIN_RE,
     _CONFIG_SCHEMA,
     _atomic_write,
+    ALL_SORT_OPTIONS,
     CONFIG_FILE,
     HISTORY_DIR,
     LAST_RESULTS_FILE,
+    LOCALE_DOMAIN,
     PROFILES_FILE,
     SEEN_ASINS_FILE,
     WISHLIST_FILE,
@@ -98,6 +100,18 @@ def _coerce_config_value(key: str, raw: str):
         elif raw.lower() in ("false", "0", "no"):
             return False
         raise click.ClickException(f"Invalid boolean value for '{key}': {raw!r}. Use true/false.")
+    if key == "sort":
+        if raw not in ALL_SORT_OPTIONS:
+            raise click.ClickException(
+                f"Invalid sort value '{raw}'. Valid: {', '.join(sorted(ALL_SORT_OPTIONS))}"
+            )
+        return raw
+    if key == "locale":
+        if raw not in LOCALE_DOMAIN:
+            raise click.ClickException(
+                f"Invalid locale '{raw}'. Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
+            )
+        return raw
     try:
         return typ(raw)
     except (ValueError, TypeError) as e:

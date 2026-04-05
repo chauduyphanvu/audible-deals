@@ -147,7 +147,7 @@ def _filter_products(
 
     if on_sale and min_discount <= 0:
         before = len(filtered)
-        filtered = [p for p in filtered if p.discount_pct is not None and p.discount_pct > 0]
+        filtered = [p for p in filtered if p.discount_pct is None or p.discount_pct > 0]
         if (removed := before - len(filtered)):
             breakdown["on sale"] = removed
 

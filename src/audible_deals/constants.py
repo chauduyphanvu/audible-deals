@@ -82,6 +82,12 @@ SORT_OPTIONS = {
     "title": "Title",
 }
 
+# Client-side sort keys (not supported by Audible API, applied locally)
+CLIENT_SORT_OPTIONS = frozenset({"price", "-price", "discount", "price-per-hour", "value"})
+
+# All valid sort keys (server + client)
+ALL_SORT_OPTIONS = frozenset(SORT_OPTIONS.keys()) | CLIENT_SORT_OPTIONS
+
 # Sort orders used by --deep to maximize item coverage
 DEEP_SORT_ORDERS = ["BestSellers", "-ReleaseDate", "AvgRating"]
 

@@ -44,6 +44,7 @@ from rich.table import Table
 from audible_deals.constants import (
     _ASIN_RE,
     _CONFIG_SCHEMA,
+    CLIENT_SORT_OPTIONS,
     CONFIG_FILE,
     DEEP_SORT_ORDERS,
     HISTORY_DIR,
@@ -512,7 +513,7 @@ def _build_scan_namespace(
 @click.option("--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter (e.g. 5.00)")
 @click.option("--category", default="", help="Category ID to search within")
 @click.option("--genre", default="", help="Genre name to search within (fuzzy match, e.g. 'sci-fi')")
-@click.option("--sort", type=click.Choice(list(SORT_OPTIONS.keys()) + ["price", "-price", "discount", "price-per-hour", "value"]), default="relevance", help="Sort order (price/discount/price-per-hour/value are client-side)")
+@click.option("--sort", type=click.Choice(list(SORT_OPTIONS.keys()) + sorted(CLIENT_SORT_OPTIONS)), default="relevance", help="Sort order (price/discount/price-per-hour/value are client-side)")
 @click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings (e.g. 100)")
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
 @click.option("--pages", type=click.IntRange(min=1), default=3, help="Number of pages to scan (50 items/page)")
@@ -707,7 +708,7 @@ def _fetch_with_progress(
 @click.option("--genre", default="", help="Genre name (fuzzy match, e.g. 'sci-fi', 'mystery', 'romance')")
 @click.option("--keywords", default="", help="Optional keyword filter within the category")
 @click.option("--max-price", type=click.FloatRange(min=0), default=5.00, help="Max price threshold (default: $5.00)")
-@click.option("--sort", type=click.Choice(["price", "-price", "discount", "price-per-hour", "value"] + list(SORT_OPTIONS.keys())), default="price-per-hour", help="Sort order (price/discount/price-per-hour/value are client-side)")
+@click.option("--sort", type=click.Choice(sorted(CLIENT_SORT_OPTIONS) + list(SORT_OPTIONS.keys())), default="price-per-hour", help="Sort order (price/discount/price-per-hour/value are client-side)")
 @click.option("--min-ratings", type=int, default=1, help="Minimum number of ratings (default: 1, filters unreviewed)")
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours (filters out shorts)")
 @click.option("--pages", type=click.IntRange(min=1), default=10, help="Pages to scan per sort order (50 items/page, default: 10)")
@@ -1535,18 +1536,18 @@ def profile():
 @click.option("--series", default="")
 @click.option("--exclude-author", "exclude_authors", multiple=True)
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True)
-@click.option("--on-sale", is_flag=True, default=False)
+@click.option("--on-sale/--no-on-sale", default=False)
 @click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0)
 @click.option("--max-price-per-hour", "max_pph", type=click.FloatRange(min=0), default=None)
 @click.option("--publisher", default="")
-@click.option("--deep", is_flag=True, default=False)
+@click.option("--deep/--no-deep", default=False)
 @click.option("--pages", type=int, default=None)
-@click.option("--first-in-series", is_flag=True, default=False)
-@click.option("--all-languages", is_flag=True, default=False)
+@click.option("--first-in-series/--no-first-in-series", default=False)
+@click.option("--all-languages/--no-all-languages", default=False)
 @click.option("--limit", "-n", type=int, default=None)
-@click.option("--skip-owned", is_flag=True, default=False)
+@click.option("--skip-owned/--no-skip-owned", default=False)
 @click.option("--language", default="")
-@click.option("--interactive", "-i", is_flag=True, default=False)
+@click.option("--interactive/--no-interactive", "-i", default=False)
 @click.pass_context
 def profile_save(ctx, name, **kwargs):
     """Save a search profile.
@@ -1575,8 +1576,12 @@ def profile_list():
         return
 
     for name, opts in profiles.items():
-        flags = " ".join(f"--{k.replace('_', '-')} {v}" if not isinstance(v, bool) else f"--{k.replace('_', '-')}"
-                         for k, v in opts.items())
+        flags = " ".join(
+            f"--{_KEY_TO_FLAG.get(k, k.replace('_', '-'))}" if isinstance(v, bool)
+            else f"--{_KEY_TO_FLAG.get(k, k.replace('_', '-'))} {v}"
+            for k, v in opts.items()
+            if not isinstance(v, bool) or v
+        )
         console.print(f"  [bold]{name}[/bold]  [dim]{flags}[/dim]")
 
 
@@ -1611,10 +1616,12 @@ def profile_show(name):
         display_key = _KEY_TO_FLAG.get(key, key.replace("_", "-"))
         if isinstance(value, bool) and value:
             console.print(f"  --{display_key}")
+        elif isinstance(value, bool) and not value:
+            console.print(f"  --no-{display_key}")
         elif isinstance(value, (list, tuple)):
             for v in value:
                 console.print(f"  --{display_key} {v}")
-        elif not isinstance(value, bool):
+        else:
             console.print(f"  --{display_key} {value}")
     console.print()
 

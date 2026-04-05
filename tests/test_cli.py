@@ -62,7 +62,9 @@ class TestFilterProducts:
 
     def test_on_sale(self, products_for_filtering):
         filtered, _ = _filter_products(products_for_filtering, on_sale=True)
-        assert all(p.discount_pct is not None and p.discount_pct > 0 for p in filtered)
+        # Items with unknown discount (None) pass through; known 0% are excluded
+        assert all(p.discount_pct is None or p.discount_pct > 0 for p in filtered)
+        assert not any(p.discount_pct == 0 for p in filtered)
 
     def test_skip_asins(self, products_for_filtering):
         filtered, _ = _filter_products(products_for_filtering, skip_asins={"CHEAP1", "CHEAP2"})
@@ -2583,8 +2585,8 @@ class TestProfileShow:
         assert result.exit_code == 0, result.output
         assert "deep" in result.output
 
-    def test_profile_show_bool_false_not_displayed(self, tmp_config):
-        """Boolean False values should be omitted — not printed as '--flag False'."""
+    def test_profile_show_bool_false_displayed_as_no_flag(self, tmp_config):
+        """Boolean False values should display as --no-flag."""
         import audible_deals.cli as cli_mod
         cli_mod._save_profiles({
             "falsetest": {
@@ -2596,6 +2598,8 @@ class TestProfileShow:
         result = runner.invoke(cli, ["profile", "show", "falsetest"])
         assert result.exit_code == 0, result.output
         assert "False" not in result.output
+        assert "--no-deep" in result.output
+        assert "--no-on-sale" in result.output
 
 
 # ===================================================================
