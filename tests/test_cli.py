@@ -62,9 +62,10 @@ class TestFilterProducts:
 
     def test_on_sale(self, products_for_filtering):
         filtered, _ = _filter_products(products_for_filtering, on_sale=True)
-        # Items with unknown discount (None) pass through; known 0% are excluded
-        assert all(p.discount_pct is None or p.discount_pct > 0 for p in filtered)
-        assert not any(p.discount_pct == 0 for p in filtered)
+        # Only items with a confirmed positive discount should pass
+        assert all(p.discount_pct is not None and p.discount_pct > 0 for p in filtered)
+        # NO_PRICE (None discount) and EXPENSIVE (0% discount) must be excluded
+        assert not any(p.asin in ("NO_PRICE", "EXPENSIVE") for p in filtered)
 
     def test_skip_asins(self, products_for_filtering):
         filtered, _ = _filter_products(products_for_filtering, skip_asins={"CHEAP1", "CHEAP2"})

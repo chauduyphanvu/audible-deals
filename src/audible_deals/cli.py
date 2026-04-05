@@ -1576,12 +1576,7 @@ def profile_list():
         return
 
     for name, opts in profiles.items():
-        flags = " ".join(
-            f"--{_KEY_TO_FLAG.get(k, k.replace('_', '-'))}" if isinstance(v, bool)
-            else f"--{_KEY_TO_FLAG.get(k, k.replace('_', '-'))} {v}"
-            for k, v in opts.items()
-            if not isinstance(v, bool) or v
-        )
+        flags = " ".join(_opts_to_flag_parts(opts))
         console.print(f"  [bold]{name}[/bold]  [dim]{flags}[/dim]")
 
 
@@ -1600,7 +1595,22 @@ def profile_delete(name):
 _KEY_TO_FLAG: dict[str, str] = {
     "exclude_authors": "exclude-author",
     "exclude_narrators": "exclude-narrator",
+    "max_pph": "max-price-per-hour",
 }
+
+
+def _opts_to_flag_parts(opts: dict) -> list[str]:
+    """Convert profile opts dict to a list of CLI flag strings."""
+    parts: list[str] = []
+    for k, v in opts.items():
+        flag = _KEY_TO_FLAG.get(k, k.replace("_", "-"))
+        if isinstance(v, bool):
+            parts.append(f"--{flag}" if v else f"--no-{flag}")
+        elif isinstance(v, (list, tuple)):
+            parts.extend(f"--{flag} {item}" for item in v)
+        else:
+            parts.append(f"--{flag} {v}")
+    return parts
 
 
 @profile.command("show")
@@ -1612,17 +1622,8 @@ def profile_show(name):
         raise click.ClickException(f"Profile '{name}' not found.")
     opts = profiles[name]
     console.print(f"\n[bold]Profile: {name}[/bold]\n")
-    for key, value in sorted(opts.items()):
-        display_key = _KEY_TO_FLAG.get(key, key.replace("_", "-"))
-        if isinstance(value, bool) and value:
-            console.print(f"  --{display_key}")
-        elif isinstance(value, bool) and not value:
-            console.print(f"  --no-{display_key}")
-        elif isinstance(value, (list, tuple)):
-            for v in value:
-                console.print(f"  --{display_key} {v}")
-        else:
-            console.print(f"  --{display_key} {value}")
+    for part in _opts_to_flag_parts(dict(sorted(opts.items()))):
+        console.print(f"  {part}")
     console.print()
 
 
