@@ -537,13 +537,13 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
     (max_price, sort, min_rating, min_ratings, min_hours,
      language, narrator, author, pages, limit, on_sale, deep, first_in_series,
      skip_owned, interactive, genre, exclude_genre, exclude_authors,
-     exclude_narrators, series, publisher, quiet) = (
+     exclude_narrators, series, publisher, quiet, max_pph, min_discount) = (
         ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"],
         ns["min_hours"], ns["language"], ns["narrator"], ns["author"],
         ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
         ns["first_in_series"], ns["skip_owned"], ns["interactive"],
         ns["genre"], ns["exclude_genre"], ns["exclude_authors"], ns["exclude_narrators"],
-        ns["series"], ns["publisher"], ns["quiet"],
+        ns["series"], ns["publisher"], ns["quiet"], ns["max_pph"], ns["min_discount"],
     )
     if genre and category:
         raise click.UsageError("Use --genre or --category, not both.")
@@ -746,13 +746,13 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
     (max_price, sort, min_rating, min_ratings, min_hours,
      language, narrator, author, pages, limit, on_sale, deep, first_in_series,
      skip_owned, interactive, genre, exclude_genre, exclude_authors,
-     exclude_narrators, keywords, series, publisher, quiet) = (
+     exclude_narrators, keywords, series, publisher, quiet, max_pph, min_discount) = (
         ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"],
         ns["min_hours"], ns["language"], ns["narrator"], ns["author"],
         ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
         ns["first_in_series"], ns["skip_owned"], ns["interactive"],
         ns["genre"], ns["exclude_genre"], ns["exclude_authors"], ns["exclude_narrators"],
-        ns["keywords"], ns["series"], ns["publisher"], ns["quiet"],
+        ns["keywords"], ns["series"], ns["publisher"], ns["quiet"], ns["max_pph"], ns["min_discount"],
     )
     if genre and category:
         raise click.UsageError("Use --genre or --category, not both.")

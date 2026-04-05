@@ -49,7 +49,7 @@ def _wishlist_entry(product: Product, max_price: float | None) -> dict:
         "asin": product.asin,
         "title": product.title,
         "max_price": max_price,
-        "added": product.release_date or "",
+        "added": datetime.date.today().isoformat(),
     }
 
 
@@ -355,6 +355,6 @@ def _find_wishlist_hits() -> list[dict]:
         if not _ASIN_RE.fullmatch(item.get("asin", "")):
             continue
         entries = _load_price_history(item["asin"])
-        if entries and item.get("max_price") and entries[-1]["price"] <= item["max_price"]:
+        if entries and item.get("max_price") is not None and entries[-1]["price"] <= item["max_price"]:
             hits.append(item)
     return hits
