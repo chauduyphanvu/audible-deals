@@ -35,7 +35,9 @@ from audible_deals.constants import (
 def _load_wishlist() -> list[dict]:
     if WISHLIST_FILE.exists():
         try:
-            return json_mod.loads(WISHLIST_FILE.read_text())
+            data = json_mod.loads(WISHLIST_FILE.read_text())
+            if isinstance(data, list):
+                return data
         except (json_mod.JSONDecodeError, KeyError):
             pass
     return []
@@ -63,7 +65,9 @@ def _wishlist_entry(product: Product, max_price: float | None) -> dict:
 def _load_profiles() -> dict[str, dict]:
     if PROFILES_FILE.exists():
         try:
-            return json_mod.loads(PROFILES_FILE.read_text())
+            data = json_mod.loads(PROFILES_FILE.read_text())
+            if isinstance(data, dict):
+                return data
         except (json_mod.JSONDecodeError, KeyError):
             pass
     return {}

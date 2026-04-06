@@ -140,13 +140,13 @@ def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
     if cfg.get("max_price") is not None and ctx.get_parameter_source("max_price") != _CL:
         ns["max_price"] = cfg["max_price"]
     for key in ("sort", "pages"):
-        if cfg.get(key) and ctx.get_parameter_source(key) != _CL:
+        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
     for key in ("min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
         if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
     for key in ("language", "narrator", "author", "series", "publisher"):
-        if cfg.get(key) and ctx.get_parameter_source(key) != _CL:
+        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
             ns[key] = cfg[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
         if cfg.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
@@ -159,13 +159,13 @@ def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
     ``ns`` is mutated in place. Profile values override config but not CLI flags.
     """
     for key in ("genre", "exclude_genre", "exclude_authors", "exclude_narrators", "keywords", "narrator", "author", "language", "series", "publisher"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key):
+        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
             ns[key] = p[key]
     for key in ("max_price", "min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
         if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
             ns[key] = p[key]
     for key in ("sort", "pages"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key):
+        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
             ns[key] = p[key]
     for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
         if p.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
@@ -1117,7 +1117,7 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
     if output and ctx.get_parameter_source("quiet") != _CL:
         quiet = True
     cached_title, data = _load_last_results()
-    products = [_deserialize_product(d) for d in data]
+    products = [p for d in data if (p := _deserialize_product(d)) is not None]
     if json_flag:
         console.file = sys.stderr
 
@@ -1716,6 +1716,8 @@ def notify(ctx, webhook):
     if not hits:
         if not webhook:
             click.echo(json_mod.dumps({"deals": [], "count": 0}, indent=2))
+        else:
+            console.print("[dim]No items at target price. Nothing sent to webhook.[/dim]")
         return
 
     payload = json_mod.dumps({"deals": hits, "count": len(hits)}, indent=2)

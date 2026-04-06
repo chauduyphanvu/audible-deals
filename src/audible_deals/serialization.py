@@ -33,9 +33,12 @@ def _serialize_product(p: Product) -> dict:
 _PRODUCT_FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Product))
 
 
-def _deserialize_product(d: dict) -> Product:
+def _deserialize_product(d: dict) -> Product | None:
     """Reconstruct a Product from a serialized dict, ignoring computed fields."""
-    return Product(**{k: v for k, v in d.items() if k in _PRODUCT_FIELDS})
+    try:
+        return Product(**{k: v for k, v in d.items() if k in _PRODUCT_FIELDS})
+    except TypeError:
+        return None
 
 
 def _export_products(products: list[Product], path: Path) -> None:

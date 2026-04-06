@@ -735,6 +735,20 @@ class TestLibraryCommand:
         assert "0" in result.output
 
 
+class TestLoadWishlistTypeValidation:
+    def test_dict_returns_empty_list(self, tmp_config):
+        """A wishlist.json containing {} instead of [] returns empty list."""
+        import audible_deals.cli as cli_mod
+        cli_mod.WISHLIST_FILE.write_text("{}")
+        assert cli_mod._load_wishlist() == []
+
+    def test_load_profiles_list_returns_empty_dict(self, tmp_config):
+        """A profiles.json containing [] instead of {} returns empty dict."""
+        import audible_deals.cli as cli_mod
+        cli_mod.PROFILES_FILE.write_text("[]")
+        assert cli_mod._load_profiles() == {}
+
+
 class TestWatchCommand:
     def test_watch_empty(self, tmp_config, mock_client):
         runner = CliRunner()
@@ -1031,6 +1045,11 @@ class TestDeserializeProduct:
         }
         p = _deserialize_product(d)
         assert p.asin == "MIN1"
+
+    def test_corrupt_dict_returns_none(self):
+        """Dicts missing required fields return None instead of crashing."""
+        assert _deserialize_product({}) is None
+        assert _deserialize_product({"price": 5.0}) is None
 
 
 class TestResolveLastReferences:
@@ -3494,8 +3513,8 @@ class TestNotifyEmpty:
         assert result.exit_code == 0, result.output
         assert "[]" in result.output
 
-    def test_notify_no_hits_with_webhook_is_silent(self, mock_client, tmp_config, monkeypatch):
-        """notify with no hits and a webhook does not POST or print anything."""
+    def test_notify_no_hits_with_webhook_shows_feedback(self, mock_client, tmp_config, monkeypatch):
+        """notify with no hits and a webhook prints feedback but does not POST."""
         import audible_deals.cli as cli_mod
         cli_mod._save_wishlist([
             {"asin": "NE02", "title": "Pricey Book", "max_price": 1.0, "added": "2024-01-01"},
@@ -3509,6 +3528,7 @@ class TestNotifyEmpty:
         result = runner.invoke(cli, ["notify", "--webhook", "https://example.com/hook"])
         assert result.exit_code == 0, result.output
         assert "[]" not in result.output
+        assert "Nothing sent to webhook" in result.output
 
 
 # ===================================================================
