@@ -226,6 +226,8 @@ def _sort_local(products: list[Product], sort: str) -> list[Product]:
         return sorted(products, key=lambda p: p.authors_str.lower())
     elif sort == "asin":
         return sorted(products, key=lambda p: p.asin)
+    elif sort == "bestsellers":
+        return sorted(products, key=lambda p: p.num_ratings, reverse=True)
     return products
 
 

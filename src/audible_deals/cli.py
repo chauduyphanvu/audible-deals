@@ -126,6 +126,12 @@ def _get_client(locale: str) -> DealsClient:
     return DealsClient(locale=locale)
 
 
+def _safe_record_prices(products: list[Product]) -> None:
+    """Record prices, warning on failure instead of crashing."""
+    try:
+        _record_prices(products)
+    except Exception as e:
+        console.print(f"[dim]Warning: could not record price history: {e}[/dim]")
 
 
 _CL = click.core.ParameterSource.COMMANDLINE
@@ -276,7 +282,7 @@ def _postprocess_and_output(
     if first_in_series:
         filtered, series_collapsed = _first_in_series(filtered)
     filtered = _sort_local(filtered, sort)
-    _record_prices(filtered)
+    _safe_record_prices(filtered)
     serialized_all = [_serialize_product(p) for p in filtered]
     if write_cache:
         try:
@@ -473,7 +479,7 @@ def _common_filter_options(func):
         click.option("--first-in-series/--no-first-in-series", default=False, help="Show only the first book per series"),
         click.option("--skip-owned/--no-skip-owned", default=False, help="Exclude books already in your library"),
         click.option("--exclude-seen", is_flag=True, default=False, help="Exclude ASINs from last search/find results"),
-        click.option("--limit", "-n", type=int, default=25, help="Show only the top N results (0 for unlimited, default: 25)"),
+        click.option("--limit", "-n", type=click.IntRange(min=0), default=25, help="Show only the top N results (0 for unlimited, default: 25)"),
         click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)"),
         click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout"),
         click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)"),
@@ -818,7 +824,7 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
 
 @cli.command()
 @click.option("--sort", type=click.Choice(["title", "rating", "length", "date", "price", "-price", "price-per-hour"]), default="date", help="Sort order (default: date — newest first)")
-@click.option("-n", "--limit", type=int, default=None, help="Show only the top N results")
+@click.option("-n", "--limit", type=click.IntRange(min=0), default=None, help="Show only the top N results")
 @click.option("-o", "--output", type=click.Path(path_type=Path), default=None, help="Export to file (.json or .csv)")
 @click.option("--json", "json_flag", is_flag=True, default=False, help="Output as JSON to stdout")
 @click.option("-q", "--quiet", is_flag=True, default=False, help="Suppress table output")
@@ -907,7 +913,7 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
 @click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
 @click.option("--sort", type=click.Choice(["price", "-price", "discount", "price-per-hour", "rating", "length", "date", "title"]), default="price-per-hour", help="Sort order (default: price-per-hour)")
-@click.option("--limit", "-n", type=int, default=25, help="Show only the top N results (0 for unlimited, default: 25)")
+@click.option("--limit", "-n", type=click.IntRange(min=0), default=25, help="Show only the top N results (0 for unlimited, default: 25)")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)")
 @click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)")
@@ -933,6 +939,12 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
         quiet = True
     if json_flag:
         console.file = sys.stderr
+
+    ns = dict(max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
+              min_hours=min_hours, on_sale=on_sale, limit=limit)
+    _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
+    max_price, min_rating, min_ratings = ns["max_price"], ns["min_rating"], ns["min_ratings"]
+    min_hours, on_sale, limit = ns["min_hours"], ns["on_sale"], ns["limit"]
 
     dc = _get_client(ctx.obj["locale"])
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
@@ -1070,7 +1082,7 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
 @click.option("--on-sale", is_flag=True, default=False, help="Only show discounted items")
 @click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0, help="Minimum discount percentage (e.g. 70)")
 @click.option("--first-in-series", is_flag=True, default=False, help="Show only first book per series")
-@click.option("--limit", "-n", type=int, default=None, help="Show only the top N results")
+@click.option("--limit", "-n", type=click.IntRange(min=0), default=None, help="Show only the top N results")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)")
 @click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout")
 @click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output")
@@ -1292,6 +1304,8 @@ def wishlist_remove(asins, last_refs):
             all_asins.append(ref_asin)
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or use --last N.")
+    for asin in all_asins:
+        _validate_asin(asin)
     items = _load_wishlist()
     remove_set = set(all_asins)
     before = len(items)
@@ -1390,7 +1404,7 @@ def _watch_once(ctx: click.Context, buy_only: bool = False, sort_by: str | None 
     with dc:
         products = dc.get_products_batch([item["asin"] for item in items])
 
-    _record_prices(products)
+    _safe_record_prices(products)
     found_asins = {p.asin for p in products}
     for item in items:
         if item["asin"] not in found_asins:
@@ -1544,7 +1558,7 @@ def profile():
 @click.option("--pages", type=int, default=None)
 @click.option("--first-in-series/--no-first-in-series", default=False)
 @click.option("--all-languages/--no-all-languages", default=False)
-@click.option("--limit", "-n", type=int, default=None)
+@click.option("--limit", "-n", type=click.IntRange(min=0), default=None)
 @click.option("--skip-owned/--no-skip-owned", default=False)
 @click.option("--language", default="")
 @click.option("--interactive/--no-interactive", "-i", default=False)
@@ -1700,7 +1714,7 @@ def notify(ctx, webhook):
     with dc:
         products = dc.get_products_batch([item["asin"] for item in items])
 
-    _record_prices(products)
+    _safe_record_prices(products)
     hits = []
     for p in products:
         target = targets.get(p.asin)
