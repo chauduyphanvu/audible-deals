@@ -289,13 +289,14 @@ def _postprocess_and_output(
             _save_last_results(title, serialized_all)
         except Exception:
             pass
-        _save_seen_asins({p.asin for p in filtered})
     total_before_limit = len(filtered)
     if limit is not None and limit > 0:
         filtered = filtered[:limit]
         serialized = serialized_all[:limit]
     else:
         serialized = serialized_all
+    if write_cache:
+        _save_seen_asins({p.asin for p in filtered})
 
     if output:
         _export_products(filtered, output)
@@ -941,10 +942,11 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
         console.file = sys.stderr
 
     ns = dict(max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
-              min_hours=min_hours, on_sale=on_sale, limit=limit)
+              min_hours=min_hours, on_sale=on_sale, limit=limit, sort=sort, pages=pages)
     _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
     max_price, min_rating, min_ratings = ns["max_price"], ns["min_rating"], ns["min_ratings"]
     min_hours, on_sale, limit = ns["min_hours"], ns["on_sale"], ns["limit"]
+    sort, pages = ns["sort"], ns["pages"]
 
     dc = _get_client(ctx.obj["locale"])
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
@@ -1133,7 +1135,7 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
     if json_flag:
         console.file = sys.stderr
 
-    effective_sort = sort or "price"  # default re-sort by price
+    effective_sort = sort or ""  # preserve original cache order when no --sort given
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     _postprocess_and_output(
         products,
