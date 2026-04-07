@@ -85,7 +85,9 @@ def _save_profiles(profiles: dict[str, dict]) -> None:
 def _load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
-            return json_mod.loads(CONFIG_FILE.read_text())
+            data = json_mod.loads(CONFIG_FILE.read_text())
+            if isinstance(data, dict):
+                return data
         except (json_mod.JSONDecodeError, KeyError, OSError):
             pass
     return {}

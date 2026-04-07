@@ -191,8 +191,10 @@ def _price_per_hour(p: Product) -> float:
 
 def _value_score(p: Product) -> float:
     """Composite value score: (rating * hours) / price. Higher is better."""
-    if p.price is None or p.price <= 0 or p.hours <= 0 or p.rating <= 0:
+    if p.price is None or p.hours <= 0 or p.rating <= 0:
         return 0.0
+    if p.price <= 0:
+        return float("inf")
     return (p.rating * p.hours) / p.price
 
 

@@ -748,6 +748,12 @@ class TestLoadWishlistTypeValidation:
         cli_mod.PROFILES_FILE.write_text("[]")
         assert cli_mod._load_profiles() == {}
 
+    def test_load_config_array_returns_empty_dict(self, tmp_config):
+        """A config.json containing a JSON array instead of {} returns {}."""
+        from audible_deals.state import _load_config
+        (tmp_config / "config.json").write_text("[1, 2]")
+        assert _load_config() == {}
+
 
 class TestWatchCommand:
     def test_watch_empty(self, tmp_config, mock_client):
@@ -3301,8 +3307,9 @@ class TestValueSort:
         assert result[1].asin == "LV"
 
     def test_value_score_zero_price(self):
+        """Free items (price=0.0) with valid rating and hours return inf."""
         p = make_product(price=0.0, length_minutes=600, rating=4.5)
-        assert _value_score(p) == 0.0
+        assert _value_score(p) == float("inf")
 
     def test_value_score_none_price(self):
         p = make_product(price=None, length_minutes=600, rating=4.5)
