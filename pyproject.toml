@@ -30,7 +30,7 @@ Issues = "https://github.com/chauduyphanvu/audible-deals/issues"
 Changelog = "https://github.com/chauduyphanvu/audible-deals/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0"]
+dev = ["pytest>=9.0.3"]
 
 [build-system]
 requires = ["hatchling"]
