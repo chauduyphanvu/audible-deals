@@ -201,10 +201,9 @@ def _resolve_categories(
     return category, category_name, exclude_category_ids
 
 
-def _postprocess_and_output(
+def _apply_filters(
     all_products: list[Product],
     *,
-    title: str,
     max_price: float | None,
     min_rating: float,
     min_ratings: int = 0,
@@ -217,22 +216,14 @@ def _postprocess_and_output(
     on_sale: bool,
     skip_asins: set[str] | None,
     exclude_category_ids: set[str],
-    first_in_series: bool,
+    do_first_in_series: bool,
     sort: str,
-    limit: int | None,
-    output: Path | None,
-    json_flag: bool,
-    quiet: bool,
-    currency: str = "$",
-    interactive: bool = False,
-    write_cache: bool = True,
-    show_url: bool = False,
     max_pph: float | None = None,
     min_discount: int = 0,
     series: str = "",
     publisher: str = "",
-) -> None:
-    """Shared post-processing pipeline for search and find commands."""
+) -> tuple[list[Product], dict[str, int], int, int]:
+    """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed)."""
     filtered, filter_breakdown = filter_products(
         all_products,
         max_price=max_price,
@@ -254,9 +245,20 @@ def _postprocess_and_output(
     )
     filtered, editions_removed = dedupe_editions(filtered)
     series_collapsed = 0
-    if first_in_series:
+    if do_first_in_series:
         filtered, series_collapsed = _first_in_series_fn(filtered)
     filtered = sort_local(filtered, sort)
+    return filtered, filter_breakdown, editions_removed, series_collapsed
+
+
+def _record_and_cache(
+    filtered: list[Product],
+    *,
+    title: str,
+    write_cache: bool = True,
+    limit: int | None,
+) -> tuple[list[Product], list[dict], int]:
+    """Record prices, persist cache, apply limit. Returns (filtered_limited, serialized, total_before_limit)."""
     _safe_record_prices(filtered)
     serialized_all = [serialize_product(p) for p in filtered]
     if write_cache:
@@ -272,7 +274,27 @@ def _postprocess_and_output(
         serialized = serialized_all
     if write_cache:
         save_seen_asins({p.asin for p in filtered})
+    return filtered, serialized, total_before_limit
 
+
+def _emit_output(
+    filtered: list[Product],
+    serialized: list[dict],
+    *,
+    title: str,
+    output: Path | None,
+    json_flag: bool,
+    quiet: bool,
+    max_price: float | None,
+    filter_breakdown: dict[str, int],
+    editions_removed: int,
+    series_collapsed: int,
+    total_before_limit: int,
+    currency: str = "$",
+    interactive: bool = False,
+    show_url: bool = False,
+) -> None:
+    """Write results to file, JSON stdout, or the terminal table."""
     if output:
         export_products(filtered, output)
         console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
@@ -284,7 +306,6 @@ def _postprocess_and_output(
         display_summary(len(filtered), filter_breakdown, max_price=max_price,
                         editions_removed=editions_removed, series_collapsed=series_collapsed,
                         currency=currency, total_before_limit=total_before_limit)
-
     if interactive and filtered and not json_flag:
         _interactive_browse(filtered)
 
@@ -598,18 +619,27 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
             search_title += f" in {category_name}"
     else:
         search_title = f"Search: {category_name or 'All'}"
-    _postprocess_and_output(
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         all_products,
-        title=search_title,
         max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
         min_hours=min_hours, narrator=narrator, author=author, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=skip_asins,
         exclude_category_ids=exclude_category_ids,
-        first_in_series=first_in_series, sort=sort, limit=limit,
-        output=output, json_flag=json_flag, quiet=quiet,
-        currency=cur, interactive=interactive, show_url=show_url, max_pph=max_pph,
+        do_first_in_series=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
+    )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=search_title, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=search_title,
+        output=output, json_flag=json_flag, quiet=quiet,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive, show_url=show_url,
     )
     display_query = queries[0] if len(queries) == 1 else None
     if display_query and not author and not json_flag and not quiet and looks_like_person_name(display_query):
@@ -778,18 +808,27 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         find_title += f" in {category_name}"
     if keywords:
         find_title += f' matching "{keywords}"'
-    _postprocess_and_output(
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         all_products,
-        title=find_title,
         max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
         min_hours=min_hours, narrator=narrator, author=author, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=skip_asins,
         exclude_category_ids=exclude_category_ids,
-        first_in_series=first_in_series, sort=sort, limit=limit,
-        output=output, json_flag=json_flag, quiet=quiet,
-        currency=cur, interactive=interactive, show_url=show_url, max_pph=max_pph,
+        do_first_in_series=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
+    )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=find_title, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=find_title,
+        output=output, json_flag=json_flag, quiet=quiet,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive, show_url=show_url,
     )
 
 
@@ -1012,29 +1051,26 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
                     time.sleep(0.3)
 
     # 4. Post-process using shared pipeline
-    _postprocess_and_output(
+    series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         all_candidates,
-        title=f"Series Continuation Books ({len(invested_sorted)} series)",
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        narrator="",
-        author="",
-        exclude_authors=(),
-        exclude_narrators=(),
-        language="",
-        on_sale=on_sale,
-        skip_asins=None,  # already filtered above
-        exclude_category_ids=set(),
-        first_in_series=False,
-        sort=sort,
-        limit=limit,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
-        currency=cur,
-        interactive=interactive,
+        max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
+        min_hours=min_hours, narrator="", author="",
+        exclude_authors=(), exclude_narrators=(), language="",
+        on_sale=on_sale, skip_asins=None, exclude_category_ids=set(),
+        do_first_in_series=False, sort=sort,
+    )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=series_title, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=series_title,
+        output=output, json_flag=json_flag, quiet=quiet,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive,
     )
 
 
@@ -1108,19 +1144,27 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
 
     effective_sort = sort or ""  # preserve original cache order when no --sort given
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
-    _postprocess_and_output(
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         products,
-        title=cached_title,
         max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
         min_hours=min_hours, narrator=narrator, author=author, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=None,
         exclude_category_ids=set(),
-        first_in_series=first_in_series, sort=effective_sort, limit=limit,
+        do_first_in_series=first_in_series, sort=effective_sort, max_pph=max_pph,
+        min_discount=min_discount, series=series, publisher=publisher,
+    )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=cached_title, write_cache=False, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=cached_title,
         output=output, json_flag=json_flag, quiet=quiet,
-        currency=cur, interactive=interactive, write_cache=False,
-        show_url=show_url, max_pph=max_pph, min_discount=min_discount, series=series,
-        publisher=publisher,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive, show_url=show_url,
     )
 
 
