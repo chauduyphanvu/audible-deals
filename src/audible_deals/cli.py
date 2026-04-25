@@ -79,6 +79,7 @@ from audible_deals.filtering import (  # noqa: F401 — re-exported for backward
     _sort_local,
     _value_score,
 )
+from audible_deals.settings import Settings
 from audible_deals.constants import _atomic_write  # noqa: F401 — re-exported for backward compat
 from audible_deals.utils import (  # noqa: F401 — re-exported for backward compat
     _looks_like_person_name,
@@ -137,54 +138,13 @@ def _safe_record_prices(products: list[Product]) -> None:
 _CL = click.core.ParameterSource.COMMANDLINE
 
 
-def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
-    """Apply global config values to the command namespace for keys not set on the CLI.
-
-    ``ns`` is mutated in place. Uses ``ctx.get_parameter_source`` to detect CLI flags.
-    Handles ``max_price`` specially (falsy 0.0 is a valid price).
-    """
-    if cfg.get("max_price") is not None and ctx.get_parameter_source("max_price") != _CL:
-        ns["max_price"] = cfg["max_price"]
-    for key in ("sort", "pages"):
-        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
-            ns[key] = cfg[key]
-    for key in ("min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
-        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
-            ns[key] = cfg[key]
-    for key in ("language", "narrator", "author", "series", "publisher"):
-        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
-            ns[key] = cfg[key]
-    for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if cfg.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
-            ns[flag] = cfg[flag]
-
-
-def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
-    """Apply profile values to the command namespace for keys not set on the CLI.
-
-    ``ns`` is mutated in place. Profile values override config but not CLI flags.
-    """
-    for key in ("genre", "exclude_genre", "exclude_authors", "exclude_narrators", "keywords", "narrator", "author", "language", "series", "publisher"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
-            ns[key] = p[key]
-    for key in ("max_price", "min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
-            ns[key] = p[key]
-    for key in ("sort", "pages"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
-            ns[key] = p[key]
-    for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if p.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
-            ns[flag] = p[flag]
-
-
-def _resolve_defaults(ctx: click.Context, ns: dict, profile_name: str | None) -> None:
-    """Apply config defaults and optional profile to a command namespace.
-
-    Mutates *ns* in place. Used by both ``search`` and ``find`` to avoid
-    duplicating the config/profile loading logic.
-    """
-    _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
+def _resolve_scan_settings(
+    ctx: click.Context,
+    profile_name: str | None,
+    cli_flags: dict,
+) -> dict:
+    """Merge config/profile/CLI and return an updated namespace dict."""
+    profile: dict | None = None
     if profile_name:
         profiles = _load_profiles()
         if profile_name not in profiles:
@@ -192,7 +152,24 @@ def _resolve_defaults(ctx: click.Context, ns: dict, profile_name: str | None) ->
                 f"Profile '{profile_name}' not found. "
                 "Use 'deals profile list' to see available profiles."
             )
-        _apply_profile_defaults(ctx, ns, profiles[profile_name])
+        profile = profiles[profile_name]
+    s = Settings.resolve(
+        ctx,
+        config=ctx.obj.get("config", {}),
+        profile=profile,
+        cli_flags=cli_flags,
+    )
+    # Write resolved settings back into the namespace dict
+    result = dict(cli_flags)
+    for key in (
+        "max_price", "sort", "pages", "min_rating", "min_ratings", "min_hours",
+        "min_discount", "max_pph", "limit", "language", "narrator", "author",
+        "series", "publisher", "on_sale", "deep", "first_in_series", "all_languages",
+        "skip_owned", "interactive", "genre", "exclude_genre", "exclude_authors",
+        "exclude_narrators", "keywords",
+    ):
+        result[key] = getattr(s, key)
+    return result
 
 
 def _resolve_categories(
@@ -499,13 +476,8 @@ def _build_scan_namespace(
     profile_name: str | None,
     **kwargs,
 ) -> dict:
-    """Build a resolved namespace dict from command kwargs + config/profile defaults.
-
-    Calls _resolve_defaults, applies quiet-on-export and language defaults.
-    Returns the resolved namespace dict ready for use.
-    """
-    ns = dict(kwargs)
-    _resolve_defaults(ctx, ns, profile_name)
+    """Build a resolved namespace dict from command kwargs + config/profile defaults."""
+    ns = _resolve_scan_settings(ctx, profile_name, dict(kwargs))
     if ns.get("output") and ctx.get_parameter_source("quiet") != _CL:
         ns["quiet"] = True
     if ns.get("json_flag"):
@@ -941,9 +913,10 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
     if json_flag:
         console.file = sys.stderr
 
-    ns = dict(max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
-              min_hours=min_hours, on_sale=on_sale, limit=limit, sort=sort, pages=pages)
-    _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
+    ns = _resolve_scan_settings(ctx, None, dict(
+        max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
+        min_hours=min_hours, on_sale=on_sale, limit=limit, sort=sort, pages=pages,
+    ))
     max_price, min_rating, min_ratings = ns["max_price"], ns["min_rating"], ns["min_ratings"]
     min_hours, on_sale, limit = ns["min_hours"], ns["on_sale"], ns["limit"]
     sort, pages = ns["sort"], ns["pages"]

@@ -1488,70 +1488,69 @@ class TestConfigBooleanOverride:
     def test_config_bool_not_overridden_when_cli_explicit(self):
         """Config booleans must not override when the user explicitly passed the flag."""
         from unittest.mock import MagicMock
-        from audible_deals.cli import _apply_config_defaults, _CL
+        from audible_deals.cli import _CL
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = _CL  # Simulate CLI explicit
-        ns = {"on_sale": False, "deep": False}
-        cfg = {"on_sale": True, "deep": True}
-        _apply_config_defaults(ctx, ns, cfg)
-        assert ns["on_sale"] is False
-        assert ns["deep"] is False
+        s = Settings.resolve(ctx, config={"on_sale": True, "deep": True},
+                             profile=None, cli_flags={"on_sale": False, "deep": False})
+        assert s.on_sale is False
+        assert s.deep is False
 
     def test_config_bool_applied_when_not_cli(self):
         """Config booleans should apply when user did NOT pass the flag."""
         from unittest.mock import MagicMock
         import click
-        from audible_deals.cli import _apply_config_defaults
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
-        ns = {"on_sale": False, "deep": False}
-        cfg = {"on_sale": True, "deep": True}
-        _apply_config_defaults(ctx, ns, cfg)
-        assert ns["on_sale"] is True
-        assert ns["deep"] is True
+        s = Settings.resolve(ctx, config={"on_sale": True, "deep": True},
+                             profile=None, cli_flags={"on_sale": False, "deep": False})
+        assert s.on_sale is True
+        assert s.deep is True
 
     def test_config_bool_false_applied_when_not_cli(self):
         """Config with explicit False should set ns to False when source is DEFAULT."""
         from unittest.mock import MagicMock
         import click
-        from audible_deals.cli import _apply_config_defaults
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
-        ns = {"on_sale": True, "deep": True}
-        cfg = {"on_sale": False, "deep": False}
-        _apply_config_defaults(ctx, ns, cfg)
-        assert ns["on_sale"] is False
-        assert ns["deep"] is False
+        s = Settings.resolve(ctx, config={"on_sale": False, "deep": False},
+                             profile=None, cli_flags={"on_sale": True, "deep": True})
+        assert s.on_sale is False
+        assert s.deep is False
 
     def test_profile_bool_not_overridden_when_cli_explicit(self):
         """Profile booleans must not override when the user explicitly passed the flag."""
         from unittest.mock import MagicMock
-        from audible_deals.cli import _apply_profile_defaults, _CL
+        from audible_deals.cli import _CL
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = _CL
-        ns = {"on_sale": False, "deep": False}
-        profile = {"on_sale": True, "deep": True}
-        _apply_profile_defaults(ctx, ns, profile)
-        assert ns["on_sale"] is False
-        assert ns["deep"] is False
+        s = Settings.resolve(ctx, config={},
+                             profile={"on_sale": True, "deep": True},
+                             cli_flags={"on_sale": False, "deep": False})
+        assert s.on_sale is False
+        assert s.deep is False
 
     def test_profile_bool_applied_when_not_cli(self):
         """Profile booleans should apply when user did NOT pass the flag."""
         from unittest.mock import MagicMock
         import click
-        from audible_deals.cli import _apply_profile_defaults
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
-        ns = {"on_sale": False, "deep": False}
-        profile = {"on_sale": True, "deep": True}
-        _apply_profile_defaults(ctx, ns, profile)
-        assert ns["on_sale"] is True
-        assert ns["deep"] is True
+        s = Settings.resolve(ctx, config={},
+                             profile={"on_sale": True, "deep": True},
+                             cli_flags={"on_sale": False, "deep": False})
+        assert s.on_sale is True
+        assert s.deep is True
 
 
 # ===================================================================
@@ -3868,68 +3867,65 @@ class TestStringKeyPrecedence:
         """When config set a string, profile must override it."""
         from unittest.mock import MagicMock
         import click
-        from audible_deals.cli import _apply_config_defaults, _apply_profile_defaults
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
-        ns = {"language": "", "narrator": "", "author": "", "series": "", "publisher": ""}
         cfg = {"language": "english", "narrator": "Alice"}
         profile = {"language": "french", "narrator": "Bob"}
+        cli_flags = {"language": "", "narrator": "", "author": "", "series": "", "publisher": ""}
 
-        _apply_config_defaults(ctx, ns, cfg)
-        assert ns["language"] == "english"
-        assert ns["narrator"] == "Alice"
+        s = Settings.resolve(ctx, config=cfg, profile=None, cli_flags=cli_flags)
+        assert s.language == "english"
+        assert s.narrator == "Alice"
 
-        _apply_profile_defaults(ctx, ns, profile)
-        assert ns["language"] == "french"
-        assert ns["narrator"] == "Bob"
+        s2 = Settings.resolve(ctx, config=cfg, profile=profile, cli_flags=cli_flags)
+        assert s2.language == "french"
+        assert s2.narrator == "Bob"
 
     def test_config_string_applied_when_no_profile(self):
         """Config string fills ns when CLI absent and no profile override."""
         from unittest.mock import MagicMock
         import click
-        from audible_deals.cli import _apply_config_defaults
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
-        ns = {"language": "", "narrator": ""}
         cfg = {"language": "french", "narrator": "Alice"}
-        _apply_config_defaults(ctx, ns, cfg)
-        assert ns["language"] == "french"
-        assert ns["narrator"] == "Alice"
+        s = Settings.resolve(ctx, config=cfg, profile=None,
+                             cli_flags={"language": "", "narrator": ""})
+        assert s.language == "french"
+        assert s.narrator == "Alice"
 
     def test_cli_string_overrides_both(self):
         """CLI-supplied string must not be overridden by config or profile."""
         from unittest.mock import MagicMock
-        from audible_deals.cli import _apply_config_defaults, _apply_profile_defaults, _CL
+        from audible_deals.cli import _CL
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = _CL
-        ns = {"language": "spanish", "narrator": "Carlos"}
         cfg = {"language": "english", "narrator": "Alice"}
         profile = {"language": "french", "narrator": "Bob"}
+        cli_flags = {"language": "spanish", "narrator": "Carlos"}
 
-        _apply_config_defaults(ctx, ns, cfg)
-        assert ns["language"] == "spanish"
-        assert ns["narrator"] == "Carlos"
-
-        _apply_profile_defaults(ctx, ns, profile)
-        assert ns["language"] == "spanish"
-        assert ns["narrator"] == "Carlos"
+        s = Settings.resolve(ctx, config=cfg, profile=profile, cli_flags=cli_flags)
+        assert s.language == "spanish"
+        assert s.narrator == "Carlos"
 
     def test_profile_only_keys_applied(self):
         """Profile-only string keys (genre, keywords) are applied when CLI absent."""
         from unittest.mock import MagicMock
         import click
-        from audible_deals.cli import _apply_profile_defaults
+        from audible_deals.settings import Settings
 
         ctx = MagicMock()
         ctx.get_parameter_source.return_value = click.core.ParameterSource.DEFAULT
-        ns = {"genre": "", "keywords": "", "exclude_genre": (), "exclude_authors": ()}
         profile = {"genre": "mystery", "keywords": "thriller"}
-        _apply_profile_defaults(ctx, ns, profile)
-        assert ns["genre"] == "mystery"
-        assert ns["keywords"] == "thriller"
+        cli_flags = {"genre": "", "keywords": "", "exclude_genre": (), "exclude_authors": ()}
+        s = Settings.resolve(ctx, config={}, profile=profile, cli_flags=cli_flags)
+        assert s.genre == "mystery"
+        assert s.keywords == "thriller"
 
 
 # ===================================================================
