@@ -16,13 +16,13 @@ import click
 from audible_deals.constants import _ASIN_RE
 
 
-def _validate_asin(asin: str) -> None:
+def validate_asin(asin: str) -> None:
     """Validate that an ASIN is alphanumeric and won't cause path traversal."""
     if not _ASIN_RE.fullmatch(asin):
         raise click.BadParameter(f"Invalid ASIN format: {asin!r}")
 
 
-def _validate_webhook_url(url: str) -> None:
+def validate_webhook_url(url: str) -> None:
     """Validate webhook URL: must be http(s) and must not resolve to private IPs."""
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
@@ -58,7 +58,7 @@ _NAME_STOPWORDS = frozenset({
 })
 
 
-def _looks_like_person_name(query: str) -> bool:
+def looks_like_person_name(query: str) -> bool:
     """Return True if query looks like a 2-3 word person name (each word Title-cased)."""
     words = query.strip().split()
     if len(words) < 2 or len(words) > 3:
@@ -68,7 +68,7 @@ def _looks_like_person_name(query: str) -> bool:
     return all(w[0].isupper() for w in words)
 
 
-def _parse_interval(value: str) -> int:
+def parse_interval(value: str) -> int:
     """Parse an interval string into seconds. Accepts '30m', '2h', '1h30m', '90s', or a plain number (minutes)."""
     raw = value
     value = value.strip().lower()

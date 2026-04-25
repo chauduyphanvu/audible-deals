@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import dataclasses
 import json as json_mod
 import math
 import os
@@ -47,6 +48,7 @@ from audible_deals.constants import (
     CLIENT_SORT_OPTIONS,
     CONFIG_FILE,
     DEEP_SORT_ORDERS,
+    DEFAULT_LIMIT,
     HISTORY_DIR,
     LAST_RESULTS_FILE,
     LOCALE_CURRENCY,
@@ -71,50 +73,49 @@ from audible_deals.display import (
     display_summary,
     display_watch_table,
 )
-from audible_deals.filtering import (  # noqa: F401 — re-exported for backward compat
-    _dedupe_editions,
-    _filter_products,
-    _first_in_series,
-    _price_per_hour,
-    _sort_local,
-    _value_score,
+from audible_deals.filtering import (
+    dedupe_editions,
+    filter_products,
+    first_in_series,
+    price_per_hour,
+    sort_local,
+    value_score,
 )
-from audible_deals.constants import _atomic_write  # noqa: F401 — re-exported for backward compat
-from audible_deals.utils import (  # noqa: F401 — re-exported for backward compat
-    _looks_like_person_name,
-    _parse_interval,
-    _validate_asin,
-    _validate_webhook_url,
+from audible_deals.settings import Settings
+from audible_deals.utils import (
+    looks_like_person_name,
+    parse_interval,
+    validate_asin,
+    validate_webhook_url,
 )
-from audible_deals.serialization import (  # noqa: F401 — re-exported for backward compat
-    _PRODUCT_FIELDS,
-    _deserialize_product,
-    _export_products,
-    _serialize_product,
+from audible_deals.serialization import (
+    deserialize_product,
+    export_products,
+    serialize_product,
 )
-from audible_deals.state import (  # noqa: F401 — re-exported for backward compat
-    _clear_last_results,
-    _clear_seen_asins,
-    _coerce_config_value,
-    _find_wishlist_hits,
-    _has_price_history,
-    _load_config,
-    _load_last_results,
-    _load_price_history,
-    _load_profiles,
-    _load_seen_asins,
-    _load_wishlist,
-    _merge_seen_asins,
-    _record_prices,
-    _resolve_last_references,
-    _save_config,
-    _save_last_results,
-    _save_profiles,
-    _save_seen_asins,
-    _save_wishlist,
-    _scan_price_changes,
-    _validate_config_key,
-    _wishlist_entry,
+from audible_deals.state import (
+    clear_last_results,
+    clear_seen_asins,
+    coerce_config_value,
+    find_wishlist_hits,
+    has_price_history,
+    load_config,
+    load_last_results,
+    load_price_history,
+    load_profiles,
+    load_seen_asins,
+    load_wishlist,
+    merge_seen_asins,
+    record_prices,
+    resolve_last_references,
+    save_config,
+    save_last_results,
+    save_profiles,
+    save_seen_asins,
+    save_wishlist,
+    scan_price_changes,
+    validate_config_key,
+    wishlist_entry,
 )
 
 
@@ -129,7 +130,7 @@ def _get_client(locale: str) -> DealsClient:
 def _safe_record_prices(products: list[Product]) -> None:
     """Record prices, warning on failure instead of crashing."""
     try:
-        _record_prices(products)
+        record_prices(products)
     except Exception as e:
         console.print(f"[dim]Warning: could not record price history: {e}[/dim]")
 
@@ -137,62 +138,16 @@ def _safe_record_prices(products: list[Product]) -> None:
 _CL = click.core.ParameterSource.COMMANDLINE
 
 
-def _apply_config_defaults(ctx: click.Context, ns: dict, cfg: dict) -> None:
-    """Apply global config values to the command namespace for keys not set on the CLI.
-
-    ``ns`` is mutated in place. Uses ``ctx.get_parameter_source`` to detect CLI flags.
-    Handles ``max_price`` specially (falsy 0.0 is a valid price).
-    """
-    if cfg.get("max_price") is not None and ctx.get_parameter_source("max_price") != _CL:
-        ns["max_price"] = cfg["max_price"]
-    for key in ("sort", "pages"):
-        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
-            ns[key] = cfg[key]
-    for key in ("min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
-        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
-            ns[key] = cfg[key]
-    for key in ("language", "narrator", "author", "series", "publisher"):
-        if cfg.get(key) is not None and ctx.get_parameter_source(key) != _CL:
-            ns[key] = cfg[key]
-    for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if cfg.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
-            ns[flag] = cfg[flag]
-
-
-def _apply_profile_defaults(ctx: click.Context, ns: dict, p: dict) -> None:
-    """Apply profile values to the command namespace for keys not set on the CLI.
-
-    ``ns`` is mutated in place. Profile values override config but not CLI flags.
-    """
-    for key in ("genre", "exclude_genre", "exclude_authors", "exclude_narrators", "keywords", "narrator", "author", "language", "series", "publisher"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
-            ns[key] = p[key]
-    for key in ("max_price", "min_rating", "min_ratings", "min_hours", "min_discount", "max_pph", "limit"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
-            ns[key] = p[key]
-    for key in ("sort", "pages"):
-        if ctx.get_parameter_source(key) != _CL and p.get(key) is not None:
-            ns[key] = p[key]
-    for flag in ("on_sale", "deep", "first_in_series", "all_languages", "skip_owned", "interactive"):
-        if p.get(flag) is not None and ctx.get_parameter_source(flag) != _CL:
-            ns[flag] = p[flag]
-
-
-def _resolve_defaults(ctx: click.Context, ns: dict, profile_name: str | None) -> None:
-    """Apply config defaults and optional profile to a command namespace.
-
-    Mutates *ns* in place. Used by both ``search`` and ``find`` to avoid
-    duplicating the config/profile loading logic.
-    """
-    _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
-    if profile_name:
-        profiles = _load_profiles()
-        if profile_name not in profiles:
-            raise click.ClickException(
-                f"Profile '{profile_name}' not found. "
-                "Use 'deals profile list' to see available profiles."
-            )
-        _apply_profile_defaults(ctx, ns, profiles[profile_name])
+def _load_profile(profile_name: str | None) -> dict | None:
+    if not profile_name:
+        return None
+    profiles = load_profiles()
+    if profile_name not in profiles:
+        raise click.ClickException(
+            f"Profile '{profile_name}' not found. "
+            "Use 'deals profile list' to see available profiles."
+        )
+    return profiles[profile_name]
 
 
 def _resolve_categories(
@@ -226,10 +181,9 @@ def _resolve_categories(
     return category, category_name, exclude_category_ids
 
 
-def _postprocess_and_output(
+def _apply_filters(
     all_products: list[Product],
     *,
-    title: str,
     max_price: float | None,
     min_rating: float,
     min_ratings: int = 0,
@@ -242,23 +196,15 @@ def _postprocess_and_output(
     on_sale: bool,
     skip_asins: set[str] | None,
     exclude_category_ids: set[str],
-    first_in_series: bool,
+    first_in_series_only: bool,
     sort: str,
-    limit: int | None,
-    output: Path | None,
-    json_flag: bool,
-    quiet: bool,
-    currency: str = "$",
-    interactive: bool = False,
-    write_cache: bool = True,
-    show_url: bool = False,
     max_pph: float | None = None,
     min_discount: int = 0,
     series: str = "",
     publisher: str = "",
-) -> None:
-    """Shared post-processing pipeline for search and find commands."""
-    filtered, filter_breakdown = _filter_products(
+) -> tuple[list[Product], dict[str, int], int, int]:
+    """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed)."""
+    filtered, filter_breakdown = filter_products(
         all_products,
         max_price=max_price,
         min_rating=min_rating,
@@ -277,16 +223,27 @@ def _postprocess_and_output(
         series=series,
         publisher=publisher,
     )
-    filtered, editions_removed = _dedupe_editions(filtered)
+    filtered, editions_removed = dedupe_editions(filtered)
     series_collapsed = 0
-    if first_in_series:
-        filtered, series_collapsed = _first_in_series(filtered)
-    filtered = _sort_local(filtered, sort)
+    if first_in_series_only:
+        filtered, series_collapsed = first_in_series(filtered)
+    filtered = sort_local(filtered, sort)
+    return filtered, filter_breakdown, editions_removed, series_collapsed
+
+
+def _record_and_cache(
+    filtered: list[Product],
+    *,
+    title: str,
+    write_cache: bool = True,
+    limit: int | None,
+) -> tuple[list[Product], list[dict], int]:
+    """Record prices, persist cache, apply limit. Returns (filtered_limited, serialized, total_before_limit)."""
     _safe_record_prices(filtered)
-    serialized_all = [_serialize_product(p) for p in filtered]
+    serialized_all = [serialize_product(p) for p in filtered]
     if write_cache:
         try:
-            _save_last_results(title, serialized_all)
+            save_last_results(title, serialized_all)
         except Exception:
             pass
     total_before_limit = len(filtered)
@@ -296,10 +253,30 @@ def _postprocess_and_output(
     else:
         serialized = serialized_all
     if write_cache:
-        _save_seen_asins({p.asin for p in filtered})
+        save_seen_asins({p.asin for p in filtered})
+    return filtered, serialized, total_before_limit
 
+
+def _emit_output(
+    filtered: list[Product],
+    serialized: list[dict],
+    *,
+    title: str,
+    output: Path | None,
+    json_flag: bool,
+    quiet: bool,
+    max_price: float | None,
+    filter_breakdown: dict[str, int],
+    editions_removed: int,
+    series_collapsed: int,
+    total_before_limit: int,
+    currency: str = "$",
+    interactive: bool = False,
+    show_url: bool = False,
+) -> None:
+    """Write results to file, JSON stdout, or the terminal table."""
     if output:
-        _export_products(filtered, output)
+        export_products(filtered, output)
         console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
     if json_flag:
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
@@ -309,7 +286,6 @@ def _postprocess_and_output(
         display_summary(len(filtered), filter_breakdown, max_price=max_price,
                         editions_removed=editions_removed, series_collapsed=series_collapsed,
                         currency=currency, total_before_limit=total_before_limit)
-
     if interactive and filtered and not json_flag:
         _interactive_browse(filtered)
 
@@ -350,7 +326,7 @@ def _interactive_browse(products: list[Product]) -> None:
             console.print(f"[dim]Opening {p.url}[/dim]")
             click.launch(p.url)
         elif action == "wishlist":
-            items = _load_wishlist()
+            items = load_wishlist()
             if any(item["asin"] == p.asin for item in items):
                 console.print(f"[dim]{p.asin} already on wishlist[/dim]")
             else:
@@ -361,8 +337,8 @@ def _interactive_browse(products: list[Product]) -> None:
                         target_price = float(raw)
                 except (ValueError, EOFError):
                     pass
-                items.append(_wishlist_entry(p, target_price))
-                _save_wishlist(items)
+                items.append(wishlist_entry(p, target_price))
+                save_wishlist(items)
                 target_note = f" (target: {p.currency}{target_price:.2f})" if target_price is not None else ""
                 console.print(f"[green]+[/green] {p.title} added to wishlist{target_note}")
 
@@ -386,7 +362,7 @@ class _HandleAuthErrors(click.Group):
 def cli(ctx, locale):
     """Audible deal finder - find cheap audiobooks during sales."""
     ctx.ensure_object(dict)
-    cfg = _load_config()
+    cfg = load_config()
     ctx.obj["config"] = cfg
     if ctx.get_parameter_source("locale") != _CL:
         cfg_locale = cfg.get("locale")
@@ -480,7 +456,7 @@ def _common_filter_options(func):
         click.option("--first-in-series/--no-first-in-series", default=False, help="Show only the first book per series"),
         click.option("--skip-owned/--no-skip-owned", default=False, help="Exclude books already in your library"),
         click.option("--exclude-seen", is_flag=True, default=False, help="Exclude ASINs from last search/find results"),
-        click.option("--limit", "-n", type=click.IntRange(min=0), default=25, help="Show only the top N results (0 for unlimited, default: 25)"),
+        click.option("--limit", "-n", type=click.IntRange(min=0), default=DEFAULT_LIMIT, help="Show only the top N results (0 for unlimited, default: 25)"),
         click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)"),
         click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout"),
         click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)"),
@@ -499,13 +475,15 @@ def _build_scan_namespace(
     profile_name: str | None,
     **kwargs,
 ) -> dict:
-    """Build a resolved namespace dict from command kwargs + config/profile defaults.
-
-    Calls _resolve_defaults, applies quiet-on-export and language defaults.
-    Returns the resolved namespace dict ready for use.
-    """
+    """Build a resolved namespace dict from command kwargs + config/profile defaults."""
+    s = Settings.resolve(
+        ctx,
+        config=ctx.obj.get("config", {}),
+        profile=_load_profile(profile_name),
+        cli_flags=dict(kwargs),
+    )
     ns = dict(kwargs)
-    _resolve_defaults(ctx, ns, profile_name)
+    ns.update(dataclasses.asdict(s))
     if ns.get("output") and ctx.get_parameter_source("quiet") != _CL:
         ns["quiet"] = True
     if ns.get("json_flag"):
@@ -572,7 +550,7 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
 
         if skip_owned:
             skip_asins = dc.get_library_asins()
-        skip_asins = _merge_seen_asins(skip_asins, exclude_seen)
+        skip_asins = merge_seen_asins(skip_asins, exclude_seen)
 
         queries = [q.strip() for q in query.split("|") if q.strip()] if "|" in query else [query]
         if not queries:
@@ -628,21 +606,30 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
             search_title += f" in {category_name}"
     else:
         search_title = f"Search: {category_name or 'All'}"
-    _postprocess_and_output(
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         all_products,
-        title=search_title,
         max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
         min_hours=min_hours, narrator=narrator, author=author, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=skip_asins,
         exclude_category_ids=exclude_category_ids,
-        first_in_series=first_in_series, sort=sort, limit=limit,
-        output=output, json_flag=json_flag, quiet=quiet,
-        currency=cur, interactive=interactive, show_url=show_url, max_pph=max_pph,
+        first_in_series_only=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
     )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=search_title, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=search_title,
+        output=output, json_flag=json_flag, quiet=quiet,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive, show_url=show_url,
+    )
     display_query = queries[0] if len(queries) == 1 else None
-    if display_query and not author and not json_flag and not quiet and _looks_like_person_name(display_query):
+    if display_query and not author and not json_flag and not quiet and looks_like_person_name(display_query):
         console.print(f"\n  [dim]Tip: Use --author '{display_query}' for exact author filtering.[/dim]")
 
 
@@ -782,7 +769,7 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
 
         if skip_owned:
             skip_asins = dc.get_library_asins()
-        skip_asins = _merge_seen_asins(skip_asins, exclude_seen)
+        skip_asins = merge_seen_asins(skip_asins, exclude_seen)
 
         desc_parts = []
         if keywords:
@@ -808,18 +795,27 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         find_title += f" in {category_name}"
     if keywords:
         find_title += f' matching "{keywords}"'
-    _postprocess_and_output(
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         all_products,
-        title=find_title,
         max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
         min_hours=min_hours, narrator=narrator, author=author, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=skip_asins,
         exclude_category_ids=exclude_category_ids,
-        first_in_series=first_in_series, sort=sort, limit=limit,
-        output=output, json_flag=json_flag, quiet=quiet,
-        currency=cur, interactive=interactive, show_url=show_url, max_pph=max_pph,
+        first_in_series_only=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
+    )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=find_title, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=find_title,
+        output=output, json_flag=json_flag, quiet=quiet,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive, show_url=show_url,
     )
 
 
@@ -868,7 +864,7 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
                 progress.update(task, completed=page_num, items=len(all_products))
             progress.update(task, total=page_count, completed=page_count)
 
-    filtered, filter_breakdown = _filter_products(
+    filtered, filter_breakdown = filter_products(
         all_products,
         author=author,
         narrator=narrator,
@@ -878,7 +874,7 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
         genre=genre,
     )
 
-    filtered = _sort_local(filtered, sort)
+    filtered = sort_local(filtered, sort)
     total_before_limit = len(filtered)
     if limit is not None and limit > 0:
         filtered = filtered[:limit]
@@ -886,10 +882,10 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
 
     if output:
-        _export_products(filtered, output)
+        export_products(filtered, output)
         console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
     if json_flag:
-        serialized = [_serialize_product(p) for p in filtered]
+        serialized = [serialize_product(p) for p in filtered]
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
         console.print()
@@ -941,12 +937,18 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
     if json_flag:
         console.file = sys.stderr
 
-    ns = dict(max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
-              min_hours=min_hours, on_sale=on_sale, limit=limit, sort=sort, pages=pages)
-    _apply_config_defaults(ctx, ns, ctx.obj.get("config", {}))
-    max_price, min_rating, min_ratings = ns["max_price"], ns["min_rating"], ns["min_ratings"]
-    min_hours, on_sale, limit = ns["min_hours"], ns["on_sale"], ns["limit"]
-    sort, pages = ns["sort"], ns["pages"]
+    s = Settings.resolve(
+        ctx,
+        config=ctx.obj.get("config", {}),
+        profile=None,
+        cli_flags=dict(
+            max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
+            min_hours=min_hours, on_sale=on_sale, limit=limit, sort=sort, pages=pages,
+        ),
+    )
+    max_price, min_rating, min_ratings = s.max_price, s.min_rating, s.min_ratings
+    min_hours, on_sale, limit = s.min_hours, s.on_sale, s.limit
+    sort, pages = s.sort, s.pages
 
     dc = _get_client(ctx.obj["locale"])
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
@@ -1041,29 +1043,26 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
                     time.sleep(0.3)
 
     # 4. Post-process using shared pipeline
-    _postprocess_and_output(
+    series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         all_candidates,
-        title=f"Series Continuation Books ({len(invested_sorted)} series)",
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        narrator="",
-        author="",
-        exclude_authors=(),
-        exclude_narrators=(),
-        language="",
-        on_sale=on_sale,
-        skip_asins=None,  # already filtered above
-        exclude_category_ids=set(),
-        first_in_series=False,
-        sort=sort,
-        limit=limit,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
-        currency=cur,
-        interactive=interactive,
+        max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
+        min_hours=min_hours, narrator="", author="",
+        exclude_authors=(), exclude_narrators=(), language="",
+        on_sale=on_sale, skip_asins=None, exclude_category_ids=set(),
+        first_in_series_only=False, sort=sort,
+    )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=series_title, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=series_title,
+        output=output, json_flag=json_flag, quiet=quiet,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive,
     )
 
 
@@ -1111,13 +1110,13 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
     """
     did_clear = False
     if clear_seen:
-        if _clear_seen_asins():
+        if clear_seen_asins():
             console.print("[green]Seen ASINs list cleared.[/green]")
         else:
             console.print("[dim]No seen ASINs to clear.[/dim]")
         did_clear = True
     if clear:
-        if _clear_last_results():
+        if clear_last_results():
             console.print("[green]Last results cache cleared.[/green]")
         else:
             console.print("[dim]No cached results to clear.[/dim]")
@@ -1125,31 +1124,39 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
     if did_clear:
         return
     if count_only:
-        cached_title, data = _load_last_results()
+        cached_title, data = load_last_results()
         click.echo(len(data))
         return
     if output and ctx.get_parameter_source("quiet") != _CL:
         quiet = True
-    cached_title, data = _load_last_results()
-    products = [p for d in data if (p := _deserialize_product(d)) is not None]
+    cached_title, data = load_last_results()
+    products = [p for d in data if (p := deserialize_product(d)) is not None]
     if json_flag:
         console.file = sys.stderr
 
     effective_sort = sort or ""  # preserve original cache order when no --sort given
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
-    _postprocess_and_output(
+    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         products,
-        title=cached_title,
         max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
         min_hours=min_hours, narrator=narrator, author=author, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=None,
         exclude_category_ids=set(),
-        first_in_series=first_in_series, sort=effective_sort, limit=limit,
+        first_in_series_only=first_in_series, sort=effective_sort, max_pph=max_pph,
+        min_discount=min_discount, series=series, publisher=publisher,
+    )
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered, title=cached_title, write_cache=False, limit=limit,
+    )
+    _emit_output(
+        filtered, serialized,
+        title=cached_title,
         output=output, json_flag=json_flag, quiet=quiet,
-        currency=cur, interactive=interactive, write_cache=False,
-        show_url=show_url, max_pph=max_pph, min_discount=min_discount, series=series,
-        publisher=publisher,
+        max_price=max_price, filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed, series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=cur, interactive=interactive, show_url=show_url,
     )
 
 
@@ -1160,12 +1167,12 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
 def detail(ctx, asin, last_ref):
     """Show detailed info for a product by ASIN."""
     if last_ref is not None:
-        resolved = _resolve_last_references((last_ref,))
+        resolved = resolve_last_references((last_ref,))
         asin, desc = resolved[0]
         console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
-    _validate_asin(asin)
+    validate_asin(asin)
     dc = _get_client(ctx.obj["locale"])
     with dc:
         try:
@@ -1183,12 +1190,12 @@ def detail(ctx, asin, last_ref):
 def open_cmd(ctx, asin, last_ref):
     """Open an audiobook's Audible page in your browser."""
     if last_ref is not None:
-        resolved = _resolve_last_references((last_ref,))
+        resolved = resolve_last_references((last_ref,))
         asin, desc = resolved[0]
         console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
-    _validate_asin(asin)
+    validate_asin(asin)
     domain = LOCALE_DOMAIN.get(ctx.obj["locale"], "www.audible.com")
     url = f"https://{domain}/pd/{asin}"
     console.print(f"[dim]Opening {url}[/dim]")
@@ -1209,7 +1216,7 @@ def compare(ctx, asins, last_refs):
     """
     all_asins = list(asins)
     if last_refs:
-        resolved = _resolve_last_references(last_refs)
+        resolved = resolve_last_references(last_refs)
         for ref_asin, desc in resolved:
             console.print(f"[dim]{desc}[/dim]")
             all_asins.append(ref_asin)
@@ -1218,7 +1225,7 @@ def compare(ctx, asins, last_refs):
         raise click.UsageError("Provide at least 2 ASINs to compare.")
 
     for asin in all_asins:
-        _validate_asin(asin)
+        validate_asin(asin)
 
     dc = _get_client(ctx.obj["locale"])
     with dc:
@@ -1259,18 +1266,18 @@ def wishlist_add(ctx, asins, max_price, last_refs):
     """
     all_asins = list(asins)
     if last_refs:
-        resolved = _resolve_last_references(last_refs)
+        resolved = resolve_last_references(last_refs)
         for ref_asin, desc in resolved:
             console.print(f"[dim]{desc}[/dim]")
             all_asins.append(ref_asin)
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or use --last N.")
 
-    items = _load_wishlist()
+    items = load_wishlist()
     existing = {item["asin"] for item in items}
 
     for asin in all_asins:
-        _validate_asin(asin)
+        validate_asin(asin)
 
     dc = _get_client(ctx.obj["locale"])
     added = 0
@@ -1284,12 +1291,12 @@ def wishlist_add(ctx, asins, max_price, last_refs):
             except ValueError:
                 console.print(f"[red]Not found: {asin}[/red]")
                 continue
-            items.append(_wishlist_entry(p, max_price))
+            items.append(wishlist_entry(p, max_price))
             existing.add(p.asin)
             added += 1
             console.print(f"[green]+[/green] {p.title} ({p.asin})")
 
-    _save_wishlist(items)
+    save_wishlist(items)
     console.print(f"\n[bold]{added}[/bold] added, {len(items)} total on wishlist")
 
 
@@ -1300,19 +1307,19 @@ def wishlist_remove(asins, last_refs):
     """Remove ASINs from your wishlist."""
     all_asins = list(asins)
     if last_refs:
-        resolved = _resolve_last_references(last_refs)
+        resolved = resolve_last_references(last_refs)
         for ref_asin, desc in resolved:
             console.print(f"[dim]{desc}[/dim]")
             all_asins.append(ref_asin)
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or use --last N.")
     for asin in all_asins:
-        _validate_asin(asin)
-    items = _load_wishlist()
+        validate_asin(asin)
+    items = load_wishlist()
     remove_set = set(all_asins)
     before = len(items)
     items = [i for i in items if i["asin"] not in remove_set]
-    _save_wishlist(items)
+    save_wishlist(items)
     removed = before - len(items)
     console.print(f"[bold]{removed}[/bold] removed, {len(items)} remaining")
 
@@ -1322,7 +1329,7 @@ def wishlist_remove(asins, last_refs):
 def wishlist_list(ctx):
     """Show your wishlist."""
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
-    items = _load_wishlist()
+    items = load_wishlist()
     if not items:
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]")
         return
@@ -1362,7 +1369,7 @@ def wishlist_sync(ctx, max_price, update):
     with dc:
         audible_items = dc.get_wishlist()
 
-    local_items = _load_wishlist()
+    local_items = load_wishlist()
     local_by_asin = {item["asin"]: item for item in local_items}
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
 
@@ -1378,11 +1385,11 @@ def wishlist_sync(ctx, max_price, update):
             else:
                 skipped += 1
             continue
-        local_items.append(_wishlist_entry(product, max_price))
+        local_items.append(wishlist_entry(product, max_price))
         added += 1
         console.print(f"[green]+[/green] {product.title} ({product.asin})")
 
-    _save_wishlist(local_items)
+    save_wishlist(local_items)
     console.print(
         f"\n[bold]{added}[/bold] synced, "
         f"{updated} updated, "
@@ -1395,7 +1402,7 @@ def wishlist_sync(ctx, max_price, update):
 
 def _watch_once(ctx: click.Context, buy_only: bool = False, sort_by: str | None = None, show_url: bool = False) -> int:
     """Run a single wishlist price check. Returns the number of BUY hits."""
-    items = _load_wishlist()
+    items = load_wishlist()
     if not items:
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]")
         return 0
@@ -1416,7 +1423,7 @@ def _watch_once(ctx: click.Context, buy_only: bool = False, sort_by: str | None 
         return 0
 
     if sort_by:
-        products = _sort_local(products, sort_by)
+        products = sort_local(products, sort_by)
 
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     return display_watch_table(products, targets, cur, buy_only, show_url)
@@ -1450,7 +1457,7 @@ def watch(ctx, every, buy_only, sort_by, show_url):
         _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
         return
 
-    interval = _parse_interval(every)
+    interval = parse_interval(every)
     console.print(f"[dim]Watching every {every} (Ctrl+C to stop)...[/dim]\n")
     try:
         while True:
@@ -1480,11 +1487,11 @@ def config_set(key, value):
         deals config set max-price 5
         deals config set skip-owned true
     """
-    norm_key = _validate_config_key(key)
-    coerced = _coerce_config_value(norm_key, value)
-    cfg = _load_config()
+    norm_key = validate_config_key(key)
+    coerced = coerce_config_value(norm_key, value)
+    cfg = load_config()
     cfg[norm_key] = coerced
-    _save_config(cfg)
+    save_config(cfg)
     console.print(f"[green]Config set:[/green] {norm_key} = {coerced!r}")
 
 
@@ -1492,8 +1499,8 @@ def config_set(key, value):
 @click.argument("key")
 def config_get(key):
     """Get a global default value."""
-    norm_key = _validate_config_key(key)
-    cfg = _load_config()
+    norm_key = validate_config_key(key)
+    cfg = load_config()
     if norm_key not in cfg:
         console.print(f"[dim]{norm_key} is not set[/dim]")
     else:
@@ -1503,7 +1510,7 @@ def config_get(key):
 @config_cmd.command("list")
 def config_list():
     """List all set global defaults."""
-    cfg = _load_config()
+    cfg = load_config()
     if not cfg:
         console.print("[dim]No global defaults set. Use 'deals config set KEY VALUE' to set one.[/dim]")
         return
@@ -1515,18 +1522,18 @@ def config_list():
 @click.argument("key", required=False, default=None)
 def config_reset(key):
     """Remove a key from global defaults, or clear all if no key given."""
-    cfg = _load_config()
+    cfg = load_config()
     if key is None:
         if not click.confirm("Remove all global defaults?"):
             console.print("[dim]Cancelled.[/dim]")
             return
-        _save_config({})
+        save_config({})
         console.print("[green]All global defaults cleared.[/green]")
         return
-    norm_key = _validate_config_key(key)
+    norm_key = validate_config_key(key)
     if norm_key in cfg:
         del cfg[norm_key]
-        _save_config(cfg)
+        save_config(cfg)
         console.print(f"[green]Config key '{norm_key}' removed.[/green]")
     else:
         console.print(f"[dim]Config key '{norm_key}' was not set.[/dim]")
@@ -1575,18 +1582,18 @@ def profile_save(ctx, name, **kwargs):
         deals find --profile my-scifi
         deals search "Brandon Sanderson" --profile my-scifi
     """
-    profiles = _load_profiles()
+    profiles = load_profiles()
     # Only save values explicitly passed on the command line
     saved = {k: v for k, v in kwargs.items() if ctx.get_parameter_source(k) == _CL}
     profiles[name] = saved
-    _save_profiles(profiles)
+    save_profiles(profiles)
     console.print(f"[green]Profile '{name}' saved[/green] ({len(saved)} options)")
 
 
 @profile.command("list")
 def profile_list():
     """List saved profiles."""
-    profiles = _load_profiles()
+    profiles = load_profiles()
     if not profiles:
         console.print("[dim]No profiles saved. Use 'deals profile save NAME --flags...' to create one.[/dim]")
         return
@@ -1600,11 +1607,11 @@ def profile_list():
 @click.argument("name")
 def profile_delete(name):
     """Delete a saved profile."""
-    profiles = _load_profiles()
+    profiles = load_profiles()
     if name not in profiles:
         raise click.ClickException(f"Profile '{name}' not found.")
     del profiles[name]
-    _save_profiles(profiles)
+    save_profiles(profiles)
     console.print(f"[green]Profile '{name}' deleted[/green]")
 
 
@@ -1633,7 +1640,7 @@ def _opts_to_flag_parts(opts: dict) -> list[str]:
 @click.argument("name")
 def profile_show(name):
     """Show the saved flags for a named profile."""
-    profiles = _load_profiles()
+    profiles = load_profiles()
     if name not in profiles:
         raise click.ClickException(f"Profile '{name}' not found.")
     opts = profiles[name]
@@ -1654,13 +1661,13 @@ def history(ctx, asin, last_ref):
     search/find results. Use 'deals history ASIN' to view past prices.
     """
     if last_ref is not None:
-        resolved = _resolve_last_references((last_ref,))
+        resolved = resolve_last_references((last_ref,))
         asin, desc = resolved[0]
         console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
-    _validate_asin(asin)
-    entries = _load_price_history(asin)
+    validate_asin(asin)
+    entries = load_price_history(asin)
     if not entries:
         console.print(
             f"[dim]No price history for {asin}. "
@@ -1683,11 +1690,11 @@ def recap(ctx, days, show_new):
     new items tracked, and wishlist items at target.
     """
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
-    drops, new_items = _scan_price_changes(days)
-    if not drops and not new_items and not _has_price_history():
+    drops, new_items = scan_price_changes(days)
+    if not drops and not new_items and not has_price_history():
         console.print("[dim]No price history yet. Run 'deals find' or 'deals search' to start tracking.[/dim]")
         return
-    wishlist_hits = _find_wishlist_hits()
+    wishlist_hits = find_wishlist_hits()
     display_recap(drops, new_items, wishlist_hits, days, cur, show_new)
 
 
@@ -1703,9 +1710,9 @@ def notify(ctx, webhook):
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
     if webhook:
-        _validate_webhook_url(webhook)
+        validate_webhook_url(webhook)
 
-    items = _load_wishlist()
+    items = load_wishlist()
     if not items:
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]")
         return

@@ -16,7 +16,9 @@ import pytest
 from click.testing import CliRunner
 
 from audible_deals.client import DealsClient, MAX_PAGE_SIZE
-from audible_deals.cli import _export_products, _record_prices, cli
+from audible_deals.cli import cli
+from audible_deals.serialization import export_products as _export_products
+from audible_deals.state import record_prices as _record_prices
 from tests.conftest import make_product, make_raw
 
 
