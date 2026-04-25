@@ -9,7 +9,7 @@ from __future__ import annotations
 from audible_deals.client import Product
 
 
-def _filter_products(
+def filter_products(
     products: list[Product],
     *,
     max_price: float | None = None,
@@ -66,7 +66,7 @@ def _filter_products(
 
     if max_pph is not None:
         before = len(filtered)
-        filtered = [p for p in filtered if _price_per_hour(p) <= max_pph]
+        filtered = [p for p in filtered if price_per_hour(p) <= max_pph]
         if (removed := before - len(filtered)):
             breakdown["max $/hr"] = removed
 
@@ -182,14 +182,14 @@ def _filter_products(
     return filtered, breakdown
 
 
-def _price_per_hour(p: Product) -> float:
+def price_per_hour(p: Product) -> float:
     """Calculate price per hour of audio. Returns inf for missing data."""
     if p.price is None or p.hours <= 0:
         return float("inf")
     return p.price / p.hours
 
 
-def _value_score(p: Product) -> float:
+def value_score(p: Product) -> float:
     """Composite value score: (rating * hours) / price. Higher is better."""
     if p.price is None or p.hours <= 0 or p.rating <= 0:
         return 0.0
@@ -198,7 +198,7 @@ def _value_score(p: Product) -> float:
     return (p.rating * p.hours) / p.price
 
 
-def _sort_local(products: list[Product], sort: str) -> list[Product]:
+def sort_local(products: list[Product], sort: str) -> list[Product]:
     """Re-sort locally when combining pages (server sort is per-page)."""
     if sort == "price":
         return sorted(products, key=lambda p: (p.price if p.price is not None else 9999))
@@ -217,9 +217,9 @@ def _sort_local(products: list[Product], sort: str) -> list[Product]:
             reverse=True,
         )
     elif sort == "price-per-hour":
-        return sorted(products, key=_price_per_hour)
+        return sorted(products, key=price_per_hour)
     elif sort == "value":
-        return sorted(products, key=lambda p: (_value_score(p), p.rating), reverse=True)
+        return sorted(products, key=lambda p: (value_score(p), p.rating), reverse=True)
     elif sort == "title":
         return sorted(products, key=lambda p: p.title.lower())
     elif sort == "author":
@@ -231,7 +231,7 @@ def _sort_local(products: list[Product], sort: str) -> list[Product]:
     return products
 
 
-def _dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
+def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
     """Remove duplicate editions of the same book (same series + position).
 
     Keeps the cheapest edition. Always-on — no flag needed.
@@ -271,7 +271,7 @@ def _series_pos(p: Product) -> float:
         return float("inf")
 
 
-def _first_in_series(products: list[Product]) -> tuple[list[Product], int]:
+def first_in_series(products: list[Product]) -> tuple[list[Product], int]:
     """Keep only the lowest-position item per series (must be <= 1.0).
 
     Non-series items pass through unchanged. Series whose lowest-available

@@ -41,7 +41,7 @@ def _setup_library_mock(mock_client, products):
 
 def _seed_last_results(tmp_config, products):
     """Write a last_results.json cache file."""
-    from audible_deals.serialization import _serialize_product
+    from audible_deals.serialization import serialize_product as _serialize_product
     data = {
         "title": "Test Results",
         "results": [_serialize_product(p) for p in products],

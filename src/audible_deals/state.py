@@ -32,7 +32,7 @@ from audible_deals.constants import (
 # ---------------------------------------------------------------------------
 
 
-def _load_wishlist() -> list[dict]:
+def load_wishlist() -> list[dict]:
     if WISHLIST_FILE.exists():
         try:
             data = json_mod.loads(WISHLIST_FILE.read_text())
@@ -43,11 +43,11 @@ def _load_wishlist() -> list[dict]:
     return []
 
 
-def _save_wishlist(items: list[dict]) -> None:
+def save_wishlist(items: list[dict]) -> None:
     _atomic_write(WISHLIST_FILE, json_mod.dumps(items, indent=2, ensure_ascii=False))
 
 
-def _wishlist_entry(product: Product, max_price: float | None) -> dict:
+def wishlist_entry(product: Product, max_price: float | None) -> dict:
     """Build a wishlist dict from a Product."""
     return {
         "asin": product.asin,
@@ -62,7 +62,7 @@ def _wishlist_entry(product: Product, max_price: float | None) -> dict:
 # ---------------------------------------------------------------------------
 
 
-def _load_profiles() -> dict[str, dict]:
+def load_profiles() -> dict[str, dict]:
     if PROFILES_FILE.exists():
         try:
             data = json_mod.loads(PROFILES_FILE.read_text())
@@ -73,7 +73,7 @@ def _load_profiles() -> dict[str, dict]:
     return {}
 
 
-def _save_profiles(profiles: dict[str, dict]) -> None:
+def save_profiles(profiles: dict[str, dict]) -> None:
     _atomic_write(PROFILES_FILE, json_mod.dumps(profiles, indent=2, ensure_ascii=False))
 
 
@@ -82,7 +82,7 @@ def _save_profiles(profiles: dict[str, dict]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _load_config() -> dict:
+def load_config() -> dict:
     if CONFIG_FILE.exists():
         try:
             data = json_mod.loads(CONFIG_FILE.read_text())
@@ -93,11 +93,11 @@ def _load_config() -> dict:
     return {}
 
 
-def _save_config(cfg: dict) -> None:
+def save_config(cfg: dict) -> None:
     _atomic_write(CONFIG_FILE, json_mod.dumps(cfg, indent=2, ensure_ascii=False))
 
 
-def _coerce_config_value(key: str, raw: str):
+def coerce_config_value(key: str, raw: str):
     """Coerce a raw string value to the type declared in _CONFIG_SCHEMA."""
     typ = _CONFIG_SCHEMA[key]
     if typ is bool:
@@ -124,7 +124,7 @@ def _coerce_config_value(key: str, raw: str):
         raise click.ClickException(f"Invalid value for '{key}' (expected {typ.__name__}): {e}")
 
 
-def _validate_config_key(key: str) -> str:
+def validate_config_key(key: str) -> str:
     """Normalize and validate a config key. Returns the snake_case key or raises."""
     norm = key.replace("-", "_")
     if norm not in _CONFIG_SCHEMA:
@@ -138,7 +138,7 @@ def _validate_config_key(key: str) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _load_seen_asins() -> set[str]:
+def load_seen_asins() -> set[str]:
     """Load cumulative seen ASINs for exclusion."""
     try:
         data = json_mod.loads(SEEN_ASINS_FILE.read_text())
@@ -149,11 +149,11 @@ def _load_seen_asins() -> set[str]:
     return set()
 
 
-def _save_seen_asins(new_asins: set[str]) -> None:
+def save_seen_asins(new_asins: set[str]) -> None:
     """Append ASINs to the cumulative seen-ASINs file."""
     if not new_asins:
         return
-    existing = _load_seen_asins()
+    existing = load_seen_asins()
     if new_asins <= existing:
         return
     merged = sorted(existing | new_asins)
@@ -163,11 +163,11 @@ def _save_seen_asins(new_asins: set[str]) -> None:
         pass
 
 
-def _merge_seen_asins(skip_asins: set[str] | None, exclude_seen: bool) -> set[str] | None:
+def merge_seen_asins(skip_asins: set[str] | None, exclude_seen: bool) -> set[str] | None:
     """Merge previously-seen ASINs into the skip set when --exclude-seen is active."""
     if not exclude_seen:
         return skip_asins
-    seen = _load_seen_asins()
+    seen = load_seen_asins()
     if skip_asins is None:
         return seen
     return skip_asins | seen
@@ -178,7 +178,7 @@ def _merge_seen_asins(skip_asins: set[str] | None, exclude_seen: bool) -> set[st
 # ---------------------------------------------------------------------------
 
 
-def _load_last_results() -> tuple[str, list[dict]]:
+def load_last_results() -> tuple[str, list[dict]]:
     """Load the last results cache from disk.
 
     Returns (title, products) where title is the original query context.
@@ -201,9 +201,9 @@ def _load_last_results() -> tuple[str, list[dict]]:
     raise click.ClickException("Last results cache is corrupt.")
 
 
-def _resolve_last_references(refs: tuple[int, ...]) -> list[tuple[str, str]]:
+def resolve_last_references(refs: tuple[int, ...]) -> list[tuple[str, str]]:
     """Convert 1-indexed position references to (asin, description) tuples from the last results cache."""
-    title, data = _load_last_results()
+    title, data = load_last_results()
     results: list[tuple[str, str]] = []
     for ref in refs:
         if ref < 1 or ref > len(data):
@@ -225,7 +225,7 @@ def _resolve_last_references(refs: tuple[int, ...]) -> list[tuple[str, str]]:
 _history_dir_created = False
 
 
-def _record_prices(products: list[Product]) -> None:
+def record_prices(products: list[Product]) -> None:
     """Append today's prices to per-ASIN history files.
 
     Batches writes: reads all existing files, updates in-memory,
@@ -266,13 +266,13 @@ def _record_prices(products: list[Product]) -> None:
 # ---------------------------------------------------------------------------
 
 
-def _save_last_results(title: str, serialized: list[dict]) -> None:
+def save_last_results(title: str, serialized: list[dict]) -> None:
     """Write serialized products to the last-results cache."""
     cache_obj = {"title": title, "results": serialized}
     _atomic_write(LAST_RESULTS_FILE, json_mod.dumps(cache_obj, ensure_ascii=False))
 
 
-def _clear_last_results() -> bool:
+def clear_last_results() -> bool:
     """Delete the last-results cache. Returns True if deleted."""
     try:
         LAST_RESULTS_FILE.unlink()
@@ -281,7 +281,7 @@ def _clear_last_results() -> bool:
         return False
 
 
-def _clear_seen_asins() -> bool:
+def clear_seen_asins() -> bool:
     """Delete the cumulative seen-ASINs file. Returns True if deleted."""
     try:
         SEEN_ASINS_FILE.unlink()
@@ -295,12 +295,12 @@ def _clear_seen_asins() -> bool:
 # ---------------------------------------------------------------------------
 
 
-def _has_price_history() -> bool:
+def has_price_history() -> bool:
     """Return True if the price history directory exists."""
     return HISTORY_DIR.exists()
 
 
-def _load_price_history(asin: str) -> list[dict]:
+def load_price_history(asin: str) -> list[dict]:
     """Load price history entries for a single ASIN.
 
     Returns an empty list if the file doesn't exist or is corrupt.
@@ -315,7 +315,7 @@ def _load_price_history(asin: str) -> list[dict]:
         return []
 
 
-def _scan_price_changes(
+def scan_price_changes(
     days: int,
 ) -> tuple[list[tuple[str, str, float, float]], list[tuple[str, str, float]]]:
     """Scan history files for price drops and newly tracked items.
@@ -370,17 +370,17 @@ def _scan_price_changes(
     return drops, new_items
 
 
-def _find_wishlist_hits() -> list[dict]:
+def find_wishlist_hits() -> list[dict]:
     """Find wishlist items whose latest tracked price is at or below target.
 
     Returns matching wishlist entry dicts.
     """
-    wishlist_items = _load_wishlist()
+    wishlist_items = load_wishlist()
     hits: list[dict] = []
     for item in wishlist_items:
         if not _ASIN_RE.fullmatch(item.get("asin", "")):
             continue
-        entries = _load_price_history(item["asin"])
+        entries = load_price_history(item["asin"])
         if entries and item.get("max_price") is not None and entries[-1]["price"] <= item["max_price"]:
             hits.append(item)
     return hits

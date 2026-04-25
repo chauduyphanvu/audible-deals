@@ -11,10 +11,10 @@ from pathlib import Path
 import click
 
 from audible_deals.client import Product
-from audible_deals.filtering import _price_per_hour
+from audible_deals.filtering import price_per_hour
 
 
-def _serialize_product(p: Product) -> dict:
+def serialize_product(p: Product) -> dict:
     """Convert a Product to a plain dict for export."""
     d = asdict(p)
     if d["price"] is not None:
@@ -24,27 +24,27 @@ def _serialize_product(p: Product) -> dict:
     d["full_title"] = p.full_title
     d["hours"] = p.hours
     d["discount_pct"] = p.discount_pct
-    pph = _price_per_hour(p)
+    pph = price_per_hour(p)
     d["price_per_hour"] = round(pph, 2) if pph != float("inf") else None
     d["url"] = p.url
     return d
 
 
-_PRODUCT_FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Product))
+PRODUCT_FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Product))
 
 
-def _deserialize_product(d: dict) -> Product | None:
+def deserialize_product(d: dict) -> Product | None:
     """Reconstruct a Product from a serialized dict, ignoring computed fields."""
     try:
-        return Product(**{k: v for k, v in d.items() if k in _PRODUCT_FIELDS})
+        return Product(**{k: v for k, v in d.items() if k in PRODUCT_FIELDS})
     except TypeError:
         return None
 
 
-def _export_products(products: list[Product], path: Path) -> None:
+def export_products(products: list[Product], path: Path) -> None:
     """Export products to file, detecting format from extension."""
     suffix = path.suffix.lower()
-    rows = [_serialize_product(p) for p in products]
+    rows = [serialize_product(p) for p in products]
 
     if suffix == ".json":
         path.write_text(json_mod.dumps(rows, indent=2, ensure_ascii=False))

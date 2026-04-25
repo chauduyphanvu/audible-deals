@@ -10,23 +10,31 @@ import pytest
 from click.testing import CliRunner
 
 from audible_deals.cli import (
-    _validate_webhook_url,
-    _dedupe_editions,
-    _deserialize_product,
-    _export_products,
     _fetch_with_progress,
-    _filter_products,
-    _first_in_series,
-    _load_seen_asins,
-    _save_seen_asins,
-    _looks_like_person_name,
-    _parse_interval,
-    _price_per_hour,
-    _resolve_last_references,
-    _serialize_product,
-    _sort_local,
-    _value_score,
     cli,
+)
+from audible_deals.filtering import (
+    dedupe_editions as _dedupe_editions,
+    filter_products as _filter_products,
+    first_in_series as _first_in_series,
+    price_per_hour as _price_per_hour,
+    sort_local as _sort_local,
+    value_score as _value_score,
+)
+from audible_deals.serialization import (
+    deserialize_product as _deserialize_product,
+    export_products as _export_products,
+    serialize_product as _serialize_product,
+)
+from audible_deals.state import (
+    load_seen_asins as _load_seen_asins,
+    save_seen_asins as _save_seen_asins,
+    resolve_last_references as _resolve_last_references,
+)
+from audible_deals.utils import (
+    looks_like_person_name as _looks_like_person_name,
+    parse_interval as _parse_interval,
+    validate_webhook_url as _validate_webhook_url,
 )
 from audible_deals.client import Product
 from tests.conftest import make_product
@@ -600,7 +608,7 @@ class TestWishlistSyncCommand:
     def test_sync_skips_existing(self, mock_client, tmp_config):
         """Items already in local wishlist are counted as skipped, not re-added."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "WS1", "title": "Already Here", "max_price": None, "added": ""},
         ])
         mock_client.get_wishlist.return_value = [
@@ -634,7 +642,7 @@ class TestWishlistSyncCommand:
 
         # Verify the saved item has max_price set
         import audible_deals.cli as cli_mod
-        items = cli_mod._load_wishlist()
+        items = cli_mod.load_wishlist()
         assert len(items) == 1
         assert items[0]["asin"] == "WS3"
         assert items[0]["max_price"] == 7.99
@@ -655,7 +663,7 @@ class TestWishlistSyncCommand:
     def test_sync_update_changes_existing_price(self, mock_client, tmp_config):
         """--update with --max-price updates target price for existing items."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "WS1", "title": "Old Price Book", "max_price": 20.0, "added": ""},
         ])
         mock_client.get_wishlist.return_value = [
@@ -664,7 +672,7 @@ class TestWishlistSyncCommand:
         runner = CliRunner()
         result = runner.invoke(cli, ["wishlist", "sync", "--max-price", "5", "--update"])
         assert result.exit_code == 0, result.output
-        items = cli_mod._load_wishlist()
+        items = cli_mod.load_wishlist()
         assert items[0]["max_price"] == 5.0
         assert "1 updated" in result.output
 
@@ -740,19 +748,19 @@ class TestLoadWishlistTypeValidation:
         """A wishlist.json containing {} instead of [] returns empty list."""
         import audible_deals.cli as cli_mod
         cli_mod.WISHLIST_FILE.write_text("{}")
-        assert cli_mod._load_wishlist() == []
+        assert cli_mod.load_wishlist() == []
 
     def test_load_profiles_list_returns_empty_dict(self, tmp_config):
         """A profiles.json containing [] instead of {} returns empty dict."""
         import audible_deals.cli as cli_mod
         cli_mod.PROFILES_FILE.write_text("[]")
-        assert cli_mod._load_profiles() == {}
+        assert cli_mod.load_profiles() == {}
 
     def test_load_config_array_returns_empty_dict(self, tmp_config):
         """A config.json containing a JSON array instead of {} returns {}."""
-        from audible_deals.state import _load_config
+        from audible_deals.state import load_config
         (tmp_config / "config.json").write_text("[1, 2]")
-        assert _load_config() == {}
+        assert load_config() == {}
 
 
 class TestWatchCommand:
@@ -765,7 +773,7 @@ class TestWatchCommand:
     def test_watch_with_items(self, mock_client, tmp_config):
         # Seed the wishlist
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "W1", "title": "Book", "max_price": 10.0},
         ])
         mock_client.get_products_batch.return_value = [
@@ -780,7 +788,7 @@ class TestWatchCommand:
     def test_watch_buy_only(self, mock_client, tmp_config):
         """--buy-only filters to only items at or below target."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "W1", "title": "Cheap Book", "max_price": 10.0},
             {"asin": "W2", "title": "Expensive Book", "max_price": 3.0},
         ])
@@ -797,7 +805,7 @@ class TestWatchCommand:
     def test_watch_sort_by_title(self, mock_client, tmp_config):
         """--sort title orders output alphabetically."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "W1", "title": "Zebra Book", "max_price": 10.0},
             {"asin": "W2", "title": "Alpha Book", "max_price": 10.0},
         ])
@@ -817,7 +825,7 @@ class TestWatchCommand:
         from io import StringIO
         from rich.console import Console
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "W1", "title": "URL Book", "max_price": 10.0},
         ])
         mock_client.get_products_batch.return_value = [
@@ -847,7 +855,7 @@ class TestWatchCommand:
     def test_watch_sort_keys(self, mock_client, tmp_config, sort_key):
         """--sort author and --sort asin run without error."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "W1", "title": "Book A", "max_price": 10.0},
             {"asin": "W2", "title": "Book B", "max_price": 10.0},
         ])
@@ -868,7 +876,7 @@ class TestHistoryCommand:
         assert "No price history" in result.output
 
     def test_history_after_recording(self, tmp_config, mock_client):
-        from audible_deals.cli import _record_prices
+        from audible_deals.state import record_prices as _record_prices
         products = [make_product(asin="H1", price=5.99)]
         _record_prices(products)
 
@@ -878,7 +886,7 @@ class TestHistoryCommand:
         assert "$5.99" in result.output
 
     def test_history_idempotent(self, tmp_config):
-        from audible_deals.cli import _record_prices
+        from audible_deals.state import record_prices as _record_prices
         products = [make_product(asin="H2", price=3.00)]
         _record_prices(products)
         _record_prices(products)  # Same day
@@ -1241,7 +1249,7 @@ class TestProfileSaveNewFlags:
         result = runner.invoke(cli, ["profile", "save", "myprofile", "--skip-owned"])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         assert profiles["myprofile"]["skip_owned"] is True
 
     def test_language_in_profile(self, tmp_config):
@@ -1249,7 +1257,7 @@ class TestProfileSaveNewFlags:
         result = runner.invoke(cli, ["profile", "save", "langprofile", "--language", "french"])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         assert profiles["langprofile"]["language"] == "french"
 
     def test_interactive_in_profile(self, tmp_config):
@@ -1257,7 +1265,7 @@ class TestProfileSaveNewFlags:
         result = runner.invoke(cli, ["profile", "save", "iprofile", "--interactive"])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         assert profiles["iprofile"]["interactive"] is True
 
 
@@ -1265,7 +1273,7 @@ class TestFindProfileSkipOwned:
     def test_find_profile_skip_owned(self, mock_client, tmp_config):
         """find --profile loads skip_owned from profile and calls get_library_asins."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"myp": {"skip_owned": True}})
+        cli_mod.save_profiles({"myp": {"skip_owned": True}})
         mock_client.search_pages.return_value = iter([([], 1, 0)])
         mock_client.get_library_asins.return_value = set()
 
@@ -1277,7 +1285,7 @@ class TestFindProfileSkipOwned:
     def test_find_backward_compat(self, mock_client, tmp_config):
         """Old profiles without new keys still work fine."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"oldp": {"max_price": 5.0}})
+        cli_mod.save_profiles({"oldp": {"max_price": 5.0}})
         mock_client.search_pages.return_value = iter([([], 1, 0)])
 
         runner = CliRunner()
@@ -1289,7 +1297,7 @@ class TestSearchWithProfile:
     def test_search_profile_applies_settings(self, mock_client, tmp_config):
         """search --profile X applies profile settings."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"stest": {"min_rating": 4.5}})
+        cli_mod.save_profiles({"stest": {"min_rating": 4.5}})
         products = [
             make_product(asin="SP1", price=5.0, rating=4.8),
             make_product(asin="SP2", price=5.0, rating=3.0),
@@ -1316,7 +1324,7 @@ class TestSearchWithProfile:
     def test_search_profile_skip_owned(self, mock_client, tmp_config):
         """search --profile with skip_owned calls get_library_asins."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"owned_profile": {"skip_owned": True}})
+        cli_mod.save_profiles({"owned_profile": {"skip_owned": True}})
         mock_client.search_pages.return_value = iter([([], 1, 0)])
         mock_client.get_library_asins.return_value = set()
 
@@ -1348,7 +1356,7 @@ class TestConfigCommands:
         result = runner.invoke(cli, ["config", "set", "skip-owned", "true"])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        cfg = cli_mod._load_config()
+        cfg = cli_mod.load_config()
         assert cfg["skip_owned"] is True
 
     def test_set_invalid_bool(self, tmp_config):
@@ -1371,7 +1379,7 @@ class TestConfigCommands:
 
     def test_list_with_values(self, tmp_config):
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 5.0, "skip_owned": True})
+        cli_mod.save_config({"max_price": 5.0, "skip_owned": True})
         runner = CliRunner()
         result = runner.invoke(cli, ["config", "list"])
         assert result.exit_code == 0, result.output
@@ -1380,21 +1388,21 @@ class TestConfigCommands:
 
     def test_reset_key(self, tmp_config):
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        cli_mod.save_config({"max_price": 5.0, "min_rating": 4.0})
         runner = CliRunner()
         result = runner.invoke(cli, ["config", "reset", "max-price"])
         assert result.exit_code == 0, result.output
-        cfg = cli_mod._load_config()
+        cfg = cli_mod.load_config()
         assert "max_price" not in cfg
         assert "min_rating" in cfg
 
     def test_reset_all(self, tmp_config):
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        cli_mod.save_config({"max_price": 5.0, "min_rating": 4.0})
         runner = CliRunner()
         result = runner.invoke(cli, ["config", "reset"], input="y\n")
         assert result.exit_code == 0, result.output
-        cfg = cli_mod._load_config()
+        cfg = cli_mod.load_config()
         assert cfg == {}
 
     def test_reset_invalid_key(self, tmp_config):
@@ -1408,7 +1416,7 @@ class TestConfigCommands:
         result = runner.invoke(cli, ["config", "set", "pages", "5"])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        cfg = cli_mod._load_config()
+        cfg = cli_mod.load_config()
         assert cfg["pages"] == 5
         assert isinstance(cfg["pages"], int)
 
@@ -1417,7 +1425,7 @@ class TestConfigCommands:
         result = runner.invoke(cli, ["config", "set", "min-rating", "4.5"])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        cfg = cli_mod._load_config()
+        cfg = cli_mod.load_config()
         assert cfg["min_rating"] == 4.5
 
 
@@ -1425,7 +1433,7 @@ class TestConfigAppliedToFind:
     def test_config_max_price_applies(self, mock_client, tmp_config):
         """Config max_price is applied when not passed on CLI."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 3.0})
+        cli_mod.save_config({"max_price": 3.0})
         products = [
             make_product(asin="CF1", price=2.0, series_name="", series_position=""),
             make_product(asin="CF2", price=6.0, series_name="", series_position=""),
@@ -1445,7 +1453,7 @@ class TestConfigAppliedToFind:
     def test_cli_flag_overrides_config(self, mock_client, tmp_config):
         """CLI --max-price overrides config max_price."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 2.0})
+        cli_mod.save_config({"max_price": 2.0})
         products = [
             make_product(asin="CO1", price=4.0, series_name="", series_position=""),
         ]
@@ -1465,8 +1473,8 @@ class TestConfigAppliedToFind:
     def test_profile_overrides_config(self, mock_client, tmp_config):
         """Profile min_rating overrides config min_rating."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"min_rating": 4.0})
-        cli_mod._save_profiles({"p": {"min_rating": 3.0}})
+        cli_mod.save_config({"min_rating": 4.0})
+        cli_mod.save_profiles({"p": {"min_rating": 3.0}})
         products = [
             make_product(asin="PO1", price=3.0, rating=3.5, series_name="", series_position=""),
         ]
@@ -1735,7 +1743,7 @@ class TestExcludeAuthorFilter:
         ])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         assert "no-weir" in profiles
         excluded = profiles["no-weir"]["exclude_authors"]
         assert "Andy Weir" in excluded
@@ -1744,7 +1752,7 @@ class TestExcludeAuthorFilter:
     def test_find_profile_exclude_author_applied(self, mock_client, tmp_config):
         """find --profile with exclude_authors actually filters out the author."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"no-weir": {"exclude_authors": ["Andy Weir"]}})
+        cli_mod.save_profiles({"no-weir": {"exclude_authors": ["Andy Weir"]}})
         products = [
             make_product(asin="EA1", price=3.0, authors=["Andy Weir"], series_name="", series_position=""),
             make_product(asin="EA2", price=3.0, authors=["Pierce Brown"], series_name="", series_position=""),
@@ -1844,7 +1852,7 @@ class TestAuthorFilter:
         result = runner.invoke(cli, ["profile", "save", "weir-profile", "--author", "Andy Weir"])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         assert profiles["weir-profile"]["author"] == "Andy Weir"
 
     def test_author_in_config(self, tmp_config):
@@ -2043,7 +2051,7 @@ class TestRecapWithTitles:
 
     def test_recap_title_stored_in_record_prices(self, tmp_config):
         """_record_prices stores the title in history entries."""
-        from audible_deals.cli import _record_prices
+        from audible_deals.state import record_prices as _record_prices
         p = make_product(asin="RC01", price=5.99, title="My Title Book")
         _record_prices([p])
 
@@ -2163,7 +2171,7 @@ class TestWatchEveryFlag:
     def test_watch_without_every_runs_once(self, mock_client, tmp_config):
         """watch without --every does a single check and exits."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([{"asin": "W1", "title": "Test", "max_price": 10.0, "added": ""}])
+        cli_mod.save_wishlist([{"asin": "W1", "title": "Test", "max_price": 10.0, "added": ""}])
         mock_client.get_products_batch.return_value = [
             make_product(asin="W1", price=5.0, title="Test"),
         ]
@@ -2498,7 +2506,7 @@ class TestExcludeNarratorFilter:
         ])
         assert result.exit_code == 0, result.output
         import audible_deals.cli as cli_mod
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         assert "no-bray" in profiles
         excluded = profiles["no-bray"]["exclude_narrators"]
         assert "R.C. Bray" in excluded
@@ -2563,7 +2571,7 @@ class TestSearchQueryOptional:
 class TestProfileShow:
     def test_profile_show_displays_flags(self, tmp_config):
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({
+        cli_mod.save_profiles({
             "myprofile": {
                 "genre": "sci-fi",
                 "max_price": 5.0,
@@ -2586,7 +2594,7 @@ class TestProfileShow:
 
     def test_profile_show_list_values(self, tmp_config):
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({
+        cli_mod.save_profiles({
             "multi": {
                 "exclude_authors": ["Andy Weir", "Brandon Sanderson"],
             }
@@ -2600,7 +2608,7 @@ class TestProfileShow:
     def test_profile_show_bool_true_displayed(self, tmp_config):
         """Boolean True values should show as --flag."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({
+        cli_mod.save_profiles({
             "booltest": {
                 "deep": True,
             }
@@ -2613,7 +2621,7 @@ class TestProfileShow:
     def test_profile_show_bool_false_displayed_as_no_flag(self, tmp_config):
         """Boolean False values should display as --no-flag."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({
+        cli_mod.save_profiles({
             "falsetest": {
                 "deep": False,
                 "on_sale": False,
@@ -2688,7 +2696,7 @@ class TestNotifyEmptyWishlist:
         """notify with items on wishlist but no hits outputs empty JSON object."""
         import json
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "NT1", "title": "Some Book", "max_price": 5.0, "added": ""},
         ])
         mock_client.get_products_batch.return_value = [
@@ -2740,7 +2748,7 @@ class TestProfileShowSingularFlags:
     def test_exclude_authors_shows_as_exclude_author(self, tmp_config):
         """profile show renders exclude_authors as --exclude-author (singular)."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"myp": {"exclude_authors": ["Andy Weir", "Terry Brooks"]}})
+        cli_mod.save_profiles({"myp": {"exclude_authors": ["Andy Weir", "Terry Brooks"]}})
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "show", "myp"])
         assert result.exit_code == 0, result.output
@@ -2750,7 +2758,7 @@ class TestProfileShowSingularFlags:
     def test_exclude_narrators_shows_as_exclude_narrator(self, tmp_config):
         """profile show renders exclude_narrators as --exclude-narrator (singular)."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"myp2": {"exclude_narrators": ["R.C. Bray"]}})
+        cli_mod.save_profiles({"myp2": {"exclude_narrators": ["R.C. Bray"]}})
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "show", "myp2"])
         assert result.exit_code == 0, result.output
@@ -2760,7 +2768,7 @@ class TestProfileShowSingularFlags:
     def test_other_keys_still_hyphenated(self, tmp_config):
         """profile show still hyphenates other underscore keys correctly."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_profiles({"myp3": {"min_rating": 4.0, "first_in_series": True}})
+        cli_mod.save_profiles({"myp3": {"min_rating": 4.0, "first_in_series": True}})
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "show", "myp3"])
         assert result.exit_code == 0, result.output
@@ -3128,31 +3136,31 @@ class TestConfigResetConfirmation:
     def test_reset_all_confirmed(self, tmp_config):
         """config reset with no key clears config when user confirms."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        cli_mod.save_config({"max_price": 5.0, "min_rating": 4.0})
         runner = CliRunner()
         result = runner.invoke(cli, ["config", "reset"], input="y\n")
         assert result.exit_code == 0, result.output
         assert "All global defaults cleared" in result.output
-        assert cli_mod._load_config() == {}
+        assert cli_mod.load_config() == {}
 
     def test_reset_all_cancelled(self, tmp_config):
         """config reset with no key leaves config intact when user cancels."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 5.0})
+        cli_mod.save_config({"max_price": 5.0})
         runner = CliRunner()
         result = runner.invoke(cli, ["config", "reset"], input="n\n")
         assert result.exit_code == 0, result.output
         assert "Cancelled" in result.output
-        assert cli_mod._load_config() == {"max_price": 5.0}
+        assert cli_mod.load_config() == {"max_price": 5.0}
 
     def test_reset_key_no_confirmation_needed(self, tmp_config):
         """config reset KEY skips the confirmation prompt."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_config({"max_price": 5.0, "min_rating": 4.0})
+        cli_mod.save_config({"max_price": 5.0, "min_rating": 4.0})
         runner = CliRunner()
         result = runner.invoke(cli, ["config", "reset", "max-price"])
         assert result.exit_code == 0, result.output
-        cfg = cli_mod._load_config()
+        cfg = cli_mod.load_config()
         assert "max_price" not in cfg
         assert "min_rating" in cfg
 
@@ -3194,7 +3202,7 @@ class TestWishlistRemoveLast:
         import audible_deals.cli as cli_mod
         p = make_product(asin="WRL1", title="Remove Me")
         self._seed_cache(tmp_config, [p])
-        cli_mod._save_wishlist([{"asin": "WRL1", "title": "Remove Me", "max_price": None, "added": ""}])
+        cli_mod.save_wishlist([{"asin": "WRL1", "title": "Remove Me", "max_price": None, "added": ""}])
 
         runner = CliRunner()
         result = runner.invoke(cli, ["wishlist", "remove", "--last", "1"])
@@ -3207,7 +3215,7 @@ class TestWishlistRemoveLast:
         import audible_deals.cli as cli_mod
         p = make_product(asin="WRL2", title="Cache Book")
         self._seed_cache(tmp_config, [p])
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "WRL2", "title": "Cache Book", "max_price": None, "added": ""},
             {"asin": "WRL3", "title": "Direct Book", "max_price": None, "added": ""},
         ])
@@ -3234,7 +3242,7 @@ class TestHistoryLast:
     def test_history_last_resolves_from_cache(self, tmp_config):
         """history --last N resolves the ASIN from the last results cache."""
         import audible_deals.cli as cli_mod
-        from audible_deals.cli import _record_prices
+        from audible_deals.state import record_prices as _record_prices
         p = make_product(asin="HL1", price=4.99, title="Cache History Book")
         self._seed_cache(tmp_config, [p])
         _record_prices([p])
@@ -3443,7 +3451,7 @@ class TestProfileSaveFalsy:
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "zeroprofile", "--max-price", "0"])
         assert result.exit_code == 0, result.output
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         assert "max_price" in profiles["zeroprofile"]
         assert profiles["zeroprofile"]["max_price"] == 0.0
 
@@ -3454,7 +3462,7 @@ class TestProfileSaveFalsy:
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "falseprofile", "--genre", "sci-fi"])
         assert result.exit_code == 0, result.output
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         # on_sale=False is NOT stored — profile save's is_flag options only capture True
         assert "on_sale" not in profiles["falseprofile"]
 
@@ -3465,7 +3473,7 @@ class TestProfileSaveFalsy:
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "emptyprofile", "--max-price", "0"])
         assert result.exit_code == 0, result.output
-        profiles = cli_mod._load_profiles()
+        profiles = cli_mod.load_profiles()
         # Empty string fields like genre, author etc. should not be saved
         assert "genre" not in profiles["emptyprofile"]
         assert "author" not in profiles["emptyprofile"]
@@ -3477,7 +3485,7 @@ class TestProfileSaveFalsy:
 class TestProfileSaveZeroDefaults:
     def test_profile_save_omits_zero_defaults(self, tmp_config):
         """profile save --genre sci-fi must NOT save min_rating=0.0 etc."""
-        from audible_deals.state import _load_profiles
+        from audible_deals.state import load_profiles as _load_profiles
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "zerotest", "--genre", "sci-fi"])
         assert result.exit_code == 0, result.output
@@ -3490,7 +3498,7 @@ class TestProfileSaveZeroDefaults:
 
     def test_profile_save_preserves_explicit_zero(self, tmp_config):
         """profile save --max-price 0 must keep max_price=0.0."""
-        from audible_deals.state import _load_profiles
+        from audible_deals.state import load_profiles as _load_profiles
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "zeroexplicit", "--max-price", "0"])
         assert result.exit_code == 0, result.output
@@ -3507,7 +3515,7 @@ class TestNotifyEmpty:
         """notify with wishlist items above target prints '[]' to stdout."""
         import audible_deals.cli as cli_mod
         # Add a wishlist item with a low target (price above target = no hit)
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "NE01", "title": "Pricey Book", "max_price": 1.0, "added": "2024-01-01"},
         ])
         # Mock get_products_batch to return product with price above target
@@ -3522,14 +3530,14 @@ class TestNotifyEmpty:
     def test_notify_no_hits_with_webhook_shows_feedback(self, mock_client, tmp_config, monkeypatch):
         """notify with no hits and a webhook prints feedback but does not POST."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "NE02", "title": "Pricey Book", "max_price": 1.0, "added": "2024-01-01"},
         ])
         mock_client.get_products_batch.return_value = [
             make_product(asin="NE02", price=9.99),
         ]
         # Use a valid-looking but unreachable webhook; should never be called
-        monkeypatch.setattr("audible_deals.cli._validate_webhook_url", lambda url: None)
+        monkeypatch.setattr("audible_deals.cli.validate_webhook_url", lambda url: None)
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--webhook", "https://example.com/hook"])
         assert result.exit_code == 0, result.output
@@ -3546,7 +3554,7 @@ class TestNotifyZeroTarget:
     def test_notify_zero_target_fires(self, mock_client, tmp_config):
         """notify must fire when max_price=0 and product price is 0 (was falsy bug)."""
         import audible_deals.cli as cli_mod
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "Z001", "title": "Free Book", "max_price": 0, "added": "2024-01-01"},
         ])
         mock_client.get_products_batch.return_value = [
@@ -3563,7 +3571,7 @@ class TestNotifyZeroTarget:
 class TestProfileSaveNewOptions:
     def test_profile_save_min_discount(self, tmp_config):
         """profile save --min-discount should persist."""
-        from audible_deals.state import _load_profiles
+        from audible_deals.state import load_profiles as _load_profiles
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "disctest", "--min-discount", "50"])
         assert result.exit_code == 0, result.output
@@ -3572,7 +3580,7 @@ class TestProfileSaveNewOptions:
 
     def test_profile_save_max_pph(self, tmp_config):
         """profile save --max-price-per-hour should persist."""
-        from audible_deals.state import _load_profiles
+        from audible_deals.state import load_profiles as _load_profiles
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "pphtest", "--max-price-per-hour", "0.5"])
         assert result.exit_code == 0, result.output
@@ -3581,7 +3589,7 @@ class TestProfileSaveNewOptions:
 
     def test_profile_save_publisher(self, tmp_config):
         """profile save --publisher should persist."""
-        from audible_deals.state import _load_profiles
+        from audible_deals.state import load_profiles as _load_profiles
         runner = CliRunner()
         result = runner.invoke(cli, ["profile", "save", "pubtest", "--publisher", "Penguin"])
         assert result.exit_code == 0, result.output
@@ -3648,7 +3656,7 @@ class TestLastCount:
     def _write_cache(self, tmp_config, products):
         """Write a mock last results cache."""
         import audible_deals.cli as cli_mod
-        data = [cli_mod._serialize_product(p) for p in products]
+        data = [cli_mod.serialize_product(p) for p in products]
         payload = json.dumps({"title": "Test Results", "results": data})
         cli_mod.LAST_RESULTS_FILE.write_text(payload)
 
@@ -3938,9 +3946,9 @@ class TestWatchRecordsPrices:
     def test_watch_records_prices(self, mock_client, tmp_config):
         """After running watch, history should contain an entry for the watched ASIN."""
         import audible_deals.cli as cli_mod
-        from audible_deals.state import _load_price_history
+        from audible_deals.state import load_price_history as _load_price_history
 
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "WR1", "title": "Record Me", "max_price": 10.0, "added": ""},
         ])
         mock_client.get_products_batch.return_value = [
@@ -3962,9 +3970,9 @@ class TestNotifyRecordsPrices:
     def test_notify_records_prices(self, mock_client, tmp_config):
         """notify records prices for fetched items."""
         import audible_deals.cli as cli_mod
-        from audible_deals.state import _load_price_history
+        from audible_deals.state import load_price_history as _load_price_history
 
-        cli_mod._save_wishlist([
+        cli_mod.save_wishlist([
             {"asin": "NR1", "title": "Deal Book", "max_price": 5.0, "added": ""},
         ])
         mock_client.get_products_batch.return_value = [
