@@ -10,6 +10,8 @@ from typing import Any
 
 import click
 
+from audible_deals.constants import DEFAULT_LIMIT, DEFAULT_SORT
+
 
 _CL = click.core.ParameterSource.COMMANDLINE
 
@@ -52,14 +54,14 @@ class Settings:
     """Fully-resolved options for a scan command."""
 
     max_price: float | None = None
-    sort: str = "price-per-hour"
+    sort: str = DEFAULT_SORT
     pages: int = 10
     min_rating: float = 0.0
     min_ratings: int = 0
     min_hours: float = 0.0
     min_discount: int = 0
     max_pph: float | None = None
-    limit: int | None = 25
+    limit: int | None = DEFAULT_LIMIT
     language: str = ""
     narrator: str = ""
     author: str = ""

@@ -20,6 +20,7 @@ Usage:
 
 from __future__ import annotations
 
+import dataclasses
 import json as json_mod
 import math
 import os
@@ -47,6 +48,7 @@ from audible_deals.constants import (
     CLIENT_SORT_OPTIONS,
     CONFIG_FILE,
     DEEP_SORT_ORDERS,
+    DEFAULT_LIMIT,
     HISTORY_DIR,
     LAST_RESULTS_FILE,
     LOCALE_CURRENCY,
@@ -74,7 +76,7 @@ from audible_deals.display import (
 from audible_deals.filtering import (
     dedupe_editions,
     filter_products,
-    first_in_series as _first_in_series_fn,
+    first_in_series,
     price_per_hour,
     sort_local,
     value_score,
@@ -136,38 +138,16 @@ def _safe_record_prices(products: list[Product]) -> None:
 _CL = click.core.ParameterSource.COMMANDLINE
 
 
-def _resolve_scan_settings(
-    ctx: click.Context,
-    profile_name: str | None,
-    cli_flags: dict,
-) -> dict:
-    """Merge config/profile/CLI and return an updated namespace dict."""
-    profile: dict | None = None
-    if profile_name:
-        profiles = load_profiles()
-        if profile_name not in profiles:
-            raise click.ClickException(
-                f"Profile '{profile_name}' not found. "
-                "Use 'deals profile list' to see available profiles."
-            )
-        profile = profiles[profile_name]
-    s = Settings.resolve(
-        ctx,
-        config=ctx.obj.get("config", {}),
-        profile=profile,
-        cli_flags=cli_flags,
-    )
-    # Write resolved settings back into the namespace dict
-    result = dict(cli_flags)
-    for key in (
-        "max_price", "sort", "pages", "min_rating", "min_ratings", "min_hours",
-        "min_discount", "max_pph", "limit", "language", "narrator", "author",
-        "series", "publisher", "on_sale", "deep", "first_in_series", "all_languages",
-        "skip_owned", "interactive", "genre", "exclude_genre", "exclude_authors",
-        "exclude_narrators", "keywords",
-    ):
-        result[key] = getattr(s, key)
-    return result
+def _load_profile(profile_name: str | None) -> dict | None:
+    if not profile_name:
+        return None
+    profiles = load_profiles()
+    if profile_name not in profiles:
+        raise click.ClickException(
+            f"Profile '{profile_name}' not found. "
+            "Use 'deals profile list' to see available profiles."
+        )
+    return profiles[profile_name]
 
 
 def _resolve_categories(
@@ -216,7 +196,7 @@ def _apply_filters(
     on_sale: bool,
     skip_asins: set[str] | None,
     exclude_category_ids: set[str],
-    do_first_in_series: bool,
+    first_in_series_only: bool,
     sort: str,
     max_pph: float | None = None,
     min_discount: int = 0,
@@ -245,8 +225,8 @@ def _apply_filters(
     )
     filtered, editions_removed = dedupe_editions(filtered)
     series_collapsed = 0
-    if do_first_in_series:
-        filtered, series_collapsed = _first_in_series_fn(filtered)
+    if first_in_series_only:
+        filtered, series_collapsed = first_in_series(filtered)
     filtered = sort_local(filtered, sort)
     return filtered, filter_breakdown, editions_removed, series_collapsed
 
@@ -476,7 +456,7 @@ def _common_filter_options(func):
         click.option("--first-in-series/--no-first-in-series", default=False, help="Show only the first book per series"),
         click.option("--skip-owned/--no-skip-owned", default=False, help="Exclude books already in your library"),
         click.option("--exclude-seen", is_flag=True, default=False, help="Exclude ASINs from last search/find results"),
-        click.option("--limit", "-n", type=click.IntRange(min=0), default=25, help="Show only the top N results (0 for unlimited, default: 25)"),
+        click.option("--limit", "-n", type=click.IntRange(min=0), default=DEFAULT_LIMIT, help="Show only the top N results (0 for unlimited, default: 25)"),
         click.option("--output", "-o", type=click.Path(path_type=Path), default=None, help="Export results to file (.json or .csv)"),
         click.option("--json", "json_flag", is_flag=True, default=False, help="Output results as JSON to stdout"),
         click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)"),
@@ -496,7 +476,14 @@ def _build_scan_namespace(
     **kwargs,
 ) -> dict:
     """Build a resolved namespace dict from command kwargs + config/profile defaults."""
-    ns = _resolve_scan_settings(ctx, profile_name, dict(kwargs))
+    s = Settings.resolve(
+        ctx,
+        config=ctx.obj.get("config", {}),
+        profile=_load_profile(profile_name),
+        cli_flags=dict(kwargs),
+    )
+    ns = dict(kwargs)
+    ns.update(dataclasses.asdict(s))
     if ns.get("output") and ctx.get_parameter_source("quiet") != _CL:
         ns["quiet"] = True
     if ns.get("json_flag"):
@@ -626,7 +613,7 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=skip_asins,
         exclude_category_ids=exclude_category_ids,
-        do_first_in_series=first_in_series, sort=sort, max_pph=max_pph,
+        first_in_series_only=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
     )
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -815,7 +802,7 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=skip_asins,
         exclude_category_ids=exclude_category_ids,
-        do_first_in_series=first_in_series, sort=sort, max_pph=max_pph,
+        first_in_series_only=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
     )
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -950,13 +937,18 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
     if json_flag:
         console.file = sys.stderr
 
-    ns = _resolve_scan_settings(ctx, None, dict(
-        max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
-        min_hours=min_hours, on_sale=on_sale, limit=limit, sort=sort, pages=pages,
-    ))
-    max_price, min_rating, min_ratings = ns["max_price"], ns["min_rating"], ns["min_ratings"]
-    min_hours, on_sale, limit = ns["min_hours"], ns["on_sale"], ns["limit"]
-    sort, pages = ns["sort"], ns["pages"]
+    s = Settings.resolve(
+        ctx,
+        config=ctx.obj.get("config", {}),
+        profile=None,
+        cli_flags=dict(
+            max_price=max_price, min_rating=min_rating, min_ratings=min_ratings,
+            min_hours=min_hours, on_sale=on_sale, limit=limit, sort=sort, pages=pages,
+        ),
+    )
+    max_price, min_rating, min_ratings = s.max_price, s.min_rating, s.min_ratings
+    min_hours, on_sale, limit = s.min_hours, s.on_sale, s.limit
+    sort, pages = s.sort, s.pages
 
     dc = _get_client(ctx.obj["locale"])
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
@@ -1058,7 +1050,7 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
         min_hours=min_hours, narrator="", author="",
         exclude_authors=(), exclude_narrators=(), language="",
         on_sale=on_sale, skip_asins=None, exclude_category_ids=set(),
-        do_first_in_series=False, sort=sort,
+        first_in_series_only=False, sort=sort,
     )
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered, title=series_title, limit=limit,
@@ -1151,7 +1143,7 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
         exclude_narrators=exclude_narrators,
         language=language, on_sale=on_sale, skip_asins=None,
         exclude_category_ids=set(),
-        do_first_in_series=first_in_series, sort=effective_sort, max_pph=max_pph,
+        first_in_series_only=first_in_series, sort=effective_sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
     )
     filtered, serialized, total_before_limit = _record_and_cache(
