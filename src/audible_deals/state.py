@@ -8,9 +8,12 @@ from __future__ import annotations
 
 import datetime
 import json as json_mod
+import logging
 from pathlib import Path
 
 import click
+
+logger = logging.getLogger(__name__)
 
 from audible_deals.client import Product
 from audible_deals.constants import (
@@ -37,14 +40,17 @@ def load_wishlist() -> list[dict]:
         try:
             data = json_mod.loads(WISHLIST_FILE.read_text())
             if isinstance(data, list):
+                logger.debug("loaded wishlist (%d items) from %s", len(data), WISHLIST_FILE)
                 return data
+            logger.warning("wishlist at %s is not a list, ignoring", WISHLIST_FILE)
         except (json_mod.JSONDecodeError, KeyError):
-            pass
+            logger.warning("wishlist at %s is corrupt, ignoring", WISHLIST_FILE, exc_info=True)
     return []
 
 
 def save_wishlist(items: list[dict]) -> None:
     _atomic_write(WISHLIST_FILE, json_mod.dumps(items, indent=2, ensure_ascii=False))
+    logger.debug("saved wishlist (%d items) to %s", len(items), WISHLIST_FILE)
 
 
 def wishlist_entry(product: Product, max_price: float | None) -> dict:
@@ -67,14 +73,17 @@ def load_profiles() -> dict[str, dict]:
         try:
             data = json_mod.loads(PROFILES_FILE.read_text())
             if isinstance(data, dict):
+                logger.debug("loaded profiles (%d) from %s", len(data), PROFILES_FILE)
                 return data
+            logger.warning("profiles at %s is not a dict, ignoring", PROFILES_FILE)
         except (json_mod.JSONDecodeError, KeyError):
-            pass
+            logger.warning("profiles at %s is corrupt, ignoring", PROFILES_FILE, exc_info=True)
     return {}
 
 
 def save_profiles(profiles: dict[str, dict]) -> None:
     _atomic_write(PROFILES_FILE, json_mod.dumps(profiles, indent=2, ensure_ascii=False))
+    logger.debug("saved profiles (%d) to %s", len(profiles), PROFILES_FILE)
 
 
 # ---------------------------------------------------------------------------
@@ -87,14 +96,17 @@ def load_config() -> dict:
         try:
             data = json_mod.loads(CONFIG_FILE.read_text())
             if isinstance(data, dict):
+                logger.debug("loaded config (%d keys) from %s", len(data), CONFIG_FILE)
                 return data
+            logger.warning("config at %s is not a dict, ignoring", CONFIG_FILE)
         except (json_mod.JSONDecodeError, KeyError, OSError):
-            pass
+            logger.warning("config at %s is corrupt, ignoring", CONFIG_FILE, exc_info=True)
     return {}
 
 
 def save_config(cfg: dict) -> None:
     _atomic_write(CONFIG_FILE, json_mod.dumps(cfg, indent=2, ensure_ascii=False))
+    logger.debug("saved config (%d keys) to %s", len(cfg), CONFIG_FILE)
 
 
 def coerce_config_value(key: str, raw: str):
@@ -143,9 +155,12 @@ def load_seen_asins() -> set[str]:
     try:
         data = json_mod.loads(SEEN_ASINS_FILE.read_text())
         if isinstance(data, list):
+            logger.debug("loaded seen ASINs (%d) from %s", len(data), SEEN_ASINS_FILE)
             return set(data)
-    except (json_mod.JSONDecodeError, OSError, KeyError, TypeError):
+    except FileNotFoundError:
         pass
+    except (json_mod.JSONDecodeError, OSError, KeyError, TypeError):
+        logger.warning("seen-asins at %s is corrupt, ignoring", SEEN_ASINS_FILE, exc_info=True)
     return set()
 
 
@@ -155,12 +170,14 @@ def save_seen_asins(new_asins: set[str]) -> None:
         return
     existing = load_seen_asins()
     if new_asins <= existing:
+        logger.debug("save_seen_asins: no new asins (%d already seen)", len(existing))
         return
     merged = sorted(existing | new_asins)
     try:
         _atomic_write(SEEN_ASINS_FILE, json_mod.dumps(merged))
+        logger.debug("saved seen ASINs (%d total, +%d new)", len(merged), len(merged) - len(existing))
     except Exception:
-        pass
+        logger.warning("failed to write seen-asins at %s", SEEN_ASINS_FILE, exc_info=True)
 
 
 def merge_seen_asins(skip_asins: set[str] | None, exclude_seen: bool) -> set[str] | None:
@@ -234,6 +251,7 @@ def record_prices(products: list[Product]) -> None:
     global _history_dir_created
     priced = [p for p in products if p.price is not None]
     if not priced:
+        logger.debug("record_prices: no priced products (input=%d)", len(products))
         return
     if not _history_dir_created:
         HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -241,9 +259,13 @@ def record_prices(products: list[Product]) -> None:
 
     today = datetime.date.today().isoformat()
     to_write: dict[Path, list[dict]] = {}
+    skipped_today = 0
+    bad_asin = 0
+    corrupt = 0
 
     for p in priced:
         if not _ASIN_RE.fullmatch(p.asin):
+            bad_asin += 1
             continue
         hist_file = HISTORY_DIR / f"{p.asin}.json"
         entries: list[dict] = []
@@ -251,14 +273,22 @@ def record_prices(products: list[Product]) -> None:
             try:
                 entries = json_mod.loads(hist_file.read_text())
             except json_mod.JSONDecodeError:
+                logger.warning("history at %s is corrupt, resetting", hist_file)
+                corrupt += 1
                 entries = []
         if entries and entries[-1].get("date") == today:
+            skipped_today += 1
             continue
         entries.append({"date": today, "price": round(p.price, 2), "title": p.title})
         to_write[hist_file] = entries[-365:]
 
     for path, entries in to_write.items():
         _atomic_write(path, json_mod.dumps(entries))
+
+    logger.debug(
+        "record_prices: priced=%d wrote=%d skipped_today=%d bad_asin=%d corrupt=%d",
+        len(priced), len(to_write), skipped_today, bad_asin, corrupt,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -270,12 +300,17 @@ def save_last_results(title: str, serialized: list[dict]) -> None:
     """Write serialized products to the last-results cache."""
     cache_obj = {"title": title, "results": serialized}
     _atomic_write(LAST_RESULTS_FILE, json_mod.dumps(cache_obj, ensure_ascii=False))
+    logger.debug(
+        "saved last results (%d items, title=%r) to %s",
+        len(serialized), title, LAST_RESULTS_FILE,
+    )
 
 
 def clear_last_results() -> bool:
     """Delete the last-results cache. Returns True if deleted."""
     try:
         LAST_RESULTS_FILE.unlink()
+        logger.debug("cleared last results cache: %s", LAST_RESULTS_FILE)
         return True
     except FileNotFoundError:
         return False
@@ -285,6 +320,7 @@ def clear_seen_asins() -> bool:
     """Delete the cumulative seen-ASINs file. Returns True if deleted."""
     try:
         SEEN_ASINS_FILE.unlink()
+        logger.debug("cleared seen-asins: %s", SEEN_ASINS_FILE)
         return True
     except FileNotFoundError:
         return False
@@ -312,6 +348,7 @@ def load_price_history(asin: str) -> list[dict]:
         entries = json_mod.loads(hist_file.read_text())
         return entries if isinstance(entries, list) else []
     except (json_mod.JSONDecodeError, OSError):
+        logger.warning("price history at %s is corrupt or unreadable", hist_file, exc_info=True)
         return []
 
 
@@ -336,6 +373,7 @@ def scan_price_changes(
         try:
             entries = json_mod.loads(hist_file.read_text())
         except json_mod.JSONDecodeError:
+            logger.warning("history at %s is corrupt, skipping in recap", hist_file)
             continue
         if not entries:
             continue
@@ -367,6 +405,10 @@ def scan_price_changes(
             if new_price < old_price:
                 drops.append((asin, title, old_price, new_price))
 
+    logger.debug(
+        "scan_price_changes days=%d drops=%d new=%d",
+        days, len(drops), len(new_items),
+    )
     return drops, new_items
 
 

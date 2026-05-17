@@ -5,6 +5,7 @@ from __future__ import annotations
 import csv
 import dataclasses
 import json as json_mod
+import logging
 from dataclasses import asdict
 from pathlib import Path
 
@@ -12,6 +13,8 @@ import click
 
 from audible_deals.client import Product
 from audible_deals.filtering import price_per_hour
+
+logger = logging.getLogger(__name__)
 
 
 def serialize_product(p: Product) -> dict:
@@ -38,6 +41,7 @@ def deserialize_product(d: dict) -> Product | None:
     try:
         return Product(**{k: v for k, v in d.items() if k in PRODUCT_FIELDS})
     except TypeError:
+        logger.warning("deserialize_product failed for asin=%r", d.get("asin"), exc_info=True)
         return None
 
 
@@ -45,6 +49,7 @@ def export_products(products: list[Product], path: Path) -> None:
     """Export products to file, detecting format from extension."""
     suffix = path.suffix.lower()
     rows = [serialize_product(p) for p in products]
+    logger.debug("export_products format=%s count=%d path=%s", suffix, len(rows), path)
 
     if suffix == ".json":
         path.write_text(json_mod.dumps(rows, indent=2, ensure_ascii=False))

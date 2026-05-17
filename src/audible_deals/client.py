@@ -5,6 +5,7 @@ from __future__ import annotations
 import contextlib
 import difflib
 import json
+import logging
 import os
 import re
 import tempfile
@@ -14,6 +15,8 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import audible
+
+logger = logging.getLogger(__name__)
 
 from audible_deals.constants import (
     AUTH_FILE,
@@ -32,6 +35,17 @@ from audible_deals.constants import _atomic_write as _atomic_write_simple
 
 
 _CATEGORY_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,30}$")
+
+_LOG_PARAM_KEYS = ("page", "num_results", "products_sort_by", "category_id", "asins", "sort_by")
+
+
+def _log_request_params(params: dict[str, Any]) -> dict[str, Any]:
+    """Subset of request params safe & useful to log (no full response_groups)."""
+    snapshot: dict[str, Any] = {k: params[k] for k in _LOG_PARAM_KEYS if k in params}
+    kw = params.get("keywords")
+    if kw:
+        snapshot["keywords"] = kw if len(kw) <= 80 else kw[:77] + "..."
+    return snapshot
 
 
 def _validate_category_id(value: str) -> None:
@@ -132,11 +146,11 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
         try:
             rating = float(dist.get("display_average_rating", 0) or 0)
         except (ValueError, TypeError):
-            pass
+            logger.debug("parse_product %s: bad display_average_rating", raw.get("asin"))
         try:
             num_ratings = int(dist.get("num_ratings", 0) or 0)
         except (ValueError, TypeError):
-            pass
+            logger.debug("parse_product %s: bad num_ratings", raw.get("asin"))
 
     # Categories - flatten ladder structure
     categories: list[str] = []
@@ -236,9 +250,36 @@ class DealsClient:
         self._client: audible.Client | None = None
         self._categories_cache: list[dict[str, str]] | None = None
         self._library_cache: set[str] | None = None
+        logger.debug("DealsClient init locale=%s auth_file=%s", locale, auth_file)
+
+    def _api_get(self, endpoint: str, **params: Any) -> dict:
+        """Wrap self.client.get with timing + DEBUG logging."""
+        debug = logger.isEnabledFor(logging.DEBUG)
+        if debug:
+            logger.debug("API GET %s params=%s", endpoint, _log_request_params(params))
+            start = time.monotonic()
+        resp = self.client.get(endpoint, **params)
+        if isinstance(resp, tuple):
+            resp = resp[0]
+        if debug:
+            elapsed_ms = (time.monotonic() - start) * 1000
+            items = 0
+            if isinstance(resp, dict):
+                for key in ("products", "items", "categories"):
+                    val = resp.get(key)
+                    if isinstance(val, list):
+                        items = len(val)
+                        break
+            total = resp.get("total_results") if isinstance(resp, dict) else None
+            logger.debug(
+                "API GET %s done %.0fms items=%d total=%s",
+                endpoint, elapsed_ms, items, total,
+            )
+        return resp
 
     def login(self, username: str, password: str) -> None:
         """Interactive Audible login. Persists tokens to auth_file."""
+        logger.info("login (interactive) locale=%s", self.locale)
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.auth_file.parent, 0o700)
         auth = audible.Authenticator.from_login(
@@ -250,6 +291,7 @@ class DealsClient:
         with _restrictive_umask():
             auth.to_file(self.auth_file)
         os.chmod(self.auth_file, 0o600)
+        logger.info("login complete, auth written to %s", self.auth_file)
 
     def login_external(self, callback_url_file: Path | None = None) -> None:
         """Login via external browser (for captcha/2FA). Persists tokens.
@@ -259,6 +301,10 @@ class DealsClient:
         prints the OAuth URL, waits for the user to save the callback URL
         to that file, then reads it — avoiding the flaky input() prompt.
         """
+        logger.info(
+            "login_external locale=%s via_file=%s",
+            self.locale, callback_url_file,
+        )
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.auth_file.parent, 0o700)
 
@@ -297,9 +343,11 @@ class DealsClient:
         with _restrictive_umask():
             auth.to_file(self.auth_file)
         os.chmod(self.auth_file, 0o600)
+        logger.info("login_external complete, auth written to %s", self.auth_file)
 
     def import_auth(self, source_path: Path) -> None:
         """Import auth from an audible-cli or Libation-exported JSON file."""
+        logger.info("import_auth from %s", source_path)
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.auth_file.parent, 0o700)
 
@@ -341,6 +389,7 @@ class DealsClient:
             }
             _atomic_write_simple(self.auth_file, json.dumps(auth_data, indent=2))
             os.chmod(self.auth_file, 0o600)
+            logger.info("import_auth (Libation format) written to %s", self.auth_file)
         else:
             # Already in audible-cli / Mkb79Auth format — validate required keys
             for key in ("access_token", "refresh_token"):
@@ -357,6 +406,7 @@ class DealsClient:
                 data["encryption"] = False
             _atomic_write_simple(self.auth_file, json.dumps(data, indent=2))
             os.chmod(self.auth_file, 0o600)
+            logger.info("import_auth (audible-cli format) written to %s", self.auth_file)
 
     @property
     def is_authenticated(self) -> bool:
@@ -403,9 +453,7 @@ class DealsClient:
         if category_id:
             params["category_id"] = category_id
 
-        resp = self.client.get("1.0/catalog/products", **params)
-        if isinstance(resp, tuple):
-            resp = resp[0]
+        resp = self._api_get("1.0/catalog/products", **params)
 
         products = [parse_product(p, locale=self.locale) for p in resp.get("products", [])]
         total = resp.get("total_results", len(products))
@@ -444,14 +492,12 @@ class DealsClient:
         asins: set[str] = set()
         page = 1
         while True:
-            resp = self.client.get(
+            resp = self._api_get(
                 "1.0/library",
                 num_results=1000,
                 page=page,
                 response_groups="product_attrs",
             )
-            if isinstance(resp, tuple):
-                resp = resp[0]
             items = resp.get("items", [])
             for item in items:
                 asin = item.get("asin", "")
@@ -461,6 +507,7 @@ class DealsClient:
                 break
             page += 1
 
+        logger.debug("library asins fetched count=%d", len(asins))
         self._library_cache = asins
         return asins
 
@@ -472,14 +519,12 @@ class DealsClient:
         """
         page = 1  # library API uses 1-indexed pages
         while True:
-            resp = self.client.get(
+            resp = self._api_get(
                 "1.0/library",
                 num_results=MAX_PAGE_SIZE,
                 page=page,
                 response_groups=CATALOG_RESPONSE_GROUPS,
             )
-            if isinstance(resp, tuple):
-                resp = resp[0]
             items = resp.get("items", [])
             products = [
                 parse_product(raw, locale=self.locale)
@@ -510,20 +555,19 @@ class DealsClient:
         all_products: list[Product] = []
         page = 0  # wishlist API uses 0-indexed pages
         while True:
-            resp = self.client.get(
+            resp = self._api_get(
                 "1.0/wishlist",
                 num_results=MAX_PAGE_SIZE,
                 page=page,
                 response_groups=CATALOG_RESPONSE_GROUPS,
                 sort_by="-DateAdded",
             )
-            if isinstance(resp, tuple):
-                resp = resp[0]
             products = [parse_product(p, locale=self.locale) for p in resp.get("products", [])]
             all_products.extend(products)
             if len(products) < MAX_PAGE_SIZE:
                 break
             page += 1
+        logger.debug("wishlist fetched count=%d", len(all_products))
         return all_products
 
     def resolve_genre(self, query: str) -> tuple[str, str]:
@@ -540,17 +584,21 @@ class DealsClient:
         names_lower = [n.lower() for n in names]
 
         # Normalize and expand aliases
-        q = query.strip().lower()
-        q = GENRE_ALIASES.get(q, q)
+        q_raw = query.strip().lower()
+        q = GENRE_ALIASES.get(q_raw, q_raw)
+        if q != q_raw:
+            logger.debug("resolve_genre alias %r -> %r", q_raw, q)
 
         # Exact match
         if q in names_lower:
             idx = names_lower.index(q)
+            logger.debug("resolve_genre exact match: %r -> %s", query, cats[idx]["name"])
             return cats[idx]["id"], cats[idx]["name"]
 
         # Substring match
         matches = [i for i, n in enumerate(names_lower) if q in n]
         if len(matches) == 1:
+            logger.debug("resolve_genre substring match: %r -> %s", query, cats[matches[0]]["name"])
             return cats[matches[0]]["id"], cats[matches[0]]["name"]
         if len(matches) > 1:
             options = ", ".join(names[i] for i in matches)
@@ -563,6 +611,7 @@ class DealsClient:
         close = difflib.get_close_matches(q, names_lower, n=1, cutoff=0.5)
         if close:
             idx = names_lower.index(close[0])
+            logger.debug("resolve_genre fuzzy match: %r -> %s", query, cats[idx]["name"])
             return cats[idx]["id"], cats[idx]["name"]
 
         available = ", ".join(names)
@@ -575,30 +624,37 @@ class DealsClient:
         """Look up a category's display name by ID."""
         _validate_category_id(category_id)
         try:
-            resp = self.client.get(f"1.0/catalog/categories/{category_id}")
-            if isinstance(resp, tuple):
-                resp = resp[0]
+            resp = self._api_get(f"1.0/catalog/categories/{category_id}")
             return resp.get("category", {}).get("name", category_id)
         except Exception:
+            logger.warning("get_category_name failed for %s", category_id, exc_info=True)
             return category_id
 
     def _load_categories_cache(self) -> list[dict[str, str]] | None:
         """Load top-level categories from disk cache if fresh."""
         cache_file = CATEGORIES_CACHE_FILE.with_suffix(f".{self.locale}.json")
         if not cache_file.exists():
+            logger.debug("categories cache miss (no file): %s", cache_file)
             return None
         try:
             data = json.loads(cache_file.read_text())
-            if time.time() - data.get("ts", 0) < CATEGORIES_CACHE_TTL:
+            age = time.time() - data.get("ts", 0)
+            if age < CATEGORIES_CACHE_TTL:
+                logger.debug(
+                    "categories cache hit (%s, age=%.0fs, %d items)",
+                    cache_file, age, len(data.get("categories", [])),
+                )
                 return data["categories"]
+            logger.debug("categories cache stale (age=%.0fs > %ds)", age, CATEGORIES_CACHE_TTL)
         except (json.JSONDecodeError, KeyError):
-            pass
+            logger.warning("categories cache corrupt: %s", cache_file, exc_info=True)
         return None
 
     def _save_categories_cache(self, categories: list[dict[str, str]]) -> None:
         """Persist top-level categories to disk."""
         cache_file = CATEGORIES_CACHE_FILE.with_suffix(f".{self.locale}.json")
         _atomic_write_simple(cache_file, json.dumps({"ts": time.time(), "categories": categories}))
+        logger.debug("categories cache saved (%s, %d items)", cache_file, len(categories))
 
     def get_categories(self, root: str = "") -> list[dict[str, str]]:
         """Get category listing. Returns list of {id, name} dicts.
@@ -608,9 +664,7 @@ class DealsClient:
         if root:
             _validate_category_id(root)
             # Subcategories: fetch children of a specific category
-            resp = self.client.get(f"1.0/catalog/categories/{root}")
-            if isinstance(resp, tuple):
-                resp = resp[0]
+            resp = self._api_get(f"1.0/catalog/categories/{root}")
             cat_data = resp.get("category", {})
             return [
                 {"id": c.get("id", ""), "name": c.get("name", "")}
@@ -621,12 +675,10 @@ class DealsClient:
             if cached:
                 return cached
             # Top-level categories
-            resp = self.client.get(
+            resp = self._api_get(
                 "1.0/catalog/categories",
                 category_type="CategoriesTopLevel",
             )
-            if isinstance(resp, tuple):
-                resp = resp[0]
             categories = [
                 {"id": c.get("id", ""), "name": c.get("name", "")}
                 for c in resp.get("categories", [])
@@ -647,14 +699,13 @@ class DealsClient:
         Returns an empty list if the series is not found.
         """
         try:
-            resp = self.client.get(
+            resp = self._api_get(
                 f"1.0/catalog/products/{series_asin}",
                 response_groups="relationships",
             )
         except Exception:
+            logger.warning("get_series_products failed for %s", series_asin, exc_info=True)
             return []
-        if isinstance(resp, tuple):
-            resp = resp[0]
         product_data = resp.get("product")
         if not product_data:
             return []
@@ -676,16 +727,15 @@ class DealsClient:
         results: list[Product] = []
         for i in range(0, len(asins), MAX_PAGE_SIZE):
             batch = asins[i:i + MAX_PAGE_SIZE]
-            resp = self.client.get(
+            resp = self._api_get(
                 "1.0/catalog/products",
                 asins=",".join(batch),
                 num_results=len(batch),
                 response_groups=CATALOG_RESPONSE_GROUPS,
             )
-            if isinstance(resp, tuple):
-                resp = resp[0]
             for raw in resp.get("products", []):
                 product = parse_product(raw, locale=self.locale)
                 if product.asin and product.title:
                     results.append(product)
+        logger.debug("get_products_batch in=%d out=%d", len(asins), len(results))
         return results

@@ -6,7 +6,11 @@ They operate on ``list[Product]`` and return transformed lists.
 
 from __future__ import annotations
 
+import logging
+
 from audible_deals.client import Product
+
+logger = logging.getLogger(__name__)
 
 
 def filter_products(
@@ -179,6 +183,10 @@ def filter_products(
         if (removed := before - len(filtered)):
             breakdown["genre"] = removed
 
+    logger.debug(
+        "filter_products in=%d out=%d breakdown=%s",
+        len(products), len(filtered), breakdown,
+    )
     return filtered, breakdown
 
 
@@ -261,6 +269,8 @@ def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
             best_asins.discard(p.asin)  # only include first occurrence
         else:
             removed += 1
+    if removed:
+        logger.debug("dedupe_editions removed=%d", removed)
     return result, removed
 
 
@@ -298,4 +308,6 @@ def first_in_series(products: list[Product]) -> tuple[list[Product], int]:
             best_asins.discard(p.asin)
         else:
             collapsed += 1
+    if collapsed:
+        logger.debug("first_in_series collapsed=%d", collapsed)
     return result, collapsed

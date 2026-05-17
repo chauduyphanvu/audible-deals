@@ -5,12 +5,15 @@ Merges defaults <- config_file <- profile <- CLI flags in a single pass.
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, fields
 from typing import Any
 
 import click
 
 from audible_deals.constants import DEFAULT_LIMIT, DEFAULT_SORT
+
+logger = logging.getLogger(__name__)
 
 
 _CL = click.core.ParameterSource.COMMANDLINE
@@ -94,16 +97,28 @@ class Settings:
         Only overrides when the source is not COMMANDLINE.
         """
         merged: dict[str, Any] = dict(cli_flags)
+        debug = logger.isEnabledFor(logging.DEBUG)
+        source: dict[str, str] = {}
+        if debug:
+            for key in cli_flags:
+                if ctx.get_parameter_source(key) == _CL:
+                    source[key] = "cli"
 
         for key in _CONFIG_KEYS:
             if config.get(key) is not None and ctx.get_parameter_source(key) != _CL:
                 merged[key] = config[key]
+                if debug:
+                    source[key] = "config"
 
         if profile:
             for key in _CONFIG_KEYS + _PROFILE_EXTRA_KEYS:
                 if profile.get(key) is not None and ctx.get_parameter_source(key) != _CL:
                     merged[key] = profile[key]
+                    if debug:
+                        source[key] = "profile"
 
         known = {f.name for f in fields(cls)}
         kwargs = {k: v for k, v in merged.items() if k in known}
+        if debug:
+            logger.debug("Settings sources: %s", source)
         return cls(**kwargs)

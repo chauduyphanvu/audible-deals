@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import dataclasses
 import json as json_mod
+import logging
 import math
 import os
 from importlib.metadata import version as _pkg_version
@@ -61,6 +62,7 @@ from audible_deals.constants import (
     WISHLIST_FILE,
 )
 from audible_deals.client import AUTH_FILE, DealsClient, Product
+from audible_deals.logging_setup import configure_logging
 from audible_deals.display import (
     console,
     create_scan_progress,
@@ -123,6 +125,9 @@ from audible_deals.state import (
 
 
 
+logger = logging.getLogger(__name__)
+
+
 def _get_client(locale: str) -> DealsClient:
     return DealsClient(locale=locale)
 
@@ -132,6 +137,7 @@ def _safe_record_prices(products: list[Product]) -> None:
     try:
         record_prices(products)
     except Exception as e:
+        logger.exception("record_prices failed for %d products", len(products))
         console.print(f"[dim]Warning: could not record price history: {e}[/dim]")
 
 
@@ -358,9 +364,14 @@ class _HandleAuthErrors(click.Group):
 @click.group(cls=_HandleAuthErrors, invoke_without_command=True)
 @click.version_option(version=_VERSION, prog_name="deals")
 @click.option("--locale", default="us", help="Audible marketplace (us, uk, ca, de, fr, au, jp, in, es)")
+@click.option(
+    "-v", "--verbose", "verbose", count=True,
+    help="Enable debug logging (-v for INFO, -vv for DEBUG). DEALS_DEBUG=1 also enables it.",
+)
 @click.pass_context
-def cli(ctx, locale):
+def cli(ctx, locale, verbose):
     """Audible deal finder - find cheap audiobooks during sales."""
+    configure_logging(verbose)
     ctx.ensure_object(dict)
     cfg = load_config()
     ctx.obj["config"] = cfg
@@ -369,6 +380,7 @@ def cli(ctx, locale):
         if cfg_locale:
             locale = cfg_locale
     ctx.obj["locale"] = locale
+    logger.debug("cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand)
     if ctx.invoked_subcommand is None:
         click.echo(ctx.get_help())
         console.print("\n  [dim]Quick start: deals find --genre sci-fi --max-price 5[/dim]")
@@ -490,6 +502,14 @@ def _build_scan_namespace(
         console.file = sys.stderr
     if not ns.get("language") and not ns.get("all_languages"):
         ns["language"] = LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
+    if logger.isEnabledFor(logging.DEBUG):
+        debug_keys = (
+            "genre", "keywords", "max_price", "max_pph", "sort", "pages", "limit",
+            "min_rating", "min_ratings", "min_hours", "min_discount", "language",
+            "on_sale", "deep", "first_in_series", "skip_owned",
+        )
+        snapshot = {k: ns.get(k) for k in debug_keys if k in ns}
+        logger.debug("resolved scan namespace: %s", snapshot)
     return ns
 
 
@@ -506,6 +526,10 @@ def _build_scan_namespace(
 @click.pass_context
 def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort, min_rating, min_ratings, min_hours, narrator, author, series, publisher, exclude_authors, exclude_narrators, on_sale, min_discount, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, interactive, profile_name, dry_run):
     """Search the Audible catalog by keyword."""
+    logger.info(
+        "search query=%r genre=%r category=%r max_price=%s pages=%s sort=%s deep=%s",
+        query, genre, category, max_price, pages, sort, deep,
+    )
     if not query and not genre and not category:
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     ns = _build_scan_namespace(
@@ -726,6 +750,10 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         deals find --author "Andy Weir" --max-price 10
         deals find --genre sci-fi --exclude-author "Sarah J. Maas" --max-price 5
     """
+    logger.info(
+        "find genre=%r category=%r keywords=%r max_price=%s pages=%s sort=%s deep=%s",
+        genre, category, keywords, max_price, pages, sort, deep,
+    )
     ns = _build_scan_namespace(
         ctx, profile_name,
         max_price=max_price, max_pph=max_pph, sort=sort, min_rating=min_rating,
@@ -847,6 +875,10 @@ def library(ctx, sort, limit, output, json_flag, quiet, author, narrator, genre,
         deals library --author "Andy Weir"
         deals library --genre sci-fi --min-rating 4.0
     """
+    logger.info(
+        "library sort=%s limit=%s author=%r narrator=%r genre=%r",
+        sort, limit, author, narrator, genre,
+    )
     if output and ctx.get_parameter_source("quiet") != _CL:
         quiet = True
     if json_flag:
@@ -932,6 +964,10 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
         deals series --sort discount -n 50
         deals series --json -o series-deals.json
     """
+    logger.info(
+        "series min_books=%s max_series=%s filter=%r max_price=%s sort=%s",
+        min_books, max_series, series_filter, max_price, sort,
+    )
     if output and ctx.get_parameter_source("quiet") != _CL:
         quiet = True
     if json_flag:
@@ -1108,6 +1144,10 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
         deals last --clear
         deals last --clear-seen
     """
+    logger.info(
+        "last sort=%s max_price=%s clear=%s clear_seen=%s count=%s",
+        sort, max_price, clear, clear_seen, count_only,
+    )
     did_clear = False
     if clear_seen:
         if clear_seen_asins():
@@ -1453,6 +1493,7 @@ def watch(ctx, every, buy_only, sort_by, show_url):
         deals watch --sort title
         deals watch --show-url
     """
+    logger.info("watch every=%s buy_only=%s sort_by=%s", every, buy_only, sort_by)
     if not every:
         _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
         return
@@ -1689,6 +1730,7 @@ def recap(ctx, days, show_new):
     Scans price history files and reports items that dropped in price,
     new items tracked, and wishlist items at target.
     """
+    logger.info("recap days=%s show_new=%s", days, show_new)
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     drops, new_items = scan_price_changes(days)
     if not drops and not new_items and not has_price_history():
@@ -1709,6 +1751,7 @@ def notify(ctx, webhook):
         deals notify --webhook https://hooks.slack.com/services/...
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
+    logger.info("notify webhook_set=%s", bool(webhook))
     if webhook:
         validate_webhook_url(webhook)
 
@@ -1752,9 +1795,11 @@ def notify(ctx, webhook):
             headers={"Content-Type": "application/json"},
         )
         try:
+            logger.debug("webhook POST %s payload_bytes=%d", webhook, len(payload))
             urllib.request.urlopen(req, timeout=10)
             console.print(f"[green]Sent {len(hits)} deal(s) to webhook[/green]")
         except Exception as e:
+            logger.exception("webhook POST failed")
             raise click.ClickException(f"Webhook failed: {e}")
     else:
         click.echo(payload)
