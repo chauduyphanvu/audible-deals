@@ -33,6 +33,9 @@ def filter_products(
     min_discount: int = 0,
     series: str = "",
     publisher: str = "",
+    skip_plus: bool = False,
+    only_plus: bool = False,
+    exclude_keywords: tuple[str, ...] = (),
 ) -> tuple[list[Product], dict[str, int]]:
     """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
@@ -182,6 +185,30 @@ def filter_products(
         ]
         if (removed := before - len(filtered)):
             breakdown["genre"] = removed
+
+    if skip_plus:
+        before = len(filtered)
+        filtered = [p for p in filtered if not p.in_plus_catalog]
+        if (removed := before - len(filtered)):
+            breakdown["plus catalog"] = removed
+    elif only_plus:
+        before = len(filtered)
+        filtered = [p for p in filtered if p.in_plus_catalog]
+        if (removed := before - len(filtered)):
+            breakdown["not plus"] = removed
+
+    if exclude_keywords:
+        before = len(filtered)
+        keywords_lower = [k.lower() for k in exclude_keywords]
+        filtered = [
+            p for p in filtered
+            if not any(
+                k in p.title.lower() or k in p.subtitle.lower()
+                for k in keywords_lower
+            )
+        ]
+        if (removed := before - len(filtered)):
+            breakdown["excluded keywords"] = removed
 
     logger.debug(
         "filter_products in=%d out=%d breakdown=%s",

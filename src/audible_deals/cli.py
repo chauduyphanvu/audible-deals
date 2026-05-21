@@ -47,6 +47,7 @@ from audible_deals.constants import (
     _ASIN_RE,
     _CONFIG_SCHEMA,
     CLIENT_SORT_OPTIONS,
+    CONFIG_DIR,
     CONFIG_FILE,
     DEEP_SORT_ORDERS,
     DEFAULT_LIMIT,
@@ -85,6 +86,7 @@ from audible_deals.filtering import (
 )
 from audible_deals.settings import Settings
 from audible_deals.utils import (
+    format_webhook_payload,
     looks_like_person_name,
     parse_interval,
     validate_asin,
@@ -208,6 +210,9 @@ def _apply_filters(
     min_discount: int = 0,
     series: str = "",
     publisher: str = "",
+    skip_plus: bool = False,
+    only_plus: bool = False,
+    exclude_keywords: tuple[str, ...] = (),
 ) -> tuple[list[Product], dict[str, int], int, int]:
     """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed)."""
     filtered, filter_breakdown = filter_products(
@@ -228,6 +233,9 @@ def _apply_filters(
         min_discount=min_discount,
         series=series,
         publisher=publisher,
+        skip_plus=skip_plus,
+        only_plus=only_plus,
+        exclude_keywords=exclude_keywords,
     )
     filtered, editions_removed = dedupe_editions(filtered)
     series_collapsed = 0
@@ -287,8 +295,21 @@ def _emit_output(
     if json_flag:
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
+        atl_asins: set[str] = set()
+        for p in filtered:
+            if p.price is None:
+                continue
+            entries = load_price_history(p.asin)
+            if len(entries) < 2:
+                continue
+            try:
+                min_price = min(float(e["price"]) for e in entries if isinstance(e.get("price"), (int, float)))
+            except ValueError:
+                continue
+            if p.price <= min_price:
+                atl_asins.add(p.asin)
         console.print()
-        display_products(filtered, max_price=max_price, title=title, currency=currency, show_url=show_url)
+        display_products(filtered, max_price=max_price, title=title, currency=currency, show_url=show_url, atl_asins=atl_asins)
         display_summary(len(filtered), filter_breakdown, max_price=max_price,
                         editions_removed=editions_removed, series_collapsed=series_collapsed,
                         currency=currency, total_before_limit=total_before_limit)
@@ -476,6 +497,9 @@ def _common_filter_options(func):
         click.option("--interactive/--no-interactive", "-i", default=False, help="Browse results interactively"),
         click.option("--profile", "profile_name", default=None, help="Load a saved search profile (overrides defaults, CLI flags take precedence)"),
         click.option("--dry-run", is_flag=True, default=False, help="Show what would be scanned without making API calls"),
+        click.option("--skip-plus/--no-skip-plus", default=False, help="Exclude Audible Plus catalog titles"),
+        click.option("--only-plus/--no-only-plus", default=False, help="Show only Audible Plus catalog titles"),
+        click.option("--exclude-keyword", "exclude_keywords", multiple=True, help="Drop results with title/subtitle matching keyword (repeatable)"),
     ]
     for option in reversed(options):
         func = option(func)
@@ -524,7 +548,7 @@ def _build_scan_namespace(
 @click.option("--pages", type=click.IntRange(min=1), default=3, help="Number of pages to scan (50 items/page)")
 @_common_filter_options
 @click.pass_context
-def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort, min_rating, min_ratings, min_hours, narrator, author, series, publisher, exclude_authors, exclude_narrators, on_sale, min_discount, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, interactive, profile_name, dry_run):
+def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort, min_rating, min_ratings, min_hours, narrator, author, series, publisher, exclude_authors, exclude_narrators, on_sale, min_discount, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, interactive, profile_name, dry_run, skip_plus, only_plus, exclude_keywords):
     """Search the Audible catalog by keyword."""
     logger.info(
         "search query=%r genre=%r category=%r max_price=%s pages=%s sort=%s deep=%s",
@@ -532,6 +556,8 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
     )
     if not query and not genre and not category:
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
+    if skip_plus and only_plus:
+        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
     ns = _build_scan_namespace(
         ctx, profile_name,
         max_price=max_price, max_pph=max_pph, sort=sort, min_rating=min_rating,
@@ -543,17 +569,20 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
         genre=genre, exclude_genre=exclude_genre, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators, keywords="", series=series,
         publisher=publisher, output=output, json_flag=json_flag, quiet=quiet,
+        skip_plus=skip_plus, only_plus=only_plus, exclude_keywords=exclude_keywords,
     )
     (max_price, sort, min_rating, min_ratings, min_hours,
      language, narrator, author, pages, limit, on_sale, deep, first_in_series,
      skip_owned, interactive, genre, exclude_genre, exclude_authors,
-     exclude_narrators, series, publisher, quiet, max_pph, min_discount) = (
+     exclude_narrators, series, publisher, quiet, max_pph, min_discount,
+     skip_plus, only_plus, exclude_keywords) = (
         ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"],
         ns["min_hours"], ns["language"], ns["narrator"], ns["author"],
         ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
         ns["first_in_series"], ns["skip_owned"], ns["interactive"],
         ns["genre"], ns["exclude_genre"], ns["exclude_authors"], ns["exclude_narrators"],
         ns["series"], ns["publisher"], ns["quiet"], ns["max_pph"], ns["min_discount"],
+        ns["skip_plus"], ns["only_plus"], ns["exclude_keywords"],
     )
     if genre and category:
         raise click.UsageError("Use --genre or --category, not both.")
@@ -639,6 +668,7 @@ def search(ctx, query, max_price, max_pph, category, genre, exclude_genre, sort,
         exclude_category_ids=exclude_category_ids,
         first_in_series_only=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
+        skip_plus=skip_plus, only_plus=only_plus, exclude_keywords=exclude_keywords,
     )
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered, title=search_title, limit=limit,
@@ -732,7 +762,7 @@ def _fetch_with_progress(
 @click.option("--pages", type=click.IntRange(min=1), default=10, help="Pages to scan per sort order (50 items/page, default: 10)")
 @_common_filter_options
 @click.pass_context
-def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort, min_rating, min_ratings, min_hours, narrator, author, series, publisher, exclude_authors, exclude_narrators, on_sale, min_discount, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, profile_name, interactive, dry_run):
+def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort, min_rating, min_ratings, min_hours, narrator, author, series, publisher, exclude_authors, exclude_narrators, on_sale, min_discount, deep, pages, language, all_languages, first_in_series, skip_owned, exclude_seen, limit, output, json_flag, quiet, show_url, profile_name, interactive, dry_run, skip_plus, only_plus, exclude_keywords):
     """Find deals: browse the catalog filtered by price and genre.
 
     Scans multiple pages of the catalog, then filters client-side for
@@ -754,6 +784,8 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         "find genre=%r category=%r keywords=%r max_price=%s pages=%s sort=%s deep=%s",
         genre, category, keywords, max_price, pages, sort, deep,
     )
+    if skip_plus and only_plus:
+        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
     ns = _build_scan_namespace(
         ctx, profile_name,
         max_price=max_price, max_pph=max_pph, sort=sort, min_rating=min_rating,
@@ -765,17 +797,20 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         genre=genre, exclude_genre=exclude_genre, exclude_authors=exclude_authors,
         exclude_narrators=exclude_narrators, keywords=keywords, series=series,
         publisher=publisher, output=output, json_flag=json_flag, quiet=quiet,
+        skip_plus=skip_plus, only_plus=only_plus, exclude_keywords=exclude_keywords,
     )
     (max_price, sort, min_rating, min_ratings, min_hours,
      language, narrator, author, pages, limit, on_sale, deep, first_in_series,
      skip_owned, interactive, genre, exclude_genre, exclude_authors,
-     exclude_narrators, keywords, series, publisher, quiet, max_pph, min_discount) = (
+     exclude_narrators, keywords, series, publisher, quiet, max_pph, min_discount,
+     skip_plus, only_plus, exclude_keywords) = (
         ns["max_price"], ns["sort"], ns["min_rating"], ns["min_ratings"],
         ns["min_hours"], ns["language"], ns["narrator"], ns["author"],
         ns["pages"], ns["limit"], ns["on_sale"], ns["deep"],
         ns["first_in_series"], ns["skip_owned"], ns["interactive"],
         ns["genre"], ns["exclude_genre"], ns["exclude_authors"], ns["exclude_narrators"],
         ns["keywords"], ns["series"], ns["publisher"], ns["quiet"], ns["max_pph"], ns["min_discount"],
+        ns["skip_plus"], ns["only_plus"], ns["exclude_keywords"],
     )
     if genre and category:
         raise click.UsageError("Use --genre or --category, not both.")
@@ -832,6 +867,7 @@ def find(ctx, category, genre, exclude_genre, keywords, max_price, max_pph, sort
         exclude_category_ids=exclude_category_ids,
         first_in_series_only=first_in_series, sort=sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
+        skip_plus=skip_plus, only_plus=only_plus, exclude_keywords=exclude_keywords,
     )
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered, title=find_title, limit=limit,
@@ -1128,8 +1164,11 @@ def series(ctx, min_books, max_series, series_filter, max_price, min_rating, min
 @click.option("--clear", is_flag=True, default=False, help="Delete the cached results and exit")
 @click.option("--clear-seen", is_flag=True, default=False, help="Clear the cumulative seen-ASINs list and exit")
 @click.option("--count", "count_only", is_flag=True, default=False, help="Show total cached result count (ignores filters)")
+@click.option("--skip-plus/--no-skip-plus", default=False, help="Exclude Audible Plus catalog titles")
+@click.option("--only-plus/--no-only-plus", default=False, help="Show only Audible Plus catalog titles")
+@click.option("--exclude-keyword", "exclude_keywords", multiple=True, help="Drop results with title/subtitle matching keyword (repeatable)")
 @click.pass_context
-def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, narrator, author, series, publisher, exclude_authors, exclude_narrators, language, on_sale, min_discount, first_in_series, limit, output, json_flag, quiet, show_url, interactive, clear, clear_seen, count_only):
+def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, narrator, author, series, publisher, exclude_authors, exclude_narrators, language, on_sale, min_discount, first_in_series, limit, output, json_flag, quiet, show_url, interactive, clear, clear_seen, count_only, skip_plus, only_plus, exclude_keywords):
     """Re-display results from the last search or find, with optional re-filtering.
 
     No API calls are made — results are read from the local cache.
@@ -1148,6 +1187,8 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
         "last sort=%s max_price=%s clear=%s clear_seen=%s count=%s",
         sort, max_price, clear, clear_seen, count_only,
     )
+    if skip_plus and only_plus:
+        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
     did_clear = False
     if clear_seen:
         if clear_seen_asins():
@@ -1185,6 +1226,7 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
         exclude_category_ids=set(),
         first_in_series_only=first_in_series, sort=effective_sort, max_pph=max_pph,
         min_discount=min_discount, series=series, publisher=publisher,
+        skip_plus=skip_plus, only_plus=only_plus, exclude_keywords=exclude_keywords,
     )
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered, title=cached_title, write_cache=False, limit=limit,
@@ -1742,16 +1784,18 @@ def recap(ctx, days, show_new):
 
 @cli.command()
 @click.option("--webhook", default=None, help="Webhook URL to POST results to")
+@click.option("--webhook-format", type=click.Choice(["generic", "slack", "discord", "teams", "ntfy"]), default="generic", help="Webhook payload format")
 @click.pass_context
-def notify(ctx, webhook):
+def notify(ctx, webhook, webhook_format):
     """Check wishlist and send notifications for items at target price.
 
     \b
     Examples:
         deals notify --webhook https://hooks.slack.com/services/...
+        deals notify --webhook https://hooks.slack.com/... --webhook-format slack
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
-    logger.info("notify webhook_set=%s", bool(webhook))
+    logger.info("notify webhook_set=%s webhook_format=%s", bool(webhook), webhook_format)
     if webhook:
         validate_webhook_url(webhook)
 
@@ -1786,23 +1830,140 @@ def notify(ctx, webhook):
             console.print("[dim]No items at target price. Nothing sent to webhook.[/dim]")
         return
 
-    payload = json_mod.dumps({"deals": hits, "count": len(hits)}, indent=2)
-
     if webhook:
-        req = urllib.request.Request(
-            webhook,
-            data=payload.encode(),
-            headers={"Content-Type": "application/json"},
-        )
+        cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+        body, headers = format_webhook_payload(hits, webhook_format, currency=cur)
+        req = urllib.request.Request(webhook, data=body, headers=headers)
         try:
-            logger.debug("webhook POST %s payload_bytes=%d", webhook, len(payload))
+            logger.debug("webhook POST %s format=%s payload_bytes=%d", webhook, webhook_format, len(body))
             urllib.request.urlopen(req, timeout=10)
             console.print(f"[green]Sent {len(hits)} deal(s) to webhook[/green]")
         except Exception as e:
             logger.exception("webhook POST failed")
             raise click.ClickException(f"Webhook failed: {e}")
     else:
-        click.echo(payload)
+        click.echo(json_mod.dumps({"deals": hits, "count": len(hits)}, indent=2))
+
+
+@cli.command()
+@click.pass_context
+def doctor(ctx):
+    """Diagnostic checks for auth, config, and marketplace reachability."""
+    rows: list[tuple[str, str, str]] = []
+    failures = 0
+
+    def add(check, status, detail=""):
+        nonlocal failures
+        if status == "FAIL":
+            failures += 1
+            rendered = "[bold red]✗ FAIL[/bold red]"
+        elif status == "WARN":
+            rendered = "[yellow]⚠ WARN[/yellow]"
+        else:
+            rendered = "[green]✓ PASS[/green]"
+        rows.append((check, rendered, detail))
+
+    if CONFIG_DIR.exists():
+        add("Config directory", "PASS", str(CONFIG_DIR))
+    else:
+        add("Config directory", "WARN", f"Not found — will be created at {CONFIG_DIR}")
+
+    auth_ok = AUTH_FILE.exists()
+    if not auth_ok:
+        add("Auth file present", "FAIL", "Run 'deals login' or 'deals import-auth'")
+    else:
+        add("Auth file present", "PASS", str(AUTH_FILE))
+
+    auth_data = None
+    if auth_ok:
+        try:
+            auth_data = json_mod.loads(AUTH_FILE.read_text())
+            if not isinstance(auth_data, dict):
+                raise ValueError("not a JSON object")
+            add("Auth file parseable", "PASS")
+        except Exception as e:
+            add("Auth file parseable", "FAIL", str(e))
+            auth_ok = False
+
+    if auth_ok and auth_data is not None:
+        expires = auth_data.get("expires")
+        if expires is None:
+            add("Auth token expiry", "WARN", "expires field missing — token freshness unknown")
+        else:
+            try:
+                exp = float(expires)
+                now = time.time()
+                if exp < now:
+                    add("Auth token expiry", "FAIL", "Token has expired — run 'deals login'")
+                    auth_ok = False
+                elif exp < now + 86400:
+                    add("Auth token expiry", "WARN", "Token expires within 24h — consider refreshing")
+                else:
+                    add("Auth token expiry", "PASS")
+            except (TypeError, ValueError):
+                add("Auth token expiry", "WARN", "Could not parse expires field")
+
+    if auth_ok:
+        try:
+            dc = _get_client(ctx.obj["locale"])
+            with dc:
+                dc._api_get("1.0/catalog/products", num_results=1)
+            add("Marketplace reachable", "PASS")
+        except Exception as e:
+            add("Marketplace reachable", "FAIL", f"{type(e).__name__}: {e}")
+    else:
+        add("Marketplace reachable", "WARN", "Skipped — auth checks failed")
+
+    try:
+        cfg = load_config()
+        if CONFIG_FILE.exists():
+            errors = [
+                f"{k}: expected {_CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
+                for k, v in cfg.items()
+                if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
+            ]
+            if errors:
+                add("Config file valid", "FAIL", "; ".join(errors))
+            else:
+                add("Config file valid", "PASS")
+        else:
+            add("Config file valid", "PASS", "No config file (using defaults)")
+    except Exception as e:
+        add("Config file valid", "FAIL", str(e))
+
+    try:
+        load_wishlist()
+        add("Wishlist parseable", "PASS")
+    except Exception as e:
+        add("Wishlist parseable", "FAIL", str(e))
+
+    try:
+        load_profiles()
+        add("Profiles parseable", "PASS")
+    except Exception as e:
+        add("Profiles parseable", "FAIL", str(e))
+
+    try:
+        load_seen_asins()
+        add("Seen-ASINs parseable", "PASS")
+    except Exception as e:
+        add("Seen-ASINs parseable", "FAIL", str(e))
+
+    if HISTORY_DIR.exists():
+        count = sum(1 for _ in HISTORY_DIR.glob("*.json"))
+        add("Price history directory", "PASS", f"{count} ASIN(s) tracked")
+    else:
+        add("Price history directory", "PASS", "Not yet created (optional)")
+
+    table = Table(title="deals doctor")
+    table.add_column("Check")
+    table.add_column("Status")
+    table.add_column("Detail", style="dim")
+    for r in rows:
+        table.add_row(*r)
+    console.print(table)
+    if failures:
+        ctx.exit(1)
 
 
 @cli.command("completions")

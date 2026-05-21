@@ -3986,3 +3986,291 @@ class TestNotifyRecordsPrices:
         history = _load_price_history("NR1")
         assert len(history) == 1
         assert history[0]["price"] == 3.99
+
+
+# ===================================================================
+# Feature 2: Webhook format templates
+# ===================================================================
+
+class TestWebhookFormats:
+    """Tests for format_webhook_payload function."""
+
+    def _hits(self):
+        return [{"asin": "B001", "title": "My Book", "price": 3.99, "target": 5.0, "url": "https://example.com/pd/B001"}]
+
+    def test_generic_format(self):
+        from audible_deals.utils import format_webhook_payload
+        body, headers = format_webhook_payload(self._hits(), "generic")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert "deals" in data
+        assert data["count"] == 1
+
+    def test_slack_format_has_text_key(self):
+        from audible_deals.utils import format_webhook_payload
+        body, headers = format_webhook_payload(self._hits(), "slack")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert "text" in data
+        assert "My Book" in data["text"]
+
+    def test_discord_format_has_content_key(self):
+        from audible_deals.utils import format_webhook_payload
+        body, headers = format_webhook_payload(self._hits(), "discord")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert "content" in data
+        assert "My Book" in data["content"]
+
+    def test_teams_format_has_messagecardtype(self):
+        from audible_deals.utils import format_webhook_payload
+        body, headers = format_webhook_payload(self._hits(), "teams")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert data["@type"] == "MessageCard"
+        assert "My Book" in str(data)
+
+    def test_ntfy_format_is_plaintext(self):
+        from audible_deals.utils import format_webhook_payload
+        body, headers = format_webhook_payload(self._hits(), "ntfy")
+        assert "text/plain" in headers["Content-Type"]
+        assert "My Book" in body.decode("utf-8")
+        assert headers["Tags"] == "book"
+
+    def test_unknown_format_raises(self):
+        from audible_deals.utils import format_webhook_payload
+        with pytest.raises(ValueError, match="Unknown webhook format"):
+            format_webhook_payload(self._hits(), "discord_v2")
+
+    def test_notify_slack_posts_correct_headers(self, mock_client, tmp_config, monkeypatch):
+        """notify --webhook-format slack sends Content-Type: application/json with 'text' key."""
+        import socket
+        import urllib.request
+        import audible_deals.cli as cli_mod
+
+        monkeypatch.setattr(
+            "audible_deals.utils.socket.getaddrinfo",
+            lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
+        )
+
+        cli_mod.save_wishlist([
+            {"asin": "WH1", "title": "Deal Book", "max_price": 5.0, "added": ""},
+        ])
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="WH1", price=3.99, title="Deal Book"),
+        ]
+
+        captured_requests = []
+
+        def fake_urlopen(req, timeout=None):
+            captured_requests.append(req)
+            return None
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "notify",
+            "--webhook", "https://example.com/slack",
+            "--webhook-format", "slack",
+        ])
+        assert result.exit_code == 0, result.output
+        assert len(captured_requests) == 1
+        req = captured_requests[0]
+        assert req.get_header("Content-type") == "application/json"
+        body = json.loads(req.data)
+        assert "text" in body
+
+
+# ===================================================================
+# Feature 3: --skip-plus / --only-plus
+# ===================================================================
+
+class TestPlusCatalogFilter:
+    def test_skip_plus_excludes_plus_titles(self):
+        products = [
+            make_product(asin="P1", in_plus_catalog=True),
+            make_product(asin="P2", in_plus_catalog=False),
+        ]
+        filtered, breakdown = _filter_products(products, skip_plus=True)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "P2"
+        assert breakdown.get("plus catalog") == 1
+
+    def test_only_plus_keeps_only_plus(self):
+        products = [
+            make_product(asin="P1", in_plus_catalog=True),
+            make_product(asin="P2", in_plus_catalog=False),
+        ]
+        filtered, breakdown = _filter_products(products, only_plus=True)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "P1"
+        assert breakdown.get("not plus") == 1
+
+    def test_neither_flag_passes_all(self):
+        products = [
+            make_product(asin="P1", in_plus_catalog=True),
+            make_product(asin="P2", in_plus_catalog=False),
+        ]
+        filtered, breakdown = _filter_products(products)
+        assert len(filtered) == 2
+        assert "plus catalog" not in breakdown
+        assert "not plus" not in breakdown
+
+    def test_find_skip_plus(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="SP1", price=3.0, in_plus_catalog=True, series_name="", series_position=""),
+            make_product(asin="SP2", price=3.0, in_plus_catalog=False, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "skip_plus.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "--all-languages",
+            "--skip-plus", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "SP1" not in asins
+        assert "SP2" in asins
+
+    def test_find_only_plus(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="OP1", price=3.0, in_plus_catalog=True, series_name="", series_position=""),
+            make_product(asin="OP2", price=3.0, in_plus_catalog=False, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "only_plus.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "--all-languages",
+            "--only-plus", "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "OP1" in asins
+        assert "OP2" not in asins
+
+    def test_find_skip_plus_and_only_plus_mutually_exclusive(self):
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1",
+            "--skip-plus", "--only-plus",
+        ])
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+
+# ===================================================================
+# Feature 4: --exclude-keyword
+# ===================================================================
+
+class TestExcludeKeyword:
+    def test_exclude_keyword_by_title(self):
+        products = [
+            make_product(asin="EK1", title="Foo Box Set"),
+            make_product(asin="EK2", title="Foo Complete Edition"),
+        ]
+        filtered, breakdown = _filter_products(products, exclude_keywords=("box set",))
+        asins = [p.asin for p in filtered]
+        assert "EK1" not in asins
+        assert "EK2" in asins
+        assert breakdown.get("excluded keywords") == 1
+
+    def test_exclude_keyword_case_insensitive(self):
+        products = [make_product(asin="EK3", title="ABRIDGED VERSION")]
+        filtered, _ = _filter_products(products, exclude_keywords=("abridged",))
+        assert len(filtered) == 0
+
+    def test_exclude_keyword_subtitle_match(self):
+        products = [make_product(asin="EK4", title="Good Book", subtitle="Abridged Edition")]
+        filtered, _ = _filter_products(products, exclude_keywords=("abridged",))
+        assert len(filtered) == 0
+
+    def test_exclude_multiple_keywords(self):
+        products = [
+            make_product(asin="EK5", title="Box Set Collection"),
+            make_product(asin="EK6", title="Abridged Cut"),
+            make_product(asin="EK7", title="Full Novel"),
+        ]
+        filtered, breakdown = _filter_products(products, exclude_keywords=("abridged", "box set"))
+        asins = [p.asin for p in filtered]
+        assert "EK5" not in asins
+        assert "EK6" not in asins
+        assert "EK7" in asins
+        assert breakdown.get("excluded keywords") == 2
+
+    def test_find_exclude_keyword_flag(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="FEK1", price=3.0, title="Abridged Story", series_name="", series_position=""),
+            make_product(asin="FEK2", price=3.0, title="Full Story", series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "excl_kw.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "find", "--max-price", "10", "--pages", "1", "--all-languages",
+            "--exclude-keyword", "abridged",
+            "-q", "--output", str(out_file),
+        ])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "FEK1" not in asins
+        assert "FEK2" in asins
+
+
+# ===================================================================
+# Feature 5: deals doctor
+# ===================================================================
+
+class TestDoctorCommand:
+    def _patch_auth(self, monkeypatch, tmp_config):
+        """Redirect AUTH_FILE in cli module to tmp_config."""
+        import audible_deals.cli as cli_mod
+        monkeypatch.setattr(cli_mod, "AUTH_FILE", tmp_config / "auth.json")
+        monkeypatch.setattr(cli_mod, "CONFIG_DIR", tmp_config)
+
+    def test_auth_file_missing_fails(self, tmp_config, mock_client, monkeypatch):
+        self._patch_auth(monkeypatch, tmp_config)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "FAIL" in result.output
+        assert result.exit_code == 1
+
+    def test_auth_file_expired_fails(self, tmp_config, mock_client, monkeypatch):
+        import time
+        self._patch_auth(monkeypatch, tmp_config)
+        auth_file = tmp_config / "auth.json"
+        auth_file.write_text(json.dumps({"expires": time.time() - 3600}))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "FAIL" in result.output
+        assert result.exit_code == 1
+
+    def test_auth_file_expires_soon_warns(self, tmp_config, mock_client, monkeypatch):
+        import time
+        self._patch_auth(monkeypatch, tmp_config)
+        auth_file = tmp_config / "auth.json"
+        auth_file.write_text(json.dumps({"expires": time.time() + 3600}))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "WARN" in result.output
+
+    def test_all_checks_pass(self, tmp_config, mock_client, monkeypatch):
+        import time
+        self._patch_auth(monkeypatch, tmp_config)
+        auth_file = tmp_config / "auth.json"
+        auth_file.write_text(json.dumps({"expires": time.time() + 86400 * 30}))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert result.exit_code == 0
+        assert "PASS" in result.output
+
+    def test_marketplace_check_skipped_when_auth_fails(self, tmp_config, mock_client, monkeypatch):
+        self._patch_auth(monkeypatch, tmp_config)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        mock_client._api_get.assert_not_called()

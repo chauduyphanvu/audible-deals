@@ -7,6 +7,7 @@ on the click command tree itself.
 from __future__ import annotations
 
 import ipaddress
+import json
 import re
 import socket
 import urllib.parse
@@ -66,6 +67,54 @@ def looks_like_person_name(query: str) -> bool:
     if any(w.lower() in _NAME_STOPWORDS for w in words):
         return False
     return all(w[0].isupper() for w in words)
+
+
+def format_webhook_payload(hits: list[dict], fmt: str, currency: str = "$") -> tuple[bytes, dict[str, str]]:
+    """Format webhook payload for the given platform. Returns (body_bytes, headers)."""
+    if fmt == "generic":
+        body = json.dumps({"deals": hits, "count": len(hits)}, indent=2)
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+    elif fmt == "slack":
+        lines = "\n".join(
+            f"• <{h['url']}|{h['title']}> — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+            for h in hits
+        )
+        body = json.dumps({"text": f"*Audible Deals ({len(hits)})*\n{lines}"})
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "discord":
+        lines = "\n".join(
+            f"• [{h['title']}](<{h['url']}>) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+            for h in hits
+        )
+        body = json.dumps({"content": f"**Audible Deals ({len(hits)})**\n{lines}"})
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "teams":
+        text = "  \n".join(
+            f"• [{h['title']}]({h['url']}) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+            for h in hits
+        )
+        body = json.dumps({
+            "@type": "MessageCard",
+            "@context": "https://schema.org/extensions",
+            "summary": "Audible Deals",
+            "themeColor": "0078D7",
+            "title": f"Audible Deals ({len(hits)})",
+            "sections": [{"text": text}],
+        })
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "ntfy":
+        n = len(hits)
+        lines = "\n".join(f"• {h['title']} — {currency}{h['price']:.2f} ({h['url']})" for h in hits)
+        body = f"Audible Deals ({n})\n{lines}"
+        headers = {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Title": f"Audible Deals ({n})",
+            "Tags": "book",
+            "Priority": "default",
+        }
+    else:
+        raise ValueError(f"Unknown webhook format: {fmt!r}")
+    return body.encode("utf-8"), headers
 
 
 def parse_interval(value: str) -> int:

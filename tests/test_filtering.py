@@ -309,6 +309,67 @@ class TestFirstInSeriesStrict:
 # filter_products — series filter
 # ===================================================================
 
+class TestSkipPlusOnlyPlus:
+    def test_skip_plus_removes_plus_titles(self):
+        products = [
+            make_product(asin="A1", in_plus_catalog=True),
+            make_product(asin="A2", in_plus_catalog=False),
+        ]
+        filtered, breakdown = filter_products(products, skip_plus=True)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "A2"
+        assert breakdown.get("plus catalog") == 1
+
+    def test_only_plus_keeps_plus_titles(self):
+        products = [
+            make_product(asin="A1", in_plus_catalog=True),
+            make_product(asin="A2", in_plus_catalog=False),
+        ]
+        filtered, breakdown = filter_products(products, only_plus=True)
+        assert len(filtered) == 1
+        assert filtered[0].asin == "A1"
+        assert breakdown.get("not plus") == 1
+
+    def test_neither_flag_no_effect(self):
+        products = [
+            make_product(asin="A1", in_plus_catalog=True),
+            make_product(asin="A2", in_plus_catalog=False),
+        ]
+        filtered, breakdown = filter_products(products)
+        assert len(filtered) == 2
+        assert "plus catalog" not in breakdown
+        assert "not plus" not in breakdown
+
+
+class TestExcludeKeywords:
+    def test_excludes_by_title(self):
+        products = [
+            make_product(asin="E1", title="Foo Box Set"),
+            make_product(asin="E2", title="Foo Unabridged"),
+        ]
+        filtered, breakdown = filter_products(products, exclude_keywords=("box set",))
+        asins = [p.asin for p in filtered]
+        assert "E1" not in asins
+        assert "E2" in asins
+        assert breakdown.get("excluded keywords") == 1
+
+    def test_case_insensitive(self):
+        products = [make_product(asin="E3", title="ABRIDGED VERSION")]
+        filtered, _ = filter_products(products, exclude_keywords=("abridged",))
+        assert len(filtered) == 0
+
+    def test_subtitle_match(self):
+        products = [make_product(asin="E4", title="Great Book", subtitle="Abridged")]
+        filtered, _ = filter_products(products, exclude_keywords=("abridged",))
+        assert len(filtered) == 0
+
+    def test_no_keywords_no_effect(self):
+        products = [make_product(asin="E5", title="Normal Book")]
+        filtered, breakdown = filter_products(products, exclude_keywords=())
+        assert len(filtered) == 1
+        assert "excluded keywords" not in breakdown
+
+
 class TestFilterSeries:
     def test_filter_series_match(self):
         products = [

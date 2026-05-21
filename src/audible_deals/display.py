@@ -61,6 +61,7 @@ def display_products(
     title: str = "Results",
     currency: str = "$",
     show_url: bool = False,
+    atl_asins: set[str] | None = None,
 ) -> None:
     """Display products in a compact rich table."""
     if not products:
@@ -90,6 +91,8 @@ def display_products(
         cur = p.currency
         # Price cell: combine current, original, and discount
         p_str = price_str(p.price, cur)
+        if atl_asins and p.asin in atl_asins:
+            p_str = "[bold gold1]★[/bold gold1] " + p_str
         if p.price is not None and max_price is not None:
             if p.price <= max_price * 0.6:
                 p_str = f"[bold green]{p_str}[/bold green]"

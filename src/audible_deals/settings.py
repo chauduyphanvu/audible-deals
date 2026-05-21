@@ -40,6 +40,8 @@ _CONFIG_KEYS: tuple[str, ...] = (
     "all_languages",
     "skip_owned",
     "interactive",
+    "skip_plus",
+    "only_plus",
 )
 
 # Additional keys that only profiles supply (not in config schema)
@@ -49,6 +51,7 @@ _PROFILE_EXTRA_KEYS: tuple[str, ...] = (
     "exclude_authors",
     "exclude_narrators",
     "keywords",
+    "exclude_keywords",
 )
 
 
@@ -81,6 +84,9 @@ class Settings:
     exclude_authors: tuple[str, ...] = ()
     exclude_narrators: tuple[str, ...] = ()
     keywords: str = ""
+    skip_plus: bool = False
+    only_plus: bool = False
+    exclude_keywords: tuple[str, ...] = ()
 
     @classmethod
     def resolve(

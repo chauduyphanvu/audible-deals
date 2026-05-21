@@ -297,6 +297,36 @@ class TestDisplaySummary:
         assert "2 series collapsed" in out
 
 
+class TestATLBadge:
+    def test_star_shown_for_atl_asin(self):
+        products = [make_product(asin="BXXX", title="ATL Book", price=2.99)]
+        out = _capture(display_products, products, atl_asins={"BXXX"})
+        assert "★" in out
+
+    def test_star_not_shown_without_atl_asins(self):
+        products = [make_product(asin="BXXX", title="Normal Book", price=5.99)]
+        out = _capture(display_products, products)
+        assert "★" not in out
+
+    def test_star_not_shown_for_non_atl_asin(self):
+        products = [
+            make_product(asin="BXXX", title="ATL Book", price=2.99),
+            make_product(asin="BYYY", title="Not ATL Book", price=4.99),
+        ]
+        out_atl = _capture(display_products, products, atl_asins={"BXXX"})
+        assert "★" in out_atl
+
+    def test_star_not_shown_for_none_atl_asins(self):
+        products = [make_product(asin="BXXX", title="Normal Book", price=5.99)]
+        out = _capture(display_products, products, atl_asins=None)
+        assert "★" not in out
+
+    def test_star_not_shown_for_empty_atl_set(self):
+        products = [make_product(asin="BXXX", title="Normal Book", price=5.99)]
+        out = _capture(display_products, products, atl_asins=set())
+        assert "★" not in out
+
+
 class TestDisplayWatchTableZeroTarget:
     def test_zero_target_shows_price_and_buy(self):
         """$0.00 target should display as '$0.00' and trigger BUY."""
