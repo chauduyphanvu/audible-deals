@@ -11,10 +11,11 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - **Compare** — side-by-side comparison of multiple audiobooks, with a $/hr value calculation
 - **Interactive mode** — browse results, view details, open in browser, or add to wishlist without leaving the CLI
 - **Wishlist & watch** — save ASINs you're eyeing and check back for price drops
-- **Price history** — automatically tracks prices over time with sparkline charts and relative dates
+- **Price history** — automatically tracks prices over time with sparkline charts and relative dates; flags an all-time-low with a ★ badge in the results table
 - **Saved profiles** — save your favorite search configurations and reuse them with `--profile` (works on `find` and `search`)
 - **Global config** — set persistent defaults (max price, skip-owned, locale, etc.) applied to every command
-- **Recap & notify** — get a summary of recent price drops, or send webhook notifications for deals at target
+- **Recap & notify** — get a summary of recent price drops, or send webhook notifications (Slack / Discord / Teams / ntfy) for deals at target
+- **Doctor** — run `deals doctor` for a one-shot diagnostic of auth, config, and marketplace reachability
 - **Locale support** — correct currency symbols and Audible URLs for all 9 marketplaces
 - **Export** — dump results to JSON or CSV; using `-o` automatically suppresses the table display
 
@@ -155,6 +156,7 @@ deals search "Dune" --max-price 5 --show-url
 | `deals recap` | Summary of recent price drops across tracked items |
 | `deals login` | Authenticate with Audible |
 | `deals import-auth PATH` | Import auth from audible-cli or Libation |
+| `deals doctor` | Diagnostic checks for auth, config, and marketplace reachability |
 | `deals completions SHELL` | Generate shell completions (bash/zsh/fish) |
 
 ## Filtering & sorting
@@ -173,6 +175,7 @@ deals search "Dune" --max-price 5 --show-url
 | `--series "Bobiverse"` | Filter by series name (case-insensitive substring match) |
 | `--exclude-author "Maas"` | Exclude books by a matching author (repeatable) |
 | `--exclude-narrator "Bray"` | Exclude books by a matching narrator (repeatable) |
+| `--exclude-keyword "abridged"` | Drop results whose title or subtitle contains the keyword (case-insensitive, repeatable) |
 | `--min-rating 4.0` | Minimum star rating |
 | `--min-ratings 100` | Minimum number of ratings (default: 1 for `find`, filters unreviewed books) |
 | `--min-hours 5` | Minimum audio length |
@@ -183,6 +186,8 @@ deals search "Dune" --max-price 5 --show-url
 | `--first-in-series` | Only show book 1 of each series |
 | `--max-price-per-hour 0.50` | Only items under this $/hr threshold (e.g. `0.35` for heavy value filtering) |
 | `--skip-owned` | Exclude books already in your library |
+| `--skip-plus` | Exclude Audible Plus catalog titles (free with membership) |
+| `--only-plus` | Show only Audible Plus catalog titles (mutually exclusive with `--skip-plus`) |
 | `--exclude-seen` | Exclude previously-seen ASINs (cumulative across runs; clear with `deals last --clear-seen`) |
 | `-n, --limit 20` | Cap the number of results (default: 25; use `-n 0` for unlimited) |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
@@ -437,11 +442,29 @@ For automation (cron jobs, CI, monitoring):
 # Print deal alerts as JSON to stdout
 deals notify
 
-# Send to a Slack/Discord/generic webhook
-deals notify --webhook https://hooks.slack.com/services/...
+# Send a generic JSON webhook
+deals notify --webhook https://example.com/hook
+
+# Slack incoming webhook (requires --webhook-format slack)
+deals notify --webhook https://hooks.slack.com/services/... --webhook-format slack
+
+# Discord, Microsoft Teams, or ntfy.sh
+deals notify --webhook https://discord.com/api/webhooks/... --webhook-format discord
+deals notify --webhook https://<tenant>.webhook.office.com/webhookb2/... --webhook-format teams
+deals notify --webhook https://ntfy.sh/your-topic --webhook-format ntfy
 ```
 
-`notify` checks your wishlist and outputs items at or below your target price as `{"deals": [...], "count": N}`. When there are no hits, it outputs `{"deals": [], "count": 0}` so automation consumers can distinguish "no deals" from a crash.
+`notify` checks your wishlist and outputs items at or below your target price. Without `--webhook` it prints `{"deals": [...], "count": N}` (or `{"deals": [], "count": 0}` when no items hit, so automation consumers can distinguish "no deals" from a crash).
+
+`--webhook-format` shapes the POST body for the destination platform:
+
+| Format | Body shape |
+|--------|------------|
+| `generic` (default) | `{"deals": [...], "count": N}` JSON — same as the stdout payload |
+| `slack` | `{"text": "..."}` with Slack mrkdwn formatting |
+| `discord` | `{"content": "..."}` with markdown links (embed previews suppressed) |
+| `teams` | Legacy `MessageCard` JSON for Teams incoming webhooks — works on tenants that still accept the deprecated O365 connector format, not on the newer Power Automate / Workflows webhooks (which need Adaptive Cards) |
+| `ntfy` | Plain-text body with `Title`, `Tags`, and `Priority` headers |
 
 ## Export
 
