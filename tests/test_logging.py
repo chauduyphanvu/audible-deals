@@ -13,12 +13,17 @@ from audible_deals.logging_setup import configure_logging
 
 
 @pytest.fixture(autouse=True)
-def reset_logging():
+def reset_logging(monkeypatch):
     """Reset the package logger between tests so configure_logging is idempotent."""
+    monkeypatch.delenv("DEALS_LOG_FILE", raising=False)
     yield
     root = logging.getLogger("audible_deals")
     for h in list(root.handlers):
         root.removeHandler(h)
+        try:
+            h.close()
+        except Exception:
+            pass
     root.setLevel(logging.WARNING)
     root.propagate = True
 
@@ -125,7 +130,7 @@ class TestApiDebugLogging:
         from audible_deals.client import DealsClient
 
         api.get_mock.return_value = {"products": [], "total_results": 0}
-        dc = DealsClient(locale="us")
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
 
         with caplog.at_level(logging.DEBUG, logger="audible_deals.client"):
             dc.search_catalog(keywords="dune", page=1)
@@ -139,10 +144,55 @@ class TestApiDebugLogging:
         from audible_deals.client import DealsClient
 
         api.get_mock.return_value = {"products": []}
-        dc = DealsClient(locale="us")
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
 
         with caplog.at_level(logging.DEBUG, logger="audible_deals.client"):
             dc.get_products_batch(["B00TEST0001", "B00TEST0002"])
 
         msgs = [r.message for r in caplog.records]
         assert any("get_products_batch in=2" in m for m in msgs)
+
+
+# ===================================================================
+# DEALS_LOG_FILE rotating file handler
+# ===================================================================
+
+class TestDealsLogFile:
+    def test_file_handler_added(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "test.log"
+        monkeypatch.setenv("DEALS_LOG_FILE", str(log_path))
+        configure_logging(0)
+        root = logging.getLogger("audible_deals")
+        file_handlers = [h for h in root.handlers if hasattr(h, "baseFilename")]
+        assert len(file_handlers) == 1
+        assert file_handlers[0].level == logging.DEBUG
+
+    def test_file_handler_writes(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "test.log"
+        monkeypatch.setenv("DEALS_LOG_FILE", str(log_path))
+        configure_logging(0)
+        logging.getLogger("audible_deals.test").debug("hello from test")
+        assert log_path.exists()
+        content = log_path.read_text()
+        assert "hello from test" in content
+
+    def test_creates_parent_dirs(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "nested" / "subdir" / "test.log"
+        monkeypatch.setenv("DEALS_LOG_FILE", str(log_path))
+        configure_logging(0)
+        assert log_path.parent.exists()
+
+    def test_no_file_handler_when_env_unset(self, monkeypatch):
+        monkeypatch.delenv("DEALS_LOG_FILE", raising=False)
+        configure_logging(0)
+        root = logging.getLogger("audible_deals")
+        file_handlers = [h for h in root.handlers if hasattr(h, "baseFilename")]
+        assert file_handlers == []
+
+    def test_idempotent_replaces_handlers(self, tmp_path, monkeypatch):
+        log_path = tmp_path / "test.log"
+        monkeypatch.setenv("DEALS_LOG_FILE", str(log_path))
+        configure_logging(0)
+        configure_logging(1)
+        root = logging.getLogger("audible_deals")
+        assert len(root.handlers) == 2  # one stderr + one file

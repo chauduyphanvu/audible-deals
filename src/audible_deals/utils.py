@@ -69,8 +69,46 @@ def looks_like_person_name(query: str) -> bool:
     return all(w[0].isupper() for w in words)
 
 
-def format_webhook_payload(hits: list[dict], fmt: str, currency: str = "$") -> tuple[bytes, dict[str, str]]:
+_TEMPLATE_KEYS = "title, price, target, url, currency, asin, discount_pct"
+
+
+def format_webhook_payload(
+    hits: list[dict],
+    fmt: str,
+    currency: str = "$",
+    *,
+    template: str | None = None,
+    extras: dict[str, dict] | None = None,
+) -> tuple[bytes, dict[str, str]]:
     """Format webhook payload for the given platform. Returns (body_bytes, headers)."""
+    if template is not None:
+        if fmt != "generic":
+            raise ValueError("template is incompatible with non-generic fmt")
+        rendered_parts: list[str] = []
+        for h in hits:
+            extra = (extras or {}).get(h.get("asin", ""), {})
+            mapping = {
+                "title": h.get("title", ""),
+                "price": float(h.get("price") or 0.0),
+                "target": float(h.get("target") or 0.0),
+                "url": h.get("url", ""),
+                "currency": extra.get("currency", currency),
+                "asin": h.get("asin", ""),
+                "discount_pct": float(extra.get("discount_pct") or 0.0),
+            }
+            try:
+                rendered_parts.append(template.format_map(mapping))
+            except KeyError as e:
+                raise ValueError(
+                    f"Template references unknown key {{{e.args[0]}}}. Valid keys: {_TEMPLATE_KEYS}."
+                )
+            except (IndexError, ValueError) as e:
+                raise ValueError(
+                    f"Template format error: {e}. Valid keys: {_TEMPLATE_KEYS}. "
+                    "Use {{ and }} for literal braces."
+                )
+        body = "\n".join(rendered_parts)
+        return body.encode("utf-8"), {"Content-Type": "text/plain; charset=utf-8"}
     if fmt == "generic":
         body = json.dumps({"deals": hits, "count": len(hits)}, indent=2)
         headers: dict[str, str] = {"Content-Type": "application/json"}

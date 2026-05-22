@@ -62,6 +62,7 @@ def display_products(
     currency: str = "$",
     show_url: bool = False,
     atl_asins: set[str] | None = None,
+    hist_context: dict[str, int] | None = None,
 ) -> None:
     """Display products in a compact rich table."""
     if not products:
@@ -70,6 +71,10 @@ def display_products(
 
     term_width = console.width or 80
     title_max = max(30, min(term_width - 55, 80))
+
+    show_hist = hist_context is not None and any(
+        p.asin in hist_context for p in products
+    )
 
     table = Table(
         title=title,
@@ -84,6 +89,8 @@ def display_products(
     table.add_column("Hrs", justify="right", width=7)
     table.add_column(f"{currency}/hr", justify="right", width=9)
     table.add_column("Rating", justify="right", width=10)
+    if show_hist:
+        table.add_column("vs hist", justify="right", width=8)
     if show_url:
         table.add_column("URL", no_wrap=True, style="dim cyan")
 
@@ -129,6 +136,17 @@ def display_products(
             _pph_str(p.price, p.hours, cur),
             rating_str(p.rating, p.num_ratings),
         ]
+        if show_hist:
+            pct = hist_context.get(p.asin) if hist_context else None
+            if pct is None:
+                hist_cell = "[dim]-[/dim]"
+            elif pct < 0:
+                hist_cell = f"[green]{pct}%[/green]"
+            elif pct == 0:
+                hist_cell = "[dim]0%[/dim]"
+            else:
+                hist_cell = f"[dim]+{pct}%[/dim]"
+            row.append(hist_cell)
         if show_url:
             row.append(p.url)
         table.add_row(*row)
@@ -366,6 +384,7 @@ def display_recap(
     days: int,
     currency: str = "$",
     show_new: bool = False,
+    atl_hits: list[dict] | None = None,
 ) -> None:
     """Display a recap of price changes, new items, and wishlist hits."""
     console.print(f"\n[bold]Recap[/bold] (last {days} days)\n")
@@ -393,7 +412,16 @@ def display_recap(
         for item in wishlist_hits:
             console.print(f"    {item['asin']}  {item['title']}")
 
-    if not drops and not new_items and not wishlist_hits:
+    if atl_hits is not None:
+        console.print(f"\n  [bold gold1]Wishlist items at all-time low:[/bold gold1]")
+        if atl_hits:
+            for item in atl_hits:
+                target_str = f" (target {currency}{item['target']:.2f})" if item.get("target") is not None else ""
+                console.print(f"    [gold1]{_label(item['asin'], item['title'])}  {currency}{item['price']:.2f}{target_str}[/gold1]")
+        else:
+            console.print("    [dim]None at ATL[/dim]")
+
+    if not drops and not new_items and not wishlist_hits and not atl_hits:
         console.print("  [dim]Nothing to report.[/dim]")
     console.print()
 

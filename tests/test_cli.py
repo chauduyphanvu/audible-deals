@@ -746,15 +746,15 @@ class TestLibraryCommand:
 class TestLoadWishlistTypeValidation:
     def test_dict_returns_empty_list(self, tmp_config):
         """A wishlist.json containing {} instead of [] returns empty list."""
-        import audible_deals.cli as cli_mod
-        cli_mod.WISHLIST_FILE.write_text("{}")
-        assert cli_mod.load_wishlist() == []
+        import audible_deals.state as state_mod
+        state_mod.WISHLIST_FILE.write_text("{}")
+        assert state_mod.load_wishlist() == []
 
     def test_load_profiles_list_returns_empty_dict(self, tmp_config):
         """A profiles.json containing [] instead of {} returns empty dict."""
-        import audible_deals.cli as cli_mod
-        cli_mod.PROFILES_FILE.write_text("[]")
-        assert cli_mod.load_profiles() == {}
+        import audible_deals.state as state_mod
+        state_mod.PROFILES_FILE.write_text("[]")
+        assert state_mod.load_profiles() == {}
 
     def test_load_config_array_returns_empty_dict(self, tmp_config):
         """A config.json containing a JSON array instead of {} returns {}."""
@@ -4080,6 +4080,117 @@ class TestWebhookFormats:
         assert req.get_header("Content-type") == "application/json"
         body = json.loads(req.data)
         assert "text" in body
+
+    def test_template_format_renders_hits(self):
+        from audible_deals.utils import format_webhook_payload
+        hits = [{"asin": "B001", "title": "My Book", "price": 3.99, "target": 5.0, "url": "https://ex.com", "currency": "$", "discount_pct": 20.0}]
+        tmpl = "{title} is ${price:.2f}"
+        body, headers = format_webhook_payload(hits, "generic", template=tmpl)
+        assert headers["Content-Type"] == "text/plain; charset=utf-8"
+        assert body.decode("utf-8") == "My Book is $3.99"
+
+    def test_template_multiple_hits_joined_with_newline(self):
+        from audible_deals.utils import format_webhook_payload
+        hits = [
+            {"asin": "B001", "title": "Book A", "price": 3.99, "target": 5.0, "url": "u1", "currency": "$", "discount_pct": 0.0},
+            {"asin": "B002", "title": "Book B", "price": 2.99, "target": 5.0, "url": "u2", "currency": "$", "discount_pct": 0.0},
+        ]
+        body, _ = format_webhook_payload(hits, "generic", template="{title}")
+        assert body.decode("utf-8") == "Book A\nBook B"
+
+    def test_template_unknown_key_raises_valueerror(self):
+        from audible_deals.utils import format_webhook_payload
+        hits = [{"asin": "B001", "title": "X", "price": 1.0, "target": 2.0, "url": "u", "currency": "$", "discount_pct": 0.0}]
+        with pytest.raises(ValueError, match="unknown key"):
+            format_webhook_payload(hits, "generic", template="{nonexistent_field}")
+
+    def test_template_and_format_mutually_exclusive(self, mock_client, tmp_config, monkeypatch, tmp_path):
+        """--webhook-template and --webhook-format are mutually exclusive."""
+        import audible_deals.cli as cli_mod
+        import socket
+
+        monkeypatch.setattr(
+            "audible_deals.utils.socket.getaddrinfo",
+            lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
+        )
+        tmpl_file = tmp_path / "tmpl.txt"
+        tmpl_file.write_text("{title}")
+        cli_mod.save_wishlist([{"asin": "B001", "title": "X", "max_price": 5.0, "added": ""}])
+        mock_client.get_products_batch.return_value = [make_product(asin="B001", price=3.99)]
+        runner = CliRunner()
+        result = runner.invoke(cli, [
+            "notify",
+            "--webhook", "https://example.com/hook",
+            "--webhook-format", "slack",
+            "--webhook-template", str(tmpl_file),
+        ])
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output.lower() or "mutually exclusive" in str(result.exception).lower()
+
+    def test_template_requires_webhook(self, mock_client, tmp_config, tmp_path):
+        import audible_deals.cli as cli_mod
+        tmpl_file = tmp_path / "tmpl.txt"
+        tmpl_file.write_text("{title}")
+        cli_mod.save_wishlist([{"asin": "B001", "title": "X", "max_price": 5.0, "added": ""}])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--webhook-template", str(tmpl_file)])
+        assert result.exit_code != 0
+        assert "requires --webhook" in result.output.lower() or "requires --webhook" in str(result.exception).lower()
+
+    def test_template_lib_rejects_non_generic_fmt(self):
+        from audible_deals.utils import format_webhook_payload
+        with pytest.raises(ValueError, match="non-generic"):
+            format_webhook_payload([], "slack", template="{title}")
+
+    def test_template_malformed_brace_raises_valueerror(self):
+        from audible_deals.utils import format_webhook_payload
+        hits = [{"asin": "B001", "title": "T", "price": 1.0, "target": 2.0, "url": "u"}]
+        with pytest.raises(ValueError, match="Valid keys"):
+            format_webhook_payload(hits, "generic", template="abc {price:zzz}")
+
+
+class TestNotifyHitsSchema:
+    def test_stdout_json_excludes_currency_and_discount(self, mock_client, tmp_config):
+        import audible_deals.cli as cli_mod
+        cli_mod.save_wishlist([{"asin": "B001", "title": "X", "max_price": 5.0, "added": ""}])
+        mock_client.get_products_batch.return_value = [make_product(asin="B001", price=3.99, list_price=9.99)]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0
+        payload = json.loads(result.output)
+        assert payload["count"] == 1
+        hit = payload["deals"][0]
+        assert set(hit.keys()) == {"asin", "title", "price", "target", "url"}
+
+
+# ===================================================================
+# --last single-ref commands reject range expansion
+# ===================================================================
+
+class TestSingleRefLastValidation:
+    def _seed_cache(self, tmp_config):
+        import audible_deals.state as state_mod
+        data = [
+            {"asin": "B00TESTAA01", "title": "Book 1"},
+            {"asin": "B00TESTAA02", "title": "Book 2"},
+            {"asin": "B00TESTAA03", "title": "Book 3"},
+        ]
+        cache = {"title": "Test", "results": data}
+        state_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache))
+
+    def test_detail_rejects_range(self, mock_client, tmp_config):
+        self._seed_cache(tmp_config)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["detail", "--last", "1-3"])
+        assert result.exit_code != 0
+        assert "single position" in result.output.lower() or "single position" in str(result.exception).lower()
+
+    def test_history_rejects_comma_list(self, tmp_config):
+        self._seed_cache(tmp_config)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["history", "--last", "1,2"])
+        assert result.exit_code != 0
+        assert "single position" in result.output.lower() or "single position" in str(result.exception).lower()
 
 
 # ===================================================================

@@ -25,6 +25,7 @@ import json as json_mod
 import logging
 import math
 import os
+import statistics
 from importlib.metadata import version as _pkg_version
 
 try:
@@ -51,6 +52,7 @@ from audible_deals.constants import (
     CONFIG_FILE,
     DEEP_SORT_ORDERS,
     DEFAULT_LIMIT,
+    GENRE_ALIASES,
     HISTORY_DIR,
     LAST_RESULTS_FILE,
     LOCALE_CURRENCY,
@@ -101,6 +103,7 @@ from audible_deals.state import (
     clear_last_results,
     clear_seen_asins,
     coerce_config_value,
+    find_wishlist_atl_hits,
     find_wishlist_hits,
     has_price_history,
     load_config,
@@ -128,6 +131,29 @@ from audible_deals.state import (
 
 
 logger = logging.getLogger(__name__)
+
+
+def _complete_profile_names(ctx, param, incomplete):
+    from click.shell_completion import CompletionItem
+    try:
+        names = load_profiles().keys()
+    except Exception:
+        return []
+    return [CompletionItem(n) for n in names if n.startswith(incomplete)]
+
+
+def _complete_genre_names(ctx, param, incomplete):
+    from click.shell_completion import CompletionItem
+    return [CompletionItem(k) for k in GENRE_ALIASES if k.startswith(incomplete)]
+
+
+def _resolve_single_last_ref(last_ref: str) -> tuple[str, str]:
+    resolved = resolve_last_references((last_ref,))
+    if len(resolved) != 1:
+        raise click.ClickException(
+            f"--last {last_ref!r} expanded to {len(resolved)} results; this command accepts a single position."
+        )
+    return resolved[0]
 
 
 def _get_client(locale: str) -> DealsClient:
@@ -296,20 +322,24 @@ def _emit_output(
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
         atl_asins: set[str] = set()
+        hist_context: dict[str, int] = {}
         for p in filtered:
             if p.price is None:
                 continue
             entries = load_price_history(p.asin)
-            if len(entries) < 2:
+            numeric = [float(e["price"]) for e in entries if isinstance(e.get("price"), (int, float))]
+            if not numeric:
                 continue
-            try:
-                min_price = min(float(e["price"]) for e in entries if isinstance(e.get("price"), (int, float)))
-            except ValueError:
-                continue
+            min_price = min(numeric)
             if p.price <= min_price:
                 atl_asins.add(p.asin)
+            if len(numeric) >= 3:
+                median = statistics.median(numeric)
+                if median > 0:
+                    pct = round((p.price - median) / median * 100)
+                    hist_context[p.asin] = pct
         console.print()
-        display_products(filtered, max_price=max_price, title=title, currency=currency, show_url=show_url, atl_asins=atl_asins)
+        display_products(filtered, max_price=max_price, title=title, currency=currency, show_url=show_url, atl_asins=atl_asins, hist_context=hist_context)
         display_summary(len(filtered), filter_breakdown, max_price=max_price,
                         editions_removed=editions_removed, series_collapsed=series_collapsed,
                         currency=currency, total_before_limit=total_before_limit)
@@ -473,7 +503,7 @@ def _common_filter_options(func):
     # Applied in reverse order (click decorators stack bottom-up)
     options = [
         click.option("--max-price-per-hour", "max_pph", type=click.FloatRange(min=0), default=None, help="Max price per hour (e.g. 0.50)"),
-        click.option("--exclude-genre", multiple=True, help="Genre(s) to exclude (repeatable, fuzzy match)"),
+        click.option("--exclude-genre", multiple=True, help="Genre(s) to exclude (repeatable, fuzzy match)", shell_complete=_complete_genre_names),
         click.option("--min-rating", type=float, default=0.0, help="Minimum rating (e.g. 4.0)"),
         click.option("--narrator", default="", help="Filter by narrator name (substring match, client-side)"),
         click.option("--author", default="", help="Filter by author name (substring match)"),
@@ -495,7 +525,7 @@ def _common_filter_options(func):
         click.option("--quiet", "-q", is_flag=True, default=False, help="Suppress table output (useful with --output)"),
         click.option("--show-url", is_flag=True, default=False, help="Show Audible URL for each item in the table"),
         click.option("--interactive/--no-interactive", "-i", default=False, help="Browse results interactively"),
-        click.option("--profile", "profile_name", default=None, help="Load a saved search profile (overrides defaults, CLI flags take precedence)"),
+        click.option("--profile", "profile_name", default=None, help="Load a saved search profile (overrides defaults, CLI flags take precedence)", shell_complete=_complete_profile_names),
         click.option("--dry-run", is_flag=True, default=False, help="Show what would be scanned without making API calls"),
         click.option("--skip-plus/--no-skip-plus", default=False, help="Exclude Audible Plus catalog titles"),
         click.option("--only-plus/--no-only-plus", default=False, help="Show only Audible Plus catalog titles"),
@@ -541,7 +571,7 @@ def _build_scan_namespace(
 @click.argument("query", required=False, default="")
 @click.option("--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter (e.g. 5.00)")
 @click.option("--category", default="", help="Category ID to search within")
-@click.option("--genre", default="", help="Genre name to search within (fuzzy match, e.g. 'sci-fi')")
+@click.option("--genre", default="", help="Genre name to search within (fuzzy match, e.g. 'sci-fi')", shell_complete=_complete_genre_names)
 @click.option("--sort", type=click.Choice(list(SORT_OPTIONS.keys()) + sorted(CLIENT_SORT_OPTIONS)), default="relevance", help="Sort order (price/discount/price-per-hour/value are client-side)")
 @click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings (e.g. 100)")
 @click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
@@ -753,7 +783,7 @@ def _fetch_with_progress(
 
 @cli.command()
 @click.option("--category", default="", help="Category ID (use 'deals categories' to find IDs)")
-@click.option("--genre", default="", help="Genre name (fuzzy match, e.g. 'sci-fi', 'mystery', 'romance')")
+@click.option("--genre", default="", help="Genre name (fuzzy match, e.g. 'sci-fi', 'mystery', 'romance')", shell_complete=_complete_genre_names)
 @click.option("--keywords", default="", help="Optional keyword filter within the category")
 @click.option("--max-price", type=click.FloatRange(min=0), default=5.00, help="Max price threshold (default: $5.00)")
 @click.option("--sort", type=click.Choice(sorted(CLIENT_SORT_OPTIONS) + list(SORT_OPTIONS.keys())), default="price-per-hour", help="Sort order (price/discount/price-per-hour/value are client-side)")
@@ -1244,13 +1274,12 @@ def last_cmd(ctx, sort, max_price, max_pph, min_rating, min_ratings, min_hours, 
 
 @cli.command()
 @click.argument("asin", required=False, default=None)
-@click.option("--last", "last_ref", type=int, default=None, help="Use result #N from last search/find")
+@click.option("--last", "last_ref", type=str, default=None, help="Use result #N from last search/find")
 @click.pass_context
 def detail(ctx, asin, last_ref):
     """Show detailed info for a product by ASIN."""
     if last_ref is not None:
-        resolved = resolve_last_references((last_ref,))
-        asin, desc = resolved[0]
+        asin, desc = _resolve_single_last_ref(last_ref)
         console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
@@ -1267,13 +1296,12 @@ def detail(ctx, asin, last_ref):
 
 @cli.command("open")
 @click.argument("asin", required=False, default=None)
-@click.option("--last", "last_ref", type=int, default=None, help="Use result #N from last search/find")
+@click.option("--last", "last_ref", type=str, default=None, help="Use result #N from last search/find")
 @click.pass_context
 def open_cmd(ctx, asin, last_ref):
     """Open an audiobook's Audible page in your browser."""
     if last_ref is not None:
-        resolved = resolve_last_references((last_ref,))
-        asin, desc = resolved[0]
+        asin, desc = _resolve_single_last_ref(last_ref)
         console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
@@ -1286,7 +1314,7 @@ def open_cmd(ctx, asin, last_ref):
 
 @cli.command()
 @click.argument("asins", nargs=-1, required=False)
-@click.option("--last", "last_refs", type=int, multiple=True, help="Use result #N from last search/find (repeatable)")
+@click.option("--last", "last_refs", type=str, multiple=True, help="Use result #N from last search/find (repeatable)")
 @click.pass_context
 def compare(ctx, asins, last_refs):
     """Compare multiple products side-by-side.
@@ -1336,7 +1364,7 @@ def wishlist():
 @wishlist.command("add")
 @click.argument("asins", nargs=-1, required=False)
 @click.option("--max-price", type=float, default=None, help="Alert when price drops below this")
-@click.option("--last", "last_refs", type=int, multiple=True, help="Use result #N from last search/find (repeatable)")
+@click.option("--last", "last_refs", type=str, multiple=True, help="Use result #N from last search/find (repeatable)")
 @click.pass_context
 def wishlist_add(ctx, asins, max_price, last_refs):
     """Add ASINs to your wishlist.
@@ -1384,7 +1412,7 @@ def wishlist_add(ctx, asins, max_price, last_refs):
 
 @wishlist.command("remove")
 @click.argument("asins", nargs=-1, required=False)
-@click.option("--last", "last_refs", type=int, multiple=True, help="Use result #N from last search/find (repeatable)")
+@click.option("--last", "last_refs", type=str, multiple=True, help="Use result #N from last search/find (repeatable)")
 def wishlist_remove(asins, last_refs):
     """Remove ASINs from your wishlist."""
     all_asins = list(asins)
@@ -1687,7 +1715,7 @@ def profile_list():
 
 
 @profile.command("delete")
-@click.argument("name")
+@click.argument("name", shell_complete=_complete_profile_names)
 def profile_delete(name):
     """Delete a saved profile."""
     profiles = load_profiles()
@@ -1720,7 +1748,7 @@ def _opts_to_flag_parts(opts: dict) -> list[str]:
 
 
 @profile.command("show")
-@click.argument("name")
+@click.argument("name", shell_complete=_complete_profile_names)
 def profile_show(name):
     """Show the saved flags for a named profile."""
     profiles = load_profiles()
@@ -1735,7 +1763,7 @@ def profile_show(name):
 
 @cli.command()
 @click.argument("asin", required=False, default=None)
-@click.option("--last", "last_ref", type=int, default=None, help="Use result #N from last search/find")
+@click.option("--last", "last_ref", type=str, default=None, help="Use result #N from last search/find")
 @click.pass_context
 def history(ctx, asin, last_ref):
     """Show price history for an ASIN.
@@ -1744,8 +1772,7 @@ def history(ctx, asin, last_ref):
     search/find results. Use 'deals history ASIN' to view past prices.
     """
     if last_ref is not None:
-        resolved = resolve_last_references((last_ref,))
-        asin, desc = resolved[0]
+        asin, desc = _resolve_single_last_ref(last_ref)
         console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
@@ -1765,28 +1792,31 @@ def history(ctx, asin, last_ref):
 @cli.command()
 @click.option("--days", type=click.IntRange(min=1), default=7, help="Look back this many days (default: 7)")
 @click.option("--show-new", is_flag=True, default=False, help="Include newly tracked item details (only count shown by default)")
+@click.option("--atl", is_flag=True, default=False, help="Include wishlist items at all-time low price")
 @click.pass_context
-def recap(ctx, days, show_new):
+def recap(ctx, days, show_new, atl):
     """Show a recap of price changes across tracked items.
 
     Scans price history files and reports items that dropped in price,
     new items tracked, and wishlist items at target.
     """
-    logger.info("recap days=%s show_new=%s", days, show_new)
+    logger.info("recap days=%s show_new=%s atl=%s", days, show_new, atl)
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     drops, new_items = scan_price_changes(days)
     if not drops and not new_items and not has_price_history():
         console.print("[dim]No price history yet. Run 'deals find' or 'deals search' to start tracking.[/dim]")
         return
     wishlist_hits = find_wishlist_hits()
-    display_recap(drops, new_items, wishlist_hits, days, cur, show_new)
+    atl_hits = find_wishlist_atl_hits() if atl else None
+    display_recap(drops, new_items, wishlist_hits, days, cur, show_new, atl_hits=atl_hits)
 
 
 @cli.command()
 @click.option("--webhook", default=None, help="Webhook URL to POST results to")
 @click.option("--webhook-format", type=click.Choice(["generic", "slack", "discord", "teams", "ntfy"]), default="generic", help="Webhook payload format")
+@click.option("--webhook-template", type=click.Path(exists=True, dir_okay=False, readable=True, path_type=Path), default=None, help="Path to a template file for webhook body (one block per hit, joined with newlines). Use {{ and }} for literal braces.")
 @click.pass_context
-def notify(ctx, webhook, webhook_format):
+def notify(ctx, webhook, webhook_format, webhook_template):
     """Check wishlist and send notifications for items at target price.
 
     \b
@@ -1795,7 +1825,11 @@ def notify(ctx, webhook, webhook_format):
         deals notify --webhook https://hooks.slack.com/... --webhook-format slack
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
-    logger.info("notify webhook_set=%s webhook_format=%s", bool(webhook), webhook_format)
+    logger.info("notify webhook_set=%s webhook_format=%s webhook_template=%s", bool(webhook), webhook_format, webhook_template)
+    if webhook_template is not None and webhook_format != "generic":
+        raise click.UsageError("--webhook-template and --webhook-format are mutually exclusive")
+    if webhook_template is not None and not webhook:
+        raise click.UsageError("--webhook-template requires --webhook")
     if webhook:
         validate_webhook_url(webhook)
 
@@ -1811,7 +1845,9 @@ def notify(ctx, webhook, webhook_format):
         products = dc.get_products_batch([item["asin"] for item in items])
 
     _safe_record_prices(products)
+    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
     hits = []
+    extras: dict[str, dict] = {}
     for p in products:
         target = targets.get(p.asin)
         if target is not None and p.price is not None and p.price <= target:
@@ -1822,6 +1858,10 @@ def notify(ctx, webhook, webhook_format):
                 "target": target,
                 "url": p.url,
             })
+            extras[p.asin] = {
+                "currency": p.currency,
+                "discount_pct": float(p.discount_pct or 0.0),
+            }
 
     if not hits:
         if not webhook:
@@ -1831,8 +1871,13 @@ def notify(ctx, webhook, webhook_format):
         return
 
     if webhook:
-        cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
-        body, headers = format_webhook_payload(hits, webhook_format, currency=cur)
+        tmpl_str = webhook_template.read_text(encoding="utf-8") if webhook_template is not None else None
+        try:
+            body, headers = format_webhook_payload(
+                hits, webhook_format, currency=cur, template=tmpl_str, extras=extras,
+            )
+        except ValueError as e:
+            raise click.ClickException(str(e))
         req = urllib.request.Request(webhook, data=body, headers=headers)
         try:
             logger.debug("webhook POST %s format=%s payload_bytes=%d", webhook, webhook_format, len(body))

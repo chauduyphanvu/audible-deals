@@ -7,6 +7,7 @@ import difflib
 import json
 import logging
 import os
+import random
 import re
 import tempfile
 import time
@@ -15,6 +16,7 @@ from pathlib import Path
 from typing import Any, Iterator
 
 import audible
+import click
 
 logger = logging.getLogger(__name__)
 
@@ -253,29 +255,53 @@ class DealsClient:
         logger.debug("DealsClient init locale=%s auth_file=%s", locale, auth_file)
 
     def _api_get(self, endpoint: str, **params: Any) -> dict:
-        """Wrap self.client.get with timing + DEBUG logging."""
+        """Wrap self.client.get with timing + DEBUG logging + retry-with-backoff."""
         debug = logger.isEnabledFor(logging.DEBUG)
-        if debug:
-            logger.debug("API GET %s params=%s", endpoint, _log_request_params(params))
-            start = time.monotonic()
-        resp = self.client.get(endpoint, **params)
-        if isinstance(resp, tuple):
-            resp = resp[0]
-        if debug:
-            elapsed_ms = (time.monotonic() - start) * 1000
-            items = 0
-            if isinstance(resp, dict):
-                for key in ("products", "items", "categories"):
-                    val = resp.get(key)
-                    if isinstance(val, list):
-                        items = len(val)
-                        break
-            total = resp.get("total_results") if isinstance(resp, dict) else None
-            logger.debug(
-                "API GET %s done %.0fms items=%d total=%s",
-                endpoint, elapsed_ms, items, total,
-            )
-        return resp
+        _RETRY_DELAYS = (1.0, 2.0)
+        for attempt in range(1, 4):
+            if debug:
+                logger.debug("API GET %s params=%s", endpoint, _log_request_params(params))
+                start = time.monotonic()
+            try:
+                resp = self.client.get(endpoint, **params)
+            except Exception as exc:
+                if isinstance(exc, click.ClickException):
+                    raise
+                status = getattr(exc, "status_code", None) or getattr(
+                    getattr(exc, "response", None), "status_code", None
+                )
+                if status is not None and 400 <= status < 500 and status != 429:
+                    raise
+                if attempt >= 3:
+                    logger.warning(
+                        "API GET %s failed (attempt %d/%d): %s; giving up",
+                        endpoint, attempt, 3, exc,
+                    )
+                    raise
+                delay = max(0.0, _RETRY_DELAYS[attempt - 1] + random.uniform(-0.3, 0.3))
+                logger.warning(
+                    "API GET %s failed (attempt %d/%d): %s; retrying in %.1fs",
+                    endpoint, attempt, 3, exc, delay,
+                )
+                time.sleep(delay)
+                continue
+            if isinstance(resp, tuple):
+                resp = resp[0]
+            if debug:
+                elapsed_ms = (time.monotonic() - start) * 1000
+                items = 0
+                if isinstance(resp, dict):
+                    for key in ("products", "items", "categories"):
+                        val = resp.get(key)
+                        if isinstance(val, list):
+                            items = len(val)
+                            break
+                total = resp.get("total_results") if isinstance(resp, dict) else None
+                logger.debug(
+                    "API GET %s done %.0fms items=%d total=%s",
+                    endpoint, elapsed_ms, items, total,
+                )
+            return resp
 
     def login(self, username: str, password: str) -> None:
         """Interactive Audible login. Persists tokens to auth_file."""

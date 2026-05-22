@@ -218,11 +218,50 @@ def load_last_results() -> tuple[str, list[dict]]:
     raise click.ClickException("Last results cache is corrupt.")
 
 
-def resolve_last_references(refs: tuple[int, ...]) -> list[tuple[str, str]]:
+def _expand_ref_string(ref: str | int) -> list[int]:
+    """Expand a single ref (int or string like '1-3,5') into a flat list of ints."""
+    if isinstance(ref, int):
+        return [ref]
+    expanded: list[int] = []
+    for part in str(ref).split(","):
+        part = part.strip()
+        if not part:
+            raise click.ClickException(f"Invalid --last value: empty part in {ref!r}.")
+        if "-" in part:
+            halves = part.split("-", 1)
+            try:
+                start, end = int(halves[0]), int(halves[1])
+            except ValueError:
+                raise click.ClickException(
+                    f"Invalid --last range {part!r}: must be two integers separated by '-'."
+                )
+            if start > end:
+                raise click.ClickException(
+                    f"Invalid --last range {part!r}: start must not exceed end."
+                )
+            if end - start >= 1000:
+                raise click.ClickException(
+                    f"Invalid --last range {part!r}: width must be under 1000."
+                )
+            expanded.extend(range(start, end + 1))
+        else:
+            try:
+                expanded.append(int(part))
+            except ValueError:
+                raise click.ClickException(
+                    f"Invalid --last value {part!r}: must be an integer or range like '1-3'."
+                )
+    return expanded
+
+
+def resolve_last_references(refs: tuple[str | int, ...]) -> list[tuple[str, str]]:
     """Convert 1-indexed position references to (asin, description) tuples from the last results cache."""
     title, data = load_last_results()
-    results: list[tuple[str, str]] = []
+    flat: list[int] = []
     for ref in refs:
+        flat.extend(_expand_ref_string(ref))
+    results: list[tuple[str, str]] = []
+    for ref in flat:
         if ref < 1 or ref > len(data):
             raise click.ClickException(
                 f"--last {ref} is out of range (cache has {len(data)} result(s))."
@@ -425,4 +464,43 @@ def find_wishlist_hits() -> list[dict]:
         entries = load_price_history(item["asin"])
         if entries and item.get("max_price") is not None and entries[-1]["price"] <= item["max_price"]:
             hits.append(item)
+    return hits
+
+
+def find_wishlist_atl_hits() -> list[dict]:
+    """Find wishlist items whose latest tracked price is at their all-time low.
+
+    Requires ≥2 numeric history entries and the chronologically-latest entry
+    to have a numeric price. Returns list of dicts with keys: asin, title, price, target.
+    """
+    wishlist_items = load_wishlist()
+    hits: list[dict] = []
+    for item in wishlist_items:
+        if not _ASIN_RE.fullmatch(item.get("asin", "")):
+            continue
+        entries = load_price_history(item["asin"])
+        if not entries:
+            continue
+        last_price = entries[-1].get("price")
+        if not isinstance(last_price, (int, float)):
+            continue
+        prices = [float(e["price"]) for e in entries if isinstance(e.get("price"), (int, float))]
+        if len(prices) < 2:
+            continue
+        latest = float(last_price)
+        min_price = min(prices)
+        if latest > min_price:
+            continue
+        title = item.get("title", "")
+        if not title:
+            for e in reversed(entries):
+                if e.get("title"):
+                    title = e["title"]
+                    break
+        hits.append({
+            "asin": item["asin"],
+            "title": title,
+            "price": latest,
+            "target": item.get("max_price"),
+        })
     return hits
