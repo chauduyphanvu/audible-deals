@@ -11,7 +11,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - **Compare** — side-by-side comparison of multiple audiobooks, with a $/hr value calculation
 - **Interactive mode** — browse results, view details, open in browser, or add to wishlist without leaving the CLI
 - **Wishlist & watch** — save ASINs you're eyeing and check back for price drops
-- **Price history** — automatically tracks prices over time with sparkline charts and relative dates; flags an all-time-low with a ★ badge in the results table
+- **Price history** — automatically tracks prices over time with sparkline charts and relative dates; flags an all-time-low with a ★ badge and shows a `vs hist` column with the percent above/below the historical median
 - **Saved profiles** — save your favorite search configurations and reuse them with `--profile` (works on `find` and `search`)
 - **Global config** — set persistent defaults (max price, skip-owned, locale, etc.) applied to every command
 - **Recap & notify** — get a summary of recent price drops, or send webhook notifications (Slack / Discord / Teams / ntfy) for deals at target
@@ -286,12 +286,16 @@ deals open --last 3
 # Compare results #1 and #2
 deals compare --last 1 --last 2
 
+# Range or comma list (compare, wishlist add/remove)
+deals compare --last 1-3
+deals wishlist add --last 1,3,5 --max-price 5
+deals wishlist add --last 1-3,7 --max-price 5
+
 # Mix positional ASINs with --last references
 deals compare B00EXAMPLE --last 2
-
-# Add results #1 and #4 to your wishlist
-deals wishlist add --last 1 --last 4 --max-price 5
 ```
+
+Single-item commands (`detail`, `open`, `history`) only accept a single position — a range like `--last 1-3` is rejected with an error.
 
 The cache is updated every time you run `deals find` or `deals search`.
 
@@ -416,7 +420,7 @@ deals watch --buy-only --sort price --show-url
 
 For fully automated alerts without a terminal, schedule `notify` on a cron job (see [Recap & notifications](#recap--notifications)).
 
-Price history is recorded automatically every time an ASIN appears in `find` or `search` results — one entry per day, kept for up to 365 days. The `history` command shows a table with relative dates ("3d ago", "1w ago") and a sparkline chart of the price trend.
+Price history is recorded automatically every time an ASIN appears in `find` or `search` results — one entry per day, kept for up to 365 days. The `history` command shows a table with relative dates ("3d ago", "1w ago") and a sparkline chart of the price trend. Results tables also show a `vs hist` column (percent above/below each ASIN's historical median price, with `-` for ASINs that don't yet have at least three price points).
 
 You can also open any audiobook's Audible page directly:
 
@@ -432,9 +436,12 @@ deals recap
 
 # Look back further
 deals recap --days 30
+
+# Also list wishlist items currently at their all-time low
+deals recap --atl
 ```
 
-The recap shows up to 10 biggest price drops (with book titles when available), a count of newly tracked items, and wishlist items currently at target. Use `--show-new` to include individual newly tracked item details.
+The recap shows up to 10 biggest price drops (with book titles when available), a count of newly tracked items, and wishlist items currently at target. Use `--show-new` to include individual newly tracked item details. Use `--atl` to add a section listing wishlist items whose latest tracked price equals their local all-time low.
 
 For automation (cron jobs, CI, monitoring):
 
@@ -465,6 +472,15 @@ deals notify --webhook https://ntfy.sh/your-topic --webhook-format ntfy
 | `discord` | `{"content": "..."}` with markdown links (embed previews suppressed) |
 | `teams` | Legacy `MessageCard` JSON for Teams incoming webhooks — works on tenants that still accept the deprecated O365 connector format, not on the newer Power Automate / Workflows webhooks (which need Adaptive Cards) |
 | `ntfy` | Plain-text body with `Title`, `Tags`, and `Priority` headers |
+
+For any other destination, supply a custom template with `--webhook-template PATH`:
+
+```bash
+deals notify --webhook https://example.com/hook \
+  --webhook-template ./tmpl.txt
+```
+
+The file contains a Python `str.format`-style template that is rendered once per hit and joined with newlines. Available keys: `title`, `price`, `target`, `url`, `currency`, `asin`, `discount_pct`. Use `{{` and `}}` for literal braces. The body is sent as `text/plain; charset=utf-8`. `--webhook-template` requires `--webhook` and is mutually exclusive with `--webhook-format`.
 
 ## Export
 
@@ -523,6 +539,26 @@ deals completions zsh >> ~/.zshrc
 # Fish
 deals completions fish > ~/.config/fish/completions/deals.fish
 ```
+
+After sourcing the completions, `--profile`, `--genre`, and `--exclude-genre` tab-complete from your saved profiles and the built-in genre alias list. `deals profile show <tab>` and `deals profile delete <tab>` also complete profile names.
+
+## Debugging
+
+```bash
+# Run with INFO-level logs on stderr
+deals -v find --genre sci-fi --max-price 5
+
+# Run with full DEBUG-level logs
+deals -vv find --genre sci-fi --max-price 5
+
+# Force DEBUG regardless of -v
+DEALS_DEBUG=1 deals find --genre sci-fi
+
+# Also persist DEBUG to a rotating log file (5 MB × 3 backups)
+DEALS_LOG_FILE=~/.cache/deals.log deals notify --webhook https://...
+```
+
+`DEALS_LOG_FILE` is useful for cron and `watch --every` runs where stderr is discarded — the file handler captures DEBUG records regardless of the `-v` flag. Transient API failures are retried automatically up to three times with jittered exponential backoff, and each retry is logged at WARNING.
 
 ## Advanced recipes
 
