@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 - `vs hist` column in results table — percent above/below the historical median for each ASIN with ≥3 recorded prices
-- Retry-with-backoff on transient API failures (`_api_get`): 3 attempts, jittered, logged at WARNING (incl. final "giving up")
+- Retry-with-backoff on transient API failures (`_api_get`): up to 3 attempts (2 retries), jittered, each attempt-failure logged at WARNING (incl. final "giving up")
 - Range syntax for `--last`: `1-5`, `1,3,5`, `1-3,7,9` (works on `compare`, `wishlist add/remove`; single-ref commands reject expansion)
 - Dynamic shell completion for `--profile`, `--genre`, `--exclude-genre`, and `deals profile show/delete NAME`
 - `deals recap --atl` — lists wishlist items currently at their all-time low

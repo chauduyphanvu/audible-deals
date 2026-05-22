@@ -295,7 +295,7 @@ deals wishlist add --last 1-3,7 --max-price 5
 deals compare B00EXAMPLE --last 2
 ```
 
-Single-item commands (`detail`, `open`, `history`) only accept a single position — a range like `--last 1-3` is rejected with an error.
+Single-item commands (`detail`, `open`, `history`) only accept a single position — a range like `--last 1-3` is rejected with an error. Range width is capped at under 1000 (e.g. `--last 1-1000` errors out).
 
 The cache is updated every time you run `deals find` or `deals search`.
 
@@ -480,7 +480,7 @@ deals notify --webhook https://example.com/hook \
   --webhook-template ./tmpl.txt
 ```
 
-The file contains a Python `str.format`-style template that is rendered once per hit and joined with newlines. Available keys: `title`, `price`, `target`, `url`, `currency`, `asin`, `discount_pct`. Use `{{` and `}}` for literal braces. The body is sent as `text/plain; charset=utf-8`. `--webhook-template` requires `--webhook` and is mutually exclusive with `--webhook-format`.
+The file contains a Python `str.format`-style template that is rendered once per hit and joined with newlines. Available keys: `title`, `price`, `target`, `url`, `currency`, `asin`, `discount_pct`. Use `{{` and `}}` for literal braces. The body is sent as `text/plain; charset=utf-8`. `--webhook-template` requires `--webhook` and cannot be combined with a non-default `--webhook-format` (slack/discord/teams/ntfy).
 
 ## Export
 
@@ -558,7 +558,7 @@ DEALS_DEBUG=1 deals find --genre sci-fi
 DEALS_LOG_FILE=~/.cache/deals.log deals notify --webhook https://...
 ```
 
-`DEALS_LOG_FILE` is useful for cron and `watch --every` runs where stderr is discarded — the file handler captures DEBUG records regardless of the `-v` flag. Transient API failures are retried automatically up to three times with jittered exponential backoff, and each retry is logged at WARNING.
+`DEALS_LOG_FILE` is useful for cron and `watch --every` runs where stderr is discarded — the file handler captures DEBUG records regardless of the `-v` flag. Transient API failures get up to three attempts (two retries) with jittered exponential backoff; each attempt-failure line is logged at WARNING, including the final "giving up" before the exception is re-raised.
 
 ## Advanced recipes
 
