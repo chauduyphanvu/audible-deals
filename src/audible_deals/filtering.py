@@ -44,175 +44,176 @@ def filter_products(
     if skip_asins:
         before = len(filtered)
         filtered = [p for p in filtered if p.asin not in skip_asins]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["owned"] = removed
 
     if max_price is not None:
         before = len(filtered)
         filtered = [p for p in filtered if p.price is not None and p.price <= max_price]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["max price"] = removed
 
     if min_rating > 0:
         before = len(filtered)
         filtered = [p for p in filtered if p.rating >= min_rating]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["min rating"] = removed
 
     if min_ratings > 0:
         before = len(filtered)
         filtered = [p for p in filtered if p.num_ratings >= min_ratings]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["min ratings"] = removed
 
     if min_hours > 0:
         before = len(filtered)
         filtered = [p for p in filtered if p.hours >= min_hours]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["min hours"] = removed
 
     if max_pph is not None:
         before = len(filtered)
         filtered = [p for p in filtered if price_per_hour(p) <= max_pph]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["max $/hr"] = removed
 
     if language:
         before = len(filtered)
         lang_lower = language.lower()
         filtered = [p for p in filtered if p.language.lower() == lang_lower]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["language"] = removed
 
     if narrator:
         before = len(filtered)
         narrator_lower = narrator.lower()
         filtered = [
-            p for p in filtered
-            if any(narrator_lower in n.lower() for n in p.narrators)
+            p for p in filtered if any(narrator_lower in n.lower() for n in p.narrators)
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["narrator"] = removed
 
     if author:
         before = len(filtered)
         author_lower = author.lower()
         filtered = [
-            p for p in filtered
-            if any(author_lower in a.lower() for a in p.authors)
+            p for p in filtered if any(author_lower in a.lower() for a in p.authors)
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["author"] = removed
 
     if series:
         before = len(filtered)
         series_lower = series.lower()
-        filtered = [
-            p for p in filtered
-            if series_lower in p.series_name.lower()
-        ]
-        if (removed := before - len(filtered)):
+        filtered = [p for p in filtered if series_lower in p.series_name.lower()]
+        if removed := before - len(filtered):
             breakdown["series"] = removed
 
     if publisher:
         before = len(filtered)
         publisher_lower = publisher.lower()
-        filtered = [
-            p for p in filtered
-            if publisher_lower in p.publisher.lower()
-        ]
-        if (removed := before - len(filtered)):
+        filtered = [p for p in filtered if publisher_lower in p.publisher.lower()]
+        if removed := before - len(filtered):
             breakdown["publisher"] = removed
 
     if exclude_authors:
         before = len(filtered)
         exclude_lower = [a.lower() for a in exclude_authors]
         filtered = [
-            p for p in filtered
+            p
+            for p in filtered
             if not any(
                 ex in author_lc
                 for author_lc in (a.lower() for a in p.authors)
                 for ex in exclude_lower
             )
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["excluded authors"] = removed
 
     if exclude_narrators:
         before = len(filtered)
         exclude_lower = [n.lower() for n in exclude_narrators]
         filtered = [
-            p for p in filtered
+            p
+            for p in filtered
             if not any(
                 ex in narrator_lc
                 for narrator_lc in (n.lower() for n in p.narrators)
                 for ex in exclude_lower
             )
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["excluded narrators"] = removed
 
     if on_sale and min_discount <= 0:
         before = len(filtered)
-        filtered = [p for p in filtered if p.discount_pct is not None and p.discount_pct > 0]
-        if (removed := before - len(filtered)):
+        filtered = [
+            p for p in filtered if p.discount_pct is not None and p.discount_pct > 0
+        ]
+        if removed := before - len(filtered):
             breakdown["on sale"] = removed
 
     if min_discount > 0:
         before = len(filtered)
         filtered = [
-            p for p in filtered
+            p
+            for p in filtered
             if p.discount_pct is not None and p.discount_pct >= min_discount
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["min discount"] = removed
 
     if exclude_category_ids:
         before = len(filtered)
         filtered = [
-            p for p in filtered
+            p
+            for p in filtered
             if not any(cid in exclude_category_ids for cid in p.category_ids)
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["excluded genres"] = removed
 
     if genre:
         before = len(filtered)
         genre_lower = genre.lower()
         filtered = [
-            p for p in filtered
+            p
+            for p in filtered
             if any(genre_lower in cat.lower() for cat in p.categories)
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["genre"] = removed
 
     if skip_plus:
         before = len(filtered)
         filtered = [p for p in filtered if not p.in_plus_catalog]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["plus catalog"] = removed
     elif only_plus:
         before = len(filtered)
         filtered = [p for p in filtered if p.in_plus_catalog]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["not plus"] = removed
 
     if exclude_keywords:
         before = len(filtered)
         keywords_lower = [k.lower() for k in exclude_keywords]
         filtered = [
-            p for p in filtered
+            p
+            for p in filtered
             if not any(
-                k in p.title.lower() or k in p.subtitle.lower()
-                for k in keywords_lower
+                k in p.title.lower() or k in p.subtitle.lower() for k in keywords_lower
             )
         ]
-        if (removed := before - len(filtered)):
+        if removed := before - len(filtered):
             breakdown["excluded keywords"] = removed
 
     logger.debug(
         "filter_products in=%d out=%d breakdown=%s",
-        len(products), len(filtered), breakdown,
+        len(products),
+        len(filtered),
+        breakdown,
     )
     return filtered, breakdown
 
@@ -236,9 +237,11 @@ def value_score(p: Product) -> float:
 def sort_local(products: list[Product], sort: str) -> list[Product]:
     """Re-sort locally when combining pages (server sort is per-page)."""
     if sort == "price":
-        return sorted(products, key=lambda p: (p.price if p.price is not None else 9999))
+        return sorted(products, key=lambda p: p.price if p.price is not None else 9999)
     elif sort == "-price":
-        return sorted(products, key=lambda p: (p.price if p.price is not None else 0), reverse=True)
+        return sorted(
+            products, key=lambda p: p.price if p.price is not None else 0, reverse=True
+        )
     elif sort == "rating":
         return sorted(products, key=lambda p: p.rating, reverse=True)
     elif sort == "length":

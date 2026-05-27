@@ -4,9 +4,8 @@ from __future__ import annotations
 
 import copy
 import json
-from pathlib import Path
 from types import SimpleNamespace
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -16,6 +15,7 @@ from audible_deals.client import Product
 # ---------------------------------------------------------------------------
 # Product factory
 # ---------------------------------------------------------------------------
+
 
 def make_product(**overrides) -> Product:
     """Build a Product with sensible defaults. Override any field via kwargs."""
@@ -53,24 +53,60 @@ def sample_product():
 def products_for_filtering():
     """A set of products that exercises every filter path."""
     return [
-        make_product(asin="CHEAP1", price=2.99, list_price=10.0, rating=4.5,
-                     length_minutes=600, language="english",
-                     category_ids=["cat_fiction"]),
-        make_product(asin="CHEAP2", price=4.99, list_price=20.0, rating=3.0,
-                     length_minutes=120, language="english",
-                     category_ids=["cat_fiction"]),
-        make_product(asin="EXPENSIVE", price=25.00, list_price=25.0, rating=5.0,
-                     length_minutes=900, language="english",
-                     category_ids=["cat_scifi"]),
-        make_product(asin="NO_PRICE", price=None, list_price=None, rating=4.0,
-                     length_minutes=300, language="english",
-                     category_ids=["cat_fiction"]),
-        make_product(asin="FRENCH", price=3.00, list_price=15.0, rating=4.0,
-                     length_minutes=400, language="french",
-                     category_ids=["cat_fiction"]),
-        make_product(asin="EROTICA", price=1.99, list_price=10.0, rating=4.0,
-                     length_minutes=200, language="english",
-                     category_ids=["cat_erotica"]),
+        make_product(
+            asin="CHEAP1",
+            price=2.99,
+            list_price=10.0,
+            rating=4.5,
+            length_minutes=600,
+            language="english",
+            category_ids=["cat_fiction"],
+        ),
+        make_product(
+            asin="CHEAP2",
+            price=4.99,
+            list_price=20.0,
+            rating=3.0,
+            length_minutes=120,
+            language="english",
+            category_ids=["cat_fiction"],
+        ),
+        make_product(
+            asin="EXPENSIVE",
+            price=25.00,
+            list_price=25.0,
+            rating=5.0,
+            length_minutes=900,
+            language="english",
+            category_ids=["cat_scifi"],
+        ),
+        make_product(
+            asin="NO_PRICE",
+            price=None,
+            list_price=None,
+            rating=4.0,
+            length_minutes=300,
+            language="english",
+            category_ids=["cat_fiction"],
+        ),
+        make_product(
+            asin="FRENCH",
+            price=3.00,
+            list_price=15.0,
+            rating=4.0,
+            length_minutes=400,
+            language="french",
+            category_ids=["cat_fiction"],
+        ),
+        make_product(
+            asin="EROTICA",
+            price=1.99,
+            list_price=10.0,
+            rating=4.0,
+            length_minutes=200,
+            language="english",
+            category_ids=["cat_erotica"],
+        ),
     ]
 
 
@@ -130,6 +166,7 @@ def raw_api_product_minimal():
 # Temp config dir
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def tmp_config(tmp_path, monkeypatch):
     """Redirect all config paths to a temp directory and fix Rich console for Click."""
@@ -139,9 +176,10 @@ def tmp_config(tmp_path, monkeypatch):
     import audible_deals.state as state_mod
     from rich.console import Console
 
-    monkeypatch.setattr(client_mod, "CONFIG_DIR", tmp_path)
     monkeypatch.setattr(client_mod, "AUTH_FILE", tmp_path / "auth.json")
-    monkeypatch.setattr(client_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json")
+    monkeypatch.setattr(
+        client_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json"
+    )
     monkeypatch.setattr(cli_mod, "HISTORY_DIR", tmp_path / "history")
     monkeypatch.setattr(cli_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json")
     monkeypatch.setattr(cli_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
@@ -169,6 +207,7 @@ def tmp_config(tmp_path, monkeypatch):
 # Mock DealsClient
 # ---------------------------------------------------------------------------
 
+
 @pytest.fixture
 def mock_client(monkeypatch):
     """Patch _get_client to return a mock that doesn't hit the network."""
@@ -189,6 +228,7 @@ def mock_client(monkeypatch):
 # Raw API response builder
 # ---------------------------------------------------------------------------
 
+
 def make_raw(asin: str = "B00RAW", **overrides) -> dict:
     """Build a raw API response dict from the RAW_API_PRODUCT template."""
     raw = copy.deepcopy(RAW_API_PRODUCT)
@@ -202,6 +242,7 @@ def make_raw(asin: str = "B00RAW", **overrides) -> dict:
 # ---------------------------------------------------------------------------
 # Low-level API mock (patches audible.Client, not DealsClient)
 # ---------------------------------------------------------------------------
+
 
 @pytest.fixture
 def api(tmp_config, monkeypatch):

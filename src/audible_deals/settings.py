@@ -118,7 +118,10 @@ class Settings:
 
         if profile:
             for key in _CONFIG_KEYS + _PROFILE_EXTRA_KEYS:
-                if profile.get(key) is not None and ctx.get_parameter_source(key) != _CL:
+                if (
+                    profile.get(key) is not None
+                    and ctx.get_parameter_source(key) != _CL
+                ):
                     merged[key] = profile[key]
                     if debug:
                         source[key] = "profile"

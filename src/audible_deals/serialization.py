@@ -41,7 +41,9 @@ def deserialize_product(d: dict) -> Product | None:
     try:
         return Product(**{k: v for k, v in d.items() if k in PRODUCT_FIELDS})
     except TypeError:
-        logger.warning("deserialize_product failed for asin=%r", d.get("asin"), exc_info=True)
+        logger.warning(
+            "deserialize_product failed for asin=%r", d.get("asin"), exc_info=True
+        )
         return None
 
 

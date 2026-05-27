@@ -53,10 +53,32 @@ def validate_webhook_url(url: str) -> None:
             )
 
 
-_NAME_STOPWORDS = frozenset({
-    "the", "a", "an", "of", "in", "on", "at", "to", "for", "and", "or", "my",
-    "no", "not", "how", "why", "what", "all", "new", "old", "red", "dark",
-})
+_NAME_STOPWORDS = frozenset(
+    {
+        "the",
+        "a",
+        "an",
+        "of",
+        "in",
+        "on",
+        "at",
+        "to",
+        "for",
+        "and",
+        "or",
+        "my",
+        "no",
+        "not",
+        "how",
+        "why",
+        "what",
+        "all",
+        "new",
+        "old",
+        "red",
+        "dark",
+    }
+)
 
 
 def looks_like_person_name(query: str) -> bool:
@@ -131,18 +153,22 @@ def format_webhook_payload(
             f"• [{h['title']}]({h['url']}) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
             for h in hits
         )
-        body = json.dumps({
-            "@type": "MessageCard",
-            "@context": "https://schema.org/extensions",
-            "summary": "Audible Deals",
-            "themeColor": "0078D7",
-            "title": f"Audible Deals ({len(hits)})",
-            "sections": [{"text": text}],
-        })
+        body = json.dumps(
+            {
+                "@type": "MessageCard",
+                "@context": "https://schema.org/extensions",
+                "summary": "Audible Deals",
+                "themeColor": "0078D7",
+                "title": f"Audible Deals ({len(hits)})",
+                "sections": [{"text": text}],
+            }
+        )
         headers = {"Content-Type": "application/json"}
     elif fmt == "ntfy":
         n = len(hits)
-        lines = "\n".join(f"• {h['title']} — {currency}{h['price']:.2f} ({h['url']})" for h in hits)
+        lines = "\n".join(
+            f"• {h['title']} — {currency}{h['price']:.2f} ({h['url']})" for h in hits
+        )
         body = f"Audible Deals ({n})\n{lines}"
         headers = {
             "Content-Type": "text/plain; charset=utf-8",
@@ -174,7 +200,11 @@ def parse_interval(value: str) -> int:
         # Reject input with unrecognized characters
         remainder = re.sub(r"\d+\s*(h|m|s)", "", value).strip()
         if remainder:
-            raise click.BadParameter(f"Cannot parse interval '{raw}'. Use e.g. '30m', '2h', '1h30m'.")
+            raise click.BadParameter(
+                f"Cannot parse interval '{raw}'. Use e.g. '30m', '2h', '1h30m'."
+            )
     if total <= 0:
-        raise click.BadParameter(f"Interval must be positive. Use e.g. '30m', '2h', '1h30m'.")
+        raise click.BadParameter(
+            "Interval must be positive. Use e.g. '30m', '2h', '1h30m'."
+        )
     return total

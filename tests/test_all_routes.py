@@ -7,21 +7,18 @@ module decomposition didn't break any imports, wiring, or behavior.
 from __future__ import annotations
 
 import json
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-import click
-import pytest
 from click.testing import CliRunner
 
 from audible_deals.cli import cli
-from audible_deals.client import Product
-from tests.conftest import make_product, make_raw
+from tests.conftest import make_product
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
 
 def _run(runner, args, **kwargs):
     """Invoke the CLI and return the result; fail on unexpected errors."""
@@ -42,6 +39,7 @@ def _setup_library_mock(mock_client, products):
 def _seed_last_results(tmp_config, products):
     """Write a last_results.json cache file."""
     from audible_deals.serialization import serialize_product as _serialize_product
+
     data = {
         "title": "Test Results",
         "results": [_serialize_product(p) for p in products],
@@ -205,22 +203,41 @@ class TestSearchCommand:
         assert result.exit_code == 0
 
     def test_search_all_filters(self, tmp_config, mock_client):
-        products = [make_product(asin="B012", price=2.99, rating=4.5, num_ratings=500,
-                                 length_minutes=600, language="english")]
+        products = [
+            make_product(
+                asin="B012",
+                price=2.99,
+                rating=4.5,
+                num_ratings=500,
+                length_minutes=600,
+                language="english",
+            )
+        ]
         _setup_search_mock(mock_client, products)
-        result = _run(CliRunner(), [
-            "search", "test",
-            "--max-price", "5",
-            "--min-rating", "4.0",
-            "--min-ratings", "100",
-            "--min-hours", "1",
-            "--on-sale",
-            "--min-discount", "10",
-            "--sort", "price",
-            "--limit", "10",
-            "--show-url",
-            "--first-in-series",
-        ])
+        result = _run(
+            CliRunner(),
+            [
+                "search",
+                "test",
+                "--max-price",
+                "5",
+                "--min-rating",
+                "4.0",
+                "--min-ratings",
+                "100",
+                "--min-hours",
+                "1",
+                "--on-sale",
+                "--min-discount",
+                "10",
+                "--sort",
+                "price",
+                "--limit",
+                "10",
+                "--show-url",
+                "--first-in-series",
+            ],
+        )
         assert result.exit_code == 0
 
     def test_search_exclude_genre(self, tmp_config, mock_client):
@@ -239,7 +256,9 @@ class TestSearchCommand:
     def test_search_with_profile(self, tmp_config, mock_client):
         # Save a profile first
         profiles_file = tmp_config / "profiles.json"
-        profiles_file.write_text(json.dumps({"test-profile": {"max_price": 5.0, "genre": "sci-fi"}}))
+        profiles_file.write_text(
+            json.dumps({"test-profile": {"max_price": 5.0, "genre": "sci-fi"}})
+        )
         products = [make_product(asin="B015", price=3.99)]
         _setup_search_mock(mock_client, products)
         mock_client.resolve_genre.return_value = ("cat1", "Science Fiction")
@@ -328,21 +347,33 @@ class TestFindCommand:
         assert isinstance(data, list)
 
     def test_find_all_filters(self, tmp_config, mock_client):
-        products = [make_product(asin="F007", price=2.99, rating=4.5,
-                                 num_ratings=200, length_minutes=480)]
+        products = [
+            make_product(
+                asin="F007", price=2.99, rating=4.5, num_ratings=200, length_minutes=480
+            )
+        ]
         _setup_search_mock(mock_client, products)
-        result = _run(CliRunner(), [
-            "find",
-            "--max-price", "5",
-            "--min-rating", "4.0",
-            "--min-ratings", "50",
-            "--min-hours", "1",
-            "--sort", "discount",
-            "--limit", "10",
-            "--on-sale",
-            "--first-in-series",
-            "--show-url",
-        ])
+        result = _run(
+            CliRunner(),
+            [
+                "find",
+                "--max-price",
+                "5",
+                "--min-rating",
+                "4.0",
+                "--min-ratings",
+                "50",
+                "--min-hours",
+                "1",
+                "--sort",
+                "discount",
+                "--limit",
+                "10",
+                "--on-sale",
+                "--first-in-series",
+                "--show-url",
+            ],
+        )
         assert result.exit_code == 0
 
     def test_find_skip_owned(self, tmp_config, mock_client):
@@ -354,7 +385,9 @@ class TestFindCommand:
 
     def test_find_with_profile(self, tmp_config, mock_client):
         profiles_file = tmp_config / "profiles.json"
-        profiles_file.write_text(json.dumps({"scifi": {"genre": "sci-fi", "max_price": 5.0}}))
+        profiles_file.write_text(
+            json.dumps({"scifi": {"genre": "sci-fi", "max_price": 5.0}})
+        )
         products = [make_product(asin="F009", price=3.99)]
         _setup_search_mock(mock_client, products)
         mock_client.resolve_genre.return_value = ("cat1", "Science Fiction")
@@ -485,7 +518,9 @@ class TestLibraryCommand:
             make_product(asin="L004", price=5.99, rating=3.0, authors=["Other"]),
         ]
         _setup_library_mock(mock_client, products)
-        result = _run(CliRunner(), ["library", "--author", "Andy", "--min-rating", "4.0"])
+        result = _run(
+            CliRunner(), ["library", "--author", "Andy", "--min-rating", "4.0"]
+        )
         assert result.exit_code == 0
 
     def test_library_export(self, tmp_config, mock_client):
@@ -702,10 +737,19 @@ class TestWatchCommand:
 
 class TestProfileCommands:
     def test_profile_save(self, tmp_config, mock_client):
-        result = _run(CliRunner(), [
-            "profile", "save", "my-scifi",
-            "--genre", "sci-fi", "--max-price", "5", "--first-in-series",
-        ])
+        result = _run(
+            CliRunner(),
+            [
+                "profile",
+                "save",
+                "my-scifi",
+                "--genre",
+                "sci-fi",
+                "--max-price",
+                "5",
+                "--first-in-series",
+            ],
+        )
         assert result.exit_code == 0
         assert "my-scifi" in result.output
 
@@ -839,6 +883,7 @@ class TestRecapCommand:
         hist_dir = tmp_config / "history"
         hist_dir.mkdir()
         import datetime
+
         today = datetime.date.today().isoformat()
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         entries = [
@@ -857,6 +902,7 @@ class TestRecapCommand:
         hist_dir = tmp_config / "history"
         hist_dir.mkdir()
         import datetime
+
         today = datetime.date.today().isoformat()
         entries = [{"date": today, "price": 4.99, "title": "New Item"}]
         (hist_dir / "R002.json").write_text(json.dumps(entries))
@@ -943,11 +989,15 @@ class TestLocaleSupport:
 
 class TestErrorPaths:
     def test_search_genre_and_category_conflict(self, tmp_config, mock_client):
-        result = CliRunner().invoke(cli, ["search", "test", "--genre", "sci-fi", "--category", "cat1"])
+        result = CliRunner().invoke(
+            cli, ["search", "test", "--genre", "sci-fi", "--category", "cat1"]
+        )
         assert result.exit_code != 0
 
     def test_find_genre_and_category_conflict(self, tmp_config, mock_client):
-        result = CliRunner().invoke(cli, ["find", "--genre", "sci-fi", "--category", "cat1"])
+        result = CliRunner().invoke(
+            cli, ["find", "--genre", "sci-fi", "--category", "cat1"]
+        )
         assert result.exit_code != 0
 
     def test_invalid_asin_in_detail(self, tmp_config, mock_client):

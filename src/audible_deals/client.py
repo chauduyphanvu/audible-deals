@@ -9,7 +9,6 @@ import logging
 import os
 import random
 import re
-import tempfile
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -18,27 +17,31 @@ from typing import Any, Iterator
 import audible
 import click
 
-logger = logging.getLogger(__name__)
-
 from audible_deals.constants import (
     AUTH_FILE,
     CATALOG_RESPONSE_GROUPS,
     CATEGORIES_CACHE_FILE,
     CATEGORIES_CACHE_TTL,
-    CONFIG_DIR,
     GENRE_ALIASES,
     LOCALE_CURRENCY,
     LOCALE_DOMAIN,
     MAX_PAGE_SIZE,
 )
-
-
 from audible_deals.constants import _atomic_write as _atomic_write_simple
+
+logger = logging.getLogger(__name__)
 
 
 _CATEGORY_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,30}$")
 
-_LOG_PARAM_KEYS = ("page", "num_results", "products_sort_by", "category_id", "asins", "sort_by")
+_LOG_PARAM_KEYS = (
+    "page",
+    "num_results",
+    "products_sort_by",
+    "category_id",
+    "asins",
+    "sort_by",
+)
 
 
 def _log_request_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -137,7 +140,9 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     list_price = _extract_list_price(raw)
 
     authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
-    narrators = [n.get("name", "") for n in (raw.get("narrators") or []) if n.get("name")]
+    narrators = [
+        n.get("name", "") for n in (raw.get("narrators") or []) if n.get("name")
+    ]
 
     # Rating - nested in overall_distribution
     rating_data = raw.get("rating") or {}
@@ -148,7 +153,9 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
         try:
             rating = float(dist.get("display_average_rating", 0) or 0)
         except (ValueError, TypeError):
-            logger.debug("parse_product %s: bad display_average_rating", raw.get("asin"))
+            logger.debug(
+                "parse_product %s: bad display_average_rating", raw.get("asin")
+            )
         try:
             num_ratings = int(dist.get("num_ratings", 0) or 0)
         except (ValueError, TypeError):
@@ -157,8 +164,8 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     # Categories - flatten ladder structure
     categories: list[str] = []
     category_ids: list[str] = []
-    for ladder in (raw.get("category_ladders") or []):
-        for cat in (ladder.get("ladder") or []):
+    for ladder in raw.get("category_ladders") or []:
+        for cat in ladder.get("ladder") or []:
             name = cat.get("name", "")
             cid = cat.get("id", "")
             if name and name not in categories:
@@ -179,7 +186,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
 
     # Audible Plus detection
     in_plus = False
-    for plan in (raw.get("plans") or []):
+    for plan in raw.get("plans") or []:
         pname = plan.get("plan_name", "")
         if "Plus" in pname or "AYCE" in pname:
             in_plus = True
@@ -260,7 +267,9 @@ class DealsClient:
         _RETRY_DELAYS = (1.0, 2.0)
         for attempt in range(1, 4):
             if debug:
-                logger.debug("API GET %s params=%s", endpoint, _log_request_params(params))
+                logger.debug(
+                    "API GET %s params=%s", endpoint, _log_request_params(params)
+                )
                 start = time.monotonic()
             try:
                 resp = self.client.get(endpoint, **params)
@@ -275,13 +284,20 @@ class DealsClient:
                 if attempt >= 3:
                     logger.warning(
                         "API GET %s failed (attempt %d/%d): %s; giving up",
-                        endpoint, attempt, 3, exc,
+                        endpoint,
+                        attempt,
+                        3,
+                        exc,
                     )
                     raise
                 delay = max(0.0, _RETRY_DELAYS[attempt - 1] + random.uniform(-0.3, 0.3))
                 logger.warning(
                     "API GET %s failed (attempt %d/%d): %s; retrying in %.1fs",
-                    endpoint, attempt, 3, exc, delay,
+                    endpoint,
+                    attempt,
+                    3,
+                    exc,
+                    delay,
                 )
                 time.sleep(delay)
                 continue
@@ -299,7 +315,10 @@ class DealsClient:
                 total = resp.get("total_results") if isinstance(resp, dict) else None
                 logger.debug(
                     "API GET %s done %.0fms items=%d total=%s",
-                    endpoint, elapsed_ms, items, total,
+                    endpoint,
+                    elapsed_ms,
+                    items,
+                    total,
                 )
             return resp
 
@@ -329,7 +348,8 @@ class DealsClient:
         """
         logger.info(
             "login_external locale=%s via_file=%s",
-            self.locale, callback_url_file,
+            self.locale,
+            callback_url_file,
         )
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.auth_file.parent, 0o700)
@@ -343,8 +363,7 @@ class DealsClient:
                 print(oauth_url)
                 print()
                 print(
-                    "After login you'll see a 'Page not found' page. "
-                    "That's expected."
+                    "After login you'll see a 'Page not found' page. That's expected."
                 )
                 print(
                     "Copy the FULL URL from your browser's address bar "
@@ -394,9 +413,7 @@ class DealsClient:
             tokens = accounts[0].get("IdentityTokens", {})
             for key in ("access_token", "refresh_token"):
                 if not isinstance(tokens.get(key), str) or not tokens[key]:
-                    raise ValueError(
-                        f"Libation auth missing required key: {key!r}"
-                    )
+                    raise ValueError(f"Libation auth missing required key: {key!r}")
             auth_data = {
                 "website_cookies": tokens.get("website_cookies"),
                 "adp_token": tokens.get("adp_token"),
@@ -420,9 +437,7 @@ class DealsClient:
             # Already in audible-cli / Mkb79Auth format — validate required keys
             for key in ("access_token", "refresh_token"):
                 if not isinstance(data.get(key), str) or not data[key]:
-                    raise ValueError(
-                        f"Auth file missing required key: {key!r}"
-                    )
+                    raise ValueError(f"Auth file missing required key: {key!r}")
             if "locale_code" in data and data["locale_code"] not in LOCALE_DOMAIN:
                 raise ValueError(
                     f"Unknown locale_code: {data['locale_code']!r}. "
@@ -432,7 +447,9 @@ class DealsClient:
                 data["encryption"] = False
             _atomic_write_simple(self.auth_file, json.dumps(data, indent=2))
             os.chmod(self.auth_file, 0o600)
-            logger.info("import_auth (audible-cli format) written to %s", self.auth_file)
+            logger.info(
+                "import_auth (audible-cli format) written to %s", self.auth_file
+            )
 
     @property
     def is_authenticated(self) -> bool:
@@ -481,7 +498,9 @@ class DealsClient:
 
         resp = self._api_get("1.0/catalog/products", **params)
 
-        products = [parse_product(p, locale=self.locale) for p in resp.get("products", [])]
+        products = [
+            parse_product(p, locale=self.locale) for p in resp.get("products", [])
+        ]
         total = resp.get("total_results", len(products))
 
         return products, total
@@ -588,7 +607,9 @@ class DealsClient:
                 response_groups=CATALOG_RESPONSE_GROUPS,
                 sort_by="-DateAdded",
             )
-            products = [parse_product(p, locale=self.locale) for p in resp.get("products", [])]
+            products = [
+                parse_product(p, locale=self.locale) for p in resp.get("products", [])
+            ]
             all_products.extend(products)
             if len(products) < MAX_PAGE_SIZE:
                 break
@@ -618,13 +639,19 @@ class DealsClient:
         # Exact match
         if q in names_lower:
             idx = names_lower.index(q)
-            logger.debug("resolve_genre exact match: %r -> %s", query, cats[idx]["name"])
+            logger.debug(
+                "resolve_genre exact match: %r -> %s", query, cats[idx]["name"]
+            )
             return cats[idx]["id"], cats[idx]["name"]
 
         # Substring match
         matches = [i for i, n in enumerate(names_lower) if q in n]
         if len(matches) == 1:
-            logger.debug("resolve_genre substring match: %r -> %s", query, cats[matches[0]]["name"])
+            logger.debug(
+                "resolve_genre substring match: %r -> %s",
+                query,
+                cats[matches[0]]["name"],
+            )
             return cats[matches[0]]["id"], cats[matches[0]]["name"]
         if len(matches) > 1:
             options = ", ".join(names[i] for i in matches)
@@ -637,14 +664,13 @@ class DealsClient:
         close = difflib.get_close_matches(q, names_lower, n=1, cutoff=0.5)
         if close:
             idx = names_lower.index(close[0])
-            logger.debug("resolve_genre fuzzy match: %r -> %s", query, cats[idx]["name"])
+            logger.debug(
+                "resolve_genre fuzzy match: %r -> %s", query, cats[idx]["name"]
+            )
             return cats[idx]["id"], cats[idx]["name"]
 
         available = ", ".join(names)
-        raise ValueError(
-            f'No genre matching "{query}".\n'
-            f"Available: {available}"
-        )
+        raise ValueError(f'No genre matching "{query}".\nAvailable: {available}')
 
     def get_category_name(self, category_id: str) -> str:
         """Look up a category's display name by ID."""
@@ -653,7 +679,9 @@ class DealsClient:
             resp = self._api_get(f"1.0/catalog/categories/{category_id}")
             return resp.get("category", {}).get("name", category_id)
         except Exception:
-            logger.warning("get_category_name failed for %s", category_id, exc_info=True)
+            logger.warning(
+                "get_category_name failed for %s", category_id, exc_info=True
+            )
             return category_id
 
     def _load_categories_cache(self) -> list[dict[str, str]] | None:
@@ -668,10 +696,14 @@ class DealsClient:
             if age < CATEGORIES_CACHE_TTL:
                 logger.debug(
                     "categories cache hit (%s, age=%.0fs, %d items)",
-                    cache_file, age, len(data.get("categories", [])),
+                    cache_file,
+                    age,
+                    len(data.get("categories", [])),
                 )
                 return data["categories"]
-            logger.debug("categories cache stale (age=%.0fs > %ds)", age, CATEGORIES_CACHE_TTL)
+            logger.debug(
+                "categories cache stale (age=%.0fs > %ds)", age, CATEGORIES_CACHE_TTL
+            )
         except (json.JSONDecodeError, KeyError):
             logger.warning("categories cache corrupt: %s", cache_file, exc_info=True)
         return None
@@ -679,8 +711,12 @@ class DealsClient:
     def _save_categories_cache(self, categories: list[dict[str, str]]) -> None:
         """Persist top-level categories to disk."""
         cache_file = CATEGORIES_CACHE_FILE.with_suffix(f".{self.locale}.json")
-        _atomic_write_simple(cache_file, json.dumps({"ts": time.time(), "categories": categories}))
-        logger.debug("categories cache saved (%s, %d items)", cache_file, len(categories))
+        _atomic_write_simple(
+            cache_file, json.dumps({"ts": time.time(), "categories": categories})
+        )
+        logger.debug(
+            "categories cache saved (%s, %d items)", cache_file, len(categories)
+        )
 
     def get_categories(self, root: str = "") -> list[dict[str, str]]:
         """Get category listing. Returns list of {id, name} dicts.
@@ -730,7 +766,9 @@ class DealsClient:
                 response_groups="relationships",
             )
         except Exception:
-            logger.warning("get_series_products failed for %s", series_asin, exc_info=True)
+            logger.warning(
+                "get_series_products failed for %s", series_asin, exc_info=True
+            )
             return []
         product_data = resp.get("product")
         if not product_data:
@@ -752,7 +790,7 @@ class DealsClient:
         """
         results: list[Product] = []
         for i in range(0, len(asins), MAX_PAGE_SIZE):
-            batch = asins[i:i + MAX_PAGE_SIZE]
+            batch = asins[i : i + MAX_PAGE_SIZE]
             resp = self._api_get(
                 "1.0/catalog/products",
                 asins=",".join(batch),
