@@ -26,19 +26,13 @@ import logging
 import math
 import os
 import statistics
-from importlib.metadata import version as _pkg_version
 
-try:
-    _VERSION = _pkg_version("audible-deals")
-except Exception:
-    _VERSION = "0.5.1"  # fallback for PyInstaller frozen builds
 try:
     import readline  # noqa: F401 — required on macOS for input() with long strings
 except ImportError:
     pass  # unavailable on Windows
 import sys
 import time
-import urllib.request
 from pathlib import Path
 
 import click
@@ -438,8 +432,28 @@ class _HandleAuthErrors(click.Group):
             raise
 
 
+def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
+    if not value or ctx.resilient_parsing:
+        return
+    try:
+        from importlib.metadata import version as _pkg_version
+
+        v = _pkg_version("audible-deals")
+    except Exception:
+        v = "0.5.1"  # fallback for PyInstaller frozen builds
+    click.echo(f"deals, version {v}")
+    ctx.exit()
+
+
 @click.group(cls=_HandleAuthErrors, invoke_without_command=True)
-@click.version_option(version=_VERSION, prog_name="deals")
+@click.option(
+    "--version",
+    is_flag=True,
+    expose_value=False,
+    is_eager=True,
+    callback=_print_version,
+    help="Show the version and exit.",
+)
 @click.option(
     "--locale",
     default="us",
@@ -2859,6 +2873,8 @@ def notify(ctx, webhook, webhook_format, webhook_template):
         return
 
     if webhook:
+        import urllib.request
+
         tmpl_str = (
             webhook_template.read_text(encoding="utf-8")
             if webhook_template is not None

@@ -12,10 +12,12 @@ import re
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Iterator
+from typing import TYPE_CHECKING, Any, Iterator
 
-import audible
 import click
+
+if TYPE_CHECKING:
+    import audible
 
 from audible_deals.constants import (
     AUTH_FILE,
@@ -324,6 +326,8 @@ class DealsClient:
 
     def login(self, username: str, password: str) -> None:
         """Interactive Audible login. Persists tokens to auth_file."""
+        import audible
+
         logger.info("login (interactive) locale=%s", self.locale)
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.auth_file.parent, 0o700)
@@ -346,6 +350,8 @@ class DealsClient:
         prints the OAuth URL, waits for the user to save the callback URL
         to that file, then reads it — avoiding the flaky input() prompt.
         """
+        import audible
+
         logger.info(
             "login_external locale=%s via_file=%s",
             self.locale,
@@ -457,6 +463,8 @@ class DealsClient:
 
     @property
     def client(self) -> audible.Client:
+        import audible
+
         if self._client is None:
             if not self.auth_file.exists():
                 raise RuntimeError("Not authenticated. Run 'deals login' first.")
