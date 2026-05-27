@@ -9,13 +9,10 @@ from __future__ import annotations
 import csv
 import datetime
 import json
-from io import StringIO
-from unittest.mock import call
 
-import pytest
 from click.testing import CliRunner
 
-from audible_deals.client import DealsClient, MAX_PAGE_SIZE
+from audible_deals.client import DealsClient
 from audible_deals.cli import cli
 from audible_deals.serialization import export_products as _export_products
 from audible_deals.state import record_prices as _record_prices
@@ -25,6 +22,7 @@ from tests.conftest import make_product, make_raw
 # ===================================================================
 # A. Client-level integration (mock audible.Client.get)
 # ===================================================================
+
 
 class TestClientIntegration:
     def _make_client(self, api):
@@ -85,6 +83,7 @@ class TestClientIntegration:
 
     def test_get_products_batch_splits(self, api):
         """Batches of >50 are split into multiple API calls."""
+
         def mock_get(endpoint, **kwargs):
             asins = kwargs.get("asins", "").split(",")
             return {"products": [make_raw(a) for a in asins]}
@@ -183,17 +182,19 @@ class TestClientIntegration:
     def test_import_auth_libation(self, api):
         """Libation AccountsSettings.json format is extracted correctly."""
         libation_data = {
-            "Accounts": [{
-                "IdentityTokens": {
-                    "access_token": "at123",
-                    "refresh_token": "rt456",
-                    "adp_token": "adp",
-                    "device_private_key": "dpk",
-                    "device_info": {"id": "dev1"},
-                    "customer_info": {"name": "User"},
-                    "locale_code": "us",
+            "Accounts": [
+                {
+                    "IdentityTokens": {
+                        "access_token": "at123",
+                        "refresh_token": "rt456",
+                        "adp_token": "adp",
+                        "device_private_key": "dpk",
+                        "device_info": {"id": "dev1"},
+                        "customer_info": {"name": "User"},
+                        "locale_code": "us",
+                    }
                 }
-            }]
+            ]
         }
         src = api.tmp_path / "libation.json"
         src.write_text(json.dumps(libation_data))
@@ -240,9 +241,7 @@ class TestClientIntegration:
     def test_categories_subcategory_no_cache(self, api):
         """Subcategory fetches hit API and don't write cache."""
         api.get_mock.return_value = {
-            "category": {
-                "children": [{"id": "sub1", "name": "Hard SciFi"}]
-            }
+            "category": {"children": [{"id": "sub1", "name": "Hard SciFi"}]}
         }
         dc = self._make_client(api)
         subs = dc.get_categories(root="parent123")
@@ -259,18 +258,30 @@ class TestClientIntegration:
 # B. CLI pipeline integration (flag combinations via CliRunner)
 # ===================================================================
 
+
 class TestCLIPipelineIntegration:
     def test_deep_mode_deduplicates(self, mock_client, tmp_config):
         """--deep iterates 3 sort orders and deduplicates overlapping ASINs."""
         # Each sort order returns different products with some overlap
-        pass1 = [make_product(asin="D1", price=3.0, series_name="", series_position=""),
-                 make_product(asin="D2", price=4.0, series_name="", series_position="")]
-        pass2 = [make_product(asin="D2", price=4.0, series_name="", series_position=""),  # overlap
-                 make_product(asin="D3", price=5.0, series_name="", series_position="")]
-        pass3 = [make_product(asin="D1", price=3.0, series_name="", series_position=""),  # overlap
-                 make_product(asin="D4", price=2.0, series_name="", series_position="")]
+        pass1 = [
+            make_product(asin="D1", price=3.0, series_name="", series_position=""),
+            make_product(asin="D2", price=4.0, series_name="", series_position=""),
+        ]
+        pass2 = [
+            make_product(
+                asin="D2", price=4.0, series_name="", series_position=""
+            ),  # overlap
+            make_product(asin="D3", price=5.0, series_name="", series_position=""),
+        ]
+        pass3 = [
+            make_product(
+                asin="D1", price=3.0, series_name="", series_position=""
+            ),  # overlap
+            make_product(asin="D4", price=2.0, series_name="", series_position=""),
+        ]
 
         call_count = 0
+
         def fake_search_pages(**kwargs):
             nonlocal call_count
             data = [pass1, pass2, pass3][call_count]
@@ -281,10 +292,20 @@ class TestCLIPipelineIntegration:
 
         out_file = tmp_config / "deep.json"
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "find", "--deep", "--pages", "1", "--max-price", "20",
-            "-q", "--output", str(out_file),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--deep",
+                "--pages",
+                "1",
+                "--max-price",
+                "20",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
         assert result.exit_code == 0, result.output
         data = json.loads(out_file.read_text())
         asins = [item["asin"] for item in data]
@@ -301,10 +322,20 @@ class TestCLIPipelineIntegration:
 
         out_file = tmp_config / "skip.json"
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "find", "--skip-owned", "--pages", "1", "--max-price", "20",
-            "-q", "--output", str(out_file),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--skip-owned",
+                "--pages",
+                "1",
+                "--max-price",
+                "20",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
         assert result.exit_code == 0, result.output
         data = json.loads(out_file.read_text())
         asins = [item["asin"] for item in data]
@@ -321,10 +352,20 @@ class TestCLIPipelineIntegration:
 
         out_file = tmp_config / "alllang.json"
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "find", "--all-languages", "--pages", "1", "--max-price", "20",
-            "-q", "--output", str(out_file),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--all-languages",
+                "--pages",
+                "1",
+                "--max-price",
+                "20",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
         assert result.exit_code == 0, result.output
         data = json.loads(out_file.read_text())
         langs = {item["language"] for item in data}
@@ -341,10 +382,19 @@ class TestCLIPipelineIntegration:
 
         out_file = tmp_config / "deflang.json"
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "find", "--pages", "1", "--max-price", "20",
-            "-q", "--output", str(out_file),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--pages",
+                "1",
+                "--max-price",
+                "20",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
         assert result.exit_code == 0, result.output
         data = json.loads(out_file.read_text())
         langs = {item["language"] for item in data}
@@ -353,7 +403,8 @@ class TestCLIPipelineIntegration:
     def test_categories_root(self, mock_client, tmp_config):
         """categories command displays top-level list."""
         mock_client.get_categories.return_value = [
-            {"id": "1", "name": "Fiction"}, {"id": "2", "name": "SciFi"},
+            {"id": "1", "name": "Fiction"},
+            {"id": "2", "name": "SciFi"},
         ]
         runner = CliRunner()
         result = runner.invoke(cli, ["categories"])
@@ -373,32 +424,77 @@ class TestCLIPipelineIntegration:
         assert "Hard SciFi" in result.output
         mock_client.get_categories.assert_called_once_with(root="ABC123")
 
-    def test_combined_first_in_series_exclude_genre_limit(self, mock_client, tmp_config):
+    def test_combined_first_in_series_exclude_genre_limit(
+        self, mock_client, tmp_config
+    ):
         """Multiple flags interact correctly in one pipeline."""
         products = [
-            make_product(asin="S1P1", series_name="S1", series_position="1",
-                         price=3.0, category_ids=["cat_ok"]),
-            make_product(asin="S1P2", series_name="S1", series_position="2",
-                         price=2.0, category_ids=["cat_ok"]),
-            make_product(asin="S1P3", series_name="S1", series_position="3",
-                         price=1.0, category_ids=["cat_ok"]),
-            make_product(asin="ERO1", series_name="", series_position="",
-                         price=1.0, category_ids=["cat_erotica"]),
-            make_product(asin="SOLO1", series_name="", series_position="",
-                         price=4.0, category_ids=["cat_ok"]),
-            make_product(asin="SOLO2", series_name="", series_position="",
-                         price=5.0, category_ids=["cat_ok"]),
+            make_product(
+                asin="S1P1",
+                series_name="S1",
+                series_position="1",
+                price=3.0,
+                category_ids=["cat_ok"],
+            ),
+            make_product(
+                asin="S1P2",
+                series_name="S1",
+                series_position="2",
+                price=2.0,
+                category_ids=["cat_ok"],
+            ),
+            make_product(
+                asin="S1P3",
+                series_name="S1",
+                series_position="3",
+                price=1.0,
+                category_ids=["cat_ok"],
+            ),
+            make_product(
+                asin="ERO1",
+                series_name="",
+                series_position="",
+                price=1.0,
+                category_ids=["cat_erotica"],
+            ),
+            make_product(
+                asin="SOLO1",
+                series_name="",
+                series_position="",
+                price=4.0,
+                category_ids=["cat_ok"],
+            ),
+            make_product(
+                asin="SOLO2",
+                series_name="",
+                series_position="",
+                price=5.0,
+                category_ids=["cat_ok"],
+            ),
         ]
         mock_client.search_pages.return_value = iter([(products, 1, len(products))])
         mock_client.resolve_genre.return_value = ("cat_erotica", "Erotica")
 
         out_file = tmp_config / "combined.json"
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "find", "--first-in-series", "--exclude-genre", "erotica",
-            "--limit", "2", "--pages", "1", "--max-price", "20",
-            "-q", "--output", str(out_file),
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--first-in-series",
+                "--exclude-genre",
+                "erotica",
+                "--limit",
+                "2",
+                "--pages",
+                "1",
+                "--max-price",
+                "20",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
         assert result.exit_code == 0, result.output
         data = json.loads(out_file.read_text())
         asins = [item["asin"] for item in data]
@@ -413,15 +509,23 @@ class TestCLIPipelineIntegration:
 # C. Edge cases
 # ===================================================================
 
+
 class TestEdgeCases:
     def test_empty_search_results(self, mock_client, tmp_config):
         """CLI handles zero search results gracefully."""
         mock_client.search_pages.return_value = iter([([], 1, 0)])
 
         runner = CliRunner()
-        result = runner.invoke(cli, [
-            "find", "--pages", "1", "--max-price", "10",
-        ])
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--pages",
+                "1",
+                "--max-price",
+                "10",
+            ],
+        )
         assert result.exit_code == 0, result.output
         assert "No products found" in result.output
 
@@ -433,7 +537,10 @@ class TestEdgeCases:
 
         # Pre-write 365 entries with dates going back
         old_entries = [
-            {"date": f"2025-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}", "price": 10.0 + i * 0.01}
+            {
+                "date": f"2025-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}",
+                "price": 10.0 + i * 0.01,
+            }
             for i in range(365)
         ]
         hist_file.write_text(json.dumps(old_entries))
@@ -467,13 +574,15 @@ class TestEdgeCases:
 
     def test_csv_list_field_joining(self, tmp_path):
         """CSV export joins list fields with '; ' separator."""
-        products = [make_product(
-            asin="CSV1",
-            authors=["Alice", "Bob", "Carol"],
-            narrators=["Narrator A", "Narrator B"],
-            categories=["Fiction", "Mystery"],
-            category_ids=["c1", "c2"],
-        )]
+        products = [
+            make_product(
+                asin="CSV1",
+                authors=["Alice", "Bob", "Carol"],
+                narrators=["Narrator A", "Narrator B"],
+                categories=["Fiction", "Mystery"],
+                category_ids=["c1", "c2"],
+            )
+        ]
         path = tmp_path / "lists.csv"
         _export_products(products, path)
 

@@ -32,20 +32,37 @@ HISTORY_DIR = CONFIG_DIR / "history"
 # ---------------------------------------------------------------------------
 
 LOCALE_CURRENCY: dict[str, str] = {
-    "us": "$", "uk": "£", "ca": "CA$", "au": "A$",
-    "in": "₹", "de": "€", "fr": "€", "jp": "¥", "es": "€",
+    "us": "$",
+    "uk": "£",
+    "ca": "CA$",
+    "au": "A$",
+    "in": "₹",
+    "de": "€",
+    "fr": "€",
+    "jp": "¥",
+    "es": "€",
 }
 LOCALE_DOMAIN: dict[str, str] = {
-    "us": "www.audible.com", "uk": "www.audible.co.uk",
-    "ca": "www.audible.ca", "au": "www.audible.com.au",
-    "in": "www.audible.in", "de": "www.audible.de",
-    "fr": "www.audible.fr", "jp": "www.audible.co.jp",
+    "us": "www.audible.com",
+    "uk": "www.audible.co.uk",
+    "ca": "www.audible.ca",
+    "au": "www.audible.com.au",
+    "in": "www.audible.in",
+    "de": "www.audible.de",
+    "fr": "www.audible.fr",
+    "jp": "www.audible.co.jp",
     "es": "www.audible.es",
 }
 LOCALE_LANGUAGES: dict[str, str] = {
-    "us": "english", "uk": "english", "ca": "english",
-    "au": "english", "in": "english", "de": "german",
-    "fr": "french", "jp": "japanese", "es": "spanish",
+    "us": "english",
+    "uk": "english",
+    "ca": "english",
+    "au": "english",
+    "in": "english",
+    "de": "german",
+    "fr": "french",
+    "jp": "japanese",
+    "es": "spanish",
 }
 
 # ---------------------------------------------------------------------------
@@ -55,18 +72,20 @@ LOCALE_LANGUAGES: dict[str, str] = {
 MAX_PAGE_SIZE = 50
 CATEGORIES_CACHE_TTL = 86400 * 7  # 7 days
 
-CATALOG_RESPONSE_GROUPS = ",".join([
-    "product_attrs",
-    "product_desc",
-    "contributors",
-    "rating",
-    "media",
-    "category_ladders",
-    "series",
-    "product_plan_details",
-    "product_plans",
-    "price",
-])
+CATALOG_RESPONSE_GROUPS = ",".join(
+    [
+        "product_attrs",
+        "product_desc",
+        "contributors",
+        "rating",
+        "media",
+        "category_ladders",
+        "series",
+        "product_plan_details",
+        "product_plans",
+        "price",
+    ]
+)
 
 # ---------------------------------------------------------------------------
 # Sort options
@@ -83,7 +102,9 @@ SORT_OPTIONS = {
 }
 
 # Client-side sort keys (not supported by Audible API, applied locally)
-CLIENT_SORT_OPTIONS = frozenset({"price", "-price", "discount", "price-per-hour", "value"})
+CLIENT_SORT_OPTIONS = frozenset(
+    {"price", "-price", "discount", "price-per-hour", "value"}
+)
 
 # All valid sort keys (server + client)
 ALL_SORT_OPTIONS = frozenset(SORT_OPTIONS.keys()) | CLIENT_SORT_OPTIONS
@@ -150,13 +171,29 @@ _ASIN_RE = re.compile(r"^[A-Za-z0-9]{2,14}$")
 # ---------------------------------------------------------------------------
 
 _CONFIG_SCHEMA: dict[str, type] = {
-    "skip_owned": bool, "max_price": float, "max_pph": float,
-    "min_rating": float, "min_ratings": int, "min_hours": float,
-    "min_discount": int, "language": str,
-    "locale": str, "sort": str, "pages": int, "on_sale": bool,
-    "deep": bool, "first_in_series": bool, "all_languages": bool,
-    "interactive": bool, "limit": int, "narrator": str, "author": str, "series": str, "publisher": str,
-    "skip_plus": bool, "only_plus": bool,
+    "skip_owned": bool,
+    "max_price": float,
+    "max_pph": float,
+    "min_rating": float,
+    "min_ratings": int,
+    "min_hours": float,
+    "min_discount": int,
+    "language": str,
+    "locale": str,
+    "sort": str,
+    "pages": int,
+    "on_sale": bool,
+    "deep": bool,
+    "first_in_series": bool,
+    "all_languages": bool,
+    "interactive": bool,
+    "limit": int,
+    "narrator": str,
+    "author": str,
+    "series": str,
+    "publisher": str,
+    "skip_plus": bool,
+    "only_plus": bool,
 }
 
 

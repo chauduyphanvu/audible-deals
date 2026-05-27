@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import logging
 
 import pytest
@@ -35,6 +34,7 @@ def _level(name: str = "audible_deals") -> int:
 # ===================================================================
 # configure_logging
 # ===================================================================
+
 
 class TestConfigureLogging:
     def test_default_is_warning(self):
@@ -75,6 +75,7 @@ class TestConfigureLogging:
 # CLI --verbose flag
 # ===================================================================
 
+
 class TestVerboseFlag:
     def test_flag_present_in_help(self):
         runner = CliRunner()
@@ -95,9 +96,11 @@ class TestVerboseFlag:
 # WARNING records on corrupted state files
 # ===================================================================
 
+
 class TestStateCorruptionWarnings:
     def test_load_wishlist_warns_on_corrupt(self, tmp_config, caplog):
         import audible_deals.state as state_mod
+
         state_mod.WISHLIST_FILE.write_text("not json")
         with caplog.at_level(logging.WARNING, logger="audible_deals.state"):
             data = state_mod.load_wishlist()
@@ -106,6 +109,7 @@ class TestStateCorruptionWarnings:
 
     def test_load_config_warns_on_corrupt(self, tmp_config, caplog):
         import audible_deals.state as state_mod
+
         state_mod.CONFIG_FILE.write_text("not json")
         with caplog.at_level(logging.WARNING, logger="audible_deals.state"):
             data = state_mod.load_config()
@@ -114,6 +118,7 @@ class TestStateCorruptionWarnings:
 
     def test_load_seen_asins_warns_on_corrupt(self, tmp_config, caplog):
         import audible_deals.state as state_mod
+
         state_mod.SEEN_ASINS_FILE.write_text("not json")
         with caplog.at_level(logging.WARNING, logger="audible_deals.state"):
             data = state_mod.load_seen_asins()
@@ -124,6 +129,7 @@ class TestStateCorruptionWarnings:
 # ===================================================================
 # DEBUG records on API calls
 # ===================================================================
+
 
 class TestApiDebugLogging:
     def test_search_catalog_emits_debug(self, api, caplog):
@@ -156,6 +162,7 @@ class TestApiDebugLogging:
 # ===================================================================
 # DEALS_LOG_FILE rotating file handler
 # ===================================================================
+
 
 class TestDealsLogFile:
     def test_file_handler_added(self, tmp_path, monkeypatch):

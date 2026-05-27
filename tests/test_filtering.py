@@ -10,15 +10,14 @@ from audible_deals.filtering import (
     first_in_series,
     price_per_hour,
     sort_local,
-    value_score,
 )
-from audible_deals.client import Product
 from tests.conftest import make_product
 
 
 # ===================================================================
 # filter_products
 # ===================================================================
+
 
 class TestFilterProducts:
     def test_max_price(self, products_for_filtering):
@@ -45,7 +44,9 @@ class TestFilterProducts:
         assert not any(p.asin in ("NO_PRICE", "EXPENSIVE") for p in filtered)
 
     def test_skip_asins(self, products_for_filtering):
-        filtered, _ = filter_products(products_for_filtering, skip_asins={"CHEAP1", "CHEAP2"})
+        filtered, _ = filter_products(
+            products_for_filtering, skip_asins={"CHEAP1", "CHEAP2"}
+        )
         assert not any(p.asin in {"CHEAP1", "CHEAP2"} for p in filtered)
 
     def test_exclude_category_ids(self, products_for_filtering):
@@ -62,7 +63,9 @@ class TestFilterProducts:
     def test_combined_filters(self, products_for_filtering):
         filtered, _ = filter_products(
             products_for_filtering,
-            max_price=5.0, min_rating=4.0, language="english",
+            max_price=5.0,
+            min_rating=4.0,
+            language="english",
         )
         for p in filtered:
             assert p.price is not None and p.price <= 5.0
@@ -73,6 +76,7 @@ class TestFilterProducts:
 # ===================================================================
 # price_per_hour
 # ===================================================================
+
 
 class TestPricePerHour:
     def test_normal(self):
@@ -92,16 +96,35 @@ class TestPricePerHour:
 # sort_local
 # ===================================================================
 
+
 class TestSortLocal:
     @pytest.fixture
     def products(self):
         return [
-            make_product(asin="A", price=5.0, rating=3.0, length_minutes=300,
-                         release_date="2024-01-01", list_price=10.0),
-            make_product(asin="B", price=2.0, rating=5.0, length_minutes=600,
-                         release_date="2024-06-01", list_price=20.0),
-            make_product(asin="C", price=8.0, rating=4.0, length_minutes=120,
-                         release_date="2023-01-01", list_price=10.0),
+            make_product(
+                asin="A",
+                price=5.0,
+                rating=3.0,
+                length_minutes=300,
+                release_date="2024-01-01",
+                list_price=10.0,
+            ),
+            make_product(
+                asin="B",
+                price=2.0,
+                rating=5.0,
+                length_minutes=600,
+                release_date="2024-06-01",
+                list_price=20.0,
+            ),
+            make_product(
+                asin="C",
+                price=8.0,
+                rating=4.0,
+                length_minutes=120,
+                release_date="2023-01-01",
+                list_price=10.0,
+            ),
         ]
 
     def test_sort_price(self, products):
@@ -157,6 +180,7 @@ class TestSortLocal:
 # dedupe_editions
 # ===================================================================
 
+
 class TestDedupeEditions:
     def test_keeps_cheapest(self):
         products = [
@@ -198,6 +222,7 @@ class TestDedupeEditions:
 # ===================================================================
 # first_in_series
 # ===================================================================
+
 
 class TestFirstInSeries:
     def test_keeps_lowest_position(self):
@@ -308,6 +333,7 @@ class TestFirstInSeriesStrict:
 # ===================================================================
 # filter_products — series filter
 # ===================================================================
+
 
 class TestSkipPlusOnlyPlus:
     def test_skip_plus_removes_plus_titles(self):

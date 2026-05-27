@@ -10,7 +10,13 @@ import datetime
 
 from rich.console import Console
 from rich.panel import Panel
-from rich.progress import BarColumn, MofNCompleteColumn, Progress, SpinnerColumn, TextColumn
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+)
 from rich.table import Table
 
 from audible_deals.client import Product
@@ -154,7 +160,9 @@ def display_products(
     console.print(table)
 
 
-def display_categories(categories: list[dict[str, str]], *, title: str = "Categories") -> None:
+def display_categories(
+    categories: list[dict[str, str]], *, title: str = "Categories"
+) -> None:
     """Display categories in a table."""
     if not categories:
         console.print("[dim]No categories found.[/dim]")
@@ -214,12 +222,14 @@ def display_product_detail(p: Product) -> None:
     lines.append("")
     lines.append(f"  [dim link={p.url}]{p.url}[/dim link]")
 
-    console.print(Panel(
-        "\n".join(lines),
-        title=f"[cyan]{p.asin}[/cyan]",
-        border_style="dim",
-        padding=(1, 2),
-    ))
+    console.print(
+        Panel(
+            "\n".join(lines),
+            title=f"[cyan]{p.asin}[/cyan]",
+            border_style="dim",
+            padding=(1, 2),
+        )
+    )
 
 
 def display_comparison(products: list[Product]) -> None:
@@ -247,10 +257,13 @@ def display_comparison(products: list[Product]) -> None:
         ("Hours", [str(p.hours) if p.hours else "-" for p in products]),
         (f"{cur}/hr", [_pph_str(p.price, p.hours, p.currency) for p in products]),
         ("Rating", [rating_str(p.rating, p.num_ratings) for p in products]),
-        ("Series", [
-            f"{p.series_name} #{p.series_position}" if p.series_name else "-"
-            for p in products
-        ]),
+        (
+            "Series",
+            [
+                f"{p.series_name} #{p.series_position}" if p.series_name else "-"
+                for p in products
+            ],
+        ),
         ("Language", [p.language or "-" for p in products]),
         ("Released", [p.release_date or "-" for p in products]),
         ("Plus", ["Yes" if p.in_plus_catalog else "-" for p in products]),
@@ -338,7 +351,12 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
         except ValueError:
             return ""
 
-    table = Table(title=f"Price History: {asin}", show_lines=False, padding=(0, 1), title_style="bold")
+    table = Table(
+        title=f"Price History: {asin}",
+        show_lines=False,
+        padding=(0, 1),
+        title_style="bold",
+    )
     table.add_column("Date", width=12)
     table.add_column("Ago", width=10, style="dim")
     table.add_column("Price", justify="right", width=10)
@@ -366,14 +384,18 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
     prices = [e["price"] for e in entries]
     low, high = min(prices), max(prices)
     current = prices[-1]
-    console.print(f"\n  Low: [green]{currency}{low:.2f}[/green]  High: [red]{currency}{high:.2f}[/red]  Current: {currency}{current:.2f}")
+    console.print(
+        f"\n  Low: [green]{currency}{low:.2f}[/green]  High: [red]{currency}{high:.2f}[/red]  Current: {currency}{current:.2f}"
+    )
 
     if len(prices) > 1:
         sparks = " ▁▂▃▄▅▆▇█"
         if high == low:
             line = sparks[4] * len(prices)
         else:
-            line = "".join(sparks[min(8, int((p - low) / (high - low) * 8))] for p in prices)
+            line = "".join(
+                sparks[min(8, int((p - low) / (high - low) * 8))] for p in prices
+            )
         console.print(f"  [dim]{line}[/dim]")
 
 
@@ -397,8 +419,12 @@ def display_recap(
 
     if drops:
         console.print(f"  [green]Price drops: {len(drops)}[/green]")
-        for asin, title, old, new in sorted(drops, key=lambda x: x[2] - x[3], reverse=True)[:10]:
-            console.print(f"    {_label(asin, title)}  {currency}{old:.2f} -> [green]{currency}{new:.2f}[/green]  ([green]-{currency}{old - new:.2f}[/green])")
+        for asin, title, old, new in sorted(
+            drops, key=lambda x: x[2] - x[3], reverse=True
+        )[:10]:
+            console.print(
+                f"    {_label(asin, title)}  {currency}{old:.2f} -> [green]{currency}{new:.2f}[/green]  ([green]-{currency}{old - new:.2f}[/green])"
+            )
     else:
         console.print("  [dim]No price drops[/dim]")
 
@@ -406,18 +432,28 @@ def display_recap(
         console.print(f"\n  [cyan]Newly tracked: {len(new_items)}[/cyan]")
         if show_new:
             for asin, title, price in new_items[:10]:
-                console.print(f"    [dim]{_label(asin, title)}  {currency}{price:.2f}[/dim]")
+                console.print(
+                    f"    [dim]{_label(asin, title)}  {currency}{price:.2f}[/dim]"
+                )
     if wishlist_hits:
-        console.print(f"\n  [bold green]Wishlist items at target: {len(wishlist_hits)}[/bold green]")
+        console.print(
+            f"\n  [bold green]Wishlist items at target: {len(wishlist_hits)}[/bold green]"
+        )
         for item in wishlist_hits:
             console.print(f"    {item['asin']}  {item['title']}")
 
     if atl_hits is not None:
-        console.print(f"\n  [bold gold1]Wishlist items at all-time low:[/bold gold1]")
+        console.print("\n  [bold gold1]Wishlist items at all-time low:[/bold gold1]")
         if atl_hits:
             for item in atl_hits:
-                target_str = f" (target {currency}{item['target']:.2f})" if item.get("target") is not None else ""
-                console.print(f"    [gold1]{_label(item['asin'], item['title'])}  {currency}{item['price']:.2f}{target_str}[/gold1]")
+                target_str = (
+                    f" (target {currency}{item['target']:.2f})"
+                    if item.get("target") is not None
+                    else ""
+                )
+                console.print(
+                    f"    [gold1]{_label(item['asin'], item['title'])}  {currency}{item['price']:.2f}{target_str}[/gold1]"
+                )
         else:
             console.print("    [dim]None at ATL[/dim]")
 
@@ -434,7 +470,12 @@ def display_watch_table(
     show_url: bool = False,
 ) -> int:
     """Display a wishlist price-check table. Returns the number of BUY hits."""
-    table = Table(title="Wishlist Price Check", show_lines=False, padding=(0, 1), title_style="bold")
+    table = Table(
+        title="Wishlist Price Check",
+        show_lines=False,
+        padding=(0, 1),
+        title_style="bold",
+    )
     table.add_column("Title", max_width=35)
     table.add_column("Price", justify="right", width=12)
     table.add_column("Target", justify="right", width=10)
@@ -470,7 +511,11 @@ def display_watch_table(
 
     console.print(table)
     if hits:
-        console.print(f"\n  [bold green]{hits} item(s) at or below target price![/bold green]")
+        console.print(
+            f"\n  [bold green]{hits} item(s) at or below target price![/bold green]"
+        )
     else:
-        console.print(f"\n  [dim]No items at target price yet. {len(products)} watched.[/dim]")
+        console.print(
+            f"\n  [dim]No items at target price yet. {len(products)} watched.[/dim]"
+        )
     return hits

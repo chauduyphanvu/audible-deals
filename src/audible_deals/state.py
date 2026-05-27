@@ -13,8 +13,6 @@ from pathlib import Path
 
 import click
 
-logger = logging.getLogger(__name__)
-
 from audible_deals.client import Product
 from audible_deals.constants import (
     _ASIN_RE,
@@ -30,6 +28,8 @@ from audible_deals.constants import (
     WISHLIST_FILE,
 )
 
+logger = logging.getLogger(__name__)
+
 # ---------------------------------------------------------------------------
 # Wishlist
 # ---------------------------------------------------------------------------
@@ -40,11 +40,15 @@ def load_wishlist() -> list[dict]:
         try:
             data = json_mod.loads(WISHLIST_FILE.read_text())
             if isinstance(data, list):
-                logger.debug("loaded wishlist (%d items) from %s", len(data), WISHLIST_FILE)
+                logger.debug(
+                    "loaded wishlist (%d items) from %s", len(data), WISHLIST_FILE
+                )
                 return data
             logger.warning("wishlist at %s is not a list, ignoring", WISHLIST_FILE)
         except (json_mod.JSONDecodeError, KeyError):
-            logger.warning("wishlist at %s is corrupt, ignoring", WISHLIST_FILE, exc_info=True)
+            logger.warning(
+                "wishlist at %s is corrupt, ignoring", WISHLIST_FILE, exc_info=True
+            )
     return []
 
 
@@ -77,7 +81,9 @@ def load_profiles() -> dict[str, dict]:
                 return data
             logger.warning("profiles at %s is not a dict, ignoring", PROFILES_FILE)
         except (json_mod.JSONDecodeError, KeyError):
-            logger.warning("profiles at %s is corrupt, ignoring", PROFILES_FILE, exc_info=True)
+            logger.warning(
+                "profiles at %s is corrupt, ignoring", PROFILES_FILE, exc_info=True
+            )
     return {}
 
 
@@ -100,7 +106,9 @@ def load_config() -> dict:
                 return data
             logger.warning("config at %s is not a dict, ignoring", CONFIG_FILE)
         except (json_mod.JSONDecodeError, KeyError, OSError):
-            logger.warning("config at %s is corrupt, ignoring", CONFIG_FILE, exc_info=True)
+            logger.warning(
+                "config at %s is corrupt, ignoring", CONFIG_FILE, exc_info=True
+            )
     return {}
 
 
@@ -117,7 +125,9 @@ def coerce_config_value(key: str, raw: str):
             return True
         elif raw.lower() in ("false", "0", "no"):
             return False
-        raise click.ClickException(f"Invalid boolean value for '{key}': {raw!r}. Use true/false.")
+        raise click.ClickException(
+            f"Invalid boolean value for '{key}': {raw!r}. Use true/false."
+        )
     if key == "sort":
         if raw not in ALL_SORT_OPTIONS:
             raise click.ClickException(
@@ -133,7 +143,9 @@ def coerce_config_value(key: str, raw: str):
     try:
         return typ(raw)
     except (ValueError, TypeError) as e:
-        raise click.ClickException(f"Invalid value for '{key}' (expected {typ.__name__}): {e}")
+        raise click.ClickException(
+            f"Invalid value for '{key}' (expected {typ.__name__}): {e}"
+        )
 
 
 def validate_config_key(key: str) -> str:
@@ -160,7 +172,9 @@ def load_seen_asins() -> set[str]:
     except FileNotFoundError:
         pass
     except (json_mod.JSONDecodeError, OSError, KeyError, TypeError):
-        logger.warning("seen-asins at %s is corrupt, ignoring", SEEN_ASINS_FILE, exc_info=True)
+        logger.warning(
+            "seen-asins at %s is corrupt, ignoring", SEEN_ASINS_FILE, exc_info=True
+        )
     return set()
 
 
@@ -175,12 +189,20 @@ def save_seen_asins(new_asins: set[str]) -> None:
     merged = sorted(existing | new_asins)
     try:
         _atomic_write(SEEN_ASINS_FILE, json_mod.dumps(merged))
-        logger.debug("saved seen ASINs (%d total, +%d new)", len(merged), len(merged) - len(existing))
+        logger.debug(
+            "saved seen ASINs (%d total, +%d new)",
+            len(merged),
+            len(merged) - len(existing),
+        )
     except Exception:
-        logger.warning("failed to write seen-asins at %s", SEEN_ASINS_FILE, exc_info=True)
+        logger.warning(
+            "failed to write seen-asins at %s", SEEN_ASINS_FILE, exc_info=True
+        )
 
 
-def merge_seen_asins(skip_asins: set[str] | None, exclude_seen: bool) -> set[str] | None:
+def merge_seen_asins(
+    skip_asins: set[str] | None, exclude_seen: bool
+) -> set[str] | None:
     """Merge previously-seen ASINs into the skip set when --exclude-seen is active."""
     if not exclude_seen:
         return skip_asins
@@ -326,7 +348,11 @@ def record_prices(products: list[Product]) -> None:
 
     logger.debug(
         "record_prices: priced=%d wrote=%d skipped_today=%d bad_asin=%d corrupt=%d",
-        len(priced), len(to_write), skipped_today, bad_asin, corrupt,
+        len(priced),
+        len(to_write),
+        skipped_today,
+        bad_asin,
+        corrupt,
     )
 
 
@@ -341,7 +367,9 @@ def save_last_results(title: str, serialized: list[dict]) -> None:
     _atomic_write(LAST_RESULTS_FILE, json_mod.dumps(cache_obj, ensure_ascii=False))
     logger.debug(
         "saved last results (%d items, title=%r) to %s",
-        len(serialized), title, LAST_RESULTS_FILE,
+        len(serialized),
+        title,
+        LAST_RESULTS_FILE,
     )
 
 
@@ -387,7 +415,9 @@ def load_price_history(asin: str) -> list[dict]:
         entries = json_mod.loads(hist_file.read_text())
         return entries if isinstance(entries, list) else []
     except (json_mod.JSONDecodeError, OSError):
-        logger.warning("price history at %s is corrupt or unreadable", hist_file, exc_info=True)
+        logger.warning(
+            "price history at %s is corrupt or unreadable", hist_file, exc_info=True
+        )
         return []
 
 
@@ -446,7 +476,9 @@ def scan_price_changes(
 
     logger.debug(
         "scan_price_changes days=%d drops=%d new=%d",
-        days, len(drops), len(new_items),
+        days,
+        len(drops),
+        len(new_items),
     )
     return drops, new_items
 
@@ -462,7 +494,11 @@ def find_wishlist_hits() -> list[dict]:
         if not _ASIN_RE.fullmatch(item.get("asin", "")):
             continue
         entries = load_price_history(item["asin"])
-        if entries and item.get("max_price") is not None and entries[-1]["price"] <= item["max_price"]:
+        if (
+            entries
+            and item.get("max_price") is not None
+            and entries[-1]["price"] <= item["max_price"]
+        ):
             hits.append(item)
     return hits
 
@@ -484,7 +520,11 @@ def find_wishlist_atl_hits() -> list[dict]:
         last_price = entries[-1].get("price")
         if not isinstance(last_price, (int, float)):
             continue
-        prices = [float(e["price"]) for e in entries if isinstance(e.get("price"), (int, float))]
+        prices = [
+            float(e["price"])
+            for e in entries
+            if isinstance(e.get("price"), (int, float))
+        ]
         if len(prices) < 2:
             continue
         latest = float(last_price)
@@ -497,10 +537,12 @@ def find_wishlist_atl_hits() -> list[dict]:
                 if e.get("title"):
                     title = e["title"]
                     break
-        hits.append({
-            "asin": item["asin"],
-            "title": title,
-            "price": latest,
-            "target": item.get("max_price"),
-        })
+        hits.append(
+            {
+                "asin": item["asin"],
+                "title": title,
+                "price": latest,
+                "target": item.get("max_price"),
+            }
+        )
     return hits

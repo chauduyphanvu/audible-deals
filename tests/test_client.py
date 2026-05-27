@@ -8,19 +8,18 @@ import time
 import pytest
 
 from audible_deals.client import (
-    LOCALE_DOMAIN,
-    Product,
     _extract_list_price,
     _extract_price,
     _validate_category_id,
     parse_product,
 )
-from tests.conftest import RAW_API_PRODUCT, RAW_API_PRODUCT_MINIMAL, make_product
+from tests.conftest import make_product
 
 
 # ===================================================================
 # Product dataclass properties
 # ===================================================================
+
 
 class TestProductProperties:
     def test_full_title_with_subtitle(self):
@@ -76,6 +75,7 @@ class TestProductProperties:
 # Price extraction
 # ===================================================================
 
+
 class TestPriceExtraction:
     def test_lowest_price(self):
         raw = {"price": {"lowest_price": {"base": 2.99}, "list_price": {"base": 15.0}}}
@@ -114,6 +114,7 @@ class TestPriceExtraction:
 # parse_product
 # ===================================================================
 
+
 class TestParseProduct:
     def test_full_product(self, raw_api_product):
         p = parse_product(raw_api_product)
@@ -147,10 +148,21 @@ class TestParseProduct:
 
     def test_category_deduplication(self):
         raw = {
-            "asin": "X", "title": "X",
+            "asin": "X",
+            "title": "X",
             "category_ladders": [
-                {"ladder": [{"id": "c1", "name": "Fiction"}, {"id": "c2", "name": "Mystery"}]},
-                {"ladder": [{"id": "c1", "name": "Fiction"}, {"id": "c3", "name": "Thriller"}]},
+                {
+                    "ladder": [
+                        {"id": "c1", "name": "Fiction"},
+                        {"id": "c2", "name": "Mystery"},
+                    ]
+                },
+                {
+                    "ladder": [
+                        {"id": "c1", "name": "Fiction"},
+                        {"id": "c3", "name": "Thriller"},
+                    ]
+                },
             ],
         }
         p = parse_product(raw)
@@ -163,9 +175,16 @@ class TestParseProduct:
         assert p.in_plus_catalog is True
 
     def test_rating_handles_bad_data(self):
-        raw = {"asin": "X", "title": "X", "rating": {"overall_distribution": {
-            "display_average_rating": "bad", "num_ratings": "bad"
-        }}}
+        raw = {
+            "asin": "X",
+            "title": "X",
+            "rating": {
+                "overall_distribution": {
+                    "display_average_rating": "bad",
+                    "num_ratings": "bad",
+                }
+            },
+        }
         p = parse_product(raw)
         assert p.rating == 0.0
         assert p.num_ratings == 0
@@ -180,9 +199,12 @@ class TestParseProduct:
     def test_null_plans_and_category_ladders(self):
         """Library API can return null for plans/category_ladders instead of []."""
         raw = {
-            "asin": "X", "title": "X",
-            "plans": None, "category_ladders": None,
-            "series": None, "rating": None,
+            "asin": "X",
+            "title": "X",
+            "plans": None,
+            "category_ladders": None,
+            "series": None,
+            "rating": None,
         }
         p = parse_product(raw)
         assert p.in_plus_catalog is False
@@ -196,9 +218,11 @@ class TestParseProduct:
 # Category caching (disk)
 # ===================================================================
 
+
 class TestCategoryCache:
     def test_save_and_load(self, tmp_config):
         from audible_deals.client import DealsClient
+
         dc = DealsClient(locale="us")
         dc.auth_file = tmp_config / "auth.json"
 
@@ -210,6 +234,7 @@ class TestCategoryCache:
 
     def test_expired_cache(self, tmp_config, monkeypatch):
         from audible_deals.client import DealsClient, CATEGORIES_CACHE_TTL
+
         dc = DealsClient(locale="us")
 
         cats = [{"id": "1", "name": "Fiction"}]
@@ -217,17 +242,21 @@ class TestCategoryCache:
 
         # Simulate stale cache by shifting time forward
         real_time = time.time
-        monkeypatch.setattr(time, "time", lambda: real_time() + CATEGORIES_CACHE_TTL + 1)
+        monkeypatch.setattr(
+            time, "time", lambda: real_time() + CATEGORIES_CACHE_TTL + 1
+        )
         loaded = dc._load_categories_cache()
         assert loaded is None
 
     def test_missing_cache(self, tmp_config):
         from audible_deals.client import DealsClient
+
         dc = DealsClient(locale="us")
         assert dc._load_categories_cache() is None
 
     def test_corrupt_cache(self, tmp_config):
         from audible_deals.client import DealsClient, CATEGORIES_CACHE_FILE
+
         cache_file = CATEGORIES_CACHE_FILE.with_suffix(".us.json")
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text("not json{{{")
@@ -240,9 +269,11 @@ class TestCategoryCache:
 # Genre resolution
 # ===================================================================
 
+
 class TestResolveGenre:
     def _make_client_with_cats(self, cats):
         from audible_deals.client import DealsClient
+
         dc = DealsClient(locale="us")
         dc._categories_cache = cats
         return dc
@@ -281,7 +312,6 @@ class TestResolveGenre:
         cid, _ = dc.resolve_genre("horror")
         assert cid == "1"
 
-
     def test_alias_true_crime(self):
         cats = [{"id": "1", "name": "Mystery, Thriller & Suspense"}]
         dc = self._make_client_with_cats(cats)
@@ -304,6 +334,7 @@ class TestResolveGenre:
 # ===================================================================
 # Category ID validation
 # ===================================================================
+
 
 class TestCategoryIdValidation:
     def test_valid_numeric_id(self):
@@ -340,9 +371,11 @@ class TestCategoryIdValidation:
 # Import-auth validation
 # ===================================================================
 
+
 class TestImportAuthValidation:
     def test_rejects_oversized_file(self, api):
         from audible_deals.client import DealsClient
+
         big_file = api.tmp_path / "big.json"
         big_file.write_text("x" * 1_100_000)
 
@@ -352,6 +385,7 @@ class TestImportAuthValidation:
 
     def test_rejects_missing_access_token(self, api):
         from audible_deals.client import DealsClient
+
         src = api.tmp_path / "bad.json"
         src.write_text(json.dumps({"refresh_token": "rt"}))
 
@@ -361,6 +395,7 @@ class TestImportAuthValidation:
 
     def test_rejects_missing_refresh_token(self, api):
         from audible_deals.client import DealsClient
+
         src = api.tmp_path / "bad.json"
         src.write_text(json.dumps({"access_token": "at"}))
 
@@ -370,11 +405,17 @@ class TestImportAuthValidation:
 
     def test_rejects_invalid_locale_code(self, api):
         from audible_deals.client import DealsClient
+
         src = api.tmp_path / "bad.json"
-        src.write_text(json.dumps({
-            "access_token": "at", "refresh_token": "rt",
-            "locale_code": "xx_invalid",
-        }))
+        src.write_text(
+            json.dumps(
+                {
+                    "access_token": "at",
+                    "refresh_token": "rt",
+                    "locale_code": "xx_invalid",
+                }
+            )
+        )
 
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
         with pytest.raises(ValueError, match="Unknown locale_code"):
@@ -382,11 +423,17 @@ class TestImportAuthValidation:
 
     def test_accepts_valid_auth(self, api):
         from audible_deals.client import DealsClient
+
         src = api.tmp_path / "good.json"
-        src.write_text(json.dumps({
-            "access_token": "at", "refresh_token": "rt",
-            "locale_code": "us",
-        }))
+        src.write_text(
+            json.dumps(
+                {
+                    "access_token": "at",
+                    "refresh_token": "rt",
+                    "locale_code": "us",
+                }
+            )
+        )
 
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
         dc.import_auth(src)
@@ -396,10 +443,11 @@ class TestImportAuthValidation:
 
     def test_libation_rejects_missing_tokens(self, api):
         from audible_deals.client import DealsClient
+
         src = api.tmp_path / "libation_bad.json"
-        src.write_text(json.dumps({
-            "Accounts": [{"IdentityTokens": {"access_token": ""}}]
-        }))
+        src.write_text(
+            json.dumps({"Accounts": [{"IdentityTokens": {"access_token": ""}}]})
+        )
 
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
         with pytest.raises(ValueError, match="Libation auth missing"):
