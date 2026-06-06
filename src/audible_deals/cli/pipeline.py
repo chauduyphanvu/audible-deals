@@ -195,6 +195,48 @@ def _emit_output(
         _interactive_browse(filtered, currency=currency)
 
 
+def _record_and_emit(
+    filtered: list[Product],
+    filter_breakdown: dict[str, int],
+    editions_removed: int,
+    series_collapsed: int,
+    *,
+    title: str,
+    limit: int | None,
+    output: Path | None,
+    json_flag: bool,
+    quiet: bool,
+    max_price: float | None,
+    currency: str,
+    interactive: bool = False,
+    show_url: bool = False,
+    write_cache: bool = True,
+) -> None:
+    """Run the shared pipeline tail: record/cache/limit, then emit."""
+    filtered, serialized, total_before_limit = _record_and_cache(
+        filtered,
+        title=title,
+        write_cache=write_cache,
+        limit=limit,
+    )
+    _emit_output(
+        filtered,
+        serialized,
+        title=title,
+        output=output,
+        json_flag=json_flag,
+        quiet=quiet,
+        max_price=max_price,
+        filter_breakdown=filter_breakdown,
+        editions_removed=editions_removed,
+        series_collapsed=series_collapsed,
+        total_before_limit=total_before_limit,
+        currency=currency,
+        interactive=interactive,
+        show_url=show_url,
+    )
+
+
 def _build_scan_settings(
     ctx: click.Context,
     profile_name: str | None,

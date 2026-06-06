@@ -24,12 +24,11 @@ from audible_deals.cli.pipeline import (
     _apply_filters,
     _apply_settings_filters,
     _build_scan_settings,
-    _emit_output,
     _fetch_with_progress,
     _print_dry_run_summary,
-    _record_and_cache,
+    _record_and_emit,
 )
-from audible_deals.client import Product
+from audible_deals.client import DealsClient, Product
 from audible_deals.constants import (
     CLIENT_SORT_OPTIONS,
     DEEP_SORT_ORDERS,
@@ -60,6 +59,56 @@ from audible_deals.settings import Settings
 from audible_deals.validation import looks_like_person_name
 
 logger = logging.getLogger(__name__)
+
+
+def _check_plus_flags(skip_plus: bool, only_plus: bool) -> None:
+    if skip_plus and only_plus:
+        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+
+
+def _check_genre_category(genre: str, category: str) -> None:
+    if genre and category:
+        raise click.UsageError("Use --genre or --category, not both.")
+
+
+def _fetch_multi_query(
+    dc: DealsClient,
+    queries: list[str],
+    *,
+    category: str,
+    sort_orders: list[str],
+    pages: int,
+) -> list[Product]:
+    """Fetch each query separately, deduplicating by ASIN across queries."""
+    all_products: list[Product] = []
+    fetched_asins: set[str] = set()
+    for q in queries:
+        sub_products = _fetch_with_progress(
+            dc,
+            keywords=q,
+            category_ids=[category],
+            sort_orders=sort_orders,
+            pages=pages,
+            description=f"Searching '{q}'",
+        )
+        for p in sub_products:
+            if p.asin not in fetched_asins:
+                fetched_asins.add(p.asin)
+                all_products.append(p)
+    return all_products
+
+
+def _search_title(queries: list[str], category_name: str) -> str:
+    if len(queries) > 1:
+        combined_query = " | ".join(queries)
+        title = f'Search: "{combined_query}"'
+    elif queries[0]:
+        title = f'Search: "{queries[0]}"'
+    else:
+        return f"Search: {category_name or 'All'}"
+    if category_name:
+        title += f" in {category_name}"
+    return title
 
 
 def _validate_history_filter_options(
@@ -181,8 +230,7 @@ def search(
     )
     if not query and not genre and not category:
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
-    if skip_plus and only_plus:
-        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    _check_plus_flags(skip_plus, only_plus)
     released_after, released_before = _validate_history_filter_options(
         require_history, hist_below, min_price_drop, released_after, released_before
     )
@@ -219,8 +267,7 @@ def search(
         exclude_keywords=exclude_keywords,
     )
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    if s.genre and category:
-        raise click.UsageError("Use --genre or --category, not both.")
+    _check_genre_category(s.genre, category)
 
     dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(s.sort, "Relevance")
@@ -251,24 +298,13 @@ def search(
             raise click.UsageError("No keywords found after splitting on '|'.")
 
         if len(queries) > 1:
-            all_products: list[Product] = []
-            fetched_asins: set[str] = set()
-            for q in queries:
-                sub_products = _fetch_with_progress(
-                    dc,
-                    keywords=q,
-                    category_ids=[category],
-                    sort_orders=sort_orders,
-                    pages=s.pages,
-                    description=f"Searching '{q}'",
-                )
-                for p in sub_products:
-                    if p.asin not in fetched_asins:
-                        fetched_asins.add(p.asin)
-                        all_products.append(p)
-            scope = " | ".join(f"'{q}'" for q in queries)
-            if category_name:
-                scope += f" in {category_name}"
+            all_products = _fetch_multi_query(
+                dc,
+                queries,
+                category=category,
+                sort_orders=sort_orders,
+                pages=s.pages,
+            )
         else:
             if queries[0]:
                 scope = f"'{queries[0]}'"
@@ -289,17 +325,7 @@ def search(
             )
 
     cur = _currency(ctx)
-    if len(queries) > 1:
-        combined_query = " | ".join(queries)
-        search_title = f'Search: "{combined_query}"'
-        if category_name:
-            search_title += f" in {category_name}"
-    elif queries[0]:
-        search_title = f'Search: "{queries[0]}"'
-        if category_name:
-            search_title += f" in {category_name}"
-    else:
-        search_title = f"Search: {category_name or 'All'}"
+    search_title = _search_title(queries, category_name)
     filtered, filter_breakdown, editions_removed, series_collapsed = (
         _apply_settings_filters(
             all_products,
@@ -313,23 +339,17 @@ def search(
             released_before=released_before,
         )
     )
-    filtered, serialized, total_before_limit = _record_and_cache(
+    _record_and_emit(
         filtered,
+        filter_breakdown,
+        editions_removed,
+        series_collapsed,
         title=search_title,
         limit=s.limit,
-    )
-    _emit_output(
-        filtered,
-        serialized,
-        title=search_title,
         output=output,
         json_flag=json_flag,
         quiet=quiet,
         max_price=s.max_price,
-        filter_breakdown=filter_breakdown,
-        editions_removed=editions_removed,
-        series_collapsed=series_collapsed,
-        total_before_limit=total_before_limit,
         currency=cur,
         interactive=s.interactive,
         show_url=show_url,
@@ -470,8 +490,7 @@ def find(
         sort,
         deep,
     )
-    if skip_plus and only_plus:
-        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    _check_plus_flags(skip_plus, only_plus)
     released_after, released_before = _validate_history_filter_options(
         require_history, hist_below, min_price_drop, released_after, released_before
     )
@@ -508,8 +527,7 @@ def find(
         exclude_keywords=exclude_keywords,
     )
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    if s.genre and category:
-        raise click.UsageError("Use --genre or --category, not both.")
+    _check_genre_category(s.genre, category)
 
     dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(s.sort, "BestSellers")
@@ -589,23 +607,17 @@ def find(
             released_before=released_before,
         )
     )
-    filtered, serialized, total_before_limit = _record_and_cache(
+    _record_and_emit(
         filtered,
+        filter_breakdown,
+        editions_removed,
+        series_collapsed,
         title=find_title,
         limit=s.limit,
-    )
-    _emit_output(
-        filtered,
-        serialized,
-        title=find_title,
         output=output,
         json_flag=json_flag,
         quiet=quiet,
         max_price=s.max_price,
-        filter_breakdown=filter_breakdown,
-        editions_removed=editions_removed,
-        series_collapsed=series_collapsed,
-        total_before_limit=total_before_limit,
         currency=cur,
         interactive=s.interactive,
         show_url=show_url,
@@ -1128,23 +1140,17 @@ def series(
         )
         return
 
-    filtered, serialized, total_before_limit = _record_and_cache(
+    _record_and_emit(
         filtered,
+        filter_breakdown,
+        editions_removed,
+        series_collapsed,
         title=series_title,
         limit=limit,
-    )
-    _emit_output(
-        filtered,
-        serialized,
-        title=series_title,
         output=output,
         json_flag=json_flag,
         quiet=quiet,
         max_price=max_price,
-        filter_breakdown=filter_breakdown,
-        editions_removed=editions_removed,
-        series_collapsed=series_collapsed,
-        total_before_limit=total_before_limit,
         currency=cur,
         interactive=interactive,
     )
@@ -1343,8 +1349,7 @@ def last_cmd(
         clear_seen,
         count_only,
     )
-    if skip_plus and only_plus:
-        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    _check_plus_flags(skip_plus, only_plus)
     did_clear = False
     if clear_seen:
         if clear_seen_asins():
@@ -1394,25 +1399,19 @@ def last_cmd(
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
-    filtered, serialized, total_before_limit = _record_and_cache(
+    _record_and_emit(
         filtered,
+        filter_breakdown,
+        editions_removed,
+        series_collapsed,
         title=cached_title,
-        write_cache=False,
         limit=limit,
-    )
-    _emit_output(
-        filtered,
-        serialized,
-        title=cached_title,
         output=output,
         json_flag=json_flag,
         quiet=quiet,
         max_price=max_price,
-        filter_breakdown=filter_breakdown,
-        editions_removed=editions_removed,
-        series_collapsed=series_collapsed,
-        total_before_limit=total_before_limit,
         currency=cur,
         interactive=interactive,
         show_url=show_url,
+        write_cache=False,
     )
