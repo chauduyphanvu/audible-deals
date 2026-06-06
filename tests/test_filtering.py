@@ -264,13 +264,15 @@ class TestFirstInSeries:
         assert len(result) == 2
 
     def test_non_numeric_position(self):
+        # "Book 1" now parses as 1.0 via parse_series_position, same as "1".
+        # On a tie, the first-seen product wins (stable behaviour).
         products = [
             make_product(asin="A", series_name="S", series_position="Book 1"),
             make_product(asin="B", series_name="S", series_position="1"),
         ]
         result, collapsed = first_in_series(products)
         assert collapsed == 1
-        assert result[0].asin == "B"
+        assert result[0].asin == "A"
 
 
 class TestFirstInSeriesStrict:
@@ -431,3 +433,104 @@ class TestFilterSeries:
         filtered, breakdown = filter_products(products, series="")
         assert len(filtered) == 2
         assert "series" not in breakdown
+
+
+# ===================================================================
+# filter_products — hist_percentile and price_drops filters
+# ===================================================================
+
+
+class TestHistPercentileFilter:
+    def test_removes_product_above_percentile(self):
+        # asin "HP1" in dict with rank 80 > threshold 50 — filtered out
+        products = [
+            make_product(asin="HP1", price=10.0),
+            make_product(asin="HP2", price=5.0),
+        ]
+        hist_percentile = {"HP1": 80, "HP2": 30}
+        filtered, breakdown = filter_products(
+            products,
+            max_hist_percentile=50,
+            hist_percentile=hist_percentile,
+        )
+        asins = [p.asin for p in filtered]
+        assert "HP1" not in asins
+        assert "HP2" in asins
+        assert breakdown.get("hist percentile") == 1
+
+    def test_pass_through_when_not_in_dict(self):
+        # asin not in hist_percentile dict — no history, passes through
+        products = [make_product(asin="HP3", price=10.0)]
+        filtered, breakdown = filter_products(
+            products,
+            max_hist_percentile=50,
+            hist_percentile={},
+        )
+        assert len(filtered) == 1
+        assert "hist percentile" not in breakdown
+
+    def test_at_threshold_passes(self):
+        products = [make_product(asin="HP4", price=10.0)]
+        hist_percentile = {"HP4": 50}
+        filtered, _ = filter_products(
+            products,
+            max_hist_percentile=50,
+            hist_percentile=hist_percentile,
+        )
+        assert len(filtered) == 1
+
+    def test_no_flag_no_filter(self):
+        products = [make_product(asin="HP5", price=10.0)]
+        filtered, breakdown = filter_products(products, max_hist_percentile=None)
+        assert len(filtered) == 1
+        assert "hist percentile" not in breakdown
+
+
+class TestPriceDropFilter:
+    def test_removes_product_below_min_drop(self):
+        products = [
+            make_product(asin="PD1", price=9.0),
+            make_product(asin="PD2", price=5.0),
+        ]
+        price_drops = {"PD1": 5.0, "PD2": 50.0}  # PD1 only 5% drop, PD2 50%
+        filtered, breakdown = filter_products(
+            products,
+            min_price_drop=20.0,
+            price_drops=price_drops,
+        )
+        asins = [p.asin for p in filtered]
+        assert "PD1" not in asins
+        assert "PD2" in asins
+        assert breakdown.get("price drop") == 1
+
+    def test_pass_through_when_not_in_dict(self):
+        # asin not in price_drops — no history, passes through
+        products = [make_product(asin="PD3", price=10.0)]
+        filtered, breakdown = filter_products(
+            products,
+            min_price_drop=20.0,
+            price_drops={},
+        )
+        assert len(filtered) == 1
+        assert "price drop" not in breakdown
+
+    def test_at_threshold_passes(self):
+        products = [make_product(asin="PD4", price=8.0)]
+        price_drops = {"PD4": 20.0}
+        filtered, _ = filter_products(
+            products,
+            min_price_drop=20.0,
+            price_drops=price_drops,
+        )
+        assert len(filtered) == 1
+
+    def test_zero_min_drop_no_filter(self):
+        products = [make_product(asin="PD5", price=10.0)]
+        price_drops = {"PD5": -5.0}  # price went up
+        filtered, breakdown = filter_products(
+            products,
+            min_price_drop=0.0,
+            price_drops=price_drops,
+        )
+        assert len(filtered) == 1
+        assert "price drop" not in breakdown

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import json
 
 import pytest
@@ -10,6 +11,9 @@ from click.testing import CliRunner
 from audible_deals.cli import cli
 from audible_deals.state import load_seen_asins, save_seen_asins, find_wishlist_atl_hits
 from audible_deals.state import _expand_ref_string, resolve_last_references
+from audible_deals.state import hist_percentiles, price_drop_pcts
+from audible_deals.state import load_all_price_histories, purge_stale_history
+from tests.conftest import make_product
 
 
 # ===================================================================
@@ -238,3 +242,297 @@ class TestFindWishlistAtlHits:
         ]
         (state_mod.HISTORY_DIR / "B00ATL0005.json").write_text(json.dumps(entries))
         assert find_wishlist_atl_hits() == []
+
+
+# ===================================================================
+# hist_percentiles
+# ===================================================================
+
+
+def _write_history(tmp_config, asin: str, prices: list[float]) -> None:
+    import audible_deals.state as state_mod
+
+    state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    entries = [
+        {"date": f"2024-01-{i + 1:02d}", "price": p, "title": "T"}
+        for i, p in enumerate(prices)
+    ]
+    (state_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+
+
+class TestHistPercentiles:
+    def test_current_at_median_is_40th(self, tmp_config):
+        # prices [1,2,3,4,5], current=3; 2 of 5 < 3 => 40th percentile (strict less-than)
+        _write_history(tmp_config, "HP01", [1.0, 2.0, 3.0, 4.0, 5.0])
+        p = make_product(asin="HP01", price=3.0)
+        result = hist_percentiles([p])
+        assert result["HP01"] == 40
+
+    def test_current_at_minimum_is_0th(self, tmp_config):
+        # prices [1,2,3,4,5], current=1; 0 of 5 < 1 => 0 (all-time low => 0)
+        _write_history(tmp_config, "HP02", [1.0, 2.0, 3.0, 4.0, 5.0])
+        p = make_product(asin="HP02", price=1.0)
+        result = hist_percentiles([p])
+        assert result["HP02"] == 0
+
+    def test_current_at_maximum_is_80th(self, tmp_config):
+        # prices [1,2,3,4,5], current=5; 4 of 5 < 5 => 80th
+        _write_history(tmp_config, "HP03", [1.0, 2.0, 3.0, 4.0, 5.0])
+        p = make_product(asin="HP03", price=5.0)
+        result = hist_percentiles([p])
+        assert result["HP03"] == 80
+
+    def test_all_time_low_ranks_zero(self, tmp_config):
+        # An all-time-low price should rank 0 so --hist-below 0..19 can match it
+        _write_history(tmp_config, "HP08", [10.0, 8.0, 6.0, 5.0, 4.0])
+        p = make_product(asin="HP08", price=4.0)
+        result = hist_percentiles([p])
+        assert result["HP08"] == 0
+
+    def test_fewer_than_5_entries_excluded(self, tmp_config):
+        _write_history(tmp_config, "HP04", [1.0, 2.0, 3.0, 4.0])
+        p = make_product(asin="HP04", price=1.0)
+        result = hist_percentiles([p])
+        assert "HP04" not in result
+
+    def test_no_history_excluded(self, tmp_config):
+        p = make_product(asin="HP05", price=5.0)
+        result = hist_percentiles([p])
+        assert "HP05" not in result
+
+    def test_no_price_excluded(self, tmp_config):
+        _write_history(tmp_config, "HP06", [1.0, 2.0, 3.0, 4.0, 5.0])
+        p = make_product(asin="HP06", price=None)
+        result = hist_percentiles([p])
+        assert "HP06" not in result
+
+    def test_non_numeric_history_entries_skipped(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        entries = [
+            {"date": "2024-01-01", "price": None, "title": "T"},
+            {"date": "2024-01-02", "price": 2.0, "title": "T"},
+            {"date": "2024-01-03", "price": 3.0, "title": "T"},
+            {"date": "2024-01-04", "price": 4.0, "title": "T"},
+            {"date": "2024-01-05", "price": 5.0, "title": "T"},
+        ]
+        (state_mod.HISTORY_DIR / "HP07.json").write_text(json.dumps(entries))
+        # 4 numeric entries — fewer than 5, should be excluded
+        p = make_product(asin="HP07", price=3.0)
+        result = hist_percentiles([p])
+        assert "HP07" not in result
+
+
+# ===================================================================
+# price_drop_pcts
+# ===================================================================
+
+
+class TestPriceDropPcts:
+    def test_basic_drop(self, tmp_config):
+        # last price was 10.0, current is 8.0 => 20% drop
+        _write_history(tmp_config, "PD01", [12.0, 10.0])
+        p = make_product(asin="PD01", price=8.0)
+        result = price_drop_pcts([p])
+        assert result["PD01"] == pytest.approx(20.0)
+
+    def test_no_history_excluded(self, tmp_config):
+        p = make_product(asin="PD02", price=5.0)
+        result = price_drop_pcts([p])
+        assert "PD02" not in result
+
+    def test_price_increase_is_negative(self, tmp_config):
+        # last price was 5.0, current is 8.0 => -60% "drop" (price went up)
+        _write_history(tmp_config, "PD03", [5.0])
+        p = make_product(asin="PD03", price=8.0)
+        result = price_drop_pcts([p])
+        assert result["PD03"] == pytest.approx(-60.0)
+
+    def test_same_price_is_zero(self, tmp_config):
+        _write_history(tmp_config, "PD04", [10.0])
+        p = make_product(asin="PD04", price=10.0)
+        result = price_drop_pcts([p])
+        assert result["PD04"] == pytest.approx(0.0)
+
+    def test_no_price_excluded(self, tmp_config):
+        _write_history(tmp_config, "PD05", [10.0])
+        p = make_product(asin="PD05", price=None)
+        result = price_drop_pcts([p])
+        assert "PD05" not in result
+
+    def test_uses_last_non_today_entry(self, tmp_config):
+        # multiple history entries — uses the last non-today one
+        _write_history(tmp_config, "PD06", [20.0, 15.0, 10.0])
+        p = make_product(asin="PD06", price=8.0)
+        result = price_drop_pcts([p])
+        # drop from 10.0 to 8.0 = 20%
+        assert result["PD06"] == pytest.approx(20.0)
+
+    def test_zero_last_price_excluded(self, tmp_config):
+        _write_history(tmp_config, "PD07", [0.0])
+        p = make_product(asin="PD07", price=5.0)
+        result = price_drop_pcts([p])
+        assert "PD07" not in result
+
+    def test_same_day_rerun_skips_today_entry(self, tmp_config):
+        """Same-day re-run: today's entry is skipped; reference is yesterday's price."""
+        import audible_deals.state as state_mod
+
+        today = datetime.date.today().isoformat()
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        entries = [
+            {"date": yesterday, "price": 10.0, "title": "T"},
+            {"date": today, "price": 8.0, "title": "T"},
+        ]
+        (state_mod.HISTORY_DIR / "PD08.json").write_text(json.dumps(entries))
+        p = make_product(asin="PD08", price=8.0)
+        result = price_drop_pcts([p])
+        # reference is yesterday's 10.0; drop from 10.0 to 8.0 = 20%
+        assert result["PD08"] == pytest.approx(20.0)
+
+    def test_all_entries_today_excluded(self, tmp_config):
+        """When all history entries are from today, ASIN is omitted (no reference price)."""
+        import audible_deals.state as state_mod
+
+        today = datetime.date.today().isoformat()
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        entries = [{"date": today, "price": 10.0, "title": "T"}]
+        (state_mod.HISTORY_DIR / "PD09.json").write_text(json.dumps(entries))
+        p = make_product(asin="PD09", price=8.0)
+        result = price_drop_pcts([p])
+        assert "PD09" not in result
+
+
+# ===================================================================
+# load_all_price_histories
+# ===================================================================
+
+
+class TestLoadAllPriceHistories:
+    def test_returns_empty_when_dir_missing(self, tmp_config):
+        result = load_all_price_histories()
+        assert result == {}
+
+    def test_returns_all_valid_histories(self, tmp_config):
+        _write_history(tmp_config, "LA01", [1.0, 2.0])
+        _write_history(tmp_config, "LA02", [3.0])
+        result = load_all_price_histories()
+        assert set(result.keys()) == {"LA01", "LA02"}
+        assert len(result["LA01"]) == 2
+        assert len(result["LA02"]) == 1
+
+    def test_skips_corrupt_files(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        (state_mod.HISTORY_DIR / "CORRUPT.json").write_text("not json")
+        _write_history(tmp_config, "GOOD01", [5.0])
+        result = load_all_price_histories()
+        assert "CORRUPT" not in result
+        assert "GOOD01" in result
+
+    def test_skips_empty_history(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        (state_mod.HISTORY_DIR / "EMPTY01.json").write_text("[]")
+        _write_history(tmp_config, "VALID01", [4.0])
+        result = load_all_price_histories()
+        assert "EMPTY01" not in result
+        assert "VALID01" in result
+
+
+# ===================================================================
+# purge_stale_history
+# ===================================================================
+
+
+def _write_history_with_dates(
+    tmp_config, asin: str, dates: list[str], price: float = 5.0
+) -> None:
+    import audible_deals.state as state_mod
+
+    state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    entries = [{"date": d, "price": price, "title": "T"} for d in dates]
+    (state_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+
+
+class TestPurgeStaleHistory:
+    def test_returns_zero_when_dir_missing(self, tmp_config):
+        count, affected = purge_stale_history(90)
+        assert count == 0
+        assert affected == []
+
+    def test_stale_file_is_deleted(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
+        _write_history_with_dates(tmp_config, "STALE01", [old_date])
+        count, affected = purge_stale_history(90)
+        assert count == 1
+        assert "STALE01" in affected
+        assert not (state_mod.HISTORY_DIR / "STALE01.json").exists()
+
+    def test_fresh_file_is_kept(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        fresh_date = datetime.date.today().isoformat()
+        _write_history_with_dates(tmp_config, "FRESH01", [fresh_date])
+        count, affected = purge_stale_history(90)
+        assert count == 0
+        assert "FRESH01" not in affected
+        assert (state_mod.HISTORY_DIR / "FRESH01.json").exists()
+
+    def test_mixed_stale_and_fresh(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        old_date = (datetime.date.today() - datetime.timedelta(days=100)).isoformat()
+        fresh_date = datetime.date.today().isoformat()
+        _write_history_with_dates(tmp_config, "OLD01", [old_date])
+        _write_history_with_dates(tmp_config, "NEW01", [fresh_date])
+        count, affected = purge_stale_history(90)
+        assert count == 1
+        assert "OLD01" in affected
+        assert not (state_mod.HISTORY_DIR / "OLD01.json").exists()
+        assert (state_mod.HISTORY_DIR / "NEW01.json").exists()
+
+    def test_dry_run_deletes_nothing(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
+        _write_history_with_dates(tmp_config, "DRY01", [old_date])
+        count, affected = purge_stale_history(90, dry_run=True)
+        assert count == 1
+        assert "DRY01" in affected
+        assert (state_mod.HISTORY_DIR / "DRY01.json").exists()
+
+    def test_corrupt_file_is_skipped(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        (state_mod.HISTORY_DIR / "CORRUPT2.json").write_text("not json")
+        count, affected = purge_stale_history(90)
+        assert "CORRUPT2" not in affected
+        assert (state_mod.HISTORY_DIR / "CORRUPT2.json").exists()
+
+    def test_file_with_no_date_is_skipped(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        entries = [{"price": 5.0, "title": "T"}]
+        (state_mod.HISTORY_DIR / "NODATE01.json").write_text(json.dumps(entries))
+        count, affected = purge_stale_history(90)
+        assert "NODATE01" not in affected
+        assert (state_mod.HISTORY_DIR / "NODATE01.json").exists()
+
+    def test_boundary_date_is_kept(self, tmp_config):
+        # A file whose last entry is exactly `days` ago (not older) is kept
+        import audible_deals.state as state_mod
+
+        cutoff_date = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+        _write_history_with_dates(tmp_config, "BOUND01", [cutoff_date])
+        count, affected = purge_stale_history(90)
+        assert count == 0
+        assert (state_mod.HISTORY_DIR / "BOUND01.json").exists()

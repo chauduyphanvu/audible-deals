@@ -867,6 +867,94 @@ class TestHistoryCommand:
         result = CliRunner().invoke(cli, ["history"])
         assert result.exit_code != 0
 
+    def test_history_json_flag_emits_json(self, tmp_config, mock_client):
+        hist_dir = tmp_config / "history"
+        hist_dir.mkdir()
+        entries = [{"date": "2024-01-01", "price": 9.99, "title": "Book"}]
+        (hist_dir / "H003.json").write_text(json.dumps(entries))
+        result = _run(CliRunner(), ["history", "H003", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, list)
+        assert data[0]["price"] == 9.99
+
+    def test_history_json_empty_emits_empty_list(self, tmp_config, mock_client):
+        result = _run(CliRunner(), ["history", "NODATA02", "--json"])
+        assert result.exit_code == 0
+        assert json.loads(result.output) == []
+
+    def test_history_all_json_emits_all(self, tmp_config, mock_client):
+        hist_dir = tmp_config / "history"
+        hist_dir.mkdir()
+        e1 = [{"date": "2024-01-01", "price": 1.0, "title": "A"}]
+        e2 = [{"date": "2024-01-02", "price": 2.0, "title": "B"}]
+        (hist_dir / "H004.json").write_text(json.dumps(e1))
+        (hist_dir / "H005.json").write_text(json.dumps(e2))
+        result = _run(CliRunner(), ["history", "--all", "--json"])
+        assert result.exit_code == 0
+        data = json.loads(result.output)
+        assert isinstance(data, dict)
+        assert "H004" in data and "H005" in data
+
+    def test_history_all_without_json_errors(self, tmp_config, mock_client):
+        result = CliRunner().invoke(cli, ["history", "--all"])
+        assert result.exit_code != 0
+        assert "--json" in result.output
+
+    def test_history_all_with_asin_errors(self, tmp_config, mock_client):
+        result = CliRunner().invoke(cli, ["history", "H006", "--all", "--json"])
+        assert result.exit_code != 0
+
+    def test_history_purge_dry_run(self, tmp_config, mock_client):
+        import datetime as dt
+
+        hist_dir = tmp_config / "history"
+        hist_dir.mkdir()
+        old_date = (dt.date.today() - dt.timedelta(days=200)).isoformat()
+        entries = [{"date": old_date, "price": 5.0, "title": "Old"}]
+        (hist_dir / "POLD01.json").write_text(json.dumps(entries))
+        result = _run(CliRunner(), ["history", "--purge-older-than", "90", "--dry-run"])
+        assert result.exit_code == 0
+        assert "Would remove" in result.output
+        assert (hist_dir / "POLD01.json").exists()
+
+    def test_history_purge_with_yes(self, tmp_config, mock_client):
+        import datetime as dt
+
+        hist_dir = tmp_config / "history"
+        hist_dir.mkdir()
+        old_date = (dt.date.today() - dt.timedelta(days=200)).isoformat()
+        entries = [{"date": old_date, "price": 5.0, "title": "Old"}]
+        (hist_dir / "POLD02.json").write_text(json.dumps(entries))
+        result = _run(CliRunner(), ["history", "--purge-older-than", "90", "--yes"])
+        assert result.exit_code == 0
+        assert "Removed" in result.output
+        assert not (hist_dir / "POLD02.json").exists()
+
+    def test_history_purge_combined_with_json_errors(self, tmp_config, mock_client):
+        result = CliRunner().invoke(
+            cli, ["history", "--purge-older-than", "90", "--json"]
+        )
+        assert result.exit_code != 0
+
+    def test_history_purge_combined_with_asin_errors(self, tmp_config, mock_client):
+        result = CliRunner().invoke(
+            cli, ["history", "H007", "--purge-older-than", "90"]
+        )
+        assert result.exit_code != 0
+
+    def test_history_purge_nothing_stale(self, tmp_config, mock_client):
+        hist_dir = tmp_config / "history"
+        hist_dir.mkdir()
+        import datetime as dt
+
+        fresh = dt.date.today().isoformat()
+        entries = [{"date": fresh, "price": 5.0, "title": "New"}]
+        (hist_dir / "FRESH02.json").write_text(json.dumps(entries))
+        result = _run(CliRunner(), ["history", "--purge-older-than", "90", "--dry-run"])
+        assert result.exit_code == 0
+        assert "No history" in result.output
+
 
 # ===========================================================================
 # 16. recap
@@ -1310,3 +1398,256 @@ class TestLibraryStats:
         result = _run(CliRunner(), ["library", "--stats"])
         assert result.exit_code == 0
         assert "Repeated Author" in result.output
+
+
+# ===========================================================================
+# Feature: series --gaps
+# ===========================================================================
+
+
+class TestParseSeriesPosition:
+    """Unit tests for the parse_series_position helper in utils."""
+
+    def test_plain_integer(self):
+        from audible_deals.utils import parse_series_position
+
+        assert parse_series_position("2") == 2.0
+
+    def test_decimal(self):
+        from audible_deals.utils import parse_series_position
+
+        assert parse_series_position("2.5") == 2.5
+
+    def test_range_picks_first(self):
+        from audible_deals.utils import parse_series_position
+
+        assert parse_series_position("1-3") == 1.0
+
+    def test_prefixed(self):
+        from audible_deals.utils import parse_series_position
+
+        assert parse_series_position("Book 2") == 2.0
+
+    def test_empty_string_goes_last(self):
+        from audible_deals.utils import parse_series_position
+
+        assert parse_series_position("") == float("inf")
+
+    def test_unparseable_goes_last(self):
+        from audible_deals.utils import parse_series_position
+
+        assert parse_series_position("Prequel") == float("inf")
+
+    def test_sort_order(self):
+        from audible_deals.utils import parse_series_position
+
+        positions = ["3", "1-3", "2.5", "Book 10", "", "Prequel"]
+        sorted_pos = sorted(positions, key=parse_series_position)
+        assert sorted_pos[:4] == ["1-3", "2.5", "3", "Book 10"]
+        # "" and "Prequel" go last (both inf), order between them doesn't matter
+        assert set(sorted_pos[4:]) == {"", "Prequel"}
+
+
+class TestSeriesGapsMode:
+    """CLI-level tests for series --gaps."""
+
+    def _make_library(self):
+        """Two books owned in 'The Expanse' series."""
+        owned1 = make_product(
+            asin="EXP001",
+            title="Leviathan Wakes",
+            series_name="The Expanse",
+            series_asin="EXPANSE1",
+            series_position="1",
+            price=0.0,
+            length_minutes=900,
+        )
+        owned2 = make_product(
+            asin="EXP003",
+            title="Abaddon's Gate",
+            series_name="The Expanse",
+            series_asin="EXPANSE1",
+            series_position="3",
+            price=0.0,
+            length_minutes=900,
+        )
+        return [owned1, owned2]
+
+    def _make_catalog(self):
+        """Catalog returns book 2 (not owned) and the two owned (should be excluded)."""
+        owned1 = make_product(
+            asin="EXP001",
+            series_name="The Expanse",
+            series_position="1",
+            price=0.0,
+        )
+        missing = make_product(
+            asin="EXP002",
+            title="Caliban's War",
+            series_name="The Expanse",
+            series_position="2",
+            price=24.95,
+            length_minutes=900,
+        )
+        owned2 = make_product(
+            asin="EXP003",
+            series_name="The Expanse",
+            series_position="3",
+            price=0.0,
+        )
+        return [owned1, missing, owned2]
+
+    def test_gaps_basic_terminal_output(self, tmp_config, mock_client):
+        """Gaps mode runs without error; missing book appears in JSON for verification."""
+        mock_client.get_library.return_value = self._make_library()
+        mock_client.get_series_products.return_value = self._make_catalog()
+
+        # Terminal display goes through Rich console (not captured by CliRunner).
+        # Verify the command succeeds and produces correct JSON in a parallel call.
+        result = _run(
+            CliRunner(),
+            ["series", "--gaps", "--min-books", "2"],
+        )
+        assert result.exit_code == 0, result.output
+
+        # JSON confirms the gap report content
+        result_json = _run(
+            CliRunner(),
+            ["series", "--gaps", "--json", "--quiet", "--min-books", "2"],
+        )
+        assert result_json.exit_code == 0, result_json.output
+        json_start = result_json.output.index("[")
+        data = json.loads(result_json.output[json_start:])
+        titles = [m["title"] for entry in data for m in entry["missing"]]
+        assert "Caliban's War" in titles
+
+    def test_gaps_json_shape(self, tmp_config, mock_client):
+        """--gaps --json emits correct per-series structure."""
+        mock_client.get_library.return_value = self._make_library()
+        mock_client.get_series_products.return_value = self._make_catalog()
+
+        result = _run(
+            CliRunner(),
+            ["series", "--gaps", "--json", "--quiet", "--min-books", "2"],
+        )
+        assert result.exit_code == 0, result.output
+        # JSON output starts with '['
+        json_start = result.output.index("[")
+        data = json.loads(result.output[json_start:])
+        assert len(data) == 1
+        entry = data[0]
+        assert entry["series"] == "The Expanse"
+        assert entry["owned"] == 2
+        assert entry["total_known"] == 3  # 2 owned + 1 missing
+        assert len(entry["missing"]) == 1
+        m = entry["missing"][0]
+        assert m["asin"] == "EXP002"
+        assert m["title"] == "Caliban's War"
+        assert m["position"] == "2"
+        assert m["price"] == 24.95
+
+    def test_gaps_with_output_raises_usage_error(self, tmp_config, mock_client):
+        """--gaps + --output is a UsageError."""
+        result = CliRunner().invoke(
+            cli,
+            ["series", "--gaps", "--output", str(tmp_config / "out.json")],
+        )
+        assert result.exit_code != 0
+        assert (
+            "not compatible" in result.output.lower()
+            or "usage" in result.output.lower()
+        )
+
+    def test_gaps_with_interactive_raises_usage_error(self, tmp_config, mock_client):
+        """--gaps + --interactive is a UsageError."""
+        result = CliRunner().invoke(
+            cli,
+            ["series", "--gaps", "--interactive"],
+        )
+        assert result.exit_code != 0
+        assert (
+            "not compatible" in result.output.lower()
+            or "usage" in result.output.lower()
+        )
+
+    def test_gaps_series_with_all_owned_omitted(self, tmp_config, mock_client):
+        """Series where catalog == owned books has no missing and is omitted."""
+        # Own 2 books; catalog returns only the 2 owned books (no new candidates)
+        owned1 = make_product(
+            asin="OM001",
+            series_name="Complete Series",
+            series_asin="CSER1",
+            series_position="1",
+            price=0.0,
+            length_minutes=600,
+        )
+        owned2 = make_product(
+            asin="OM002",
+            series_name="Complete Series",
+            series_asin="CSER1",
+            series_position="2",
+            price=0.0,
+            length_minutes=600,
+        )
+        mock_client.get_library.return_value = [owned1, owned2]
+        # Catalog has the same books already owned — no new candidates
+        mock_client.get_series_products.return_value = [owned1, owned2]
+
+        result = _run(
+            CliRunner(),
+            ["series", "--gaps", "--json", "--quiet", "--min-books", "2"],
+        )
+        assert result.exit_code == 0, result.output
+        json_start = result.output.index("[")
+        data = json.loads(result.output[json_start:])
+        assert data == [], "All-owned series should be omitted from gaps output"
+
+    def test_gaps_missing_sorted_by_position(self, tmp_config, mock_client):
+        """Missing books within a series are sorted by numeric position."""
+        owned = make_product(
+            asin="SRT001",
+            series_name="Sort Series",
+            series_asin="SORT1",
+            series_position="1",
+            price=0.0,
+            length_minutes=600,
+        )
+        owned2 = make_product(
+            asin="SRT002",
+            series_name="Sort Series",
+            series_asin="SORT1",
+            series_position="2",
+            price=0.0,
+            length_minutes=600,
+        )
+        miss5 = make_product(
+            asin="SRTM5",
+            title="Book Five",
+            series_name="Sort Series",
+            series_position="5",
+            price=9.99,
+            length_minutes=600,
+        )
+        miss3 = make_product(
+            asin="SRTM3",
+            title="Book Three",
+            series_name="Sort Series",
+            series_position="3",
+            price=7.99,
+            length_minutes=600,
+        )
+        mock_client.get_library.return_value = [owned, owned2]
+        mock_client.get_series_products.return_value = [owned, owned2, miss5, miss3]
+
+        result = _run(
+            CliRunner(),
+            ["series", "--gaps", "--json", "--quiet", "--min-books", "2"],
+        )
+        assert result.exit_code == 0, result.output
+        json_start = result.output.index("[")
+        data = json.loads(result.output[json_start:])
+        assert len(data) == 1
+        missing = data[0]["missing"]
+        assert len(missing) == 2
+        assert missing[0]["asin"] == "SRTM3"  # position 3 sorts before 5
+        assert missing[1]["asin"] == "SRTM5"

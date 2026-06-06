@@ -67,6 +67,14 @@ def save_wishlist(items: list[dict]) -> None:
     _save_json_file(WISHLIST_FILE, items, "wishlist")
 
 
+def partition_wishlist(items: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Split wishlist entries into (asin_items, author_items)."""
+    return (
+        [i for i in items if i.get("asin")],
+        [i for i in items if i.get("type") == "author"],
+    )
+
+
 def wishlist_entry(product: Product, max_price: float | None) -> dict:
     """Build a wishlist dict from a Product."""
     return {
@@ -406,6 +414,13 @@ def load_price_history(asin: str) -> list[dict]:
         return []
 
 
+def _numeric_prices(entries: list[dict]) -> list[float]:
+    """Extract the numeric prices from history entries, in order."""
+    return [
+        float(e["price"]) for e in entries if isinstance(e.get("price"), (int, float))
+    ]
+
+
 def price_history_context(products: list[Product]) -> tuple[set[str], dict[str, int]]:
     """Compute (atl_asins, hist_context) for priced products from their histories.
 
@@ -417,11 +432,7 @@ def price_history_context(products: list[Product]) -> tuple[set[str], dict[str, 
     for p in products:
         if p.price is None:
             continue
-        numeric = [
-            float(e["price"])
-            for e in load_price_history(p.asin)
-            if isinstance(e.get("price"), (int, float))
-        ]
+        numeric = _numeric_prices(load_price_history(p.asin))
         if not numeric:
             continue
         if p.price <= min(numeric):
@@ -431,6 +442,55 @@ def price_history_context(products: list[Product]) -> tuple[set[str], dict[str, 
             if median > 0:
                 hist_context[p.asin] = round((p.price - median) / median * 100)
     return atl_asins, hist_context
+
+
+def _history_entries(asin: str, histories: dict[str, list[dict]] | None) -> list[dict]:
+    """Entries from a preloaded map when given, else from disk."""
+    if histories is not None:
+        return histories.get(asin, [])
+    return load_price_history(asin)
+
+
+def hist_percentiles(
+    products: list[Product], histories: dict[str, list[dict]] | None = None
+) -> dict[str, int]:
+    """Percentile rank (0–100) of current price within its history (≥5 entries required)."""
+    result: dict[str, int] = {}
+    for p in products:
+        if p.price is None:
+            continue
+        numeric = _numeric_prices(_history_entries(p.asin, histories))
+        if len(numeric) < 5:
+            continue
+        result[p.asin] = round(
+            100 * sum(1 for h in numeric if h < p.price) / len(numeric)
+        )
+    return result
+
+
+def price_drop_pcts(
+    products: list[Product], histories: dict[str, list[dict]] | None = None
+) -> dict[str, float]:
+    """Percent drop from last tracked price (negative means price went up).
+
+    Skips entries dated today so same-day re-runs don't compare a price against itself.
+    If all entries are from today, the ASIN is omitted (no reference price available).
+    """
+    result: dict[str, float] = {}
+    today_iso = datetime.date.today().isoformat()
+    for p in products:
+        if p.price is None:
+            continue
+        entries = _history_entries(p.asin, histories)
+        prior = [e for e in entries if e.get("date") != today_iso]
+        numeric = _numeric_prices(prior)
+        if not numeric:
+            continue
+        last = numeric[-1]
+        if last <= 0:
+            continue
+        result[p.asin] = (last - p.price) / last * 100
+    return result
 
 
 def scan_price_changes(
@@ -518,6 +578,84 @@ def find_wishlist_hits() -> list[dict]:
     return hits
 
 
+def load_all_price_histories() -> dict[str, list[dict]]:
+    """Load price history for every ASIN in the history directory.
+
+    Returns a dict keyed by ASIN; empty ASINs (corrupt or no entries) are skipped.
+    Returns {} when the directory doesn't exist.
+    """
+    if not HISTORY_DIR.exists():
+        return {}
+    result: dict[str, list[dict]] = {}
+    for hist_file in HISTORY_DIR.glob("*.json"):
+        entries = load_price_history(hist_file.stem)
+        if entries:
+            result[hist_file.stem] = entries
+    return result
+
+
+def delete_price_histories(asins: list[str]) -> int:
+    """Delete the history files for the given ASINs. Returns the number removed."""
+    removed = 0
+    for asin in asins:
+        try:
+            (HISTORY_DIR / f"{asin}.json").unlink()
+            removed += 1
+        except FileNotFoundError:
+            pass
+    return removed
+
+
+def purge_stale_history(days: int, dry_run: bool = False) -> tuple[int, list[str]]:
+    """Delete history files whose most-recent entry is older than *days* days ago.
+
+    Corrupt files and files with no parseable last-entry date are skipped.
+    Returns (count, asins_affected).
+    """
+    if not HISTORY_DIR.exists():
+        return 0, []
+
+    cutoff = datetime.date.today() - datetime.timedelta(days=days)
+    count = 0
+    affected: list[str] = []
+
+    for hist_file in HISTORY_DIR.glob("*.json"):
+        asin = hist_file.stem
+        raw = load_price_history(asin)
+        if not raw:
+            logger.warning("history at %s has no entries, skipping purge", hist_file)
+            continue
+        last_date_str = raw[-1].get("date")
+        if not last_date_str:
+            logger.warning(
+                "history at %s has no parseable date, skipping purge", hist_file
+            )
+            continue
+        try:
+            last_date = datetime.date.fromisoformat(last_date_str)
+        except ValueError:
+            logger.warning(
+                "history at %s has invalid date %r, skipping purge",
+                hist_file,
+                last_date_str,
+            )
+            continue
+        if last_date >= cutoff:
+            continue
+        count += 1
+        affected.append(asin)
+        if not dry_run:
+            try:
+                hist_file.unlink()
+            except FileNotFoundError:
+                pass
+
+    logger.debug(
+        "purge_stale_history days=%d dry_run=%s removed=%d", days, dry_run, count
+    )
+    return count, affected
+
+
 def find_wishlist_atl_hits() -> list[dict]:
     """Find wishlist items whose latest tracked price is at their all-time low.
 
@@ -531,11 +669,7 @@ def find_wishlist_atl_hits() -> list[dict]:
         last_price = entries[-1].get("price")
         if not isinstance(last_price, (int, float)):
             continue
-        prices = [
-            float(e["price"])
-            for e in entries
-            if isinstance(e.get("price"), (int, float))
-        ]
+        prices = _numeric_prices(entries)
         if len(prices) < 2:
             continue
         latest = float(last_price)

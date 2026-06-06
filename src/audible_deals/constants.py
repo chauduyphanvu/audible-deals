@@ -8,9 +8,11 @@ This module is a dependency-free leaf — it does not import from any other
 
 from __future__ import annotations
 
+import contextlib
 import os
 import re
 import tempfile
+import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -27,6 +29,7 @@ SEEN_ASINS_FILE = CONFIG_DIR / "seen_asins.json"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_DIR = CONFIG_DIR / "history"
 NOTIFY_STATE_FILE = CONFIG_DIR / "notify_state.json"
+LOCK_FILE = CONFIG_DIR / ".deals.lock"
 
 # ---------------------------------------------------------------------------
 # Locale maps
@@ -222,3 +225,76 @@ def _atomic_write(path: Path, content: str) -> None:
     except BaseException:
         os.unlink(tmp)
         raise
+
+
+# ---------------------------------------------------------------------------
+# Run lock
+# ---------------------------------------------------------------------------
+
+_LOCK_STALE_SECONDS = 600  # 10 minutes
+
+
+class LockHeldError(Exception):
+    """Raised when the run lock is held by another process."""
+
+
+@contextlib.contextmanager
+def run_lock():
+    """Exclusive cross-process lock for unattended commands.
+
+    Acquires via O_CREAT|O_EXCL (atomic on POSIX and Windows NTFS).
+    Treats the lock as stale when its mtime is older than 10 minutes.
+    Raises LockHeldError when a fresh lock is held by another process.
+
+    PID-ownership: writes our PID to the lock file; the finally block only
+    unlinks the file when it still contains our PID, so we never remove
+    another process's lock on exit.
+
+    Stale-break: after unlinking a stale lock we retry the O_EXCL create
+    exactly once; if that create also fails, we lost the race and raise
+    LockHeldError rather than looping indefinitely.
+    """
+    my_pid = str(os.getpid()).encode()
+    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
+
+    def _try_create() -> bool:
+        """Attempt O_EXCL create; return True on success, False on FileExistsError."""
+        try:
+            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            return False
+        try:
+            os.write(fd, my_pid)
+        except OSError:
+            os.close(fd)
+            LOCK_FILE.unlink(missing_ok=True)
+            raise
+        os.close(fd)
+        return True
+
+    if not _try_create():
+        # Lock file exists — check staleness
+        try:
+            age = time.time() - LOCK_FILE.stat().st_mtime
+        except FileNotFoundError:
+            age = _LOCK_STALE_SECONDS + 1  # vanished between checks; retry once
+
+        if age > _LOCK_STALE_SECONDS:
+            try:
+                LOCK_FILE.unlink()
+            except FileNotFoundError:
+                pass
+            # Retry once; if another racer beat us, raise immediately
+            if not _try_create():
+                raise LockHeldError(f"Lock held (mtime {age:.0f}s ago): {LOCK_FILE}")
+        else:
+            raise LockHeldError(f"Lock held (mtime {age:.0f}s ago): {LOCK_FILE}")
+
+    try:
+        yield
+    finally:
+        try:
+            if LOCK_FILE.read_bytes() == my_pid:
+                LOCK_FILE.unlink()
+        except (FileNotFoundError, OSError):
+            pass

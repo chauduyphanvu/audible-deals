@@ -524,6 +524,34 @@ def display_watch_table(
     return hits
 
 
+def display_series_gaps(gaps: list[dict], currency: str = "$") -> None:
+    """Display per-series gap report for --gaps mode."""
+    if not gaps:
+        console.print(
+            "[dim]No gaps found in scanned series (filters applied — see --max-price/--on-sale).[/dim]"
+        )
+        return
+
+    for entry in gaps:
+        series_name = entry["series"]
+        owned = entry["owned"]
+        total = entry["total_known"]
+        missing = entry["missing"]
+        console.print(
+            f"\n[bold]{series_name}[/bold] [dim]— own {owned} of {total}[/dim]"
+        )
+        for book in missing:
+            pos = book["position"]
+            pos_str = f"#{pos}" if pos else "  "
+            title = book["title"]
+            price = book["price"]
+            p_str = price_str(price, currency) if price is not None else "-"
+            atl = "[bold gold1] ★[/bold gold1]" if book.get("atl") else ""
+            console.print(
+                f"  [dim]missing[/dim]  {pos_str:<6} {title:<45} {p_str}{atl}"
+            )
+
+
 def display_library_stats(products: list[Product], currency: str = "$") -> None:
     """Display aggregate statistics for a library product list."""
     if not products:

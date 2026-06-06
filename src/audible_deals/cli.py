@@ -50,8 +50,11 @@ from audible_deals.constants import (
     HISTORY_DIR,
     LOCALE_CURRENCY,
     LOCALE_LANGUAGES,
+    LockHeldError,
     MAX_PAGE_SIZE,
+    PROFILES_FILE,
     SORT_OPTIONS,
+    run_lock,
     product_url,
 )
 
@@ -69,6 +72,8 @@ from audible_deals.display import (
     display_product_detail,
     display_products,
     display_recap,
+    price_str,
+    display_series_gaps,
     display_summary,
     display_watch_table,
 )
@@ -78,12 +83,13 @@ from audible_deals.filtering import (
     first_in_series,
     sort_local,
 )
-from audible_deals.settings import Settings
+from audible_deals.settings import Settings, _PROFILE_EXTRA_KEYS
 from audible_deals.utils import (
     format_recap_payload,
     format_webhook_payload,
     looks_like_person_name,
     parse_interval,
+    parse_series_position,
     validate_asin,
     validate_webhook_url,
 )
@@ -96,9 +102,12 @@ from audible_deals.state import (
     clear_last_results,
     clear_seen_asins,
     coerce_config_value,
+    delete_price_histories,
     find_wishlist_atl_hits,
     find_wishlist_hits,
     has_price_history,
+    hist_percentiles,
+    load_all_price_histories,
     load_config,
     load_last_results,
     load_notify_state,
@@ -107,7 +116,10 @@ from audible_deals.state import (
     load_seen_asins,
     load_wishlist,
     merge_seen_asins,
+    partition_wishlist,
+    price_drop_pcts,
     price_history_context,
+    purge_stale_history,
     record_prices,
     resolve_last_references,
     save_config,
@@ -256,8 +268,22 @@ def _apply_filters(
     only_plus: bool = False,
     exclude_keywords: tuple[str, ...] = (),
     drop_zero_length: bool = True,
+    hist_below: int | None = None,
+    min_price_drop: float = 0.0,
 ) -> tuple[list[Product], dict[str, int], int, int]:
     """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed)."""
+    hist_percentile = None
+    price_drops = None
+    if hist_below is not None or min_price_drop > 0:
+        histories = {
+            p.asin: load_price_history(p.asin)
+            for p in all_products
+            if p.price is not None
+        }
+        if hist_below is not None:
+            hist_percentile = hist_percentiles(all_products, histories)
+        if min_price_drop > 0:
+            price_drops = price_drop_pcts(all_products, histories)
     filtered, filter_breakdown = filter_products(
         all_products,
         drop_zero_length=drop_zero_length,
@@ -280,6 +306,10 @@ def _apply_filters(
         skip_plus=skip_plus,
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
+        max_hist_percentile=hist_below,
+        hist_percentile=hist_percentile,
+        min_price_drop=min_price_drop,
+        price_drops=price_drops,
     )
     filtered, editions_removed = dedupe_editions(filtered)
     series_collapsed = 0
@@ -422,7 +452,7 @@ def _interactive_browse(products: list[Product], currency: str = "$") -> None:
                 display_price_history(entries, p.asin, currency)
         elif action == "wishlist":
             items = load_wishlist()
-            if any(item["asin"] == p.asin for item in items):
+            if any(item.get("asin") == p.asin for item in items):
                 console.print(f"[dim]{p.asin} already on wishlist[/dim]")
             else:
                 target_price = None
@@ -727,6 +757,20 @@ def _common_filter_options(func):
             multiple=True,
             help="Drop results with title/subtitle matching keyword (repeatable)",
         ),
+        click.option(
+            "--hist-below",
+            "hist_below",
+            type=click.IntRange(min=0, max=100),
+            default=None,
+            help="Keep only items whose current price is at or below the Nth percentile of their tracked history (requires ≥5 history entries; others pass through)",
+        ),
+        click.option(
+            "--min-price-drop",
+            "min_price_drop",
+            type=click.FloatRange(min=0),
+            default=0.0,
+            help="Keep only items whose price dropped by at least PCT%% from their last tracked price (no history = pass through)",
+        ),
     ]
     for option in reversed(options):
         func = option(func)
@@ -786,6 +830,8 @@ def _apply_settings_filters(
     *,
     skip_asins: set[str] | None,
     exclude_category_ids: set[str],
+    hist_below: int | None = None,
+    min_price_drop: float = 0.0,
 ) -> tuple[list[Product], dict[str, int], int, int]:
     """Run _apply_filters with all filter options taken from a resolved Settings."""
     return _apply_filters(
@@ -811,6 +857,8 @@ def _apply_settings_filters(
         skip_plus=s.skip_plus,
         only_plus=s.only_plus,
         exclude_keywords=s.exclude_keywords,
+        hist_below=hist_below,
+        min_price_drop=min_price_drop,
     )
 
 
@@ -885,6 +933,8 @@ def search(
     skip_plus,
     only_plus,
     exclude_keywords,
+    hist_below,
+    min_price_drop,
 ):
     """Search the Audible catalog by keyword."""
     logger.info(
@@ -1021,6 +1071,8 @@ def search(
             s,
             skip_asins=skip_asins,
             exclude_category_ids=exclude_category_ids,
+            hist_below=hist_below,
+            min_price_drop=min_price_drop,
         )
     )
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -1223,6 +1275,8 @@ def find(
     skip_plus,
     only_plus,
     exclude_keywords,
+    hist_below,
+    min_price_drop,
 ):
     """Find deals: browse the catalog filtered by price and genre.
 
@@ -1361,6 +1415,8 @@ def find(
             s,
             skip_asins=skip_asins,
             exclude_category_ids=exclude_category_ids,
+            hist_below=hist_below,
+            min_price_drop=min_price_drop,
         )
     )
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -1534,6 +1590,64 @@ def library(
                 console.print(f"  [bold]{len(filtered)}[/bold] books in library")
 
 
+def _series_gaps_report(
+    filtered: list[Product],
+    invested_sorted: list[tuple[str, list[Product]]],
+    candidate_series: dict[str, str],
+    *,
+    json_flag: bool,
+    quiet: bool,
+    currency: str,
+) -> None:
+    """Emit the per-series gap report (JSON or table) from filtered candidates."""
+    by_series: dict[str, list[Product]] = {}
+    for p in filtered:
+        sname = candidate_series.get(p.asin, "")
+        if sname:
+            by_series.setdefault(sname, []).append(p)
+
+    atl_asins, _ = price_history_context(filtered)
+
+    gaps: list[dict] = []
+    for sname, books in sorted(invested_sorted, key=lambda x: x[0]):
+        missing_products = by_series.get(sname, [])
+        if not missing_products:
+            continue
+        missing_products.sort(key=lambda p: parse_series_position(p.series_position))
+        missing_entries = [
+            {
+                "asin": p.asin,
+                "title": p.title,
+                "position": p.series_position or "",
+                "price": p.price,
+                "atl": p.asin in atl_asins,
+            }
+            for p in missing_products
+        ]
+        gaps.append(
+            {
+                "series": sname,
+                "owned": len(books),
+                "total_known": len(books) + len(missing_entries),
+                "missing": missing_entries,
+            }
+        )
+
+    if json_flag:
+        stripped = [
+            {
+                **g,
+                "missing": [
+                    {k: v for k, v in m.items() if k != "atl"} for m in g["missing"]
+                ],
+            }
+            for g in gaps
+        ]
+        click.echo(json_mod.dumps(stripped, indent=2, ensure_ascii=False))
+    elif not quiet:
+        display_series_gaps(gaps, currency=currency)
+
+
 @cli.command()
 @click.option(
     "--min-books",
@@ -1620,6 +1734,13 @@ def library(
     default=3,
     help="Pages to scan per series search (default: 3)",
 )
+@click.option(
+    "--gaps",
+    "gaps_mode",
+    is_flag=True,
+    default=False,
+    help="Show missing books per series instead of a flat deals table (price/rating filters apply to missing books)",
+)
 @click.pass_context
 def series(
     ctx,
@@ -1638,6 +1759,7 @@ def series(
     quiet,
     interactive,
     pages,
+    gaps_mode,
 ):
     """Find continuation books in series you're invested in.
 
@@ -1652,14 +1774,26 @@ def series(
         deals series --series "Expeditionary Force" --on-sale
         deals series --sort discount -n 50
         deals series --json -o series-deals.json
+        deals series --gaps
+        deals series --gaps --json
     """
+    if gaps_mode and output:
+        raise click.UsageError("--gaps is not compatible with --output/-o")
+    if gaps_mode and interactive:
+        raise click.UsageError("--gaps is not compatible with --interactive/-i")
+    if gaps_mode and ctx.get_parameter_source("limit") == _CL:
+        raise click.UsageError("--limit/-n is ignored in --gaps mode")
+    if gaps_mode and ctx.get_parameter_source("sort") == _CL:
+        raise click.UsageError("--sort is ignored in --gaps mode")
+
     logger.info(
-        "series min_books=%s max_series=%s filter=%r max_price=%s sort=%s",
+        "series min_books=%s max_series=%s filter=%r max_price=%s sort=%s gaps=%s",
         min_books,
         max_series,
         series_filter,
         max_price,
         sort,
+        gaps_mode,
     )
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
@@ -1740,6 +1874,7 @@ def series(
 
         # 3. Fetch catalog entries for each series
         all_candidates: list[Product] = []
+        candidate_series: dict[str, str] = {}  # asin -> series_name
         seen_asins: set[str] = set(owned_asins)
 
         with create_scan_progress() as progress:
@@ -1779,6 +1914,7 @@ def series(
                         continue
                     seen_asins.add(p.asin)
                     all_candidates.append(p)
+                    candidate_series[p.asin] = sname
 
                 progress.update(
                     task, completed=series_idx + 1, items=len(all_candidates)
@@ -1808,6 +1944,20 @@ def series(
         sort=sort,
         drop_zero_length=False,
     )
+
+    if gaps_mode:
+        # Record prices so history keeps accruing, but skip cache/limit/table pipeline.
+        _safe_record_prices(filtered)
+        _series_gaps_report(
+            filtered,
+            invested_sorted,
+            candidate_series,
+            json_flag=json_flag,
+            quiet=quiet,
+            currency=cur,
+        )
+        return
+
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered,
         title=series_title,
@@ -2211,21 +2361,57 @@ def wishlist():
     multiple=True,
     help="Use result #N from last search/find (repeatable)",
 )
+@click.option(
+    "--author",
+    default=None,
+    help="Watch all titles by this author (use with --max-price)",
+)
 @click.pass_context
-def wishlist_add(ctx, asins, max_price, last_refs):
-    """Add ASINs to your wishlist.
+def wishlist_add(ctx, asins, max_price, last_refs, author):
+    """Add ASINs (or an author watch) to your wishlist.
 
     \b
     Example:
         deals wishlist add B00R6S1RCY B00I2VWW5U --max-price 5
         deals wishlist add --last 1 --last 2 --max-price 5
+        deals wishlist add --author "Brandon Sanderson" --max-price 5
     """
+    if author:
+        if asins or last_refs:
+            raise click.UsageError(
+                "--author cannot be combined with ASIN arguments or --last."
+            )
+        if max_price is None:
+            raise click.UsageError("--max-price is required when using --author.")
+        items = load_wishlist()
+        author_lower = author.lower()
+        if any(
+            i.get("type") == "author" and i.get("author", "").lower() == author_lower
+            for i in items
+        ):
+            console.print(f"[dim]Already watching author: {author}[/dim]")
+            return
+        items.append(
+            {
+                "type": "author",
+                "author": author,
+                "max_price": max_price,
+                "added": datetime.date.today().isoformat(),
+            }
+        )
+        save_wishlist(items)
+        console.print(
+            f"[green]+[/green] Author watch: {author} "
+            f"(target {price_str(max_price, _currency(ctx))})"
+        )
+        return
+
     all_asins = _collect_asins(asins, last_refs)
     if not all_asins:
-        raise click.UsageError("Provide at least one ASIN or use --last N.")
+        raise click.UsageError("Provide at least one ASIN or --author or use --last N.")
 
     items = load_wishlist()
-    existing = {item["asin"] for item in items}
+    existing = {item["asin"] for item in items if item.get("asin")}
 
     for asin in all_asins:
         validate_asin(asin)
@@ -2260,20 +2446,108 @@ def wishlist_add(ctx, asins, max_price, last_refs):
     multiple=True,
     help="Use result #N from last search/find (repeatable)",
 )
-def wishlist_remove(asins, last_refs):
-    """Remove ASINs from your wishlist."""
+@click.option(
+    "--author",
+    default=None,
+    help="Remove an author watch by name (case-insensitive)",
+)
+def wishlist_remove(asins, last_refs, author):
+    """Remove ASINs or an author watch from your wishlist."""
     all_asins = _collect_asins(asins, last_refs)
-    if not all_asins:
-        raise click.UsageError("Provide at least one ASIN or use --last N.")
+    if not all_asins and not author:
+        raise click.UsageError("Provide at least one ASIN, --author, or use --last N.")
     for asin in all_asins:
         validate_asin(asin)
     items = load_wishlist()
-    remove_set = set(all_asins)
     before = len(items)
-    items = [i for i in items if i["asin"] not in remove_set]
+    if all_asins:
+        remove_set = set(all_asins)
+        items = [i for i in items if i.get("asin") not in remove_set]
+    if author:
+        author_lower = author.lower()
+        items = [
+            i
+            for i in items
+            if not (
+                i.get("type") == "author"
+                and i.get("author", "").lower() == author_lower
+            )
+        ]
     save_wishlist(items)
     removed = before - len(items)
     console.print(f"[bold]{removed}[/bold] removed, {len(items)} remaining")
+
+
+@wishlist.command("update")
+@click.argument("asins", nargs=-1, required=False)
+@click.option(
+    "--last",
+    "last_refs",
+    type=str,
+    multiple=True,
+    help="Use result #N from last search/find (repeatable)",
+)
+@click.option(
+    "--max-price",
+    type=click.FloatRange(min=0),
+    default=None,
+    help="Set the target price for the matching wishlist entries",
+)
+@click.option(
+    "--clear-target",
+    is_flag=True,
+    default=False,
+    help="Clear the target price (set to no target)",
+)
+@click.pass_context
+def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
+    """Update the target price for wishlist items.
+
+    \b
+    Examples:
+        deals wishlist update B00R6S1RCY --max-price 5
+        deals wishlist update B00R6S1RCY B00I2VWW5U --max-price 3.99
+        deals wishlist update B00R6S1RCY --clear-target
+        deals wishlist update --last 1 --max-price 5
+    """
+    all_asins = _collect_asins(asins, last_refs)
+    if not all_asins:
+        raise click.UsageError("Provide at least one ASIN or use --last N.")
+
+    if max_price is not None and clear_target:
+        raise click.UsageError("Use either --max-price or --clear-target, not both.")
+    if max_price is None and not clear_target:
+        raise click.UsageError("Provide --max-price or --clear-target.")
+
+    for asin in all_asins:
+        validate_asin(asin)
+
+    items = load_wishlist()
+    by_asin = {item["asin"]: item for item in items if item.get("asin")}
+    cur = _currency(ctx)
+
+    updated = 0
+    not_found = 0
+    for asin in all_asins:
+        if asin not in by_asin:
+            console.print(f"[red]Not on wishlist: {asin}[/red]")
+            not_found += 1
+            continue
+        entry = by_asin[asin]
+        if clear_target:
+            entry["max_price"] = None
+            console.print(
+                f"[yellow]~[/yellow] {entry['title']} ({asin}) → target cleared"
+            )
+        else:
+            entry["max_price"] = max_price
+            console.print(
+                f"[yellow]~[/yellow] {entry['title']} ({asin}) → target {price_str(max_price, cur)}"
+            )
+        updated += 1
+
+    save_wishlist(items)
+    console.print(f"\n[bold]{updated}[/bold] updated, {not_found} not found")
 
 
 @wishlist.command("list")
@@ -2282,24 +2556,42 @@ def wishlist_list(ctx):
     """Show your wishlist."""
     cur = _currency(ctx)
     items = load_wishlist()
-    if not items:
+    asin_items, author_items = partition_wishlist(items)
+
+    if not asin_items and not author_items:
         console.print(
             "[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]"
         )
         return
 
-    table = Table(
-        title="Wishlist", show_lines=False, padding=(0, 1), title_style="bold"
-    )
-    table.add_column("ASIN", style="cyan", width=14)
-    table.add_column("Title", max_width=40)
-    table.add_column("Target", justify="right", width=10)
+    if asin_items:
+        table = Table(
+            title="Wishlist", show_lines=False, padding=(0, 1), title_style="bold"
+        )
+        table.add_column("ASIN", style="cyan", width=14)
+        table.add_column("Title", max_width=40)
+        table.add_column("Target", justify="right", width=10)
 
-    for item in items:
-        target = f"{cur}{item['max_price']:.2f}" if item.get("max_price") else "-"
-        table.add_row(item["asin"], item["title"], target)
+        for item in asin_items:
+            target = price_str(item.get("max_price") or None, cur)
+            table.add_row(item.get("asin", ""), item.get("title", ""), target)
 
-    console.print(table)
+        console.print(table)
+
+    if author_items:
+        atbl = Table(
+            title="Author watches",
+            show_lines=False,
+            padding=(0, 1),
+            title_style="bold",
+        )
+        atbl.add_column("Author", max_width=40)
+        atbl.add_column("Target", justify="right", width=10)
+        atbl.add_column("Added", width=12)
+        for item in author_items:
+            target = price_str(item.get("max_price") or None, cur)
+            atbl.add_row(item.get("author", ""), target, item.get("added", ""))
+        console.print(atbl)
 
 
 @wishlist.command("sync")
@@ -2336,7 +2628,7 @@ def wishlist_sync(ctx, max_price, update):
         audible_items = dc.get_wishlist()
 
     local_items = load_wishlist()
-    local_by_asin = {item["asin"]: item for item in local_items}
+    local_by_asin = {item["asin"]: item for item in local_items if item.get("asin")}
     cur = _currency(ctx)
 
     added = 0
@@ -2348,7 +2640,7 @@ def wishlist_sync(ctx, max_price, update):
                 local_by_asin[product.asin]["max_price"] = max_price
                 updated += 1
                 console.print(
-                    f"[yellow]~[/yellow] {product.title} ({product.asin}) → target {cur}{max_price:.2f}"
+                    f"[yellow]~[/yellow] {product.title} ({product.asin}) → target {price_str(max_price, cur)}"
                 )
             else:
                 skipped += 1
@@ -2374,23 +2666,34 @@ def _watch_once(
 ) -> int:
     """Run a single wishlist price check. Returns the number of BUY hits."""
     items = load_wishlist()
-    if not items:
+    asin_items, author_items = partition_wishlist(items)
+    if not asin_items and not author_items:
         console.print(
             "[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]"
         )
         return 0
 
+    if author_items and not asin_items:
+        console.print(
+            "[dim]Author watches are checked by 'deals notify'. Use 'deals notify' to see author hits.[/dim]"
+        )
+    elif author_items:
+        console.print("[dim]Author watches are checked by 'deals notify' only.[/dim]")
+
+    if not asin_items:
+        return 0
+
     dc = _get_client(ctx.obj["locale"])
     targets: dict[str, float | None] = {
-        item["asin"]: item.get("max_price") for item in items
+        item["asin"]: item.get("max_price") for item in asin_items
     }
 
     with dc:
-        products = dc.get_products_batch([item["asin"] for item in items])
+        products = dc.get_products_batch([item["asin"] for item in asin_items])
 
     _safe_record_prices(products)
     found_asins = {p.asin for p in products}
-    for item in items:
+    for item in asin_items:
         if item["asin"] not in found_asins:
             console.print(f"[red]Not found: {item['asin']} ({item['title']})[/red]")
 
@@ -2674,20 +2977,94 @@ def profile_show(name):
     default=None,
     help="Use result #N from last search/find",
 )
+@click.option(
+    "--json", "json_flag", is_flag=True, default=False, help="Emit raw entries as JSON"
+)
+@click.option(
+    "--all",
+    "all_flag",
+    is_flag=True,
+    default=False,
+    help="Emit all ASIN histories as JSON (requires --json)",
+)
+@click.option(
+    "--purge-older-than",
+    "purge_days",
+    type=click.IntRange(min=1),
+    default=None,
+    help="Delete history files whose last entry is older than DAYS days",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be purged without deleting",
+)
+@click.option(
+    "--yes", is_flag=True, default=False, help="Skip confirmation prompt for purge"
+)
 @click.pass_context
-def history(ctx, asin, last_ref):
+def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
     """Show price history for an ASIN.
 
     History is recorded automatically each time an ASIN appears in
     search/find results. Use 'deals history ASIN' to view past prices.
     """
+    if dry_run and purge_days is None:
+        raise click.UsageError("--dry-run requires --purge-older-than")
+    if yes and purge_days is None:
+        raise click.UsageError("--yes requires --purge-older-than")
+
+    if purge_days is not None:
+        if json_flag or all_flag or asin or last_ref:
+            raise click.UsageError(
+                "--purge-older-than cannot be combined with --json, --all, ASIN, or --last."
+            )
+        count, affected = purge_stale_history(purge_days, dry_run=True)
+        if count == 0:
+            console.print(
+                f"[dim]No history files older than {purge_days} days found.[/dim]"
+            )
+            return
+        if dry_run:
+            examples = ", ".join(affected[:5])
+            suffix = f" (e.g. {examples})" if affected else ""
+            console.print(
+                f"[dim]Would remove {count} stale history file(s) (>{purge_days} days since last entry){suffix}.[/dim]"
+            )
+            return
+        if not yes:
+            click.confirm(
+                f"Remove {count} history file(s) older than {purge_days} days?",
+                abort=True,
+            )
+        actual_count = delete_price_histories(affected)
+        console.print(
+            f"[green]Removed {actual_count} stale history files (>{purge_days} days since last entry).[/green]"
+        )
+        return
+
+    if all_flag:
+        if not json_flag:
+            raise click.UsageError("--all requires --json.")
+        if asin or last_ref:
+            raise click.UsageError("--all cannot be combined with an ASIN or --last.")
+        click.echo(
+            json_mod.dumps(load_all_price_histories(), indent=2, ensure_ascii=False)
+        )
+        return
+
     if last_ref is not None:
         asin, desc = _resolve_single_last_ref(last_ref)
-        console.print(f"[dim]{desc}[/dim]")
+        if not json_flag:
+            console.print(f"[dim]{desc}[/dim]")
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
     validate_asin(asin)
     entries = load_price_history(asin)
+    if json_flag:
+        click.echo(json_mod.dumps(entries, indent=2, ensure_ascii=False))
+        return
     if not entries:
         console.print(
             f"[dim]No price history for {asin}. "
@@ -2752,6 +3129,24 @@ def recap(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
     Scans price history files and reports items that dropped in price,
     new items tracked, and wishlist items at target.
     """
+    try:
+        with run_lock():
+            _recap_body(ctx, days, show_new, atl, json_flag, webhook, webhook_format)
+    except LockHeldError:
+        click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
+        if json_flag:
+            empty: dict = {
+                "days": days,
+                "drops": [],
+                "new_count": 0,
+                "wishlist_hits": [],
+            }
+            if atl:
+                empty["atl_hits"] = []
+            click.echo(json_mod.dumps(empty, indent=2))
+
+
+def _recap_body(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
     logger.info("recap days=%s show_new=%s atl=%s", days, show_new, atl)
     if json_flag and webhook:
         raise click.UsageError("--json and --webhook are mutually exclusive")
@@ -2878,6 +3273,20 @@ def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
         deals notify --webhook https://hooks.slack.com/... --webhook-format slack
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
+    try:
+        with run_lock():
+            _notify_body(
+                ctx, webhook, webhook_format, webhook_template, exit_code, cooldown
+            )
+    except LockHeldError:
+        click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
+        if not webhook:
+            click.echo(json_mod.dumps({"deals": [], "count": 0}, indent=2))
+        if exit_code:
+            ctx.exit(1)
+
+
+def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
     logger.info(
         "notify webhook_set=%s webhook_format=%s webhook_template=%s",
         bool(webhook),
@@ -2898,32 +3307,62 @@ def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]")
         return
 
+    asin_items, author_items = partition_wishlist(items)
+
     dc = _get_client(ctx.obj["locale"])
-    targets = {item["asin"]: item.get("max_price") for item in items}
+    targets = {item["asin"]: item.get("max_price") for item in asin_items}
 
-    with dc:
-        products = dc.get_products_batch([item["asin"] for item in items])
-
-    _safe_record_prices(products)
     cur = _currency(ctx)
     hits = []
     extras: dict[str, dict] = {}
-    for p in products:
-        target = targets.get(p.asin)
-        if target is not None and p.price is not None and p.price <= target:
-            hits.append(
-                {
-                    "asin": p.asin,
-                    "title": p.title,
-                    "price": round(p.price, 2),
-                    "target": target,
-                    "url": p.url,
-                }
-            )
-            extras[p.asin] = {
-                "currency": p.currency,
-                "discount_pct": float(p.discount_pct or 0.0),
+    hit_asins: set[str] = set()
+
+    def add_hit(p: Product, target: float) -> None:
+        hit_asins.add(p.asin)
+        hits.append(
+            {
+                "asin": p.asin,
+                "title": p.title,
+                "price": round(p.price, 2),
+                "target": target,
+                "url": p.url,
             }
+        )
+        extras[p.asin] = {
+            "currency": p.currency,
+            "discount_pct": float(p.discount_pct or 0.0),
+        }
+
+    with dc:
+        products = dc.get_products_batch([item["asin"] for item in asin_items])
+        _safe_record_prices(products)
+        for p in products:
+            target = targets.get(p.asin)
+            if target is not None and p.price is not None and p.price <= target:
+                add_hit(p, target)
+
+        for awatch in author_items:
+            author_name = awatch.get("author", "")
+            author_target = awatch.get("max_price")
+            if not author_name or author_target is None:
+                continue
+            author_results: list = []
+            for page_products, _, _ in dc.search_pages(
+                keywords=author_name,
+                sort_by="Relevance",
+                max_pages=2,
+            ):
+                author_results.extend(page_products)
+            filtered_author, _ = filter_products(
+                author_results,
+                author=author_name,
+                max_price=author_target,
+                drop_zero_length=True,
+            )
+            _safe_record_prices(filtered_author)
+            for p in filtered_author:
+                if p.asin not in hit_asins:
+                    add_hit(p, author_target)
 
     suppressed = 0
     if cooldown is not None:
@@ -2984,11 +3423,12 @@ def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
         click.echo(json_mod.dumps({"deals": hits, "count": len(hits)}, indent=2))
 
     if cooldown is not None:
-        wishlist_asins = {item["asin"] for item in items}
+        wishlist_asins = {item["asin"] for item in asin_items}
         today_iso = today.isoformat()
         for hit in hits:
             notify_state[hit["asin"]] = {"price": hit["price"], "date": today_iso}
-        notify_state = {k: v for k, v in notify_state.items() if k in wishlist_asins}
+        keep_asins = wishlist_asins | hit_asins
+        notify_state = {k: v for k, v in notify_state.items() if k in keep_asins}
         save_notify_state(notify_state)
 
 
@@ -3073,22 +3513,88 @@ def doctor(ctx):
     else:
         add("Marketplace reachable", "WARN", "Skipped — auth checks failed")
 
-    try:
-        cfg = load_config()
-        if CONFIG_FILE.exists():
-            errors = [
-                f"{k}: expected {_CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
-                for k, v in cfg.items()
-                if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
-            ]
-            if errors:
-                add("Config file valid", "FAIL", "; ".join(errors))
+    if CONFIG_FILE.exists():
+        try:
+            cfg = json_mod.loads(CONFIG_FILE.read_text())
+            if not isinstance(cfg, dict):
+                add(
+                    "Config file valid",
+                    "FAIL",
+                    f"Expected a JSON object, got {type(cfg).__name__}",
+                )
+                add("Unknown config keys", "WARN", "Skipped — config file unparseable")
             else:
-                add("Config file valid", "PASS")
+                errors = [
+                    f"{k}: expected {_CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
+                    for k, v in cfg.items()
+                    if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
+                ]
+                if errors:
+                    add("Config file valid", "FAIL", "; ".join(errors))
+                else:
+                    add("Config file valid", "PASS")
+                unknown = sorted(k for k in cfg if k not in _CONFIG_SCHEMA)
+                if unknown:
+                    add("Unknown config keys", "WARN", ", ".join(unknown))
+                else:
+                    add("Unknown config keys", "PASS")
+        except Exception as e:
+            add("Config file valid", "FAIL", str(e))
+            add("Unknown config keys", "WARN", "Skipped — config file unparseable")
+    else:
+        add("Config file valid", "PASS", "No config file (using defaults)")
+
+    if PROFILES_FILE.exists():
+        try:
+            profiles = load_profiles()
+            valid_profile_keys = set(_CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
+            bad_profiles: dict[str, list[str]] = {}
+            for pname, popts in profiles.items():
+                bad = sorted(k for k in popts if k not in valid_profile_keys)
+                if bad:
+                    bad_profiles[pname] = bad
+            if bad_profiles:
+                detail = "; ".join(
+                    f"{n}: {', '.join(ks)}" for n, ks in sorted(bad_profiles.items())
+                )
+                add("Unknown profile keys", "WARN", detail)
+            else:
+                add("Unknown profile keys", "PASS")
+        except Exception as e:
+            add("Unknown profile keys", "WARN", str(e))
+
+    try:
+        ns = load_notify_state()
+        today = datetime.date.today()
+        malformed = 0
+        stale = 0
+        for entry in ns.values():
+            if not isinstance(entry, dict):
+                malformed += 1
+                continue
+            try:
+                d = datetime.date.fromisoformat(entry["date"])
+                age = abs((today - d).days)
+                if age > 365:
+                    stale += 1
+            except (KeyError, ValueError, TypeError):
+                malformed += 1
+                continue
+            if not isinstance(entry.get("price"), (int, float)):
+                malformed += 1
+        if malformed or stale:
+            parts = []
+            if malformed:
+                parts.append(f"{malformed} malformed")
+            if stale:
+                parts.append(f"{stale} stale (>365 days)")
+            add("Notify-state health", "WARN", "; ".join(parts))
+        elif ns:
+            add("Notify-state health", "PASS", f"{len(ns)} suppressed ASIN(s) tracked")
         else:
-            add("Config file valid", "PASS", "No config file (using defaults)")
+            add("Notify-state health", "PASS", "No entries")
     except Exception as e:
-        add("Config file valid", "FAIL", str(e))
+        add("Notify-state health", "WARN", str(e))
 
     try:
         load_wishlist()

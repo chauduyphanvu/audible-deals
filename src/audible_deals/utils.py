@@ -245,6 +245,17 @@ def format_recap_payload(
     return body_str.encode("utf-8"), headers
 
 
+def parse_series_position(position: str) -> float:
+    """Parse a series position string into a float for sorting.
+
+    Handles plain numbers ("2"), decimals ("2.5"), ranges ("1-3"), and
+    prefixed strings ("Book 2"). Returns float('inf') for unparseable input
+    so those items sort last.
+    """
+    m = re.search(r"\d+(?:\.\d+)?", position or "")
+    return float(m.group()) if m else float("inf")
+
+
 def parse_interval(value: str) -> int:
     """Parse an interval string into seconds. Accepts '30m', '2h', '1h30m', '90s', or a plain number (minutes)."""
     raw = value

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime as _datetime
 import json
+import os
 
 import click
 import pytest
@@ -299,13 +300,15 @@ class TestFirstInSeries:
         assert len(result) == 2
 
     def test_non_numeric_position(self):
+        # "Book 1" now parses as 1.0 via parse_series_position, same as "1".
+        # On a tie, the first-seen product wins (stable behaviour).
         products = [
             make_product(asin="A", series_name="S", series_position="Book 1"),
             make_product(asin="B", series_name="S", series_position="1"),
         ]
         result, collapsed = _first_in_series(products)
         assert collapsed == 1
-        assert result[0].asin == "B"
+        assert result[0].asin == "A"
 
 
 # ===================================================================
@@ -704,6 +707,23 @@ class TestWishlistCommands:
         result = runner.invoke(cli, ["wishlist", "add", "BAD"])
         assert "Not found" in result.output
 
+    def test_list_entry_with_neither_key_does_not_crash(self, mock_client, tmp_config):
+        """wishlist list must not crash and must skip entries with neither asin nor author type."""
+        import audible_deals.state as state_mod
+
+        # Write a malformed entry with no asin and no type="author"
+        items = [
+            {"title": "Orphan Entry", "max_price": 5.0},
+            {"asin": "W2", "title": "Valid Book", "max_price": 3.0},
+        ]
+        state_mod.WISHLIST_FILE.write_text(json.dumps(items))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list"])
+        assert result.exit_code == 0, result.output
+        # Valid book appears; orphan entry is silently skipped
+        assert "W2" in result.output
+        assert "Orphan Entry" not in result.output
+
 
 class TestWishlistSyncCommand:
     def test_sync_adds_new_items(self, mock_client, tmp_config):
@@ -1052,6 +1072,20 @@ class TestHistoryCommand:
         hist_file = tmp_config / "history" / "H2.json"
         entries = json.loads(hist_file.read_text())
         assert len(entries) == 1
+
+    def test_dry_run_without_purge_is_error(self, tmp_config, mock_client):
+        """--dry-run without --purge-older-than raises UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["history", "B00EXAMPLE1", "--dry-run"])
+        assert result.exit_code != 0
+        assert "purge" in result.output.lower() or "usage" in result.output.lower()
+
+    def test_yes_without_purge_is_error(self, tmp_config, mock_client):
+        """--yes without --purge-older-than raises UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["history", "B00EXAMPLE1", "--yes"])
+        assert result.exit_code != 0
+        assert "purge" in result.output.lower() or "usage" in result.output.lower()
 
 
 class TestCompletionsCommand:
@@ -4988,6 +5022,26 @@ class TestSeriesCommand:
         assert isinstance(data, list)
         assert any(item["asin"] == "A3" for item in data)
 
+    def test_gaps_with_limit_is_error(self, tmp_config, mock_client):
+        """series --gaps --limit/-n raises UsageError."""
+        mock_client.get_library.return_value = []
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series", "--gaps", "-n", "10"])
+        assert result.exit_code != 0
+        assert (
+            "--limit" in result.output
+            or "-n" in result.output
+            or "ignored" in result.output
+        )
+
+    def test_gaps_with_sort_is_error(self, tmp_config, mock_client):
+        """series --gaps --sort raises UsageError."""
+        mock_client.get_library.return_value = []
+        runner = CliRunner()
+        result = runner.invoke(cli, ["series", "--gaps", "--sort", "price"])
+        assert result.exit_code != 0
+        assert "--sort" in result.output or "ignored" in result.output
+
 
 # ===================================================================
 # Fix: Config/Profile string-key precedence
@@ -5719,6 +5773,308 @@ class TestDoctorCommand:
 
 
 # ===================================================================
+# Feature A: doctor — unknown config/profile keys + notify-state health
+# ===================================================================
+
+
+class TestDoctorUnknownKeys:
+    def _patch_auth(self, monkeypatch, tmp_config):
+        import audible_deals.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "AUTH_FILE", tmp_config / "auth.json")
+        monkeypatch.setattr(cli_mod, "CONFIG_DIR", tmp_config)
+
+    def test_unknown_config_key_warns(self, tmp_config, mock_client, monkeypatch):
+        """A config.json key absent from _CONFIG_SCHEMA triggers a WARN row."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.CONFIG_FILE.write_text(
+            json.dumps({"max_price": 5.0, "typo_key": True, "another_bad": 1})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "WARN" in result.output
+        assert "Unknown config keys" in result.output
+        assert "typo_key" in result.output
+        assert "another_bad" in result.output
+
+    def test_no_unknown_config_keys_passes(self, tmp_config, mock_client, monkeypatch):
+        """All known keys → PASS for unknown-config-keys check."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.CONFIG_FILE.write_text(json.dumps({"max_price": 5.0}))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Unknown config keys" in result.output
+        assert result.output.count("FAIL") == 1  # only auth FAIL
+
+    def test_no_config_file_skips_unknown_key_check(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        """No config.json → unknown-config-key row is absent."""
+        self._patch_auth(monkeypatch, tmp_config)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Unknown config keys" not in result.output
+
+    def test_unknown_profile_key_warns(self, tmp_config, mock_client, monkeypatch):
+        """A profile with a key outside the combined allowed set triggers WARN."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.PROFILES_FILE.write_text(
+            json.dumps({"myprofile": {"max_price": 5.0, "ghost_key": "x"}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Unknown profile keys" in result.output
+        assert "WARN" in result.output
+        assert "ghost_key" in result.output
+
+    def test_no_profiles_file_skips_profile_key_check(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        """No profiles.json → unknown-profile-key row is absent entirely."""
+        self._patch_auth(monkeypatch, tmp_config)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Unknown profile keys" not in result.output
+
+    def test_notify_state_malformed_entry_warns(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        """A notify_state.json with a non-dict entry triggers WARN."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps(
+                {"B001": "not-a-dict", "B002": {"date": "2025-01-01", "price": 3.99}}
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Notify-state health" in result.output
+        assert "WARN" in result.output
+        assert "malformed" in result.output
+
+    def test_notify_state_stale_entry_warns(self, tmp_config, mock_client, monkeypatch):
+        """A notify_state.json entry with a date >365 days old triggers WARN."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"B003": {"date": "2000-01-01", "price": 1.99}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Notify-state health" in result.output
+        assert "WARN" in result.output
+        assert "stale" in result.output
+
+    def test_notify_state_healthy_passes(self, tmp_config, mock_client, monkeypatch):
+        """A notify_state.json with a recent valid entry shows PASS."""
+        import audible_deals.state as state_mod
+        import datetime as dt
+
+        self._patch_auth(monkeypatch, tmp_config)
+        recent = dt.date.today().isoformat()
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"B004": {"date": recent, "price": 2.99}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Notify-state health" in result.output
+        assert "1 suppressed ASIN(s) tracked" in result.output
+
+    def test_notify_state_empty_passes(self, tmp_config, mock_client, monkeypatch):
+        """An empty notify_state.json shows PASS with 'No entries'."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.NOTIFY_STATE_FILE.write_text(json.dumps({}))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Notify-state health" in result.output
+        assert "No entries" in result.output
+
+    def test_corrupt_config_json_fails(self, tmp_config, mock_client, monkeypatch):
+        """doctor reports FAIL for Config file valid when config.json is corrupt."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.CONFIG_FILE.write_text("not valid json {{{")
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Config file valid" in result.output
+        assert "FAIL" in result.output
+
+    def test_non_dict_config_json_fails(self, tmp_config, mock_client, monkeypatch):
+        """doctor reports FAIL for Config file valid when config.json is not a JSON object."""
+        import audible_deals.state as state_mod
+
+        self._patch_auth(monkeypatch, tmp_config)
+        state_mod.CONFIG_FILE.write_text(json.dumps([1, 2, 3]))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["doctor"])
+        assert "Config file valid" in result.output
+        assert "FAIL" in result.output
+
+
+# ===================================================================
+# Feature B: run lock (context manager unit tests)
+# ===================================================================
+
+
+class TestRunLock:
+    def test_acquire_and_release(self, tmp_path):
+        """Lock is acquired then the file is removed on exit."""
+        import audible_deals.constants as constants_mod
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            assert lock_file.exists()
+        assert not lock_file.exists()
+
+    def test_pid_written_to_lock(self, tmp_path):
+        """The lock file contains the current PID."""
+        import os
+        import audible_deals.constants as constants_mod
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            assert lock_file.read_text() == str(os.getpid())
+
+    def test_contention_raises_lock_held_error(self, tmp_path):
+        """A held (fresh) lock raises LockHeldError."""
+        import audible_deals.constants as constants_mod
+        from audible_deals.constants import LockHeldError, run_lock
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        lock_file.write_text("99999")
+        with pytest.raises(LockHeldError):
+            with run_lock():
+                pass
+
+    def test_stale_lock_broken(self, tmp_path):
+        """A lock file older than 10 minutes is removed and the lock is acquired."""
+        import time
+        import audible_deals.constants as constants_mod
+        from audible_deals.constants import run_lock
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        lock_file.write_text("99999")
+        old_mtime = time.time() - 700  # 700s > 600s stale threshold
+        os.utime(str(lock_file), (old_mtime, old_mtime))
+        with run_lock():
+            assert lock_file.exists()
+        assert not lock_file.exists()
+
+    def test_lock_released_on_exception(self, tmp_path):
+        """Lock file is removed even when the body raises."""
+        import audible_deals.constants as constants_mod
+        from audible_deals.constants import run_lock
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        with pytest.raises(ValueError):
+            with run_lock():
+                raise ValueError("boom")
+        assert not lock_file.exists()
+
+    def test_release_does_not_remove_foreign_pid_lock(self, tmp_path):
+        """Release must NOT unlink the lock when it contains a different PID."""
+        import audible_deals.constants as constants_mod
+        from audible_deals.constants import run_lock
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        with run_lock():
+            # Simulate another process overwriting the lock with its own PID
+            lock_file.write_text("99999")
+        # Our finally block should have seen PID mismatch and left the file alone
+        assert lock_file.exists()
+        assert lock_file.read_text() == "99999"
+
+
+class TestNotifyLockCLI:
+    def test_held_lock_exits_zero_with_message(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        """When lock is held, notify exits 0 and prints the in-progress message."""
+        # Pre-create a fresh lock file so run_lock() sees contention
+        lock_file = tmp_config / ".deals.lock"
+        lock_file.write_text("99999")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0
+        assert "in progress" in result.output
+
+    def test_held_lock_notify_no_webhook_emits_empty_json(
+        self, tmp_config, mock_client
+    ):
+        """notify lock-held without --webhook emits empty JSON to stdout."""
+        lock_file = tmp_config / ".deals.lock"
+        lock_file.write_text("99999")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0
+        # CliRunner mixes stderr into output; find the JSON portion
+        json_start = result.output.index("{")
+        parsed = json.loads(result.output[json_start:])
+        assert parsed == {"deals": [], "count": 0}
+
+    def test_held_lock_recap_exits_zero_with_message(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        """When lock is held, recap exits 0 and prints the in-progress message."""
+        lock_file = tmp_config / ".deals.lock"
+        lock_file.write_text("99999")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap"])
+        assert result.exit_code == 0
+        assert "in progress" in result.output
+
+    def test_held_lock_with_exit_code_exits_one(self, tmp_config, mock_client):
+        """notify --exit-code under a held lock must not signal 'deals found'."""
+        lock_file = tmp_config / ".deals.lock"
+        lock_file.write_text("99999")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--exit-code"])
+        assert result.exit_code == 1
+
+    def test_held_lock_recap_json_emits_empty_json(self, tmp_config, mock_client):
+        """recap --json lock-held emits empty JSON with the recap shape."""
+        lock_file = tmp_config / ".deals.lock"
+        lock_file.write_text("99999")
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--json"])
+        assert result.exit_code == 0
+        # CliRunner mixes stderr into output; find the JSON portion
+        json_start = result.output.index("{")
+        parsed = json.loads(result.output[json_start:])
+        assert parsed["days"] == 7  # default
+        assert parsed["drops"] == []
+        assert parsed["new_count"] == 0
+        assert parsed["wishlist_hits"] == []
+
+
+# ===================================================================
 # Feature G: notify --cooldown
 # ===================================================================
 
@@ -6301,3 +6657,798 @@ class TestFindSubcategories:
         assert result.exit_code == 0, result.output
         assert "Subcategories: 3" in result.output
         assert "API calls: 6" in result.output
+
+
+# ===================================================================
+# Feature: wishlist update
+# ===================================================================
+
+
+class TestWishlistUpdateCommand:
+    """Tests for `deals wishlist update`."""
+
+    def _seed_wishlist(self, items):
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(items)
+
+    def _seed_cache(self, tmp_config, products):
+        import audible_deals.cli as cli_mod
+
+        cache_obj = {
+            "title": "Search: test",
+            "results": [_serialize_product(p) for p in products],
+        }
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+
+    def test_set_target_price(self, tmp_config):
+        """--max-price updates max_price for the matching entry."""
+        import audible_deals.cli as cli_mod
+
+        self._seed_wishlist(
+            [
+                {
+                    "asin": "WU01",
+                    "title": "Update Me",
+                    "max_price": 10.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "update", "WU01", "--max-price", "3.99"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Update Me" in result.output
+        assert "3.99" in result.output
+        assert "1 updated" in result.output
+        items = cli_mod.load_wishlist()
+        assert items[0]["max_price"] == 3.99
+
+    def test_clear_target(self, tmp_config):
+        """--clear-target sets max_price to None."""
+        import audible_deals.cli as cli_mod
+
+        self._seed_wishlist(
+            [
+                {
+                    "asin": "WU02",
+                    "title": "Clear Me",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "update", "WU02", "--clear-target"])
+        assert result.exit_code == 0, result.output
+        assert "Clear Me" in result.output
+        assert "target cleared" in result.output
+        assert "1 updated" in result.output
+        items = cli_mod.load_wishlist()
+        assert items[0]["max_price"] is None
+
+    def test_both_flags_errors(self, tmp_config):
+        """Providing both --max-price and --clear-target is a UsageError."""
+        self._seed_wishlist(
+            [{"asin": "WU03", "title": "Book", "max_price": 5.0, "added": "2024-01-01"}]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "update", "WU03", "--max-price", "2", "--clear-target"]
+        )
+        assert result.exit_code != 0
+        assert "not both" in result.output or "Usage" in result.output
+
+    def test_neither_flag_errors(self, tmp_config):
+        """Providing neither --max-price nor --clear-target is a UsageError."""
+        self._seed_wishlist(
+            [{"asin": "WU04", "title": "Book", "max_price": 5.0, "added": "2024-01-01"}]
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "update", "WU04"])
+        assert result.exit_code != 0
+        assert "--max-price" in result.output or "Usage" in result.output
+
+    def test_unknown_asin_reported_not_errored(self, tmp_config):
+        """An ASIN not on the wishlist prints a message but does not error."""
+        self._seed_wishlist([])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "update", "WU99", "--max-price", "3"])
+        assert result.exit_code == 0, result.output
+        assert "Not on wishlist: WU99" in result.output
+        assert "0 updated" in result.output
+        assert "1 not found" in result.output
+
+    def test_no_asins_raises_usage_error(self, tmp_config):
+        """Passing no ASINs and no --last raises a UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "update", "--max-price", "5"])
+        assert result.exit_code != 0
+        assert "ASIN" in result.output or "Usage" in result.output
+
+    def test_last_ref_resolves(self, tmp_config):
+        """--last N resolves the ASIN from the last results cache."""
+        import audible_deals.cli as cli_mod
+
+        p = make_product(asin="WU05", title="Last Ref Book")
+        self._seed_cache(tmp_config, [p])
+        self._seed_wishlist(
+            [
+                {
+                    "asin": "WU05",
+                    "title": "Last Ref Book",
+                    "max_price": None,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "update", "--last", "1", "--max-price", "4"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Result #1" in result.output
+        assert "Last Ref Book" in result.output
+        assert "4.00" in result.output
+        assert "1 updated" in result.output
+        items = cli_mod.load_wishlist()
+        assert items[0]["max_price"] == 4.0
+
+    def test_added_date_preserved(self, tmp_config):
+        """The 'added' date is not modified when updating the target price."""
+        import audible_deals.cli as cli_mod
+
+        self._seed_wishlist(
+            [
+                {
+                    "asin": "WU06",
+                    "title": "Dated Book",
+                    "max_price": 8.0,
+                    "added": "2023-05-15",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "update", "WU06", "--max-price", "2"])
+        assert result.exit_code == 0, result.output
+        items = cli_mod.load_wishlist()
+        assert items[0]["added"] == "2023-05-15"
+
+    def test_multiple_asins_partial_not_found(self, tmp_config):
+        """Mix of found and not-found ASINs: found updated, not-found reported."""
+        import audible_deals.cli as cli_mod
+
+        self._seed_wishlist(
+            [
+                {
+                    "asin": "WU07",
+                    "title": "Present Book",
+                    "max_price": 10.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "update", "WU07", "WU99", "--max-price", "3"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "1 updated" in result.output
+        assert "1 not found" in result.output
+        assert "Not on wishlist: WU99" in result.output
+        items = cli_mod.load_wishlist()
+        assert items[0]["max_price"] == 3.0
+
+
+# ===================================================================
+# Feature: author wishlist watches
+# ===================================================================
+
+
+class TestWishlistAddAuthor:
+    def test_add_author_watch_requires_max_price(self, tmp_config, mock_client):
+        """--author without --max-price is a UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "add", "--author", "Brandon Sanderson"]
+        )
+        assert result.exit_code != 0
+        assert (
+            "max-price" in result.output.lower()
+            or "max-price" in str(result.exception).lower()
+        )
+
+    def test_add_author_watch_rejects_asin_combo(self, tmp_config, mock_client):
+        """--author combined with ASIN positional arg is a UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "wishlist",
+                "add",
+                "B00TEST001",
+                "--author",
+                "Brandon Sanderson",
+                "--max-price",
+                "5",
+            ],
+        )
+        assert result.exit_code != 0
+        assert (
+            "author" in result.output.lower()
+            or "author" in str(result.exception).lower()
+        )
+
+    def test_add_author_watch_rejects_last_combo(self, tmp_config, mock_client):
+        """--author combined with --last is a UsageError."""
+        import audible_deals.cli as cli_mod
+
+        p = make_product(asin="B00TESTAA01", title="Book")
+        from audible_deals.serialization import serialize_product
+
+        cache_obj = {"title": "Test", "results": [serialize_product(p)]}
+        cli_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "wishlist",
+                "add",
+                "--author",
+                "Brandon Sanderson",
+                "--max-price",
+                "5",
+                "--last",
+                "1",
+            ],
+        )
+        assert result.exit_code != 0
+
+    def test_add_author_watch_appends_entry(self, tmp_config, mock_client):
+        """add --author appends an author watch entry to the wishlist."""
+        import audible_deals.cli as cli_mod
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["wishlist", "add", "--author", "Brandon Sanderson", "--max-price", "5"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Brandon Sanderson" in result.output
+        items = cli_mod.load_wishlist()
+        assert len(items) == 1
+        assert items[0]["type"] == "author"
+        assert items[0]["author"] == "Brandon Sanderson"
+        assert items[0]["max_price"] == 5.0
+        assert "asin" not in items[0]
+
+    def test_add_author_watch_duplicate_ignored(self, tmp_config, mock_client):
+        """Adding the same author twice (case-insensitive) prints 'already watching'."""
+        import audible_deals.cli as cli_mod
+
+        runner = CliRunner()
+        runner.invoke(
+            cli,
+            ["wishlist", "add", "--author", "Brandon Sanderson", "--max-price", "5"],
+        )
+        result = runner.invoke(
+            cli,
+            ["wishlist", "add", "--author", "brandon sanderson", "--max-price", "3"],
+        )
+        assert result.exit_code == 0, result.output
+        assert "already watching" in result.output.lower()
+        items = cli_mod.load_wishlist()
+        assert len(items) == 1  # no second entry added
+
+    def test_add_author_watch_no_network_call(self, tmp_config, mock_client):
+        """Adding an author watch does not call get_product."""
+        runner = CliRunner()
+        runner.invoke(
+            cli,
+            ["wishlist", "add", "--author", "Brandon Sanderson", "--max-price", "5"],
+        )
+        mock_client.get_product.assert_not_called()
+
+
+class TestWishlistListAuthor:
+    def test_list_shows_author_section(self, tmp_config, mock_client):
+        """wishlist list renders author watches in a separate section."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "asin": "B001",
+                    "title": "A Book",
+                    "max_price": 10.0,
+                    "added": "2024-01-01",
+                },
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-06-01",
+                },
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list"])
+        assert result.exit_code == 0, result.output
+        assert "Author watches" in result.output
+        assert "Brandon Sanderson" in result.output
+        assert "B001" in result.output
+
+    def test_list_author_only_shows_author_table(self, tmp_config, mock_client):
+        """wishlist list with only author watches does not say 'empty'."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": "Terry Pratchett",
+                    "max_price": 4.0,
+                    "added": "2024-06-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list"])
+        assert result.exit_code == 0, result.output
+        assert "empty" not in result.output.lower()
+        assert "Terry Pratchett" in result.output
+
+    def test_list_both_empty_shows_empty_message(self, tmp_config, mock_client):
+        """wishlist list with no entries (neither ASIN nor author) shows empty message."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list"])
+        assert result.exit_code == 0, result.output
+        assert "empty" in result.output.lower()
+
+
+class TestWishlistRemoveAuthor:
+    def test_remove_author_by_name(self, tmp_config, mock_client):
+        """wishlist remove --author removes a matching author watch."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "remove", "--author", "Brandon Sanderson"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "1 removed" in result.output
+        items = cli_mod.load_wishlist()
+        assert items == []
+
+    def test_remove_author_case_insensitive(self, tmp_config, mock_client):
+        """wishlist remove --author matches case-insensitively."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "remove", "--author", "brandon sanderson"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "1 removed" in result.output
+
+    def test_remove_author_not_present_removes_zero(self, tmp_config, mock_client):
+        """wishlist remove --author for an author not on the list removes 0."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "remove", "--author", "Terry Pratchett"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "0 removed" in result.output
+        items = cli_mod.load_wishlist()
+        assert len(items) == 1
+
+    def test_remove_no_args_is_usage_error(self, tmp_config):
+        """wishlist remove with no args and no --author is a UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "remove"])
+        assert result.exit_code != 0
+
+
+class TestWatchSkipsAuthorEntries:
+    def test_watch_with_only_author_entries_prints_hint(self, tmp_config, mock_client):
+        """watch with only author entries prints a hint and returns 0 hits."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch"])
+        assert result.exit_code == 0, result.output
+        assert "notify" in result.output.lower()
+        mock_client.get_products_batch.assert_not_called()
+
+    def test_watch_mixed_skips_author_fetches_asin(self, tmp_config, mock_client):
+        """watch with mixed entries fetches only ASIN items."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "asin": "B00ASIN001",
+                    "title": "Normal Book",
+                    "max_price": 10.0,
+                    "added": "",
+                },
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                },
+            ]
+        )
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="B00ASIN001", price=8.0, title="Normal Book"),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["watch"])
+        assert result.exit_code == 0, result.output
+        # Should only request the ASIN, not author entry
+        called_asins = mock_client.get_products_batch.call_args[0][0]
+        assert "B00ASIN001" in called_asins
+        assert len(called_asins) == 1
+
+
+class TestWishlistSyncSkipsAuthorEntries:
+    def test_sync_skips_author_entries(self, tmp_config, mock_client):
+        """wishlist sync does not crash when author entries exist."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        mock_client.get_wishlist.return_value = [
+            make_product(asin="WS10", title="New Sync Book"),
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "sync"])
+        assert result.exit_code == 0, result.output
+        assert "1 synced" in result.output
+        items = cli_mod.load_wishlist()
+        asins = [i.get("asin") for i in items if i.get("asin")]
+        assert "WS10" in asins
+        authors = [i for i in items if i.get("type") == "author"]
+        assert len(authors) == 1
+
+
+class TestWishlistUpdateSkipsAuthorEntries:
+    def test_update_skips_author_entries(self, tmp_config, mock_client):
+        """wishlist update does not crash when author entries exist."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "asin": "B00UPD001",
+                    "title": "Update Book",
+                    "max_price": 10.0,
+                    "added": "",
+                },
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                },
+            ]
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["wishlist", "update", "B00UPD001", "--max-price", "3"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "1 updated" in result.output
+        items = cli_mod.load_wishlist()
+        asin_item = next(i for i in items if i.get("asin") == "B00UPD001")
+        assert asin_item["max_price"] == 3.0
+
+
+class TestNotifyAuthorHits:
+    def _save_author_wishlist(self, cli_mod, author, max_price):
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": author,
+                    "max_price": max_price,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+
+    def test_notify_author_hit_appears_in_json_output(self, tmp_config, mock_client):
+        """notify with an author watch fires when search returns a matching title."""
+        import audible_deals.cli as cli_mod
+
+        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        author_product = make_product(
+            asin="B00AUTH001",
+            title="Mistborn",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = []
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["count"] == 1
+        assert payload["deals"][0]["asin"] == "B00AUTH001"
+        assert payload["deals"][0]["target"] == 5.0
+
+    def test_notify_author_hit_deduped_against_asin_hits(self, tmp_config, mock_client):
+        """Author hit whose ASIN is already an ASIN-entry hit is not duplicated."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "asin": "B00AUTH001",
+                    "title": "Mistborn",
+                    "max_price": 5.0,
+                    "added": "",
+                },
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                },
+            ]
+        )
+        shared_product = make_product(
+            asin="B00AUTH001",
+            title="Mistborn",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = [shared_product]
+        mock_client.search_pages.return_value = iter([([shared_product], 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        asins = [d["asin"] for d in payload["deals"]]
+        assert asins.count("B00AUTH001") == 1
+
+    def test_notify_author_above_price_not_hit(self, tmp_config, mock_client):
+        """Author search result above max_price is not a hit."""
+        import audible_deals.cli as cli_mod
+
+        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 2.0)
+        author_product = make_product(
+            asin="B00AUTH002",
+            title="Way of Kings",
+            authors=["Brandon Sanderson"],
+            price=9.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = []
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["count"] == 0
+
+    def test_notify_author_records_prices(self, tmp_config, mock_client):
+        """notify records price history for author-search results."""
+        import audible_deals.cli as cli_mod
+        from audible_deals.state import load_price_history as _load_price_history
+
+        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        author_product = make_product(
+            asin="B00AUTH003",
+            title="Elantris",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = []
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+        runner = CliRunner()
+        runner.invoke(cli, ["notify"])
+        history = _load_price_history("B00AUTH003")
+        assert len(history) == 1
+        assert history[0]["price"] == 3.99
+
+
+class TestNotifyAuthorCooldown:
+    def _save_author_wishlist(self, cli_mod, author, max_price):
+        cli_mod.save_wishlist(
+            [
+                {
+                    "type": "author",
+                    "author": author,
+                    "max_price": max_price,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+
+    def test_author_hit_cooldown_state_persisted(self, tmp_config, mock_client):
+        """After an author hit fires, its ASIN is in notify_state."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        author_product = make_product(
+            asin="B00AUTH010",
+            title="Warbreaker",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = []
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "3"])
+        assert result.exit_code == 0, result.output
+        state = json.loads(state_mod.NOTIFY_STATE_FILE.read_text())
+        assert "B00AUTH010" in state
+
+    def test_author_hit_cooldown_suppressed_second_run(self, tmp_config, mock_client):
+        """Author hit suppressed within cooldown window on second run."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        today = _datetime.date.today().isoformat()
+        state_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"B00AUTH011": {"price": 3.99, "date": today}})
+        )
+        author_product = make_product(
+            asin="B00AUTH011",
+            title="Rhythm of War",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = []
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "7"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["count"] == 0
+
+    def test_author_hit_cooldown_state_not_pruned(self, tmp_config, mock_client):
+        """Author-hit ASIN in notify_state is not pruned after save (cooldown fix)."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        author_product = make_product(
+            asin="B00AUTH012",
+            title="The Final Empire",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = []
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "7"])
+        assert result.exit_code == 0, result.output
+        state = json.loads(state_mod.NOTIFY_STATE_FILE.read_text())
+        # B00AUTH012 is not a wishlist ASIN, but it should be retained (not pruned)
+        assert "B00AUTH012" in state
+
+    def test_suppressed_author_asin_survives_prune_when_asin_hit_fires(
+        self, tmp_config, mock_client
+    ):
+        """Regression: suppressed author ASIN state must survive when another ASIN hit fires.
+
+        Day 1: author ASIN B00AUTH020 fires and is recorded in notify_state.
+        Day 2: B00AUTH020 is suppressed by cooldown; ASIN-entry B00ASIN001 fires.
+        After day-2 save, B00AUTH020 state entry must still be present (not pruned).
+        """
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        # Wishlist: one ASIN-entry + one author watch
+        cli_mod.save_wishlist(
+            [
+                {
+                    "asin": "B00ASIN001",
+                    "title": "ASIN Book",
+                    "max_price": 10.0,
+                    "added": "",
+                },
+                {
+                    "type": "author",
+                    "author": "Brandon Sanderson",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                },
+            ]
+        )
+
+        today = _datetime.date.today().isoformat()
+        # Pre-populate: day-1 author hit was recorded
+        state_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"B00AUTH020": {"price": 3.99, "date": today}})
+        )
+
+        # Day 2: ASIN hit fires; author hit is suppressed
+        asin_product = make_product(asin="B00ASIN001", price=5.0, title="ASIN Book")
+        author_product = make_product(
+            asin="B00AUTH020",
+            title="The Way of Kings",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = [asin_product]
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "7"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        # Only ASIN hit fires on day 2
+        assert payload["count"] == 1
+        assert payload["deals"][0]["asin"] == "B00ASIN001"
+
+        # Suppressed author ASIN state must survive
+        state = json.loads(state_mod.NOTIFY_STATE_FILE.read_text())
+        assert "B00AUTH020" in state, "Suppressed author ASIN was incorrectly pruned"

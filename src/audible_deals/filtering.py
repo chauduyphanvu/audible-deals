@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from audible_deals.client import Product
+from audible_deals.utils import parse_series_position
 
 logger = logging.getLogger(__name__)
 
@@ -37,6 +38,10 @@ def filter_products(
     only_plus: bool = False,
     exclude_keywords: tuple[str, ...] = (),
     drop_zero_length: bool = False,
+    max_hist_percentile: int | None = None,
+    hist_percentile: dict[str, int] | None = None,
+    min_price_drop: float = 0.0,
+    price_drops: dict[str, float] | None = None,
 ) -> tuple[list[Product], dict[str, int]]:
     """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
@@ -152,6 +157,23 @@ def filter_products(
             ),
         )
 
+    if max_hist_percentile is not None and hist_percentile is not None:
+        _apply(
+            "hist percentile",
+            lambda p: (
+                p.asin not in hist_percentile
+                or hist_percentile[p.asin] <= max_hist_percentile
+            ),
+        )
+
+    if min_price_drop > 0 and price_drops is not None:
+        _apply(
+            "price drop",
+            lambda p: (
+                p.asin not in price_drops or price_drops[p.asin] >= min_price_drop
+            ),
+        )
+
     logger.debug(
         "filter_products in=%d out=%d breakdown=%s",
         len(products),
@@ -240,10 +262,7 @@ def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
 
 
 def _series_pos(p: Product) -> float:
-    try:
-        return float(p.series_position) if p.series_position else float("inf")
-    except ValueError:
-        return float("inf")
+    return parse_series_position(p.series_position)
 
 
 def first_in_series(products: list[Product]) -> tuple[list[Product], int]:
