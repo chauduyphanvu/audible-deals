@@ -443,7 +443,7 @@ class TestDetailCommand:
 
 class TestOpenCommand:
     def test_open_by_asin(self, tmp_config, mock_client):
-        with patch("audible_deals.cli.click.launch") as mock_launch:
+        with patch("audible_deals.cli.misc.click.launch") as mock_launch:
             result = _run(CliRunner(), ["open", "B00OPEN01"])
             assert result.exit_code == 0
             mock_launch.assert_called_once()
@@ -452,7 +452,7 @@ class TestOpenCommand:
     def test_open_by_last_ref(self, tmp_config, mock_client):
         products = [make_product(asin="B00OPEN02")]
         _seed_last_results(tmp_config, products)
-        with patch("audible_deals.cli.click.launch") as mock_launch:
+        with patch("audible_deals.cli.misc.click.launch") as mock_launch:
             result = _run(CliRunner(), ["open", "--last", "1"])
             assert result.exit_code == 0
             mock_launch.assert_called_once()
@@ -1140,7 +1140,7 @@ class TestZeroLengthFiltering:
 
     def test_zero_length_breakdown_label(self, tmp_config, mock_client):
         """The breakdown for zero-length items uses the label 'no runtime'."""
-        from audible_deals.cli import _apply_filters
+        from audible_deals.cli.pipeline import _apply_filters
 
         products = [
             make_product(asin="NR3", length_minutes=0, price=3.99),
@@ -1315,13 +1315,13 @@ class TestInteractiveBrowseVerbs:
 
         test_console = Console(file=StringIO(), force_terminal=False)
         monkeypatch.setattr(display_mod, "console", test_console)
-        import audible_deals.cli as cli_mod
+        import audible_deals.cli.interactive as interactive_mod
 
-        monkeypatch.setattr(cli_mod, "console", test_console)
+        monkeypatch.setattr(interactive_mod, "console", test_console)
         return test_console
 
     def test_compare_shows_both_titles(self, tmp_config, monkeypatch):
-        from audible_deals.cli import _interactive_browse
+        from audible_deals.cli.interactive import _interactive_browse
 
         p1 = make_product(asin="IA01", title="Alpha Book", price=5.0)
         p2 = make_product(asin="IA02", title="Beta Book", price=8.0)
@@ -1334,10 +1334,10 @@ class TestInteractiveBrowseVerbs:
         assert "Beta Book" in out
 
     def test_history_no_entries_prints_message(self, tmp_config, monkeypatch):
-        from audible_deals.cli import _interactive_browse
-        import audible_deals.cli as cli_mod
+        from audible_deals.cli.interactive import _interactive_browse
+        import audible_deals.cli.interactive as interactive_mod
 
-        monkeypatch.setattr(cli_mod, "load_price_history", lambda asin: [])
+        monkeypatch.setattr(interactive_mod, "load_price_history", lambda asin: [])
         p = make_product(asin="IH01", title="History Book", price=5.0)
         inputs = iter(["h 1", "q"])
         monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
@@ -1348,7 +1348,7 @@ class TestInteractiveBrowseVerbs:
         assert "No price history" in out
 
     def test_compare_missing_second_index_prints_error(self, tmp_config, monkeypatch):
-        from audible_deals.cli import _interactive_browse
+        from audible_deals.cli.interactive import _interactive_browse
 
         p = make_product(asin="IC01", title="Only Book", price=5.0)
         inputs = iter(["c 1", "q"])

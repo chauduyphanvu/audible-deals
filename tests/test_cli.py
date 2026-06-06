@@ -10,10 +10,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from audible_deals.cli import (
-    _fetch_with_progress,
-    cli,
-)
+from audible_deals.cli import cli
+from audible_deals.cli.pipeline import _fetch_with_progress
 from audible_deals.filtering import (
     dedupe_editions as _dedupe_editions,
     filter_products as _filter_products,
@@ -987,7 +985,7 @@ class TestWatchCommand:
         """--show-url adds URL column to output."""
         from io import StringIO
         from rich.console import Console
-        import audible_deals.cli as cli_mod
+        import audible_deals.cli.wishlist as cli_wishlist_mod
 
         wishlist_mod.save_wishlist(
             [
@@ -1003,15 +1001,15 @@ class TestWatchCommand:
 
         buf = StringIO()
         wide_console = Console(file=buf, width=200, highlight=False)
-        original_cli = cli_mod.console
+        original_cli = cli_wishlist_mod.console
         original_display = display_mod.console
-        cli_mod.console = wide_console
+        cli_wishlist_mod.console = wide_console
         display_mod.console = wide_console
         try:
             runner = CliRunner()
             result = runner.invoke(cli, ["watch", "--show-url"])
         finally:
-            cli_mod.console = original_cli
+            cli_wishlist_mod.console = original_cli
             display_mod.console = original_display
         assert result.exit_code == 0, result.output
         captured = buf.getvalue()
@@ -1879,7 +1877,7 @@ class TestConfigBooleanOverride:
     def test_config_bool_not_overridden_when_cli_explicit(self):
         """Config booleans must not override when the user explicitly passed the flag."""
         from unittest.mock import MagicMock
-        from audible_deals.cli import _CL
+        from audible_deals.cli.helpers import _CL
         from audible_deals.settings import Settings
 
         ctx = MagicMock()
@@ -1930,7 +1928,7 @@ class TestConfigBooleanOverride:
     def test_profile_bool_not_overridden_when_cli_explicit(self):
         """Profile booleans must not override when the user explicitly passed the flag."""
         from unittest.mock import MagicMock
-        from audible_deals.cli import _CL
+        from audible_deals.cli.helpers import _CL
         from audible_deals.settings import Settings
 
         ctx = MagicMock()
@@ -4516,7 +4514,9 @@ class TestNotifyEmpty:
             make_product(asin="NE02", price=9.99),
         ]
         # Use a valid-looking but unreachable webhook; should never be called
-        monkeypatch.setattr("audible_deals.cli.validate_webhook_url", lambda url: None)
+        monkeypatch.setattr(
+            "audible_deals.cli.notify.validate_webhook_url", lambda url: None
+        )
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--webhook", "https://example.com/hook"])
         assert result.exit_code == 0, result.output
@@ -4659,9 +4659,8 @@ class TestDryRunSearch:
 class TestLastCount:
     def _write_cache(self, tmp_config, products):
         """Write a mock last results cache."""
-        import audible_deals.cli as cli_mod
 
-        data = [cli_mod.serialize_product(p) for p in products]
+        data = [_serialize_product(p) for p in products]
         payload = json.dumps({"title": "Test Results", "results": data})
         constants_mod.LAST_RESULTS_FILE.write_text(payload)
 
@@ -4742,7 +4741,7 @@ class TestFilterSeries:
 class TestSeriesCommand:
     @pytest.fixture(autouse=True)
     def _no_sleep(self, monkeypatch):
-        monkeypatch.setattr("audible_deals.cli.time.sleep", lambda _: None)
+        monkeypatch.setattr("audible_deals.cli.scan.time.sleep", lambda _: None)
 
     def test_series_direct_lookup(self, tmp_config, mock_client):
         """With series_asin, uses direct lookup via get_series_products."""
@@ -5015,7 +5014,7 @@ class TestStringKeyPrecedence:
     def test_cli_string_overrides_both(self):
         """CLI-supplied string must not be overridden by config or profile."""
         from unittest.mock import MagicMock
-        from audible_deals.cli import _CL
+        from audible_deals.cli.helpers import _CL
         from audible_deals.settings import Settings
 
         ctx = MagicMock()
@@ -5985,7 +5984,7 @@ class TestNotifyLockCLI:
 
 
 class TestNotifyCooldown:
-    def _setup_wishlist_and_product(self, cli_mod, mock_client, asin, price, target):
+    def _setup_wishlist_and_product(self, mock_client, asin, price, target):
         wishlist_mod.save_wishlist(
             [{"asin": asin, "title": "Test Book", "max_price": target, "added": ""}]
         )
@@ -5995,9 +5994,8 @@ class TestNotifyCooldown:
 
     def test_same_price_suppressed_within_cooldown(self, mock_client, tmp_config):
         """Second run at same price within cooldown window is suppressed."""
-        import audible_deals.cli as cli_mod
 
-        self._setup_wishlist_and_product(cli_mod, mock_client, "CD01", 3.99, 5.0)
+        self._setup_wishlist_and_product(mock_client, "CD01", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
         constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         constants_mod.NOTIFY_STATE_FILE.write_text(
@@ -6011,9 +6009,8 @@ class TestNotifyCooldown:
 
     def test_further_price_drop_renotifies(self, mock_client, tmp_config):
         """Further price drop re-notifies even within cooldown window."""
-        import audible_deals.cli as cli_mod
 
-        self._setup_wishlist_and_product(cli_mod, mock_client, "CD02", 2.99, 5.0)
+        self._setup_wishlist_and_product(mock_client, "CD02", 2.99, 5.0)
         today = _datetime.date.today().isoformat()
         constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         constants_mod.NOTIFY_STATE_FILE.write_text(
@@ -6028,10 +6025,9 @@ class TestNotifyCooldown:
 
     def test_expired_cooldown_renotifies(self, mock_client, tmp_config):
         """Cooldown expired: re-notifies even at same price."""
-        import audible_deals.cli as cli_mod
         import datetime
 
-        self._setup_wishlist_and_product(cli_mod, mock_client, "CD03", 3.99, 5.0)
+        self._setup_wishlist_and_product(mock_client, "CD03", 3.99, 5.0)
         old_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
         constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         constants_mod.NOTIFY_STATE_FILE.write_text(
@@ -6045,9 +6041,8 @@ class TestNotifyCooldown:
 
     def test_no_cooldown_flag_no_state_written(self, mock_client, tmp_config):
         """Without --cooldown, notify_state.json is never written."""
-        import audible_deals.cli as cli_mod
 
-        self._setup_wishlist_and_product(cli_mod, mock_client, "CD04", 3.99, 5.0)
+        self._setup_wishlist_and_product(mock_client, "CD04", 3.99, 5.0)
         runner = CliRunner()
         result = runner.invoke(cli, ["notify"])
         assert result.exit_code == 0, result.output
@@ -6055,9 +6050,8 @@ class TestNotifyCooldown:
 
     def test_all_suppressed_exit_code_exits_1(self, mock_client, tmp_config):
         """All hits suppressed by cooldown + --exit-code → exit 1."""
-        import audible_deals.cli as cli_mod
 
-        self._setup_wishlist_and_product(cli_mod, mock_client, "CD05", 3.99, 5.0)
+        self._setup_wishlist_and_product(mock_client, "CD05", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
         constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         constants_mod.NOTIFY_STATE_FILE.write_text(
@@ -6070,9 +6064,8 @@ class TestNotifyCooldown:
     def test_state_updated_after_send(self, mock_client, tmp_config):
         """Notify state is updated with new price and date after a successful send."""
         import datetime
-        import audible_deals.cli as cli_mod
 
-        self._setup_wishlist_and_product(cli_mod, mock_client, "CD06", 3.99, 5.0)
+        self._setup_wishlist_and_product(mock_client, "CD06", 3.99, 5.0)
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
@@ -6084,9 +6077,8 @@ class TestNotifyCooldown:
 
     def test_pruned_asin_not_on_wishlist(self, mock_client, tmp_config):
         """State entries for ASINs no longer on wishlist are pruned on save."""
-        import audible_deals.cli as cli_mod
 
-        self._setup_wishlist_and_product(cli_mod, mock_client, "CD07", 3.99, 5.0)
+        self._setup_wishlist_and_product(mock_client, "CD07", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
         constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         constants_mod.NOTIFY_STATE_FILE.write_text(
@@ -7107,7 +7099,7 @@ class TestWishlistUpdateSkipsAuthorEntries:
 
 
 class TestNotifyAuthorHits:
-    def _save_author_wishlist(self, cli_mod, author, max_price):
+    def _save_author_wishlist(self, author, max_price):
         wishlist_mod.save_wishlist(
             [
                 {
@@ -7121,9 +7113,8 @@ class TestNotifyAuthorHits:
 
     def test_notify_author_hit_appears_in_json_output(self, tmp_config, mock_client):
         """notify with an author watch fires when search returns a matching title."""
-        import audible_deals.cli as cli_mod
 
-        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        self._save_author_wishlist("Brandon Sanderson", 5.0)
         author_product = make_product(
             asin="B00AUTH001",
             title="Mistborn",
@@ -7178,9 +7169,8 @@ class TestNotifyAuthorHits:
 
     def test_notify_author_above_price_not_hit(self, tmp_config, mock_client):
         """Author search result above max_price is not a hit."""
-        import audible_deals.cli as cli_mod
 
-        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 2.0)
+        self._save_author_wishlist("Brandon Sanderson", 2.0)
         author_product = make_product(
             asin="B00AUTH002",
             title="Way of Kings",
@@ -7198,12 +7188,11 @@ class TestNotifyAuthorHits:
 
     def test_notify_author_records_prices(self, tmp_config, mock_client):
         """notify records price history for author-search results."""
-        import audible_deals.cli as cli_mod
         from audible_deals.price_history import (
             load_price_history as _load_price_history,
         )
 
-        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        self._save_author_wishlist("Brandon Sanderson", 5.0)
         author_product = make_product(
             asin="B00AUTH003",
             title="Elantris",
@@ -7221,9 +7210,8 @@ class TestNotifyAuthorHits:
 
     def test_author_hit_json_contains_author_field(self, tmp_config, mock_client):
         """Author-watch hit dicts must include an 'author' key with the watch name."""
-        import audible_deals.cli as cli_mod
 
-        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        self._save_author_wishlist("Brandon Sanderson", 5.0)
         author_product = make_product(
             asin="B00AUTH010",
             title="The Final Empire",
@@ -7268,7 +7256,7 @@ class TestNotifyAuthorHits:
 
 
 class TestNotifyAuthorCooldown:
-    def _save_author_wishlist(self, cli_mod, author, max_price):
+    def _save_author_wishlist(self, author, max_price):
         wishlist_mod.save_wishlist(
             [
                 {
@@ -7282,9 +7270,8 @@ class TestNotifyAuthorCooldown:
 
     def test_author_hit_cooldown_state_persisted(self, tmp_config, mock_client):
         """After an author hit fires, its ASIN is in notify_state."""
-        import audible_deals.cli as cli_mod
 
-        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        self._save_author_wishlist("Brandon Sanderson", 5.0)
         author_product = make_product(
             asin="B00AUTH010",
             title="Warbreaker",
@@ -7302,9 +7289,8 @@ class TestNotifyAuthorCooldown:
 
     def test_author_hit_cooldown_suppressed_second_run(self, tmp_config, mock_client):
         """Author hit suppressed within cooldown window on second run."""
-        import audible_deals.cli as cli_mod
 
-        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        self._save_author_wishlist("Brandon Sanderson", 5.0)
         today = _datetime.date.today().isoformat()
         constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
         constants_mod.NOTIFY_STATE_FILE.write_text(
@@ -7327,9 +7313,8 @@ class TestNotifyAuthorCooldown:
 
     def test_author_hit_cooldown_state_not_pruned(self, tmp_config, mock_client):
         """Author-hit ASIN in notify_state is not pruned after save (cooldown fix)."""
-        import audible_deals.cli as cli_mod
 
-        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        self._save_author_wishlist("Brandon Sanderson", 5.0)
         author_product = make_product(
             asin="B00AUTH012",
             title="The Final Empire",
@@ -7518,11 +7503,11 @@ class TestInteractiveBrowse:
 
     def _run(self, products, user_input, tmp_config):
         """Invoke _interactive_browse with simulated user input."""
-        import audible_deals.cli as cli_mod
+        from audible_deals.cli.interactive import _interactive_browse
 
         @click.command()
         def _cmd():
-            cli_mod._interactive_browse(products)
+            _interactive_browse(products)
 
         runner = CliRunner()
         return runner.invoke(_cmd, input=user_input, catch_exceptions=False)
@@ -7794,7 +7779,7 @@ class TestHistBelowZero:
 class TestReleasedDateNormalization:
     def test_compact_released_after_is_normalized(self, mock_client, tmp_config):
         """Compact ISO form '20240101' parses and normalizes to '2024-01-01'."""
-        from audible_deals.cli import _validate_history_filter_options
+        from audible_deals.cli.scan import _validate_history_filter_options
 
         after, before = _validate_history_filter_options(
             False, None, 0.0, "20240101", ""
@@ -7804,7 +7789,7 @@ class TestReleasedDateNormalization:
 
     def test_compact_released_before_is_normalized(self, mock_client, tmp_config):
         """Compact ISO form '20241231' normalizes to '2024-12-31'."""
-        from audible_deals.cli import _validate_history_filter_options
+        from audible_deals.cli.scan import _validate_history_filter_options
 
         after, before = _validate_history_filter_options(
             False, None, 0.0, "", "20241231"
@@ -7814,7 +7799,7 @@ class TestReleasedDateNormalization:
 
     def test_dashed_dates_pass_through_unchanged(self, mock_client, tmp_config):
         """Standard dashed dates are returned as-is."""
-        from audible_deals.cli import _validate_history_filter_options
+        from audible_deals.cli.scan import _validate_history_filter_options
 
         after, before = _validate_history_filter_options(
             False, None, 0.0, "2024-06-01", "2024-12-31"
@@ -7830,11 +7815,11 @@ class TestReleasedDateNormalization:
 
 class TestInteractiveBrowseWishlistCheck:
     def _run(self, products, user_input, tmp_config):
-        import audible_deals.cli as cli_mod
+        from audible_deals.cli.interactive import _interactive_browse
 
         @click.command()
         def _cmd():
-            cli_mod._interactive_browse(products)
+            _interactive_browse(products)
 
         runner = CliRunner()
         return runner.invoke(_cmd, input=user_input, catch_exceptions=False)

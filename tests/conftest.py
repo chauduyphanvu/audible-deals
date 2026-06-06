@@ -171,7 +171,6 @@ def raw_api_product_minimal():
 def tmp_config(tmp_path, monkeypatch):
     """Redirect all config paths to a temp directory and fix Rich console for Click."""
     import audible_deals.client as client_mod
-    import audible_deals.cli as cli_mod
     import audible_deals.display as display_mod
     from rich.console import Console
 
@@ -203,7 +202,8 @@ def tmp_config(tmp_path, monkeypatch):
     # the "I/O operation on closed file" crash.
     test_console = Console(force_terminal=False, force_interactive=False)
     monkeypatch.setattr(display_mod, "console", test_console)
-    monkeypatch.setattr(cli_mod, "console", test_console)
+    for mod in _cli_console_modules():
+        monkeypatch.setattr(mod, "console", test_console)
 
     return tmp_path
 
@@ -213,10 +213,37 @@ def tmp_config(tmp_path, monkeypatch):
 # ---------------------------------------------------------------------------
 
 
+def _cli_console_modules():
+    """All cli submodules that bind the shared Rich console by name."""
+    import audible_deals.cli as cli_mod
+    import audible_deals.cli.helpers as cli_helpers_mod
+    import audible_deals.cli.interactive as cli_interactive_mod
+    import audible_deals.cli.misc as cli_misc_mod
+    import audible_deals.cli.notify as cli_notify_mod
+    import audible_deals.cli.pipeline as cli_pipeline_mod
+    import audible_deals.cli.scan as cli_scan_mod
+    import audible_deals.cli.wishlist as cli_wishlist_mod
+
+    return (
+        cli_mod,
+        cli_helpers_mod,
+        cli_pipeline_mod,
+        cli_interactive_mod,
+        cli_scan_mod,
+        cli_wishlist_mod,
+        cli_notify_mod,
+        cli_misc_mod,
+    )
+
+
 @pytest.fixture
 def mock_client(monkeypatch):
     """Patch _get_client to return a mock that doesn't hit the network."""
-    import audible_deals.cli as cli_mod
+    import audible_deals.cli.helpers as cli_helpers_mod
+    import audible_deals.cli.misc as cli_misc_mod
+    import audible_deals.cli.notify as cli_notify_mod
+    import audible_deals.cli.scan as cli_scan_mod
+    import audible_deals.cli.wishlist as cli_wishlist_mod
 
     client = MagicMock()
     client.__enter__ = MagicMock(return_value=client)
@@ -225,7 +252,14 @@ def mock_client(monkeypatch):
     def _get_mock(locale):
         return client
 
-    monkeypatch.setattr(cli_mod, "_get_client", _get_mock)
+    for mod in (
+        cli_helpers_mod,
+        cli_scan_mod,
+        cli_wishlist_mod,
+        cli_notify_mod,
+        cli_misc_mod,
+    ):
+        monkeypatch.setattr(mod, "_get_client", _get_mock)
     return client
 
 
