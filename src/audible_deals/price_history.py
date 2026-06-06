@@ -11,6 +11,7 @@ from pathlib import Path
 from audible_deals import constants, wishlist
 from audible_deals.product import Product
 from audible_deals.constants import _ASIN_RE, _atomic_write
+from audible_deals.storage import load_json_file
 
 logger = logging.getLogger(__name__)
 
@@ -78,16 +79,7 @@ def load_price_history(asin: str) -> list[dict]:
     Returns an empty list if the file doesn't exist or is corrupt.
     """
     hist_file = constants.HISTORY_DIR / f"{asin}.json"
-    if not hist_file.exists():
-        return []
-    try:
-        entries = json.loads(hist_file.read_text())
-        return entries if isinstance(entries, list) else []
-    except (json.JSONDecodeError, OSError):
-        logger.warning(
-            "price history at %s is corrupt or unreadable", hist_file, exc_info=True
-        )
-        return []
+    return load_json_file(hist_file, list, f"price history {asin}")
 
 
 def _numeric_prices(entries: list[dict]) -> list[float]:
