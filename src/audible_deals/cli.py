@@ -39,6 +39,7 @@ from rich.table import Table
 
 from audible_deals.constants import (
     _CONFIG_SCHEMA,
+    AUTH_FILE,
     CLIENT_SORT_OPTIONS,
     CONFIG_DIR,
     CONFIG_FILE,
@@ -47,15 +48,15 @@ from audible_deals.constants import (
     GENRE_ALIASES,
     HISTORY_DIR,
     LOCALE_CURRENCY,
-    LOCALE_DOMAIN,
     LOCALE_LANGUAGES,
     MAX_PAGE_SIZE,
     SORT_OPTIONS,
+    product_url,
 )
 
 # Re-exported so tests can reference these paths via the cli module namespace.
 from audible_deals.constants import LAST_RESULTS_FILE, SEEN_ASINS_FILE  # noqa: F401
-from audible_deals.client import AUTH_FILE, DealsClient, Product
+from audible_deals.client import DealsClient, Product
 from audible_deals.logging_setup import configure_logging
 from audible_deals.display import (
     console,
@@ -146,6 +147,18 @@ def _resolve_single_last_ref(last_ref: str) -> tuple[str, str]:
 
 def _get_client(locale: str) -> DealsClient:
     return DealsClient(locale=locale)
+
+
+def _currency(ctx: click.Context) -> str:
+    return LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+
+
+def _resolve_skip_asins(
+    dc: DealsClient, skip_owned: bool, exclude_seen: bool
+) -> set[str] | None:
+    """Build the set of ASINs to exclude from owned library and seen history."""
+    skip_asins = dc.get_library_asins() if skip_owned else None
+    return merge_seen_asins(skip_asins, exclude_seen)
 
 
 def _safe_record_prices(products: list[Product]) -> None:
@@ -694,25 +707,20 @@ def _resolve_output_quiet(ctx: click.Context, output, json_flag, quiet) -> bool:
     return quiet
 
 
-def _build_scan_namespace(
+def _build_scan_settings(
     ctx: click.Context,
     profile_name: str | None,
     **kwargs,
-) -> dict:
-    """Build a resolved namespace dict from command kwargs + config/profile defaults."""
+) -> Settings:
+    """Resolve command kwargs + config/profile defaults into a Settings."""
     s = Settings.resolve(
         ctx,
         config=ctx.obj.get("config", {}),
         profile=_load_profile(profile_name),
         cli_flags=dict(kwargs),
     )
-    ns = dict(kwargs)
-    ns.update(dataclasses.asdict(s))
-    ns["quiet"] = _resolve_output_quiet(
-        ctx, ns.get("output"), ns.get("json_flag"), ns.get("quiet")
-    )
-    if not ns.get("language") and not ns.get("all_languages"):
-        ns["language"] = LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
+    if not s.language and not s.all_languages:
+        s = dataclasses.replace(s, language=LOCALE_LANGUAGES.get(ctx.obj["locale"], ""))
     if logger.isEnabledFor(logging.DEBUG):
         debug_keys = (
             "genre",
@@ -732,9 +740,43 @@ def _build_scan_namespace(
             "first_in_series",
             "skip_owned",
         )
-        snapshot = {k: ns.get(k) for k in debug_keys if k in ns}
-        logger.debug("resolved scan namespace: %s", snapshot)
-    return ns
+        snapshot = {k: getattr(s, k) for k in debug_keys}
+        logger.debug("resolved scan settings: %s", snapshot)
+    return s
+
+
+def _apply_settings_filters(
+    products: list[Product],
+    s: Settings,
+    *,
+    skip_asins: set[str] | None,
+    exclude_category_ids: set[str],
+) -> tuple[list[Product], dict[str, int], int, int]:
+    """Run _apply_filters with all filter options taken from a resolved Settings."""
+    return _apply_filters(
+        products,
+        max_price=s.max_price,
+        min_rating=s.min_rating,
+        min_ratings=s.min_ratings,
+        min_hours=s.min_hours,
+        narrator=s.narrator,
+        author=s.author,
+        exclude_authors=s.exclude_authors,
+        exclude_narrators=s.exclude_narrators,
+        language=s.language,
+        on_sale=s.on_sale,
+        skip_asins=skip_asins,
+        exclude_category_ids=exclude_category_ids,
+        first_in_series_only=s.first_in_series,
+        sort=s.sort,
+        max_pph=s.max_pph,
+        min_discount=s.min_discount,
+        series=s.series,
+        publisher=s.publisher,
+        skip_plus=s.skip_plus,
+        only_plus=s.only_plus,
+        exclude_keywords=s.exclude_keywords,
+    )
 
 
 @cli.command()
@@ -824,7 +866,7 @@ def search(
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     if skip_plus and only_plus:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
-    ns = _build_scan_namespace(
+    s = _build_scan_settings(
         ctx,
         profile_name,
         max_price=max_price,
@@ -852,81 +894,21 @@ def search(
         keywords="",
         series=series,
         publisher=publisher,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
         skip_plus=skip_plus,
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
-    (
-        max_price,
-        sort,
-        min_rating,
-        min_ratings,
-        min_hours,
-        language,
-        narrator,
-        author,
-        pages,
-        limit,
-        on_sale,
-        deep,
-        first_in_series,
-        skip_owned,
-        interactive,
-        genre,
-        exclude_genre,
-        exclude_authors,
-        exclude_narrators,
-        series,
-        publisher,
-        quiet,
-        max_pph,
-        min_discount,
-        skip_plus,
-        only_plus,
-        exclude_keywords,
-    ) = (
-        ns["max_price"],
-        ns["sort"],
-        ns["min_rating"],
-        ns["min_ratings"],
-        ns["min_hours"],
-        ns["language"],
-        ns["narrator"],
-        ns["author"],
-        ns["pages"],
-        ns["limit"],
-        ns["on_sale"],
-        ns["deep"],
-        ns["first_in_series"],
-        ns["skip_owned"],
-        ns["interactive"],
-        ns["genre"],
-        ns["exclude_genre"],
-        ns["exclude_authors"],
-        ns["exclude_narrators"],
-        ns["series"],
-        ns["publisher"],
-        ns["quiet"],
-        ns["max_pph"],
-        ns["min_discount"],
-        ns["skip_plus"],
-        ns["only_plus"],
-        ns["exclude_keywords"],
-    )
-    if genre and category:
+    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
+    if s.genre and category:
         raise click.UsageError("Use --genre or --category, not both.")
 
     dc = _get_client(ctx.obj["locale"])
-    server_sort = SORT_OPTIONS.get(sort, "Relevance")
-    sort_orders = DEEP_SORT_ORDERS if deep else [server_sort]
-    skip_asins: set[str] | None = None
+    server_sort = SORT_OPTIONS.get(s.sort, "Relevance")
+    sort_orders = DEEP_SORT_ORDERS if s.deep else [server_sort]
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
-            dc, genre, category, exclude_genre
+            dc, s.genre, category, s.exclude_genre
         )
 
         if dry_run:
@@ -934,13 +916,11 @@ def search(
                 category_name=category_name,
                 query=query,
                 sort_orders=sort_orders,
-                pages=pages,
+                pages=s.pages,
             )
             return
 
-        if skip_owned:
-            skip_asins = dc.get_library_asins()
-        skip_asins = merge_seen_asins(skip_asins, exclude_seen)
+        skip_asins = _resolve_skip_asins(dc, s.skip_owned, exclude_seen)
 
         queries = (
             [q.strip() for q in query.split("|") if q.strip()]
@@ -959,7 +939,7 @@ def search(
                     keywords=q,
                     category_id=category,
                     sort_orders=sort_orders,
-                    pages=pages,
+                    pages=s.pages,
                     description=f"Searching '{q}'",
                 )
                 for p in sub_products:
@@ -984,11 +964,11 @@ def search(
                 keywords=queries[0],
                 category_id=category,
                 sort_orders=sort_orders,
-                pages=pages,
+                pages=s.pages,
                 description=f"Searching {scope}",
             )
 
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
     if len(queries) > 1:
         combined_query = " | ".join(queries)
         search_title = f'Search: "{combined_query}"'
@@ -1000,34 +980,18 @@ def search(
             search_title += f" in {category_name}"
     else:
         search_title = f"Search: {category_name or 'All'}"
-    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
-        all_products,
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        narrator=narrator,
-        author=author,
-        exclude_authors=exclude_authors,
-        exclude_narrators=exclude_narrators,
-        language=language,
-        on_sale=on_sale,
-        skip_asins=skip_asins,
-        exclude_category_ids=exclude_category_ids,
-        first_in_series_only=first_in_series,
-        sort=sort,
-        max_pph=max_pph,
-        min_discount=min_discount,
-        series=series,
-        publisher=publisher,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        exclude_keywords=exclude_keywords,
+    filtered, filter_breakdown, editions_removed, series_collapsed = (
+        _apply_settings_filters(
+            all_products,
+            s,
+            skip_asins=skip_asins,
+            exclude_category_ids=exclude_category_ids,
+        )
     )
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered,
         title=search_title,
-        limit=limit,
+        limit=s.limit,
     )
     _emit_output(
         filtered,
@@ -1036,19 +1000,19 @@ def search(
         output=output,
         json_flag=json_flag,
         quiet=quiet,
-        max_price=max_price,
+        max_price=s.max_price,
         filter_breakdown=filter_breakdown,
         editions_removed=editions_removed,
         series_collapsed=series_collapsed,
         total_before_limit=total_before_limit,
         currency=cur,
-        interactive=interactive,
+        interactive=s.interactive,
         show_url=show_url,
     )
     display_query = queries[0] if len(queries) == 1 else None
     if (
         display_query
-        and not author
+        and not s.author
         and not json_flag
         and not quiet
         and looks_like_person_name(display_query)
@@ -1235,7 +1199,7 @@ def find(
     )
     if skip_plus and only_plus:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
-    ns = _build_scan_namespace(
+    s = _build_scan_settings(
         ctx,
         profile_name,
         max_price=max_price,
@@ -1263,102 +1227,37 @@ def find(
         keywords=keywords,
         series=series,
         publisher=publisher,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
         skip_plus=skip_plus,
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
-    (
-        max_price,
-        sort,
-        min_rating,
-        min_ratings,
-        min_hours,
-        language,
-        narrator,
-        author,
-        pages,
-        limit,
-        on_sale,
-        deep,
-        first_in_series,
-        skip_owned,
-        interactive,
-        genre,
-        exclude_genre,
-        exclude_authors,
-        exclude_narrators,
-        keywords,
-        series,
-        publisher,
-        quiet,
-        max_pph,
-        min_discount,
-        skip_plus,
-        only_plus,
-        exclude_keywords,
-    ) = (
-        ns["max_price"],
-        ns["sort"],
-        ns["min_rating"],
-        ns["min_ratings"],
-        ns["min_hours"],
-        ns["language"],
-        ns["narrator"],
-        ns["author"],
-        ns["pages"],
-        ns["limit"],
-        ns["on_sale"],
-        ns["deep"],
-        ns["first_in_series"],
-        ns["skip_owned"],
-        ns["interactive"],
-        ns["genre"],
-        ns["exclude_genre"],
-        ns["exclude_authors"],
-        ns["exclude_narrators"],
-        ns["keywords"],
-        ns["series"],
-        ns["publisher"],
-        ns["quiet"],
-        ns["max_pph"],
-        ns["min_discount"],
-        ns["skip_plus"],
-        ns["only_plus"],
-        ns["exclude_keywords"],
-    )
-    if genre and category:
+    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
+    if s.genre and category:
         raise click.UsageError("Use --genre or --category, not both.")
 
     dc = _get_client(ctx.obj["locale"])
-    server_sort = SORT_OPTIONS.get(sort, "BestSellers")
-    skip_asins: set[str] | None = None
-
-    sort_orders = DEEP_SORT_ORDERS if deep else [server_sort]
+    server_sort = SORT_OPTIONS.get(s.sort, "BestSellers")
+    sort_orders = DEEP_SORT_ORDERS if s.deep else [server_sort]
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
-            dc, genre, category, exclude_genre
+            dc, s.genre, category, s.exclude_genre
         )
 
         if dry_run:
             _print_dry_run_summary(
                 category_name=category_name,
-                query=keywords,
+                query=s.keywords,
                 sort_orders=sort_orders,
-                pages=pages,
+                pages=s.pages,
             )
             return
 
-        if skip_owned:
-            skip_asins = dc.get_library_asins()
-        skip_asins = merge_seen_asins(skip_asins, exclude_seen)
+        skip_asins = _resolve_skip_asins(dc, s.skip_owned, exclude_seen)
 
         desc_parts = []
-        if keywords:
-            desc_parts.append(f'"{keywords}"')
+        if s.keywords:
+            desc_parts.append(f'"{s.keywords}"')
         if category:
             desc_parts.append(category_name or category)
         if not desc_parts:
@@ -1367,47 +1266,31 @@ def find(
 
         all_products = _fetch_with_progress(
             dc,
-            keywords=keywords,
+            keywords=s.keywords,
             category_id=category,
             sort_orders=sort_orders,
-            pages=pages,
+            pages=s.pages,
             description=f"Scanning {desc_str}",
         )
 
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
-    find_title = f"Deals under {cur}{max_price:.2f}"
+    cur = _currency(ctx)
+    find_title = f"Deals under {cur}{s.max_price:.2f}"
     if category_name:
         find_title += f" in {category_name}"
-    if keywords:
-        find_title += f' matching "{keywords}"'
-    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
-        all_products,
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        narrator=narrator,
-        author=author,
-        exclude_authors=exclude_authors,
-        exclude_narrators=exclude_narrators,
-        language=language,
-        on_sale=on_sale,
-        skip_asins=skip_asins,
-        exclude_category_ids=exclude_category_ids,
-        first_in_series_only=first_in_series,
-        sort=sort,
-        max_pph=max_pph,
-        min_discount=min_discount,
-        series=series,
-        publisher=publisher,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        exclude_keywords=exclude_keywords,
+    if s.keywords:
+        find_title += f' matching "{s.keywords}"'
+    filtered, filter_breakdown, editions_removed, series_collapsed = (
+        _apply_settings_filters(
+            all_products,
+            s,
+            skip_asins=skip_asins,
+            exclude_category_ids=exclude_category_ids,
+        )
     )
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered,
         title=find_title,
-        limit=limit,
+        limit=s.limit,
     )
     _emit_output(
         filtered,
@@ -1416,13 +1299,13 @@ def find(
         output=output,
         json_flag=json_flag,
         quiet=quiet,
-        max_price=max_price,
+        max_price=s.max_price,
         filter_breakdown=filter_breakdown,
         editions_removed=editions_removed,
         series_collapsed=series_collapsed,
         total_before_limit=total_before_limit,
         currency=cur,
-        interactive=interactive,
+        interactive=s.interactive,
         show_url=show_url,
     )
 
@@ -1536,7 +1419,7 @@ def library(
     if limit is not None and limit > 0:
         filtered = filtered[:limit]
 
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
 
     if output:
         export_products(filtered, output)
@@ -1713,7 +1596,7 @@ def series(
     sort, pages = s.sort, s.pages
 
     dc = _get_client(ctx.obj["locale"])
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
 
     with dc:
         # 1. Fetch library
@@ -2078,7 +1961,7 @@ def last_cmd(
     products = [p for d in data if (p := deserialize_product(d)) is not None]
 
     effective_sort = sort or ""  # preserve original cache order when no --sort given
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
     filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
         products,
         max_price=max_price,
@@ -2173,8 +2056,7 @@ def open_cmd(ctx, asin, last_ref):
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
     validate_asin(asin)
-    domain = LOCALE_DOMAIN.get(ctx.obj["locale"], "www.audible.com")
-    url = f"https://{domain}/pd/{asin}"
+    url = product_url(asin, ctx.obj["locale"])
     console.print(f"[dim]Opening {url}[/dim]")
     click.launch(url)
 
@@ -2325,7 +2207,7 @@ def wishlist_remove(asins, last_refs):
 @click.pass_context
 def wishlist_list(ctx):
     """Show your wishlist."""
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
     items = load_wishlist()
     if not items:
         console.print(
@@ -2382,7 +2264,7 @@ def wishlist_sync(ctx, max_price, update):
 
     local_items = load_wishlist()
     local_by_asin = {item["asin"]: item for item in local_items}
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
 
     added = 0
     skipped = 0
@@ -2445,7 +2327,7 @@ def _watch_once(
     if sort_by:
         products = sort_local(products, sort_by)
 
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
     return display_watch_table(products, targets, cur, buy_only, show_url)
 
 
@@ -2726,7 +2608,7 @@ def history(ctx, asin, last_ref):
         )
         return
 
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
     display_price_history(entries, asin, cur)
 
 
@@ -2757,7 +2639,7 @@ def recap(ctx, days, show_new, atl):
     new items tracked, and wishlist items at target.
     """
     logger.info("recap days=%s show_new=%s atl=%s", days, show_new, atl)
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
     drops, new_items = scan_price_changes(days)
     if not drops and not new_items and not has_price_history():
         console.print(
@@ -2822,7 +2704,7 @@ def notify(ctx, webhook, webhook_format, webhook_template):
         products = dc.get_products_batch([item["asin"] for item in items])
 
     _safe_record_prices(products)
-    cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
+    cur = _currency(ctx)
     hits = []
     extras: dict[str, dict] = {}
     for p in products:

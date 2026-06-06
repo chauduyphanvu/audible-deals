@@ -11,38 +11,16 @@ from typing import Any
 
 import click
 
-from audible_deals.constants import DEFAULT_LIMIT, DEFAULT_SORT
+from audible_deals.constants import _CONFIG_SCHEMA, DEFAULT_LIMIT, DEFAULT_SORT
 
 logger = logging.getLogger(__name__)
 
 
 _CL = click.core.ParameterSource.COMMANDLINE
 
-# Keys covered by config-file defaults
-_CONFIG_KEYS: tuple[str, ...] = (
-    "max_price",
-    "sort",
-    "pages",
-    "min_rating",
-    "min_ratings",
-    "min_hours",
-    "min_discount",
-    "max_pph",
-    "limit",
-    "language",
-    "narrator",
-    "author",
-    "series",
-    "publisher",
-    "on_sale",
-    "deep",
-    "first_in_series",
-    "all_languages",
-    "skip_owned",
-    "interactive",
-    "skip_plus",
-    "only_plus",
-)
+# Keys covered by config-file defaults. locale is resolved once in the CLI
+# group callback, not per-scan.
+_CONFIG_KEYS: tuple[str, ...] = tuple(k for k in _CONFIG_SCHEMA if k != "locale")
 
 # Additional keys that only profiles supply (not in config schema)
 _PROFILE_EXTRA_KEYS: tuple[str, ...] = (

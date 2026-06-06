@@ -173,39 +173,30 @@ def value_score(p: Product) -> float:
     return (p.rating * p.hours) / p.price
 
 
+# sort name -> (key function, reverse). Missing prices always sort last.
+_SORT_KEYS = {
+    "price": (lambda p: p.price if p.price is not None else float("inf"), False),
+    "-price": (lambda p: p.price if p.price is not None else float("-inf"), True),
+    "rating": (lambda p: p.rating, True),
+    "length": (lambda p: p.length_minutes, True),
+    "date": (lambda p: p.release_date or "", True),
+    "release-date": (lambda p: p.release_date or "", True),
+    "discount": (lambda p: p.discount_pct if p.discount_pct is not None else 0, True),
+    "price-per-hour": (price_per_hour, False),
+    "value": (lambda p: (value_score(p), p.rating), True),
+    "title": (lambda p: p.title.lower(), False),
+    "author": (lambda p: p.authors_str.lower(), False),
+    "asin": (lambda p: p.asin, False),
+    "bestsellers": (lambda p: p.num_ratings, True),
+}
+
+
 def sort_local(products: list[Product], sort: str) -> list[Product]:
     """Re-sort locally when combining pages (server sort is per-page)."""
-    if sort == "price":
-        return sorted(products, key=lambda p: p.price if p.price is not None else 9999)
-    elif sort == "-price":
-        return sorted(
-            products, key=lambda p: p.price if p.price is not None else 0, reverse=True
-        )
-    elif sort == "rating":
-        return sorted(products, key=lambda p: p.rating, reverse=True)
-    elif sort == "length":
-        return sorted(products, key=lambda p: p.length_minutes, reverse=True)
-    elif sort in ("date", "release-date"):
-        return sorted(products, key=lambda p: p.release_date or "", reverse=True)
-    elif sort == "discount":
-        return sorted(
-            products,
-            key=lambda p: p.discount_pct if p.discount_pct is not None else 0,
-            reverse=True,
-        )
-    elif sort == "price-per-hour":
-        return sorted(products, key=price_per_hour)
-    elif sort == "value":
-        return sorted(products, key=lambda p: (value_score(p), p.rating), reverse=True)
-    elif sort == "title":
-        return sorted(products, key=lambda p: p.title.lower())
-    elif sort == "author":
-        return sorted(products, key=lambda p: p.authors_str.lower())
-    elif sort == "asin":
-        return sorted(products, key=lambda p: p.asin)
-    elif sort == "bestsellers":
-        return sorted(products, key=lambda p: p.num_ratings, reverse=True)
-    return products
+    if sort not in _SORT_KEYS:
+        return products
+    key, reverse = _SORT_KEYS[sort]
+    return sorted(products, key=key, reverse=reverse)
 
 
 def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:

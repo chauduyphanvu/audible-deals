@@ -20,6 +20,7 @@ from rich.progress import (
 from rich.table import Table
 
 from audible_deals.client import Product
+from audible_deals.filtering import price_per_hour
 
 console = Console()
 
@@ -277,7 +278,7 @@ def display_comparison(products: list[Product]) -> None:
     # Highlight the best value
     priced = [p for p in products if p.price is not None and p.hours > 0]
     if priced:
-        best = min(priced, key=lambda p: p.price / p.hours)
+        best = min(priced, key=price_per_hour)
         console.print(
             f"\n  Best value: [bold green]{best.title}[/bold green] "
             f"at {_pph_str(best.price, best.hours, best.currency)}/hr"

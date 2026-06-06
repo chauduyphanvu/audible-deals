@@ -53,6 +53,14 @@ LOCALE_DOMAIN: dict[str, str] = {
     "jp": "www.audible.co.jp",
     "es": "www.audible.es",
 }
+
+
+def product_url(asin: str, locale: str) -> str:
+    """Audible product page URL for an ASIN in the given marketplace."""
+    domain = LOCALE_DOMAIN.get(locale, "www.audible.com")
+    return f"https://{domain}/pd/{asin}"
+
+
 LOCALE_LANGUAGES: dict[str, str] = {
     "us": "english",
     "uk": "english",

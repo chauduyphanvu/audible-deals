@@ -20,6 +20,7 @@ if TYPE_CHECKING:
     import audible
 
 from audible_deals.constants import (
+    _atomic_write,
     AUTH_FILE,
     CATALOG_RESPONSE_GROUPS,
     CATEGORIES_CACHE_FILE,
@@ -28,8 +29,8 @@ from audible_deals.constants import (
     LOCALE_CURRENCY,
     LOCALE_DOMAIN,
     MAX_PAGE_SIZE,
+    product_url,
 )
-from audible_deals.constants import _atomic_write as _atomic_write_simple
 
 logger = logging.getLogger(__name__)
 
@@ -129,8 +130,7 @@ class Product:
 
     @property
     def url(self) -> str:
-        domain = LOCALE_DOMAIN.get(self.locale, "www.audible.com")
-        return f"https://{domain}/pd/{self.asin}"
+        return product_url(self.asin, self.locale)
 
 
 def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
@@ -323,13 +323,17 @@ class DealsClient:
                 )
             return resp
 
+    def _prepare_auth_dir(self) -> None:
+        """Create the auth directory with owner-only permissions."""
+        self.auth_file.parent.mkdir(parents=True, exist_ok=True)
+        os.chmod(self.auth_file.parent, 0o700)
+
     def login(self, username: str, password: str) -> None:
         """Interactive Audible login. Persists tokens to auth_file."""
         import audible
 
         logger.info("login (interactive) locale=%s", self.locale)
-        self.auth_file.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.auth_file.parent, 0o700)
+        self._prepare_auth_dir()
         auth = audible.Authenticator.from_login(
             username,
             password,
@@ -356,8 +360,7 @@ class DealsClient:
             self.locale,
             callback_url_file,
         )
-        self.auth_file.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.auth_file.parent, 0o700)
+        self._prepare_auth_dir()
 
         if callback_url_file:
 
@@ -398,8 +401,7 @@ class DealsClient:
     def import_auth(self, source_path: Path) -> None:
         """Import auth from an audible-cli or Libation-exported JSON file."""
         logger.info("import_auth from %s", source_path)
-        self.auth_file.parent.mkdir(parents=True, exist_ok=True)
-        os.chmod(self.auth_file.parent, 0o700)
+        self._prepare_auth_dir()
 
         raw = source_path.read_text()
         if len(raw) > 1_000_000:
@@ -435,9 +437,7 @@ class DealsClient:
                 "with_username": tokens.get("with_username", False),
                 "encryption": False,
             }
-            _atomic_write_simple(self.auth_file, json.dumps(auth_data, indent=2))
-            os.chmod(self.auth_file, 0o600)
-            logger.info("import_auth (Libation format) written to %s", self.auth_file)
+            source_format = "Libation"
         else:
             # Already in audible-cli / Mkb79Auth format — validate required keys
             for key in ("access_token", "refresh_token"):
@@ -450,11 +450,14 @@ class DealsClient:
                 )
             if "encryption" not in data:
                 data["encryption"] = False
-            _atomic_write_simple(self.auth_file, json.dumps(data, indent=2))
-            os.chmod(self.auth_file, 0o600)
-            logger.info(
-                "import_auth (audible-cli format) written to %s", self.auth_file
-            )
+            auth_data = data
+            source_format = "audible-cli"
+
+        _atomic_write(self.auth_file, json.dumps(auth_data, indent=2))
+        os.chmod(self.auth_file, 0o600)
+        logger.info(
+            "import_auth (%s format) written to %s", source_format, self.auth_file
+        )
 
     @property
     def is_authenticated(self) -> bool:
@@ -718,7 +721,7 @@ class DealsClient:
     def _save_categories_cache(self, categories: list[dict[str, str]]) -> None:
         """Persist top-level categories to disk."""
         cache_file = CATEGORIES_CACHE_FILE.with_suffix(f".{self.locale}.json")
-        _atomic_write_simple(
+        _atomic_write(
             cache_file, json.dumps({"ts": time.time(), "categories": categories})
         )
         logger.debug(
