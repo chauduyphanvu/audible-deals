@@ -18,8 +18,10 @@ from audible_deals.filtering import (
     dedupe_editions as _dedupe_editions,
     filter_products as _filter_products,
     first_in_series as _first_in_series,
-    price_per_hour as _price_per_hour,
     sort_local as _sort_local,
+)
+from audible_deals.metrics import (
+    price_per_hour as _price_per_hour,
     value_score as _value_score,
 )
 from audible_deals.serialization import (

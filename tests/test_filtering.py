@@ -8,9 +8,9 @@ from audible_deals.filtering import (
     dedupe_editions,
     filter_products,
     first_in_series,
-    price_per_hour,
     sort_local,
 )
+from audible_deals.metrics import price_per_hour
 from tests.conftest import make_product
 
 

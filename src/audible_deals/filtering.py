@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 
 from audible_deals.client import Product
+from audible_deals.metrics import price_per_hour, value_score
 from audible_deals.utils import parse_series_position
 
 logger = logging.getLogger(__name__)
@@ -203,22 +204,6 @@ def filter_products(
 
 def _price_or(p: Product, missing: float) -> float:
     return p.price if p.price is not None else missing
-
-
-def price_per_hour(p: Product) -> float:
-    """Calculate price per hour of audio. Returns inf for missing data."""
-    if p.price is None or p.hours <= 0:
-        return float("inf")
-    return p.price / p.hours
-
-
-def value_score(p: Product) -> float:
-    """Composite value score: (rating * hours) / price. Higher is better."""
-    if p.price is None or p.hours <= 0 or p.rating <= 0:
-        return 0.0
-    if p.price <= 0:
-        return float("inf")
-    return (p.rating * p.hours) / p.price
 
 
 # sort name -> (key function, reverse). Missing prices always sort last.

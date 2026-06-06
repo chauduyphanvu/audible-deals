@@ -12,7 +12,7 @@ from pathlib import Path
 import click
 
 from audible_deals.client import Product
-from audible_deals.filtering import price_per_hour
+from audible_deals.metrics import price_per_hour
 
 logger = logging.getLogger(__name__)
 
