@@ -410,6 +410,7 @@ def display_recap(
     currency: str = "$",
     show_new: bool = False,
     atl_hits: list[dict] | None = None,
+    atl_all: bool = False,
 ) -> None:
     """Display a recap of price changes, new items, and wishlist hits."""
     console.print(f"\n[bold]Recap[/bold] (last {days} days)\n")
@@ -446,7 +447,12 @@ def display_recap(
             console.print(f"    {item['asin']}  {item['title']}")
 
     if atl_hits is not None:
-        console.print("\n  [bold gold1]Wishlist items at all-time low:[/bold gold1]")
+        atl_header = (
+            "Tracked items at all-time low:"
+            if atl_all
+            else "Wishlist items at all-time low:"
+        )
+        console.print(f"\n  [bold gold1]{atl_header}[/bold gold1]")
         if atl_hits:
             for item in atl_hits:
                 target_str = (

@@ -534,3 +534,130 @@ class TestPriceDropFilter:
         )
         assert len(filtered) == 1
         assert "price drop" not in breakdown
+
+
+# ===================================================================
+# filter_products — require_history
+# ===================================================================
+
+
+class TestRequireHistory:
+    def test_require_history_drops_missing_from_hist_percentile(self):
+        products = [
+            make_product(asin="RH1", price=5.0),
+            make_product(asin="RH2", price=5.0),
+        ]
+        hist_percentile = {"RH1": 30}
+        filtered, breakdown = filter_products(
+            products,
+            max_hist_percentile=50,
+            hist_percentile=hist_percentile,
+            require_history=True,
+        )
+        asins = [p.asin for p in filtered]
+        assert "RH1" in asins
+        assert "RH2" not in asins
+
+    def test_no_require_history_passes_through_missing(self):
+        products = [make_product(asin="RH3", price=5.0)]
+        filtered, breakdown = filter_products(
+            products,
+            max_hist_percentile=50,
+            hist_percentile={},
+            require_history=False,
+        )
+        assert len(filtered) == 1
+
+    def test_require_history_drops_missing_from_price_drops(self):
+        products = [
+            make_product(asin="RH4", price=5.0),
+            make_product(asin="RH5", price=5.0),
+        ]
+        price_drops = {"RH4": 50.0}
+        filtered, breakdown = filter_products(
+            products,
+            min_price_drop=20.0,
+            price_drops=price_drops,
+            require_history=True,
+        )
+        asins = [p.asin for p in filtered]
+        assert "RH4" in asins
+        assert "RH5" not in asins
+
+    def test_no_require_history_passes_through_missing_price_drop(self):
+        products = [make_product(asin="RH6", price=5.0)]
+        filtered, breakdown = filter_products(
+            products,
+            min_price_drop=20.0,
+            price_drops={},
+            require_history=False,
+        )
+        assert len(filtered) == 1
+
+
+# ===================================================================
+# filter_products — released_after / released_before
+# ===================================================================
+
+
+class TestReleasedDateFilters:
+    def test_released_after_keeps_on_or_after(self):
+        products = [
+            make_product(asin="RA1", release_date="2024-06-01"),
+            make_product(asin="RA2", release_date="2024-06-01"),
+            make_product(asin="RA3", release_date="2023-01-01"),
+        ]
+        filtered, breakdown = filter_products(products, released_after="2024-06-01")
+        asins = [p.asin for p in filtered]
+        assert "RA1" in asins
+        assert "RA2" in asins
+        assert "RA3" not in asins
+        assert breakdown.get("released after") == 1
+
+    def test_released_before_keeps_on_or_before(self):
+        products = [
+            make_product(asin="RB1", release_date="2022-01-01"),
+            make_product(asin="RB2", release_date="2025-12-31"),
+        ]
+        filtered, breakdown = filter_products(products, released_before="2023-01-01")
+        asins = [p.asin for p in filtered]
+        assert "RB1" in asins
+        assert "RB2" not in asins
+        assert breakdown.get("released before") == 1
+
+    def test_empty_release_date_dropped_when_bound_set(self):
+        products = [
+            make_product(asin="RD1", release_date=""),
+            make_product(asin="RD2", release_date="2024-01-01"),
+        ]
+        filtered, _ = filter_products(products, released_after="2020-01-01")
+        asins = [p.asin for p in filtered]
+        assert "RD1" not in asins
+        assert "RD2" in asins
+
+    def test_no_bounds_no_filtering(self):
+        products = [
+            make_product(asin="RN1", release_date="2024-01-01"),
+            make_product(asin="RN2", release_date=""),
+        ]
+        filtered, breakdown = filter_products(products)
+        assert len(filtered) == 2
+        assert "released after" not in breakdown
+        assert "released before" not in breakdown
+
+    def test_longer_iso_timestamp_uses_first_10_chars(self):
+        products = [
+            make_product(asin="RT1", release_date="2024-03-15T00:00:00Z"),
+        ]
+        filtered, _ = filter_products(products, released_after="2024-03-15")
+        assert len(filtered) == 1
+
+    def test_released_after_inclusive(self):
+        products = [make_product(asin="RI1", release_date="2024-01-01")]
+        filtered, _ = filter_products(products, released_after="2024-01-01")
+        assert len(filtered) == 1
+
+    def test_released_before_inclusive(self):
+        products = [make_product(asin="RI2", release_date="2024-01-01")]
+        filtered, _ = filter_products(products, released_before="2024-01-01")
+        assert len(filtered) == 1

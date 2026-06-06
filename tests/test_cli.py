@@ -6324,6 +6324,38 @@ class TestRecapJson:
         assert payload["drops"] == []
         assert payload["atl_hits"] == []
 
+    def test_recap_atl_all_json_includes_atl_hits(self, tmp_config):
+        """recap --atl-all --json surfaces ATL hits across all tracked ASINs."""
+        import datetime
+
+        today = datetime.date.today().isoformat()
+        old_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        # Write two history entries so the ATL condition can be evaluated
+        self._write_history(
+            tmp_config,
+            "RALL01",
+            [
+                {"date": old_date, "price": 9.99, "title": "All Book"},
+                {"date": today, "price": 5.99, "title": "All Book"},
+            ],
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--json", "--atl-all"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert "atl_hits" in payload
+        asins = [h["asin"] for h in payload["atl_hits"]]
+        assert "RALL01" in asins
+
+    def test_recap_atl_all_no_history_includes_empty_atl_hits(self, tmp_config):
+        """recap --atl-all --json with no history still includes atl_hits key."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--json", "--atl-all"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert "atl_hits" in payload
+        assert payload["atl_hits"] == []
+
 
 class TestRecapWebhook:
     def _write_history(self, tmp_config, asin, entries):
@@ -7309,6 +7341,54 @@ class TestNotifyAuthorHits:
         assert len(history) == 1
         assert history[0]["price"] == 3.99
 
+    def test_author_hit_json_contains_author_field(self, tmp_config, mock_client):
+        """Author-watch hit dicts must include an 'author' key with the watch name."""
+        import audible_deals.cli as cli_mod
+
+        self._save_author_wishlist(cli_mod, "Brandon Sanderson", 5.0)
+        author_product = make_product(
+            asin="B00AUTH010",
+            title="The Final Empire",
+            authors=["Brandon Sanderson"],
+            price=3.99,
+            length_minutes=600,
+        )
+        mock_client.get_products_batch.return_value = []
+        mock_client.search_pages.return_value = iter([([author_product], 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["count"] == 1
+        deal = payload["deals"][0]
+        assert deal["author"] == "Brandon Sanderson"
+
+    def test_asin_hit_json_has_no_author_field(self, tmp_config, mock_client):
+        """ASIN-watch hit dicts must not include an 'author' key."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_wishlist(
+            [
+                {
+                    "asin": "B00AUTH011",
+                    "title": "Elantris",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                }
+            ]
+        )
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="B00AUTH011", price=3.99)
+        ]
+        mock_client.search_pages.return_value = iter([])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["count"] == 1
+        deal = payload["deals"][0]
+        assert "author" not in deal
+
 
 class TestNotifyAuthorCooldown:
     def _save_author_wishlist(self, cli_mod, author, max_price):
@@ -7452,3 +7532,662 @@ class TestNotifyAuthorCooldown:
         # Suppressed author ASIN state must survive
         state = json.loads(state_mod.NOTIFY_STATE_FILE.read_text())
         assert "B00AUTH020" in state, "Suppressed author ASIN was incorrectly pruned"
+
+
+# ===================================================================
+# Feature 2 — --require-history CLI validation
+# ===================================================================
+
+
+class TestRequireHistoryCLI:
+    def test_require_history_without_hist_filter_raises_usage_error_find(
+        self, tmp_config
+    ):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--require-history"])
+        assert result.exit_code == 2
+        assert "--require-history requires" in result.output
+
+    def test_require_history_without_hist_filter_raises_usage_error_search(
+        self, tmp_config
+    ):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "test", "--require-history"])
+        assert result.exit_code == 2
+        assert "--require-history requires" in result.output
+
+    def test_require_history_with_hist_below_accepted(self, mock_client, tmp_config):
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--require-history",
+                "--hist-below",
+                "50",
+                "--pages",
+                "1",
+                "-q",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_require_history_with_min_price_drop_accepted(
+        self, mock_client, tmp_config
+    ):
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--require-history",
+                "--min-price-drop",
+                "10",
+                "--pages",
+                "1",
+                "-q",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+
+# ===================================================================
+# Feature 3 — --released-after / --released-before CLI validation
+# ===================================================================
+
+
+class TestReleasedDateCLI:
+    def test_invalid_released_after_raises_usage_error(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--released-after", "not-a-date"])
+        assert result.exit_code == 2
+        assert "invalid date" in result.output
+
+    def test_invalid_released_before_raises_usage_error(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--released-before", "2024/01/01"])
+        assert result.exit_code == 2
+        assert "invalid date" in result.output
+
+    def test_valid_released_after_accepted(self, mock_client, tmp_config):
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["find", "--released-after", "2024-01-01", "--pages", "1", "-q"],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_valid_released_before_accepted(self, mock_client, tmp_config):
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["find", "--released-before", "2024-12-31", "--pages", "1", "-q"],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_invalid_released_after_search_raises_usage_error(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", "test", "--released-after", "bad"])
+        assert result.exit_code == 2
+        assert "invalid date" in result.output
+
+
+# ===================================================================
+# Feature 1 & 2 — bulk wishlist add and '?' help in _interactive_browse
+# ===================================================================
+
+
+class TestInteractiveBrowse:
+    """Drive _interactive_browse via a thin Click wrapper."""
+
+    def _run(self, products, user_input, tmp_config):
+        """Invoke _interactive_browse with simulated user input."""
+        import audible_deals.cli as cli_mod
+
+        @click.command()
+        def _cmd():
+            cli_mod._interactive_browse(products)
+
+        runner = CliRunner()
+        return runner.invoke(_cmd, input=user_input, catch_exceptions=False)
+
+    def test_bulk_range_adds_two(self, tmp_config):
+        """'w 1-2' adds both products with a single price prompt."""
+        import audible_deals.state as state_mod
+
+        products = [
+            make_product(asin="BR1", title="Book One"),
+            make_product(asin="BR2", title="Book Two"),
+            make_product(asin="BR3", title="Book Three"),
+        ]
+        result = self._run(products, "w 1-2\n3.99\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        items = state_mod.load_wishlist()
+        asins = [i["asin"] for i in items]
+        assert "BR1" in asins
+        assert "BR2" in asins
+        assert "BR3" not in asins
+        assert items[0]["max_price"] == 3.99
+        assert items[1]["max_price"] == 3.99
+
+    def test_bulk_list_adds_two(self, tmp_config):
+        """'w 1,3' adds first and third products."""
+        import audible_deals.state as state_mod
+
+        products = [
+            make_product(asin="BL1", title="Book One"),
+            make_product(asin="BL2", title="Book Two"),
+            make_product(asin="BL3", title="Book Three"),
+        ]
+        result = self._run(products, "w 1,3\n\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        items = state_mod.load_wishlist()
+        asins = [i["asin"] for i in items]
+        assert "BL1" in asins
+        assert "BL3" in asins
+        assert "BL2" not in asins
+
+    def test_bulk_dedup_same_index_twice(self, tmp_config):
+        """'w 1,1' adds the item only once."""
+        import audible_deals.state as state_mod
+
+        products = [make_product(asin="BD1", title="Dedup Book")]
+        result = self._run(products, "w 1,1\n\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        items = state_mod.load_wishlist()
+        assert len([i for i in items if i.get("asin") == "BD1"]) == 1
+
+    def test_out_of_range_rejected_without_crash(self, tmp_config):
+        """An out-of-range index in a range prints the bounds message and continues."""
+        import audible_deals.state as state_mod
+
+        products = [make_product(asin="OR1", title="Only Book")]
+        result = self._run(products, "w 5\n\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "1-1" in result.output
+        assert state_mod.load_wishlist() == []
+
+    def test_single_index_still_works(self, tmp_config):
+        """'w 1' still adds a single item as before."""
+        import audible_deals.state as state_mod
+
+        products = [make_product(asin="SI1", title="Single Book")]
+        result = self._run(products, "w 1\n\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        items = state_mod.load_wishlist()
+        assert any(i.get("asin") == "SI1" for i in items)
+
+    def test_already_on_wishlist_shows_note(self, tmp_config):
+        """Skips with a dim note if ASIN is already on the wishlist."""
+        import audible_deals.state as state_mod
+
+        products = [make_product(asin="AW1", title="Already Book")]
+        state_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.WISHLIST_FILE.write_text(
+            json.dumps(
+                [
+                    {
+                        "asin": "AW1",
+                        "title": "Already Book",
+                        "max_price": None,
+                        "added": "",
+                    }
+                ]
+            )
+        )
+        # Already-wishlisted item: note is shown with no prompt and no write.
+        result = self._run(products, "w 1\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "already on wishlist" in result.output
+
+    def test_help_action_prints_hint(self, tmp_config):
+        """'?' prints the hint line and result count."""
+        products = [make_product(asin="HP1"), make_product(asin="HP2")]
+        result = self._run(products, "?\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "1-2" in result.output
+
+    def test_help_keyword_prints_hint(self, tmp_config):
+        """'help' also prints the hint."""
+        products = [make_product(asin="HK1")]
+        result = self._run(products, "help\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "w #" in result.output
+
+    def test_invalid_input_mentions_question_mark(self, tmp_config):
+        """The invalid-input message mentions '?'."""
+        products = [make_product(asin="IM1")]
+        result = self._run(products, "xyz\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "?" in result.output
+
+
+# ===================================================================
+# Feature 3 — deals wishlist purge --owned
+# ===================================================================
+
+
+class TestWishlistPurge:
+    def test_purge_removes_owned_keeps_unowned(self, mock_client, tmp_config):
+        """Owned ASINs are removed; unowned and author watches survive."""
+        import audible_deals.state as state_mod
+
+        mock_client.get_library_asins.return_value = {"OWN1", "OWN2"}
+        state_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.WISHLIST_FILE.write_text(
+            json.dumps(
+                [
+                    {
+                        "asin": "OWN1",
+                        "title": "Owned One",
+                        "max_price": None,
+                        "added": "",
+                    },
+                    {
+                        "asin": "OWN2",
+                        "title": "Owned Two",
+                        "max_price": None,
+                        "added": "",
+                    },
+                    {
+                        "asin": "KEEP",
+                        "title": "Unowned",
+                        "max_price": None,
+                        "added": "",
+                    },
+                    {
+                        "type": "author",
+                        "author": "Sanderson",
+                        "max_price": 5.0,
+                        "added": "",
+                    },
+                ]
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "purge", "--owned", "--yes"])
+        assert result.exit_code == 0, result.output
+        remaining = state_mod.load_wishlist()
+        asins = [i.get("asin") for i in remaining if i.get("asin")]
+        assert "OWN1" not in asins
+        assert "OWN2" not in asins
+        assert "KEEP" in asins
+        authors = [i for i in remaining if i.get("type") == "author"]
+        assert len(authors) == 1
+        assert "2 removed" in result.output
+        assert "remaining" in result.output
+
+    def test_purge_dry_run_does_not_modify(self, mock_client, tmp_config):
+        """--dry-run lists candidates but does not write."""
+        import audible_deals.state as state_mod
+
+        mock_client.get_library_asins.return_value = {"DRY1"}
+        state_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        original = [
+            {"asin": "DRY1", "title": "Dry Book", "max_price": None, "added": ""},
+        ]
+        state_mod.WISHLIST_FILE.write_text(json.dumps(original))
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "purge", "--owned", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "Dry Book" in result.output
+        assert state_mod.load_wishlist() == original
+
+    def test_purge_missing_owned_raises_usage_error(self, mock_client, tmp_config):
+        """Omitting --owned raises UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "purge"])
+        assert result.exit_code == 2
+        assert "--owned" in result.output
+
+    def test_purge_nothing_to_purge(self, mock_client, tmp_config):
+        """Prints a dim 'Nothing to purge' note when no owned items exist."""
+        import audible_deals.state as state_mod
+
+        mock_client.get_library_asins.return_value = {"NOT_ON_LIST"}
+        state_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.WISHLIST_FILE.write_text(
+            json.dumps(
+                [{"asin": "KEEP", "title": "Unowned", "max_price": None, "added": ""}]
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "purge", "--owned", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert "Nothing to purge" in result.output
+
+    def test_purge_author_watches_never_removed(self, mock_client, tmp_config):
+        """Author-watch entries are never removed even if their author matches nothing."""
+        import audible_deals.state as state_mod
+
+        mock_client.get_library_asins.return_value = set()
+        state_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.WISHLIST_FILE.write_text(
+            json.dumps(
+                [
+                    {
+                        "type": "author",
+                        "author": "Tolkien",
+                        "max_price": 3.0,
+                        "added": "",
+                    },
+                ]
+            )
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "purge", "--owned", "--yes"])
+        assert result.exit_code == 0, result.output
+        assert "Nothing to purge" in result.output
+        remaining = state_mod.load_wishlist()
+        assert len(remaining) == 1
+
+
+# ===================================================================
+# Finding 1 — falsy-zero --hist-below guard
+# ===================================================================
+
+
+class TestHistBelowZero:
+    def test_hist_below_zero_accepted_with_require_history(
+        self, mock_client, tmp_config
+    ):
+        """--hist-below 0 is valid and must not trigger the UsageError."""
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["find", "--require-history", "--hist-below", "0", "--pages", "1", "-q"],
+        )
+        assert result.exit_code == 0, result.output
+
+    def test_hist_below_zero_search_accepted(self, mock_client, tmp_config):
+        """--hist-below 0 on search with --require-history must not raise UsageError."""
+        mock_client.search_pages.return_value = iter([([], 1, 0)])
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "search",
+                "test",
+                "--require-history",
+                "--hist-below",
+                "0",
+                "--pages",
+                "1",
+                "-q",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+
+
+# ===================================================================
+# Finding 2 — compact ISO date normalization
+# ===================================================================
+
+
+class TestReleasedDateNormalization:
+    def test_compact_released_after_is_normalized(self, mock_client, tmp_config):
+        """Compact ISO form '20240101' parses and normalizes to '2024-01-01'."""
+        from audible_deals.cli import _validate_history_filter_options
+
+        after, before = _validate_history_filter_options(
+            False, None, 0.0, "20240101", ""
+        )
+        assert after == "2024-01-01"
+        assert before == ""
+
+    def test_compact_released_before_is_normalized(self, mock_client, tmp_config):
+        """Compact ISO form '20241231' normalizes to '2024-12-31'."""
+        from audible_deals.cli import _validate_history_filter_options
+
+        after, before = _validate_history_filter_options(
+            False, None, 0.0, "", "20241231"
+        )
+        assert after == ""
+        assert before == "2024-12-31"
+
+    def test_dashed_dates_pass_through_unchanged(self, mock_client, tmp_config):
+        """Standard dashed dates are returned as-is."""
+        from audible_deals.cli import _validate_history_filter_options
+
+        after, before = _validate_history_filter_options(
+            False, None, 0.0, "2024-06-01", "2024-12-31"
+        )
+        assert after == "2024-06-01"
+        assert before == "2024-12-31"
+
+
+# ===================================================================
+# Finding 4 — browse 'w': no prompt/save when all items already wishlisted
+# ===================================================================
+
+
+class TestInteractiveBrowseWishlistCheck:
+    def _run(self, products, user_input, tmp_config):
+        import audible_deals.cli as cli_mod
+
+        @click.command()
+        def _cmd():
+            cli_mod._interactive_browse(products)
+
+        runner = CliRunner()
+        return runner.invoke(_cmd, input=user_input, catch_exceptions=False)
+
+    def test_already_wishlisted_no_file_write(self, tmp_config):
+        """When all selected items are already on wishlist, file is not rewritten."""
+        import audible_deals.state as state_mod
+
+        products = [make_product(asin="NW1", title="Already There")]
+        state_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        original = [
+            {"asin": "NW1", "title": "Already There", "max_price": None, "added": ""}
+        ]
+        state_mod.WISHLIST_FILE.write_text(json.dumps(original))
+        mtime_before = state_mod.WISHLIST_FILE.stat().st_mtime
+
+        result = self._run(products, "w 1\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "already on wishlist" in result.output
+        assert state_mod.WISHLIST_FILE.stat().st_mtime == mtime_before
+
+    def test_mixed_some_already_wishlisted_adds_only_new(self, tmp_config):
+        """Partial overlap: already-on-wishlist items get a note; new items are added."""
+        import audible_deals.state as state_mod
+
+        products = [
+            make_product(asin="MX1", title="Already"),
+            make_product(asin="MX2", title="New One"),
+        ]
+        state_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.WISHLIST_FILE.write_text(
+            json.dumps(
+                [{"asin": "MX1", "title": "Already", "max_price": None, "added": ""}]
+            )
+        )
+        result = self._run(products, "w 1,2\n\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "already on wishlist" in result.output
+        items = state_mod.load_wishlist()
+        asins = [i.get("asin") for i in items]
+        assert "MX1" in asins
+        assert "MX2" in asins
+
+
+# ===================================================================
+# Finding 5 — _expand_ref_string label parameter
+# ===================================================================
+
+
+class TestExpandRefStringLabel:
+    def test_default_label_in_error(self):
+        """Default label is '--last' in error messages."""
+        from audible_deals.state import _expand_ref_string
+
+        with pytest.raises(click.ClickException, match="--last"):
+            _expand_ref_string("abc")
+
+    def test_custom_label_in_error(self):
+        """Custom label replaces '--last' in error messages."""
+        from audible_deals.state import _expand_ref_string
+
+        with pytest.raises(click.ClickException, match="selection"):
+            _expand_ref_string("abc", label="selection")
+
+    def test_custom_label_range_error(self):
+        """Custom label appears in range-specific error messages."""
+        from audible_deals.state import _expand_ref_string
+
+        with pytest.raises(click.ClickException, match="selection"):
+            _expand_ref_string("5-3", label="selection")
+
+    def test_custom_label_empty_part_error(self):
+        """Custom label appears in empty-part error messages."""
+        from audible_deals.state import _expand_ref_string
+
+        with pytest.raises(click.ClickException, match="selection"):
+            _expand_ref_string(",1", label="selection")
+
+
+# ===================================================================
+# Finding 6 — format_recap_payload renders ATL hits in non-generic formats
+# ===================================================================
+
+
+class TestFormatRecapPayloadAtlHits:
+    def _payload_with_atl(self):
+        return {
+            "days": 7,
+            "drops": [
+                {
+                    "asin": "D001",
+                    "title": "Drop Book",
+                    "old_price": 10.0,
+                    "new_price": 5.0,
+                    "drop_pct": 50,
+                }
+            ],
+            "new_count": 0,
+            "wishlist_hits": [],
+            "atl_hits": [
+                {"asin": "A001", "title": "ATL Book", "price": 2.99, "target": None}
+            ],
+        }
+
+    def _payload_atl_only(self):
+        return {
+            "days": 7,
+            "drops": [],
+            "new_count": 0,
+            "wishlist_hits": [],
+            "atl_hits": [
+                {
+                    "asin": "A002",
+                    "title": "ATL Only Book",
+                    "price": 1.99,
+                    "target": None,
+                }
+            ],
+        }
+
+    def test_slack_includes_atl_hits(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, _ = format_recap_payload(self._payload_with_atl(), "slack")
+        text = json.loads(body)["text"]
+        assert "ATL Book" in text
+        assert "2.99" in text
+
+    def test_discord_includes_atl_hits(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, _ = format_recap_payload(self._payload_with_atl(), "discord")
+        content = json.loads(body)["content"]
+        assert "ATL Book" in content
+        assert "2.99" in content
+
+    def test_teams_includes_atl_hits(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, _ = format_recap_payload(self._payload_with_atl(), "teams")
+        data = json.loads(body)
+        assert "ATL Book" in str(data)
+
+    def test_ntfy_includes_atl_hits(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, _ = format_recap_payload(self._payload_with_atl(), "ntfy")
+        text = body.decode("utf-8")
+        assert "ATL Book" in text
+        assert "2.99" in text
+
+    def test_no_atl_hits_key_renders_cleanly(self):
+        """Payload without atl_hits key does not crash and renders normally."""
+        from audible_deals.utils import format_recap_payload
+
+        payload = {
+            "days": 7,
+            "drops": [
+                {
+                    "asin": "D1",
+                    "title": "Book",
+                    "old_price": 10.0,
+                    "new_price": 5.0,
+                    "drop_pct": 50,
+                }
+            ],
+            "new_count": 0,
+            "wishlist_hits": [],
+        }
+        body, _ = format_recap_payload(payload, "slack")
+        text = json.loads(body)["text"]
+        assert "Book" in text
+
+    def test_empty_atl_hits_no_section(self):
+        """Empty atl_hits list does not add an ATL section."""
+        from audible_deals.utils import format_recap_payload
+
+        payload = {**self._payload_with_atl(), "atl_hits": []}
+        body, _ = format_recap_payload(payload, "slack")
+        text = json.loads(body)["text"]
+        assert "all-time low" not in text.lower()
+
+
+# ===================================================================
+# Finding 3 — display_recap atl_all label
+# ===================================================================
+
+
+class TestDisplayRecapAtlAllLabel:
+    def _capture_recap(self, **kwargs):
+        from io import StringIO
+        from rich.console import Console
+        from audible_deals.display import display_recap
+        import audible_deals.display as display_mod
+
+        buf = StringIO()
+        old_console = display_mod.console
+        display_mod.console = Console(file=buf, highlight=False, markup=False)
+        try:
+            display_recap([], [], [], 7, **kwargs)
+        finally:
+            display_mod.console = old_console
+        return buf.getvalue()
+
+    def test_atl_all_false_uses_wishlist_label(self):
+        """atl_all=False (default) uses 'Wishlist items at all-time low:'."""
+        output = self._capture_recap(atl_hits=[], atl_all=False)
+        assert "Wishlist items at all-time low" in output
+
+    def test_atl_all_true_uses_tracked_label(self):
+        """atl_all=True uses 'Tracked items at all-time low:'."""
+        output = self._capture_recap(atl_hits=[], atl_all=True)
+        assert "Tracked items at all-time low" in output
+
+    def test_atl_none_shows_no_atl_section(self):
+        """atl_hits=None means no ATL section at all."""
+        output = self._capture_recap(atl_hits=None)
+        assert "all-time low" not in output.lower()

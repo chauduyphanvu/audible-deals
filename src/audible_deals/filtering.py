@@ -42,6 +42,9 @@ def filter_products(
     hist_percentile: dict[str, int] | None = None,
     min_price_drop: float = 0.0,
     price_drops: dict[str, float] | None = None,
+    require_history: bool = False,
+    released_after: str = "",
+    released_before: str = "",
 ) -> tuple[list[Product], dict[str, int]]:
     """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
@@ -161,8 +164,9 @@ def filter_products(
         _apply(
             "hist percentile",
             lambda p: (
-                p.asin not in hist_percentile
-                or hist_percentile[p.asin] <= max_hist_percentile
+                hist_percentile[p.asin] <= max_hist_percentile
+                if p.asin in hist_percentile
+                else not require_history
             ),
         )
 
@@ -170,8 +174,22 @@ def filter_products(
         _apply(
             "price drop",
             lambda p: (
-                p.asin not in price_drops or price_drops[p.asin] >= min_price_drop
+                price_drops[p.asin] >= min_price_drop
+                if p.asin in price_drops
+                else not require_history
             ),
+        )
+
+    if released_after:
+        _apply(
+            "released after",
+            lambda p: bool(p.release_date) and p.release_date[:10] >= released_after,
+        )
+
+    if released_before:
+        _apply(
+            "released before",
+            lambda p: bool(p.release_date) and p.release_date[:10] <= released_before,
         )
 
     logger.debug(

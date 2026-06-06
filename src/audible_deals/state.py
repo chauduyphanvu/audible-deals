@@ -236,7 +236,7 @@ def load_last_results() -> tuple[str, list[dict]]:
     raise click.ClickException("Last results cache is corrupt.")
 
 
-def _expand_ref_string(ref: str | int) -> list[int]:
+def _expand_ref_string(ref: str | int, label: str = "--last") -> list[int]:
     """Expand a single ref (int or string like '1-3,5') into a flat list of ints."""
     if isinstance(ref, int):
         return [ref]
@@ -244,22 +244,22 @@ def _expand_ref_string(ref: str | int) -> list[int]:
     for part in str(ref).split(","):
         part = part.strip()
         if not part:
-            raise click.ClickException(f"Invalid --last value: empty part in {ref!r}.")
+            raise click.ClickException(f"Invalid {label} value: empty part in {ref!r}.")
         if "-" in part:
             halves = part.split("-", 1)
             try:
                 start, end = int(halves[0]), int(halves[1])
             except ValueError:
                 raise click.ClickException(
-                    f"Invalid --last range {part!r}: must be two integers separated by '-'."
+                    f"Invalid {label} range {part!r}: must be two integers separated by '-'."
                 )
             if start > end:
                 raise click.ClickException(
-                    f"Invalid --last range {part!r}: start must not exceed end."
+                    f"Invalid {label} range {part!r}: start must not exceed end."
                 )
             if end - start >= 1000:
                 raise click.ClickException(
-                    f"Invalid --last range {part!r}: width must be under 1000."
+                    f"Invalid {label} range {part!r}: width must be under 1000."
                 )
             expanded.extend(range(start, end + 1))
         else:
@@ -267,7 +267,7 @@ def _expand_ref_string(ref: str | int) -> list[int]:
                 expanded.append(int(part))
             except ValueError:
                 raise click.ClickException(
-                    f"Invalid --last value {part!r}: must be an integer or range like '1-3'."
+                    f"Invalid {label} value {part!r}: must be an integer or range like '1-3'."
                 )
     return expanded
 
@@ -421,6 +421,35 @@ def _numeric_prices(entries: list[dict]) -> list[float]:
     ]
 
 
+def _latest_title(entries: list[dict]) -> str:
+    """Return the title from the most recent entry that has one."""
+    for e in reversed(entries):
+        if e.get("title"):
+            return e["title"]
+    return ""
+
+
+def _atl_latest(entries: list[dict]) -> tuple[float, float] | None:
+    """Return (latest, prev_min) when the latest price is at the all-time low.
+
+    Requires ≥2 numeric entries and a numeric latest price; returns None
+    otherwise, or when the latest price is above the previous minimum.
+    """
+    if not entries:
+        return None
+    last_price = entries[-1].get("price")
+    if not isinstance(last_price, (int, float)):
+        return None
+    prices = _numeric_prices(entries)
+    if len(prices) < 2:
+        return None
+    latest = float(last_price)
+    prev_min = min(prices[:-1])
+    if latest > prev_min:
+        return None
+    return latest, prev_min
+
+
 def price_history_context(products: list[Product]) -> tuple[set[str], dict[str, int]]:
     """Compute (atl_asins, hist_context) for priced products from their histories.
 
@@ -495,36 +524,24 @@ def price_drop_pcts(
 
 def scan_price_changes(
     days: int,
+    histories: dict[str, list[dict]] | None = None,
 ) -> tuple[list[tuple[str, str, float, float]], list[tuple[str, str, float]]]:
     """Scan history files for price drops and newly tracked items.
 
+    Accepts preloaded histories to avoid re-reading the directory.
     Returns (drops, new_items) where:
       drops = [(asin, title, old_price, new_price), ...]
       new_items = [(asin, title, current_price), ...]
     """
-    if not HISTORY_DIR.exists():
-        return [], []
+    if histories is None:
+        histories = load_all_price_histories()
 
     cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
     drops: list[tuple[str, str, float, float]] = []
     new_items: list[tuple[str, str, float]] = []
 
-    for hist_file in HISTORY_DIR.glob("*.json"):
-        asin = hist_file.stem
-        try:
-            entries = json_mod.loads(hist_file.read_text())
-        except json_mod.JSONDecodeError:
-            logger.warning("history at %s is corrupt, skipping in recap", hist_file)
-            continue
-        if not entries:
-            continue
-
-        title = ""
-        for e in reversed(entries):
-            if e.get("title"):
-                title = e["title"]
-                break
-
+    for asin, entries in histories.items():
+        title = _latest_title(entries)
         recent = [e for e in entries if e["date"] >= cutoff]
         if not recent:
             continue
@@ -664,30 +681,55 @@ def find_wishlist_atl_hits() -> list[dict]:
     """
     hits: list[dict] = []
     for item, entries in _wishlist_with_history():
-        if not entries:
+        atl = _atl_latest(entries)
+        if atl is None:
             continue
-        last_price = entries[-1].get("price")
-        if not isinstance(last_price, (int, float)):
-            continue
-        prices = _numeric_prices(entries)
-        if len(prices) < 2:
-            continue
-        latest = float(last_price)
-        min_price = min(prices)
-        if latest > min_price:
-            continue
-        title = item.get("title", "")
-        if not title:
-            for e in reversed(entries):
-                if e.get("title"):
-                    title = e["title"]
-                    break
+        latest, _ = atl
         hits.append(
             {
                 "asin": item["asin"],
-                "title": title,
+                "title": item.get("title", "") or _latest_title(entries),
                 "price": latest,
                 "target": item.get("max_price"),
             }
         )
     return hits
+
+
+def find_all_atl_hits(
+    limit: int = 20, histories: dict[str, list[dict]] | None = None
+) -> list[dict]:
+    """Find all tracked ASINs whose latest price is at their all-time low.
+
+    Requires ≥2 numeric history entries and the latest entry to have a numeric
+    price. Target is filled from the wishlist when the ASIN is present, else None.
+    Accepts preloaded histories to avoid re-reading the directory. Returns up to
+    *limit* dicts sorted by drop magnitude (how far below the previous minimum)
+    descending.
+    """
+    wishlist = load_wishlist()
+    wishlist_by_asin = {item["asin"]: item for item in wishlist if "asin" in item}
+    if histories is None:
+        histories = load_all_price_histories()
+
+    scored: list[tuple[float, dict]] = []
+    for asin, entries in histories.items():
+        atl = _atl_latest(entries)
+        if atl is None:
+            continue
+        latest, prev_min = atl
+        wl_item = wishlist_by_asin.get(asin)
+        scored.append(
+            (
+                prev_min - latest,
+                {
+                    "asin": asin,
+                    "title": _latest_title(entries),
+                    "price": latest,
+                    "target": wl_item.get("max_price") if wl_item else None,
+                },
+            )
+        )
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    return [hit for _, hit in scored[:limit]]

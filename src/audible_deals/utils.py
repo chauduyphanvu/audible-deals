@@ -190,7 +190,17 @@ def format_recap_payload(
     days = payload.get("days", 0)
     drops = payload.get("drops", [])
     wishlist_hits = payload.get("wishlist_hits", [])
+    atl_hits = payload.get("atl_hits") or []
     title_str = f"Audible Recap (last {days} days)"
+
+    def _atl_section(sep: str = "\n") -> str:
+        if not atl_hits:
+            return ""
+        atl_lines = sep.join(
+            f"• {h['title']} — {currency}{h['price']:.2f}" for h in atl_hits[:10]
+        )
+        return f"{sep}At all-time low:{sep}{atl_lines}"
+
     if fmt == "generic":
         body_str = json.dumps(payload, indent=2)
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -200,7 +210,9 @@ def format_recap_payload(
             for d in drops[:10]
         )
         footer = f"Wishlist at target: {len(wishlist_hits)}"
-        body_str = json.dumps({"text": f"*{title_str}*\n{lines}\n{footer}"})
+        body_str = json.dumps(
+            {"text": f"*{title_str}*\n{lines}\n{footer}{_atl_section()}"}
+        )
         headers = {"Content-Type": "application/json"}
     elif fmt == "discord":
         lines = "\n".join(
@@ -208,7 +220,9 @@ def format_recap_payload(
             for d in drops[:10]
         )
         footer = f"Wishlist at target: {len(wishlist_hits)}"
-        body_str = json.dumps({"content": f"**{title_str}**\n{lines}\n{footer}"})
+        body_str = json.dumps(
+            {"content": f"**{title_str}**\n{lines}\n{footer}{_atl_section()}"}
+        )
         headers = {"Content-Type": "application/json"}
     elif fmt == "teams":
         text = "  \n".join(
@@ -216,6 +230,7 @@ def format_recap_payload(
             for d in drops[:10]
         )
         footer = f"Wishlist at target: {len(wishlist_hits)}"
+        atl_section = _atl_section("  \n")
         body_str = json.dumps(
             {
                 "@type": "MessageCard",
@@ -223,7 +238,7 @@ def format_recap_payload(
                 "summary": title_str,
                 "themeColor": "0078D7",
                 "title": title_str,
-                "sections": [{"text": f"{text}  \n{footer}"}],
+                "sections": [{"text": f"{text}  \n{footer}{atl_section}"}],
             }
         )
         headers = {"Content-Type": "application/json"}
@@ -233,7 +248,7 @@ def format_recap_payload(
             for d in drops[:10]
         )
         footer = f"Wishlist at target: {len(wishlist_hits)}"
-        body_str = f"{title_str}\n{lines}\n{footer}"
+        body_str = f"{title_str}\n{lines}\n{footer}{_atl_section()}"
         headers = {
             "Content-Type": "text/plain; charset=utf-8",
             "Title": title_str,

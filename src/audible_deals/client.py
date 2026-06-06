@@ -283,6 +283,12 @@ class DealsClient:
                     )
                     raise
                 delay = max(0.0, _RETRY_DELAYS[attempt - 1] + random.uniform(-0.3, 0.3))
+                if status == 429:
+                    resp = getattr(exc, "response", None)
+                    headers = getattr(resp, "headers", None)
+                    retry_after = headers.get("Retry-After", "") if headers else ""
+                    if isinstance(retry_after, str) and retry_after.isdigit():
+                        delay = max(delay, min(int(retry_after), 120))
                 logger.warning(
                     "API GET %s failed (attempt %d/%d): %s; retrying in %.1fs",
                     endpoint,

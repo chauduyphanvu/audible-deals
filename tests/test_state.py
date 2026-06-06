@@ -9,7 +9,12 @@ import pytest
 from click.testing import CliRunner
 
 from audible_deals.cli import cli
-from audible_deals.state import load_seen_asins, save_seen_asins, find_wishlist_atl_hits
+from audible_deals.state import (
+    load_seen_asins,
+    save_seen_asins,
+    find_wishlist_atl_hits,
+    find_all_atl_hits,
+)
 from audible_deals.state import _expand_ref_string, resolve_last_references
 from audible_deals.state import hist_percentiles, price_drop_pcts
 from audible_deals.state import load_all_price_histories, purge_stale_history
@@ -536,3 +541,96 @@ class TestPurgeStaleHistory:
         count, affected = purge_stale_history(90)
         assert count == 0
         assert (state_mod.HISTORY_DIR / "BOUND01.json").exists()
+
+
+# ===================================================================
+# find_all_atl_hits
+# ===================================================================
+
+
+class TestFindAllAtlHits:
+    def _write_history(self, tmp_config, asin, prices):
+        import audible_deals.state as state_mod
+
+        hist_dir = state_mod.HISTORY_DIR
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        entries = [
+            {"date": f"2024-01-{i + 1:02d}", "price": p, "title": f"Book {asin}"}
+            for i, p in enumerate(prices)
+        ]
+        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+
+    def _write_wishlist(self, tmp_config, items):
+        import audible_deals.state as state_mod
+
+        state_mod.WISHLIST_FILE.write_text(json.dumps(items))
+
+    def test_atl_non_wishlist_asin_found(self, tmp_config):
+        self._write_history(tmp_config, "B00ALL0001", [9.99, 8.99, 6.99])
+        hits = find_all_atl_hits()
+        assert len(hits) == 1
+        assert hits[0]["asin"] == "B00ALL0001"
+        assert hits[0]["price"] == pytest.approx(6.99)
+        assert hits[0]["target"] is None
+
+    def test_non_atl_excluded(self, tmp_config):
+        # Latest price is above the previous minimum — not ATL
+        self._write_history(tmp_config, "B00ALL0002", [5.99, 8.99, 9.99])
+        hits = find_all_atl_hits()
+        assert hits == []
+
+    def test_fewer_than_two_numeric_prices_excluded(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        entries = [{"date": "2024-01-01", "price": 5.99, "title": "T"}]
+        (state_mod.HISTORY_DIR / "B00ALL0003.json").write_text(json.dumps(entries))
+        hits = find_all_atl_hits()
+        assert hits == []
+
+    def test_target_filled_from_wishlist(self, tmp_config):
+        self._write_wishlist(
+            tmp_config,
+            [{"asin": "B00ALL0004", "title": "WL Book", "max_price": 7.0}],
+        )
+        self._write_history(tmp_config, "B00ALL0004", [9.99, 8.99, 6.99])
+        hits = find_all_atl_hits()
+        assert len(hits) == 1
+        assert hits[0]["target"] == pytest.approx(7.0)
+
+    def test_target_none_when_not_on_wishlist(self, tmp_config):
+        self._write_history(tmp_config, "B00ALL0005", [9.99, 8.99, 6.99])
+        hits = find_all_atl_hits()
+        assert hits[0]["target"] is None
+
+    def test_sorted_by_drop_magnitude_descending(self, tmp_config):
+        # B00ALL0006: prev_min=8.99, latest=6.99, drop=2.00
+        # B00ALL0007: prev_min=9.99, latest=5.99, drop=4.00 — bigger drop
+        self._write_history(tmp_config, "B00ALL0006", [9.99, 8.99, 6.99])
+        self._write_history(tmp_config, "B00ALL0007", [9.99, 5.99])
+        hits = find_all_atl_hits()
+        asins = [h["asin"] for h in hits]
+        assert asins.index("B00ALL0007") < asins.index("B00ALL0006")
+
+    def test_limit_respected(self, tmp_config):
+        for i in range(5):
+            asin = f"B00LIM{i:04d}"
+            self._write_history(tmp_config, asin, [10.0, float(i + 1)])
+        hits = find_all_atl_hits(limit=3)
+        assert len(hits) == 3
+
+    def test_latest_non_numeric_excluded(self, tmp_config):
+        import audible_deals.state as state_mod
+
+        state_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        entries = [
+            {"date": "2024-01-01", "price": 9.99, "title": "T"},
+            {"date": "2024-01-02", "price": None, "title": "T"},
+        ]
+        (state_mod.HISTORY_DIR / "B00ALL0008.json").write_text(json.dumps(entries))
+        hits = find_all_atl_hits()
+        assert hits == []
+
+    def test_empty_history_dir_returns_empty(self, tmp_config):
+        hits = find_all_atl_hits()
+        assert hits == []

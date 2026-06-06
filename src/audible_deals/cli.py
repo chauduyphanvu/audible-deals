@@ -99,10 +99,12 @@ from audible_deals.serialization import (
     serialize_product,
 )
 from audible_deals.state import (
+    _expand_ref_string,
     clear_last_results,
     clear_seen_asins,
     coerce_config_value,
     delete_price_histories,
+    find_all_atl_hits,
     find_wishlist_atl_hits,
     find_wishlist_hits,
     has_price_history,
@@ -270,6 +272,9 @@ def _apply_filters(
     drop_zero_length: bool = True,
     hist_below: int | None = None,
     min_price_drop: float = 0.0,
+    require_history: bool = False,
+    released_after: str = "",
+    released_before: str = "",
 ) -> tuple[list[Product], dict[str, int], int, int]:
     """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed)."""
     hist_percentile = None
@@ -310,6 +315,9 @@ def _apply_filters(
         hist_percentile=hist_percentile,
         min_price_drop=min_price_drop,
         price_drops=price_drops,
+        require_history=require_history,
+        released_after=released_after,
+        released_before=released_before,
     )
     filtered, editions_removed = dedupe_editions(filtered)
     series_collapsed = 0
@@ -395,10 +403,11 @@ def _emit_output(
 
 def _interactive_browse(products: list[Product], currency: str = "$") -> None:
     """Interactive mode: let user pick items to view details, open, or wishlist."""
-    console.print(
-        "\n  [dim]Enter a # for details, 'o #' open, 'w #' wishlist, "
-        "'c # #' compare, 'h #' history, 'q' quit.[/dim]"
+    _HINT = (
+        "\n  [dim]Enter a # for details, 'o #' open, 'w #[,#-#]' wishlist, "
+        "'c # #' compare, 'h #' history, '?' help, 'q' quit.[/dim]"
     )
+    console.print(_HINT)
     while True:
         try:
             choice = click.prompt("\n>", default="q", show_default=False).strip()
@@ -407,10 +416,16 @@ def _interactive_browse(products: list[Product], currency: str = "$") -> None:
         if choice.lower() == "q":
             break
 
+        if choice.strip() in ("?", "help"):
+            console.print(_HINT)
+            console.print(f"  [dim]Results: 1-{len(products)}[/dim]")
+            continue
+
         parts = choice.split()
         action = "detail"
         idx = -1
         idx2 = -1
+        w_ref = None
         try:
             if len(parts) >= 1 and parts[0].lower() == "c":
                 if len(parts) != 3:
@@ -418,17 +433,68 @@ def _interactive_browse(products: list[Product], currency: str = "$") -> None:
                 action = "compare"
                 idx = int(parts[1]) - 1
                 idx2 = int(parts[2]) - 1
-            elif len(parts) == 2 and parts[0].lower() in ("o", "w", "h"):
-                action = {"o": "open", "w": "wishlist", "h": "history"}[
-                    parts[0].lower()
-                ]
+            elif len(parts) == 2 and parts[0].lower() == "w":
+                action = "wishlist"
+                w_ref = parts[1]
+            elif len(parts) == 2 and parts[0].lower() in ("o", "h"):
+                action = {"o": "open", "h": "history"}[parts[0].lower()]
                 idx = int(parts[1]) - 1
             else:
                 idx = int(parts[0]) - 1
         except (ValueError, IndexError):
             console.print(
-                "[dim]Invalid input. Enter a number, 'o #', 'w #', 'c # #', 'h #', or 'q'.[/dim]"
+                "[dim]Invalid input. Enter a number, 'o #', 'w #[,#-#]', 'c # #', 'h #', '?', or 'q'.[/dim]"
             )
+            continue
+
+        if action == "wishlist":
+            try:
+                one_based = _expand_ref_string(w_ref, label="selection")
+            except click.ClickException as exc:
+                console.print(f"[dim]{exc.format_message()}[/dim]")
+                continue
+            selected = [n - 1 for n in dict.fromkeys(one_based)]
+            if not all(0 <= z < len(products) for z in selected):
+                console.print(f"[dim]Number must be 1-{len(products)}.[/dim]")
+                continue
+
+            items = load_wishlist()
+            existing_asins = {item.get("asin") for item in items}
+            to_add: list[int] = []
+            for z in selected:
+                p = products[z]
+                if p.asin in existing_asins:
+                    console.print(f"[dim]{p.asin} already on wishlist[/dim]")
+                else:
+                    existing_asins.add(p.asin)
+                    to_add.append(z)
+            if not to_add:
+                continue
+
+            target_price = None
+            try:
+                raw = click.prompt(
+                    "  Target price (or Enter to skip)",
+                    default="",
+                    show_default=False,
+                ).strip()
+                if raw:
+                    target_price = float(raw)
+            except (ValueError, EOFError):
+                pass
+
+            for z in to_add:
+                p = products[z]
+                items.append(wishlist_entry(p, target_price))
+                target_note = (
+                    f" (target: {p.currency}{target_price:.2f})"
+                    if target_price is not None
+                    else ""
+                )
+                console.print(
+                    f"[green]+[/green] {p.title} added to wishlist{target_note}"
+                )
+            save_wishlist(items)
             continue
 
         indices = [idx, idx2] if action == "compare" else [idx]
@@ -450,32 +516,6 @@ def _interactive_browse(products: list[Product], currency: str = "$") -> None:
                 console.print(f"[dim]No price history for {p.asin}[/dim]")
             else:
                 display_price_history(entries, p.asin, currency)
-        elif action == "wishlist":
-            items = load_wishlist()
-            if any(item.get("asin") == p.asin for item in items):
-                console.print(f"[dim]{p.asin} already on wishlist[/dim]")
-            else:
-                target_price = None
-                try:
-                    raw = click.prompt(
-                        "  Target price (or Enter to skip)",
-                        default="",
-                        show_default=False,
-                    ).strip()
-                    if raw:
-                        target_price = float(raw)
-                except (ValueError, EOFError):
-                    pass
-                items.append(wishlist_entry(p, target_price))
-                save_wishlist(items)
-                target_note = (
-                    f" (target: {p.currency}{target_price:.2f})"
-                    if target_price is not None
-                    else ""
-                )
-                console.print(
-                    f"[green]+[/green] {p.title} added to wishlist{target_note}"
-                )
 
 
 class _HandleAuthErrors(click.Group):
@@ -603,6 +643,35 @@ def categories(ctx, parent):
     console.print(
         "\n  [dim]Tip: use --parent ID to see subcategories, "
         "or pass the ID to 'deals find --category ID'[/dim]"
+    )
+
+
+def _validate_history_filter_options(
+    require_history: bool,
+    hist_below: int | None,
+    min_price_drop: float,
+    released_after: str,
+    released_before: str,
+) -> tuple[str, str]:
+    """Validate history/date filter options; return normalized (released_after, released_before)."""
+    if require_history and hist_below is None and not min_price_drop:
+        raise click.UsageError(
+            "--require-history requires --hist-below or --min-price-drop"
+        )
+
+    def _norm_date(opt: str, value: str) -> str:
+        if not value:
+            return value
+        try:
+            return datetime.date.fromisoformat(value).isoformat()
+        except ValueError:
+            raise click.UsageError(
+                f"{opt}: invalid date {value!r} (expected YYYY-MM-DD)"
+            )
+
+    return (
+        _norm_date("--released-after", released_after),
+        _norm_date("--released-before", released_before),
     )
 
 
@@ -771,6 +840,25 @@ def _common_filter_options(func):
             default=0.0,
             help="Keep only items whose price dropped by at least PCT%% from their last tracked price (no history = pass through)",
         ),
+        click.option(
+            "--require-history",
+            "require_history",
+            is_flag=True,
+            default=False,
+            help="With --hist-below/--min-price-drop, drop items lacking enough history instead of passing them through",
+        ),
+        click.option(
+            "--released-after",
+            "released_after",
+            default="",
+            help="Only items released on/after this date (YYYY-MM-DD)",
+        ),
+        click.option(
+            "--released-before",
+            "released_before",
+            default="",
+            help="Only items released on/before this date (YYYY-MM-DD)",
+        ),
     ]
     for option in reversed(options):
         func = option(func)
@@ -832,6 +920,9 @@ def _apply_settings_filters(
     exclude_category_ids: set[str],
     hist_below: int | None = None,
     min_price_drop: float = 0.0,
+    require_history: bool = False,
+    released_after: str = "",
+    released_before: str = "",
 ) -> tuple[list[Product], dict[str, int], int, int]:
     """Run _apply_filters with all filter options taken from a resolved Settings."""
     return _apply_filters(
@@ -859,6 +950,9 @@ def _apply_settings_filters(
         exclude_keywords=s.exclude_keywords,
         hist_below=hist_below,
         min_price_drop=min_price_drop,
+        require_history=require_history,
+        released_after=released_after,
+        released_before=released_before,
     )
 
 
@@ -935,6 +1029,9 @@ def search(
     exclude_keywords,
     hist_below,
     min_price_drop,
+    require_history,
+    released_after,
+    released_before,
 ):
     """Search the Audible catalog by keyword."""
     logger.info(
@@ -951,6 +1048,9 @@ def search(
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     if skip_plus and only_plus:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    released_after, released_before = _validate_history_filter_options(
+        require_history, hist_below, min_price_drop, released_after, released_before
+    )
     s = _build_scan_settings(
         ctx,
         profile_name,
@@ -1073,6 +1173,9 @@ def search(
             exclude_category_ids=exclude_category_ids,
             hist_below=hist_below,
             min_price_drop=min_price_drop,
+            require_history=require_history,
+            released_after=released_after,
+            released_before=released_before,
         )
     )
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -1277,6 +1380,9 @@ def find(
     exclude_keywords,
     hist_below,
     min_price_drop,
+    require_history,
+    released_after,
+    released_before,
 ):
     """Find deals: browse the catalog filtered by price and genre.
 
@@ -1308,6 +1414,9 @@ def find(
     )
     if skip_plus and only_plus:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    released_after, released_before = _validate_history_filter_options(
+        require_history, hist_below, min_price_drop, released_after, released_before
+    )
     s = _build_scan_settings(
         ctx,
         profile_name,
@@ -1417,6 +1526,9 @@ def find(
             exclude_category_ids=exclude_category_ids,
             hist_below=hist_below,
             min_price_drop=min_price_drop,
+            require_history=require_history,
+            released_after=released_after,
+            released_before=released_before,
         )
     )
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -2658,6 +2770,74 @@ def wishlist_sync(ctx, max_price, update):
     )
 
 
+@wishlist.command("purge")
+@click.option(
+    "--owned",
+    is_flag=True,
+    default=False,
+    help="Remove wishlist entries already owned in your Audible library",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    default=False,
+    help="Show what would be removed without saving",
+)
+@click.option(
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip confirmation prompt",
+)
+@click.pass_context
+def wishlist_purge(ctx, owned, dry_run, yes):
+    """Remove wishlist entries already owned in your Audible library.
+
+    \b
+    Examples:
+        deals wishlist purge --owned
+        deals wishlist purge --owned --dry-run
+        deals wishlist purge --owned --yes
+    """
+    if not owned:
+        raise click.UsageError("Specify --owned to purge owned items")
+
+    items = load_wishlist()
+    if not any(i.get("asin") for i in items):
+        console.print("[dim]Nothing to purge.[/dim]")
+        return
+
+    dc = _get_client(ctx.obj["locale"])
+    with dc:
+        owned_asins = dc.get_library_asins()
+
+    to_remove = [i for i in items if i.get("asin") in owned_asins]
+    kept = [i for i in items if i.get("asin") not in owned_asins]
+
+    if not to_remove:
+        console.print("[dim]Nothing to purge.[/dim]")
+        return
+
+    if dry_run:
+        for item in to_remove:
+            console.print(
+                f"[dim]Would remove: {item.get('title', '')} ({item.get('asin', '')})[/dim]"
+            )
+        return
+
+    if not yes:
+        click.confirm(
+            f"Remove {len(to_remove)} owned item(s) from wishlist?",
+            abort=True,
+        )
+
+    save_wishlist(kept)
+    console.print(
+        f"\n[bold]{len(to_remove)}[/bold] removed, {len(kept)} remaining on wishlist"
+    )
+
+
 def _watch_once(
     ctx: click.Context,
     buy_only: bool = False,
@@ -3109,6 +3289,13 @@ def _post_webhook(url: str, body: bytes, headers: dict[str, str]) -> None:
     help="Include wishlist items at all-time low price",
 )
 @click.option(
+    "--atl-all",
+    "atl_all",
+    is_flag=True,
+    default=False,
+    help="Include ALL tracked items at all-time low, not just wishlist",
+)
+@click.option(
     "--json",
     "json_flag",
     is_flag=True,
@@ -3123,7 +3310,7 @@ def _post_webhook(url: str, body: bytes, headers: dict[str, str]) -> None:
     help="Webhook payload format",
 )
 @click.pass_context
-def recap(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
+def recap(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_format):
     """Show a recap of price changes across tracked items.
 
     Scans price history files and reports items that dropped in price,
@@ -3131,23 +3318,27 @@ def recap(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
     """
     try:
         with run_lock():
-            _recap_body(ctx, days, show_new, atl, json_flag, webhook, webhook_format)
+            _recap_body(
+                ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_format
+            )
     except LockHeldError:
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
         if json_flag:
-            empty: dict = {
-                "days": days,
-                "drops": [],
-                "new_count": 0,
-                "wishlist_hits": [],
-            }
-            if atl:
-                empty["atl_hits"] = []
+            empty = _empty_recap_payload(days, atl or atl_all)
             click.echo(json_mod.dumps(empty, indent=2))
 
 
-def _recap_body(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
-    logger.info("recap days=%s show_new=%s atl=%s", days, show_new, atl)
+def _empty_recap_payload(days: int, include_atl: bool) -> dict:
+    payload: dict = {"days": days, "drops": [], "new_count": 0, "wishlist_hits": []}
+    if include_atl:
+        payload["atl_hits"] = []
+    return payload
+
+
+def _recap_body(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_format):
+    logger.info(
+        "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
+    )
     if json_flag and webhook:
         raise click.UsageError("--json and --webhook are mutually exclusive")
     if webhook:
@@ -3155,17 +3346,11 @@ def _recap_body(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
     if json_flag:
         console.file = sys.stderr
     cur = _currency(ctx)
-    drops, new_items = scan_price_changes(days)
+    histories = load_all_price_histories()
+    drops, new_items = scan_price_changes(days, histories=histories)
     if not drops and not new_items and not has_price_history():
         if json_flag:
-            empty: dict = {
-                "days": days,
-                "drops": [],
-                "new_count": 0,
-                "wishlist_hits": [],
-            }
-            if atl:
-                empty["atl_hits"] = []
+            empty = _empty_recap_payload(days, atl or atl_all)
             click.echo(json_mod.dumps(empty, indent=2))
             return
         console.print(
@@ -3173,7 +3358,12 @@ def _recap_body(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
         )
         return
     wishlist_hits = find_wishlist_hits()
-    atl_hits = find_wishlist_atl_hits() if atl else None
+    if atl_all:
+        atl_hits: list[dict] | None = find_all_atl_hits(histories=histories)
+    elif atl:
+        atl_hits = find_wishlist_atl_hits()
+    else:
+        atl_hits = None
 
     if json_flag or webhook:
 
@@ -3233,7 +3423,14 @@ def _recap_body(ctx, days, show_new, atl, json_flag, webhook, webhook_format):
             return
 
     display_recap(
-        drops, new_items, wishlist_hits, days, cur, show_new, atl_hits=atl_hits
+        drops,
+        new_items,
+        wishlist_hits,
+        days,
+        cur,
+        show_new,
+        atl_hits=atl_hits,
+        atl_all=atl_all,
     )
 
 
@@ -3317,17 +3514,18 @@ def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cool
     extras: dict[str, dict] = {}
     hit_asins: set[str] = set()
 
-    def add_hit(p: Product, target: float) -> None:
+    def add_hit(p: Product, target: float, author: str | None = None) -> None:
         hit_asins.add(p.asin)
-        hits.append(
-            {
-                "asin": p.asin,
-                "title": p.title,
-                "price": round(p.price, 2),
-                "target": target,
-                "url": p.url,
-            }
-        )
+        hit: dict = {
+            "asin": p.asin,
+            "title": p.title,
+            "price": round(p.price, 2),
+            "target": target,
+            "url": p.url,
+        }
+        if author is not None:
+            hit["author"] = author
+        hits.append(hit)
         extras[p.asin] = {
             "currency": p.currency,
             "discount_pct": float(p.discount_pct or 0.0),
@@ -3362,7 +3560,7 @@ def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cool
             _safe_record_prices(filtered_author)
             for p in filtered_author:
                 if p.asin not in hit_asins:
-                    add_hit(p, author_target)
+                    add_hit(p, author_target, author=author_name)
 
     suppressed = 0
     if cooldown is not None:

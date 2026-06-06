@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import json
 import time
+from types import SimpleNamespace
 
 import pytest
 
+import audible_deals.client as client_mod
 from audible_deals.client import (
+    DealsClient,
     _extract_prices,
     _validate_category_id,
     parse_product,
@@ -443,3 +446,61 @@ class TestImportAuthValidation:
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
         with pytest.raises(ValueError, match="Libation auth missing"):
             dc.import_auth(src)
+
+
+# ===================================================================
+# _api_get — Retry-After-aware backoff for 429 responses
+# ===================================================================
+
+
+def _make_429_exc(retry_after: str | None = None) -> Exception:
+    """Build an exception whose .response mimics a 429 HTTP response."""
+    resp = SimpleNamespace(
+        status_code=429,
+        headers={} if retry_after is None else {"Retry-After": retry_after},
+    )
+    exc = Exception("rate limited")
+    exc.status_code = 429
+    exc.response = resp
+    return exc
+
+
+class TestRetryAfterBackoff:
+    def _make_dc(self, api_fixture, side_effects):
+        """Set up a DealsClient whose .client.get raises then succeeds."""
+        api_fixture.get_mock.side_effect = side_effects
+        dc = DealsClient(auth_file=api_fixture.tmp_path / "auth.json", locale="us")
+        return dc
+
+    def test_429_with_retry_after_sleeps_at_least_header_value(self, api, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr(client_mod.time, "sleep", lambda s: sleeps.append(s))
+        exc = _make_429_exc(retry_after="30")
+        api.get_mock.side_effect = [exc, {"products": []}]
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with dc:
+            dc._api_get("library", num_results=1)
+        assert sleeps, "expected at least one sleep"
+        assert sleeps[0] >= 30
+
+    def test_429_without_retry_after_uses_normal_delay(self, api, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr(client_mod.time, "sleep", lambda s: sleeps.append(s))
+        exc = _make_429_exc(retry_after=None)
+        api.get_mock.side_effect = [exc, {"products": []}]
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with dc:
+            dc._api_get("library", num_results=1)
+        assert sleeps, "expected at least one sleep"
+        assert sleeps[0] < 30
+
+    def test_429_retry_after_capped_at_120(self, api, monkeypatch):
+        sleeps = []
+        monkeypatch.setattr(client_mod.time, "sleep", lambda s: sleeps.append(s))
+        exc = _make_429_exc(retry_after="9999")
+        api.get_mock.side_effect = [exc, {"products": []}]
+        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        with dc:
+            dc._api_get("library", num_results=1)
+        assert sleeps, "expected at least one sleep"
+        assert sleeps[0] <= 120
