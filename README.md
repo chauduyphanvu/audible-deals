@@ -192,6 +192,7 @@ deals search "Dune" --max-price 5 --show-url
 | `-n, --limit 20` | Cap the number of results (default: 25; use `-n 0` for unlimited) |
 | `--pages 10` | Number of catalog pages to scan (default: 10 for `find`, 3 for `search`) |
 | `--deep` | Scan with 3 sort orders for broader coverage — 3x the API calls (`find` and `search`) |
+| `--subcategories` | Scan each subcategory of the resolved genre separately — surfaces items buried in broad top-level buckets (`find` only, requires `--genre` or `--category`) |
 | `--dry-run` | Show what would be scanned (sort orders, pages, API calls) without fetching anything |
 | `--show-url` | Add a full Audible URL column to the results table |
 | `-i, --interactive` | Browse results interactively after the table is shown |
@@ -563,6 +564,15 @@ DEALS_LOG_FILE=~/.cache/deals.log deals notify --webhook https://...
 ## Advanced recipes
 
 These combine flags and commands for power-user workflows.
+
+### Scan subcategories for deeper coverage
+
+```bash
+# Cheap books buried beyond the page horizon of "Science Fiction & Fantasy" surface here
+deals find --genre "sci-fi" --subcategories --max-price 5
+# Combine with --deep for maximum coverage (more API calls)
+deals find --genre "sci-fi" --subcategories --deep --max-price 5
+```
 
 ### Preview a deep scan before running it
 

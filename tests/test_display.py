@@ -12,6 +12,7 @@ from audible_deals.display import (
     discount_str,
     display_categories,
     display_comparison,
+    display_library_stats,
     display_product_detail,
     display_products,
     display_summary,
@@ -348,3 +349,32 @@ class TestDisplayWatchTableZeroTarget:
         out = _capture(display_watch_table, [p], {"W1": None})
         assert "BUY" not in out
         assert "-" in out
+
+
+class TestDisplayLibraryStats:
+    def test_empty(self):
+        out = _capture(display_library_stats, [])
+        assert "empty" in out.lower()
+
+    def test_total_books_and_hours(self):
+        products = [
+            make_product(asin="S1", length_minutes=600, rating=4.0),
+            make_product(asin="S2", length_minutes=300, rating=4.5),
+        ]
+        out = _capture(display_library_stats, products)
+        assert "2" in out
+        assert "15" in out  # (600+300)/60 = 15 h
+
+    def test_top_author_appears(self):
+        products = [
+            make_product(asin="S3", authors=["Big Author"], length_minutes=300),
+            make_product(asin="S4", authors=["Big Author"], length_minutes=300),
+            make_product(asin="S5", authors=["Other"], length_minutes=300),
+        ]
+        out = _capture(display_library_stats, products)
+        assert "Big Author" in out
+
+    def test_locale_currency_unused(self):
+        products = [make_product(asin="S6", length_minutes=300, rating=0)]
+        out = _capture(display_library_stats, products, currency="£")
+        assert "empty" not in out.lower()

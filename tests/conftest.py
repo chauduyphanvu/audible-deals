@@ -190,6 +190,7 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(state_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
     monkeypatch.setattr(state_mod, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(state_mod, "PROFILES_FILE", tmp_path / "profiles.json")
+    monkeypatch.setattr(state_mod, "NOTIFY_STATE_FILE", tmp_path / "notify_state.json")
 
     # Replace the Rich console with one that writes to a fresh stderr-like
     # stream, so it doesn't conflict with Click's CliRunner file handling.

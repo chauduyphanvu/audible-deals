@@ -4,7 +4,23 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.7.0] - 2026-06-05
+
+### Added
+- `deals find --subcategories` — scan each subcategory of the genre separately for deeper coverage; dry-run shows the multiplied API-call math
+- `deals notify --cooldown DAYS` — suppress repeat notifications for unchanged prices across cron runs; re-fires when the price drops further (state in `notify_state.json`)
+- `deals recap --json` and `deals recap --webhook` (generic/slack/discord/teams/ntfy) — machine-readable and webhook output for cron pipelines; `--json` and `--webhook` are mutually exclusive
+- `--exit-code` flag on `notify` and `watch` — exit 0 when any item hits target, 1 when none (rejected with `watch --every`)
+- Interactive mode verbs: `c # #` compares two results side-by-side, `h #` shows price history — no extra API calls
+- `deals library --stats` — aggregate library statistics: totals, average rating/length, top genres, authors, and narrators
+- `profile save` now persists `--skip-plus`, `--only-plus`, and `--exclude-keyword`
+
+### Fixed
+- Zero-length items (missing runtime) are excluded from `find`/`search`/`last` results — they polluted the default `price-per-hour` sort; `series` keeps them so pre-orders remain visible
+- `--version` fallback in frozen builds reported a stale version
+- install.sh now suggests installing from source when the binary download fails
+
+## [0.6.0] - 2026-05-27
 
 ### Added
 - `vs hist` column in results table — percent above/below the historical median for each ASIN with ≥3 recorded prices
@@ -42,4 +58,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.7.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.7.0
+[0.6.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.6.0
 [0.1.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.1.0

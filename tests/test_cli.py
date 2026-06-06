@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime as _datetime
 import json
 
 import click
@@ -1565,6 +1566,117 @@ class TestSearchWithProfile:
         mock_client.get_library_asins.assert_called_once()
 
 
+class TestProfileSaveMissingFlags:
+    def test_skip_plus_persisted(self, tmp_config):
+        """profile save --skip-plus stores skip_plus=True."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["profile", "save", "plustest", "--skip-plus"])
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+
+        profiles = cli_mod.load_profiles()
+        assert profiles["plustest"]["skip_plus"] is True
+
+    def test_exclude_keyword_persisted(self, tmp_config):
+        """profile save --exclude-keyword stores the keyword in exclude_keywords."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["profile", "save", "kwtest", "--exclude-keyword", "abridged"],
+        )
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+
+        profiles = cli_mod.load_profiles()
+        assert "abridged" in profiles["kwtest"]["exclude_keywords"]
+
+    def test_skip_plus_and_exclude_keyword_round_trip(self, tmp_config):
+        """profile save --skip-plus --exclude-keyword abridged persists both keys."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "profile",
+                "save",
+                "combo",
+                "--skip-plus",
+                "--exclude-keyword",
+                "abridged",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        import audible_deals.cli as cli_mod
+
+        profiles = cli_mod.load_profiles()
+        assert profiles["combo"]["skip_plus"] is True
+        assert "abridged" in profiles["combo"]["exclude_keywords"]
+
+    def test_find_profile_applies_skip_plus(self, mock_client, tmp_config):
+        """find --profile applies skip_plus, excluding plus-catalog items."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_profiles({"skipplus": {"skip_plus": True}})
+        products = [
+            make_product(asin="PL1", price=5.0, in_plus_catalog=True),
+            make_product(asin="PL2", price=5.0, in_plus_catalog=False),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "skip_plus_profile.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--profile",
+                "skipplus",
+                "--pages",
+                "1",
+                "--all-languages",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "PL2" in asins
+        assert "PL1" not in asins
+
+    def test_search_profile_applies_exclude_keyword(self, mock_client, tmp_config):
+        """search --profile applies exclude_keywords, removing matching titles."""
+        import audible_deals.cli as cli_mod
+
+        cli_mod.save_profiles({"kwprofile": {"exclude_keywords": ["abridged"]}})
+        products = [
+            make_product(asin="KW1", title="Great Book Abridged Edition", price=5.0),
+            make_product(asin="KW2", title="Great Book Full", price=5.0),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "kw_profile.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "search",
+                "test",
+                "--profile",
+                "kwprofile",
+                "--pages",
+                "1",
+                "--all-languages",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "KW2" in asins
+        assert "KW1" not in asins
+
+
 # ===================================================================
 # Improvement #4: Global defaults config
 # ===================================================================
@@ -1866,7 +1978,7 @@ class TestFetchWithProgress:
         result = _fetch_with_progress(
             mock_client,
             keywords="",
-            category_id="",
+            category_ids=[""],
             sort_orders=["BestSellers"],
             pages=1,
             description="Test",
@@ -1891,7 +2003,7 @@ class TestFetchWithProgress:
         result = _fetch_with_progress(
             mock_client,
             keywords="",
-            category_id="",
+            category_ids=[""],
             sort_orders=["BestSellers", "AvgRating"],
             pages=1,
             description="Test",
@@ -5604,3 +5716,588 @@ class TestDoctorCommand:
         runner = CliRunner()
         runner.invoke(cli, ["doctor"])
         mock_client._api_get.assert_not_called()
+
+
+# ===================================================================
+# Feature G: notify --cooldown
+# ===================================================================
+
+
+class TestNotifyCooldown:
+    def _setup_wishlist_and_product(self, cli_mod, mock_client, asin, price, target):
+        cli_mod.save_wishlist(
+            [{"asin": asin, "title": "Test Book", "max_price": target, "added": ""}]
+        )
+        mock_client.get_products_batch.return_value = [
+            make_product(asin=asin, price=price, title="Test Book"),
+        ]
+
+    def test_same_price_suppressed_within_cooldown(self, mock_client, tmp_config):
+        """Second run at same price within cooldown window is suppressed."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._setup_wishlist_and_product(cli_mod, mock_client, "CD01", 3.99, 5.0)
+        today = _datetime.date.today().isoformat()
+        state_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"CD01": {"price": 3.99, "date": today}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "3"])
+        assert result.exit_code == 0, result.output
+        parsed = json.loads(result.output)
+        assert parsed == {"deals": [], "count": 0}
+
+    def test_further_price_drop_renotifies(self, mock_client, tmp_config):
+        """Further price drop re-notifies even within cooldown window."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._setup_wishlist_and_product(cli_mod, mock_client, "CD02", 2.99, 5.0)
+        today = _datetime.date.today().isoformat()
+        state_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"CD02": {"price": 3.99, "date": today}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "7"])
+        assert result.exit_code == 0, result.output
+        parsed = json.loads(result.output)
+        assert parsed["count"] == 1
+        assert parsed["deals"][0]["asin"] == "CD02"
+
+    def test_expired_cooldown_renotifies(self, mock_client, tmp_config):
+        """Cooldown expired: re-notifies even at same price."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+        import datetime
+
+        self._setup_wishlist_and_product(cli_mod, mock_client, "CD03", 3.99, 5.0)
+        old_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
+        state_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"CD03": {"price": 3.99, "date": old_date}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "7"])
+        assert result.exit_code == 0, result.output
+        parsed = json.loads(result.output)
+        assert parsed["count"] == 1
+
+    def test_no_cooldown_flag_no_state_written(self, mock_client, tmp_config):
+        """Without --cooldown, notify_state.json is never written."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._setup_wishlist_and_product(cli_mod, mock_client, "CD04", 3.99, 5.0)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        assert not state_mod.NOTIFY_STATE_FILE.exists()
+
+    def test_all_suppressed_exit_code_exits_1(self, mock_client, tmp_config):
+        """All hits suppressed by cooldown + --exit-code → exit 1."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._setup_wishlist_and_product(cli_mod, mock_client, "CD05", 3.99, 5.0)
+        today = _datetime.date.today().isoformat()
+        state_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"CD05": {"price": 3.99, "date": today}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "3", "--exit-code"])
+        assert result.exit_code == 1, result.output
+
+    def test_state_updated_after_send(self, mock_client, tmp_config):
+        """Notify state is updated with new price and date after a successful send."""
+        import datetime
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._setup_wishlist_and_product(cli_mod, mock_client, "CD06", 3.99, 5.0)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "7"])
+        assert result.exit_code == 0, result.output
+        assert state_mod.NOTIFY_STATE_FILE.exists()
+        state = json.loads(state_mod.NOTIFY_STATE_FILE.read_text())
+        assert "CD06" in state
+        assert state["CD06"]["price"] == pytest.approx(3.99)
+        assert state["CD06"]["date"] == datetime.date.today().isoformat()
+
+    def test_pruned_asin_not_on_wishlist(self, mock_client, tmp_config):
+        """State entries for ASINs no longer on wishlist are pruned on save."""
+        import audible_deals.cli as cli_mod
+        import audible_deals.state as state_mod
+
+        self._setup_wishlist_and_product(cli_mod, mock_client, "CD07", 3.99, 5.0)
+        today = _datetime.date.today().isoformat()
+        state_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        state_mod.NOTIFY_STATE_FILE.write_text(
+            json.dumps({"OLD1": {"price": 1.0, "date": today}})
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify", "--cooldown", "7"])
+        assert result.exit_code == 0, result.output
+        state = json.loads(state_mod.NOTIFY_STATE_FILE.read_text())
+        assert "OLD1" not in state
+        assert "CD07" in state
+
+
+# ===================================================================
+# Feature H: recap --json and recap --webhook
+# ===================================================================
+
+
+class TestRecapJson:
+    def _write_history(self, tmp_config, asin, entries):
+        import audible_deals.cli as cli_mod
+
+        hist_dir = cli_mod.HISTORY_DIR
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+
+    def test_recap_json_emits_parseable_json(self, tmp_config):
+        """recap --json emits valid JSON with required keys."""
+        import datetime
+
+        today = datetime.date.today().isoformat()
+        old_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        self._write_history(
+            tmp_config,
+            "RJ01",
+            [
+                {"date": old_date, "price": 10.00, "title": "Recap Book"},
+                {"date": today, "price": 5.00, "title": "Recap Book"},
+            ],
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert "days" in payload
+        assert "drops" in payload
+        assert "new_count" in payload
+        assert "wishlist_hits" in payload
+
+    def test_recap_json_and_webhook_mutually_exclusive(self, tmp_config):
+        """recap --json --webhook is a usage error."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["recap", "--json", "--webhook", "https://example.com/hook"]
+        )
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+    def test_recap_json_drops_have_drop_pct(self, tmp_config):
+        """recap --json drop entries include drop_pct correctly computed."""
+        import datetime
+
+        today = datetime.date.today().isoformat()
+        old_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        self._write_history(
+            tmp_config,
+            "RJ02",
+            [
+                {"date": old_date, "price": 10.00, "title": "Pct Book"},
+                {"date": today, "price": 5.00, "title": "Pct Book"},
+            ],
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert len(payload["drops"]) >= 1
+        drop = next(d for d in payload["drops"] if d["asin"] == "RJ02")
+        assert drop["drop_pct"] == 50
+        assert drop["old_price"] == pytest.approx(10.00)
+        assert drop["new_price"] == pytest.approx(5.00)
+
+    def test_recap_json_sorted_biggest_drop_first(self, tmp_config):
+        """recap --json drops sorted biggest absolute drop first."""
+        import datetime
+
+        today = datetime.date.today().isoformat()
+        old_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        self._write_history(
+            tmp_config,
+            "RJS1",
+            [
+                {"date": old_date, "price": 20.00, "title": "Big Drop"},
+                {"date": today, "price": 5.00, "title": "Big Drop"},
+            ],
+        )
+        self._write_history(
+            tmp_config,
+            "RJS2",
+            [
+                {"date": old_date, "price": 8.00, "title": "Small Drop"},
+                {"date": today, "price": 6.00, "title": "Small Drop"},
+            ],
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        drops = payload["drops"]
+        assert len(drops) >= 2
+        big = next(d for d in drops if d["asin"] == "RJS1")
+        small = next(d for d in drops if d["asin"] == "RJS2")
+        assert drops.index(big) < drops.index(small)
+
+    def test_recap_json_no_history_emits_empty_payload(self, tmp_config):
+        """recap --json with no price history dir emits parseable JSON with empty drops."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7", "--json"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["days"] == 7
+        assert payload["drops"] == []
+        assert payload["new_count"] == 0
+        assert payload["wishlist_hits"] == []
+        assert "atl_hits" not in payload
+
+    def test_recap_json_no_history_with_atl_includes_atl_hits(self, tmp_config):
+        """recap --json --atl with no price history emits empty payload including atl_hits."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["recap", "--days", "7", "--json", "--atl"])
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["drops"] == []
+        assert payload["atl_hits"] == []
+
+
+class TestRecapWebhook:
+    def _write_history(self, tmp_config, asin, entries):
+        import audible_deals.cli as cli_mod
+
+        hist_dir = cli_mod.HISTORY_DIR
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+
+    def test_recap_webhook_posts(self, tmp_config, monkeypatch):
+        """recap --webhook POSTs to the webhook URL."""
+        import socket
+        import datetime
+
+        monkeypatch.setattr(
+            "audible_deals.utils.socket.getaddrinfo",
+            lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
+        )
+        today = datetime.date.today().isoformat()
+        old_date = (datetime.date.today() - datetime.timedelta(days=3)).isoformat()
+        self._write_history(
+            tmp_config,
+            "RW01",
+            [
+                {"date": old_date, "price": 12.00, "title": "Webhook Book"},
+                {"date": today, "price": 4.00, "title": "Webhook Book"},
+            ],
+        )
+        captured = []
+
+        def fake_urlopen(req, timeout=None):
+            captured.append(req)
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["recap", "--webhook", "https://example.com/hook"],
+        )
+        assert result.exit_code == 0, result.output
+        assert len(captured) == 1
+        assert "Sent recap to webhook" in result.output
+
+    def test_recap_empty_webhook_skips_post(self, tmp_config, monkeypatch):
+        """recap --webhook skips POST when there's nothing to report."""
+        import socket
+
+        monkeypatch.setattr(
+            "audible_deals.utils.socket.getaddrinfo",
+            lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
+        )
+        captured = []
+
+        def fake_urlopen(req, timeout=None):
+            captured.append(req)
+
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            ["recap", "--webhook", "https://example.com/hook"],
+        )
+        assert len(captured) == 0
+        assert "Nothing to send" in result.output or result.exit_code == 0
+
+
+class TestFormatRecapPayload:
+    def _payload(self, days=7, drops=None, wishlist_hits=None):
+        return {
+            "days": days,
+            "drops": drops
+            or [
+                {
+                    "asin": "R001",
+                    "title": "My Recap Book",
+                    "old_price": 10.0,
+                    "new_price": 5.0,
+                    "drop_pct": 50,
+                }
+            ],
+            "new_count": 0,
+            "wishlist_hits": wishlist_hits or [],
+        }
+
+    def test_generic_shape(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, headers = format_recap_payload(self._payload(), "generic")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert "days" in data
+        assert "drops" in data
+
+    def test_slack_has_text_key(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, headers = format_recap_payload(self._payload(), "slack")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert "text" in data
+        assert "My Recap Book" in data["text"]
+
+    def test_discord_has_content_key(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, headers = format_recap_payload(self._payload(), "discord")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert "content" in data
+        assert "My Recap Book" in data["content"]
+
+    def test_teams_has_messagecardtype(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, headers = format_recap_payload(self._payload(), "teams")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert data["@type"] == "MessageCard"
+        assert "My Recap Book" in str(data)
+
+    def test_ntfy_is_plaintext(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, headers = format_recap_payload(self._payload(), "ntfy")
+        assert "text/plain" in headers["Content-Type"]
+        assert "My Recap Book" in body.decode("utf-8")
+        assert headers["Tags"] == "book"
+
+    def test_unknown_format_raises(self):
+        from audible_deals.utils import format_recap_payload
+
+        with pytest.raises(ValueError, match="Unknown webhook format"):
+            format_recap_payload(self._payload(), "unknown_fmt")
+
+    def test_title_includes_days(self):
+        from audible_deals.utils import format_recap_payload
+
+        body, _ = format_recap_payload(self._payload(days=14), "slack")
+        text = json.loads(body)["text"]
+        assert "14" in text
+
+
+# ===================================================================
+# --subcategories flag on find
+# ===================================================================
+
+
+class TestFindSubcategories:
+    def _make_search_side_effect(self, products_by_call: list[list]):
+        """Return a side_effect that yields successive product lists."""
+        call_idx = 0
+
+        def _side_effect(**kwargs):
+            nonlocal call_idx
+            batch = products_by_call[call_idx % len(products_by_call)]
+            call_idx += 1
+            yield batch, 1, len(batch)
+
+        return _side_effect
+
+    def test_subcategories_scans_each_child(self, mock_client, tmp_config):
+        """--subcategories calls get_categories and scans each child id."""
+        child1 = make_product(
+            asin="SUB1", price=2.0, series_name="", series_position=""
+        )
+        child2 = make_product(
+            asin="SUB2", price=3.0, series_name="", series_position=""
+        )
+
+        mock_client.resolve_genre.return_value = ("parent1", "Sci-Fi")
+        mock_client.get_categories.return_value = [
+            {"id": "child1", "name": "Space Opera"},
+            {"id": "child2", "name": "Cyberpunk"},
+        ]
+
+        call_order: list[str] = []
+
+        def fake_search_pages(**kwargs):
+            call_order.append(kwargs["category_id"])
+            batch = [child1] if kwargs["category_id"] == "child1" else [child2]
+            yield batch, 1, 1
+
+        mock_client.search_pages.side_effect = fake_search_pages
+
+        out_file = tmp_config / "sub.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--genre",
+                "sci-fi",
+                "--subcategories",
+                "--pages",
+                "1",
+                "--max-price",
+                "10",
+                "--all-languages",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        mock_client.get_categories.assert_called_once_with(root="parent1")
+        assert set(call_order) == {"child1", "child2"}
+        data = json.loads(out_file.read_text())
+        asins = {d["asin"] for d in data}
+        assert asins == {"SUB1", "SUB2"}
+
+    def test_subcategories_no_children_falls_back(self, mock_client, tmp_config):
+        """No children → scans the parent and prints the notice."""
+        products = [
+            make_product(asin="FB1", price=2.0, series_name="", series_position="")
+        ]
+
+        mock_client.resolve_genre.return_value = ("parent2", "Mystery")
+        mock_client.get_categories.return_value = []
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--genre",
+                "mystery",
+                "--subcategories",
+                "--pages",
+                "1",
+                "--max-price",
+                "10",
+                "--all-languages",
+                "-q",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "No subcategories found" in result.output
+        called_ids = [
+            c.kwargs["category_id"] for c in mock_client.search_pages.call_args_list
+        ]
+        assert called_ids == ["parent2"]
+
+    def test_subcategories_without_genre_raises(self, mock_client, tmp_config):
+        """--subcategories without --genre/--category raises UsageError."""
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--subcategories",
+                "--pages",
+                "1",
+                "--max-price",
+                "10",
+            ],
+        )
+        assert result.exit_code != 0
+        assert "--subcategories requires --genre or --category" in result.output
+
+    def test_subcategories_dedup_across_children(self, mock_client, tmp_config):
+        """Same ASIN in two subcategories appears only once."""
+        shared = make_product(
+            asin="DEDUP", price=2.0, series_name="", series_position=""
+        )
+        unique = make_product(
+            asin="UNIQ", price=3.0, series_name="", series_position=""
+        )
+
+        mock_client.resolve_genre.return_value = ("parent3", "Fantasy")
+        mock_client.get_categories.return_value = [
+            {"id": "c1", "name": "Epic Fantasy"},
+            {"id": "c2", "name": "Urban Fantasy"},
+        ]
+
+        def fake_search_pages(**kwargs):
+            if kwargs["category_id"] == "c1":
+                yield [shared, unique], 1, 2
+            else:
+                yield [shared], 1, 1
+
+        mock_client.search_pages.side_effect = fake_search_pages
+
+        out_file = tmp_config / "dedup.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--genre",
+                "fantasy",
+                "--subcategories",
+                "--pages",
+                "1",
+                "--max-price",
+                "10",
+                "--all-languages",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert asins.count("DEDUP") == 1
+        assert "UNIQ" in asins
+
+    def test_subcategories_dry_run_multiplied(self, mock_client, tmp_config):
+        """Dry run with subcategories shows multiplied API-call count and subcategory count."""
+        mock_client.resolve_genre.return_value = ("parent4", "Romance")
+        mock_client.get_categories.return_value = [
+            {"id": "r1", "name": "Contemporary"},
+            {"id": "r2", "name": "Historical"},
+            {"id": "r3", "name": "Paranormal"},
+        ]
+
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--genre",
+                "romance",
+                "--subcategories",
+                "--pages",
+                "2",
+                "--dry-run",
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        assert "Subcategories: 3" in result.output
+        assert "API calls: 6" in result.output

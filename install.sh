@@ -106,6 +106,9 @@ main() {
         echo "  URL: $url" >&2
         echo "" >&2
         echo "Check that v${version} exists at https://github.com/$REPO/releases" >&2
+        echo "" >&2
+        echo "Alternatively, install from source (requires Python 3.11+):" >&2
+        echo "  git clone https://github.com/$REPO.git && cd audible-deals && pip install ." >&2
         exit 1
     fi
 

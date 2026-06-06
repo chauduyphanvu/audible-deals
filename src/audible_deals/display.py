@@ -6,6 +6,7 @@ rich tables and panels.
 
 from __future__ import annotations
 
+import collections
 import datetime
 
 from rich.console import Console
@@ -521,3 +522,59 @@ def display_watch_table(
             f"\n  [dim]No items at target price yet. {len(products)} watched.[/dim]"
         )
     return hits
+
+
+def display_library_stats(products: list[Product], currency: str = "$") -> None:
+    """Display aggregate statistics for a library product list."""
+    if not products:
+        console.print("[dim]Library is empty.[/dim]")
+        return
+
+    total = len(products)
+    total_hours = sum(p.hours for p in products)
+    avg_hours = total_hours / total
+    rated = [p.rating for p in products if p.rating > 0]
+    avg_rating = sum(rated) / len(rated) if rated else 0.0
+
+    headline = Table(show_header=False, box=None, padding=(0, 2))
+    headline.add_column(style="dim", width=18)
+    headline.add_column()
+    headline.add_row("Total books", f"[bold]{total:,}[/bold]")
+    headline.add_row("Total hours", f"[bold]{total_hours:,.0f} h[/bold]")
+    headline.add_row("Avg length", f"{avg_hours:.1f} h")
+    if avg_rating:
+        headline.add_row("Avg rating", f"{avg_rating:.2f}")
+    console.print(headline)
+
+    genre_counts: collections.Counter[str] = collections.Counter()
+    for p in products:
+        for cat in p.categories:
+            genre_counts[cat] += 1
+
+    author_counts: collections.Counter[str] = collections.Counter()
+    for p in products:
+        for a in p.authors:
+            author_counts[a] += 1
+
+    narrator_counts: collections.Counter[str] = collections.Counter()
+    for p in products:
+        for n in p.narrators:
+            narrator_counts[n] += 1
+
+    def _top_table(title: str, counter: collections.Counter[str]) -> None:
+        table = Table(
+            title=title,
+            show_lines=False,
+            padding=(0, 1),
+            title_style="bold",
+            expand=False,
+        )
+        table.add_column("Name", min_width=30)
+        table.add_column("#", justify="right", width=6)
+        for name, count in counter.most_common(5):
+            table.add_row(name, str(count))
+        console.print(table)
+
+    _top_table("Top Genres", genre_counts)
+    _top_table("Top Authors", author_counts)
+    _top_table("Top Narrators", narrator_counts)

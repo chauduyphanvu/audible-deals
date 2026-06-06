@@ -26,6 +26,7 @@ LAST_RESULTS_FILE = CONFIG_DIR / "last_results.json"
 SEEN_ASINS_FILE = CONFIG_DIR / "seen_asins.json"
 CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_DIR = CONFIG_DIR / "history"
+NOTIFY_STATE_FILE = CONFIG_DIR / "notify_state.json"
 
 # ---------------------------------------------------------------------------
 # Locale maps

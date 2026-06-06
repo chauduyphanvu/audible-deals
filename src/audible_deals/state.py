@@ -24,6 +24,7 @@ from audible_deals.constants import (
     HISTORY_DIR,
     LAST_RESULTS_FILE,
     LOCALE_DOMAIN,
+    NOTIFY_STATE_FILE,
     PROFILES_FILE,
     SEEN_ASINS_FILE,
     WISHLIST_FILE,
@@ -100,6 +101,19 @@ def load_config() -> dict:
 
 def save_config(cfg: dict) -> None:
     _save_json_file(CONFIG_FILE, cfg, "config")
+
+
+# ---------------------------------------------------------------------------
+# Notify cooldown state
+# ---------------------------------------------------------------------------
+
+
+def load_notify_state() -> dict:
+    return _load_json_file(NOTIFY_STATE_FILE, dict, "notify state")
+
+
+def save_notify_state(state: dict) -> None:
+    _save_json_file(NOTIFY_STATE_FILE, state, "notify state")
 
 
 def coerce_config_value(key: str, raw: str):

@@ -1016,3 +1016,297 @@ class TestErrorPaths:
         """wishlist add with no ASINs or --last should error."""
         result = CliRunner().invoke(cli, ["wishlist", "add"])
         assert result.exit_code != 0
+
+
+# ===========================================================================
+# 21. Zero-length item filtering (Feature C)
+# ===========================================================================
+
+
+class TestZeroLengthFiltering:
+    def test_zero_length_excluded_from_find(self, tmp_config, mock_client):
+        """find drops products with length_minutes==0 and records 'no runtime' breakdown."""
+        products = [
+            make_product(asin="NR1", length_minutes=0, price=3.99),
+            make_product(asin="NR2", length_minutes=600, price=3.99),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "zero_length.json"
+        result = _run(
+            CliRunner(),
+            [
+                "find",
+                "--pages",
+                "1",
+                "--all-languages",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "NR2" in asins
+        assert "NR1" not in asins
+
+    def test_zero_length_breakdown_label(self, tmp_config, mock_client):
+        """The breakdown for zero-length items uses the label 'no runtime'."""
+        from audible_deals.cli import _apply_filters
+
+        products = [
+            make_product(asin="NR3", length_minutes=0, price=3.99),
+            make_product(asin="NR4", length_minutes=300, price=3.99),
+        ]
+        _, breakdown, _, _ = _apply_filters(
+            products,
+            max_price=None,
+            min_rating=0.0,
+            min_hours=0.0,
+            language="",
+            on_sale=False,
+            skip_asins=None,
+            exclude_category_ids=set(),
+            first_in_series_only=False,
+            sort="price",
+        )
+        assert breakdown.get("no runtime") == 1
+
+    def test_library_keeps_zero_length(self, tmp_config, mock_client):
+        """library does NOT drop zero-length items — they are kept as-is."""
+        products = [
+            make_product(asin="LZ1", length_minutes=0, price=0.0),
+            make_product(asin="LZ2", length_minutes=600, price=0.0),
+        ]
+        _setup_library_mock(mock_client, products)
+        result = _run(
+            CliRunner(),
+            ["library", "--json", "--quiet"],
+        )
+        assert result.exit_code == 0, result.output
+        json_start = result.output.index("[")
+        data = json.loads(result.output[json_start:])
+        asins = [d["asin"] for d in data]
+        assert "LZ1" in asins
+        assert "LZ2" in asins
+
+    def test_series_keeps_zero_length_preorder(self, tmp_config, mock_client):
+        """series route keeps zero-length (pre-order) products; find still drops them."""
+        # Two library books in the same series so the user is "invested"
+        owned1 = make_product(
+            asin="SO1",
+            series_name="Epic Arc",
+            series_asin="SARC1",
+            length_minutes=600,
+            price=0.0,
+        )
+        owned2 = make_product(
+            asin="SO2",
+            series_name="Epic Arc",
+            series_asin="SARC1",
+            length_minutes=600,
+            price=0.0,
+        )
+        # A pre-order with length_minutes==0 that should survive the series pipeline
+        preorder = make_product(
+            asin="SPRE1",
+            series_name="Epic Arc",
+            series_asin="SARC1",
+            length_minutes=0,
+            price=14.99,
+        )
+        mock_client.get_library.return_value = [owned1, owned2]
+        mock_client.get_series_products.return_value = [preorder]
+
+        result = _run(
+            CliRunner(),
+            ["series", "--min-books", "2", "--json", "--quiet", "--limit", "0"],
+        )
+        assert result.exit_code == 0, result.output
+        json_start = result.output.index("[")
+        data = json.loads(result.output[json_start:])
+        asins = [d["asin"] for d in data]
+        assert "SPRE1" in asins, "pre-order should not be dropped by series command"
+
+    def test_find_still_drops_zero_length(self, tmp_config, mock_client):
+        """find route continues to drop zero-length products after drop_zero_length param added."""
+        products = [
+            make_product(asin="FNR1", length_minutes=0, price=3.99),
+            make_product(asin="FNR2", length_minutes=600, price=3.99),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "find_zero.json"
+        result = _run(
+            CliRunner(),
+            [
+                "find",
+                "--pages",
+                "1",
+                "--all-languages",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        asins = [d["asin"] for d in data]
+        assert "FNR2" in asins
+        assert "FNR1" not in asins
+
+
+# ===========================================================================
+# Feature D: --exit-code on notify and watch
+# ===========================================================================
+
+
+class TestNotifyExitCode:
+    def test_no_hits_with_flag_exits_1(self, tmp_config, mock_client):
+        wl = [{"asin": "EC01", "title": "Book", "max_price": 2.0, "added": ""}]
+        (tmp_config / "wishlist.json").write_text(json.dumps(wl))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="EC01", price=9.99),
+        ]
+        result = CliRunner().invoke(cli, ["notify", "--exit-code"])
+        assert result.exit_code == 1
+
+    def test_with_hit_and_flag_exits_0(self, tmp_config, mock_client):
+        wl = [{"asin": "EC02", "title": "Book", "max_price": 5.0, "added": ""}]
+        (tmp_config / "wishlist.json").write_text(json.dumps(wl))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="EC02", price=3.99),
+        ]
+        result = CliRunner().invoke(cli, ["notify", "--exit-code"])
+        assert result.exit_code == 0
+
+    def test_no_flag_no_hits_exits_0(self, tmp_config, mock_client):
+        wl = [{"asin": "EC03", "title": "Book", "max_price": 2.0, "added": ""}]
+        (tmp_config / "wishlist.json").write_text(json.dumps(wl))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="EC03", price=9.99),
+        ]
+        result = CliRunner().invoke(cli, ["notify"])
+        assert result.exit_code == 0
+
+
+class TestWatchExitCode:
+    def test_no_hits_with_flag_exits_1(self, tmp_config, mock_client):
+        wl = [{"asin": "WEC1", "title": "Book", "max_price": 2.0, "added": ""}]
+        (tmp_config / "wishlist.json").write_text(json.dumps(wl))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="WEC1", price=9.99),
+        ]
+        result = CliRunner().invoke(cli, ["watch", "--exit-code"])
+        assert result.exit_code == 1
+
+    def test_with_hit_and_flag_exits_0(self, tmp_config, mock_client):
+        wl = [{"asin": "WEC2", "title": "Book", "max_price": 5.0, "added": ""}]
+        (tmp_config / "wishlist.json").write_text(json.dumps(wl))
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="WEC2", price=3.99),
+        ]
+        result = CliRunner().invoke(cli, ["watch", "--exit-code"])
+        assert result.exit_code == 0
+
+    def test_exit_code_with_every_is_usage_error(self, tmp_config, mock_client):
+        result = CliRunner().invoke(cli, ["watch", "--exit-code", "--every", "5m"])
+        assert result.exit_code != 0
+        assert "exit-code" in result.output.lower() or "every" in result.output.lower()
+
+
+# ===========================================================================
+# Feature E: interactive c/h verbs
+# ===========================================================================
+
+
+class TestInteractiveBrowseVerbs:
+    def _setup(self, tmp_config, monkeypatch):
+        import audible_deals.display as display_mod
+        from io import StringIO
+        from rich.console import Console
+
+        test_console = Console(file=StringIO(), force_terminal=False)
+        monkeypatch.setattr(display_mod, "console", test_console)
+        import audible_deals.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "console", test_console)
+        return test_console
+
+    def test_compare_shows_both_titles(self, tmp_config, monkeypatch):
+        from audible_deals.cli import _interactive_browse
+
+        p1 = make_product(asin="IA01", title="Alpha Book", price=5.0)
+        p2 = make_product(asin="IA02", title="Beta Book", price=8.0)
+        inputs = iter(["c 1 2", "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        console = self._setup(tmp_config, monkeypatch)
+        _interactive_browse([p1, p2])
+        out = console.file.getvalue()
+        assert "Alpha Book" in out
+        assert "Beta Book" in out
+
+    def test_history_no_entries_prints_message(self, tmp_config, monkeypatch):
+        from audible_deals.cli import _interactive_browse
+        import audible_deals.cli as cli_mod
+
+        monkeypatch.setattr(cli_mod, "load_price_history", lambda asin: [])
+        p = make_product(asin="IH01", title="History Book", price=5.0)
+        inputs = iter(["h 1", "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        console = self._setup(tmp_config, monkeypatch)
+        _interactive_browse([p])
+        out = console.file.getvalue()
+        assert "IH01" in out
+        assert "No price history" in out
+
+    def test_compare_missing_second_index_prints_error(self, tmp_config, monkeypatch):
+        from audible_deals.cli import _interactive_browse
+
+        p = make_product(asin="IC01", title="Only Book", price=5.0)
+        inputs = iter(["c 1", "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        console = self._setup(tmp_config, monkeypatch)
+        _interactive_browse([p])
+        out = console.file.getvalue()
+        assert "Invalid input" in out
+
+
+# ===========================================================================
+# Feature F: library --stats
+# ===========================================================================
+
+
+class TestLibraryStats:
+    def test_library_stats_shows_headline(self, tmp_config, mock_client):
+        products = [
+            make_product(
+                asin="LS01",
+                title="Stats Book",
+                authors=["Jane Author"],
+                length_minutes=600,
+                rating=4.5,
+            ),
+            make_product(
+                asin="LS02",
+                title="Another Book",
+                authors=["Jane Author"],
+                length_minutes=300,
+                rating=4.0,
+            ),
+        ]
+        _setup_library_mock(mock_client, products)
+        result = _run(CliRunner(), ["library", "--stats"])
+        assert result.exit_code == 0
+        assert "2" in result.output  # total books
+        assert "15" in result.output  # total hours (600+300 = 900 min = 15 h)
+
+    def test_library_stats_shows_top_author(self, tmp_config, mock_client):
+        products = [
+            make_product(asin="LS03", authors=["Repeated Author"], length_minutes=300),
+            make_product(asin="LS04", authors=["Repeated Author"], length_minutes=300),
+            make_product(asin="LS05", authors=["Other Author"], length_minutes=300),
+        ]
+        _setup_library_mock(mock_client, products)
+        result = _run(CliRunner(), ["library", "--stats"])
+        assert result.exit_code == 0
+        assert "Repeated Author" in result.output

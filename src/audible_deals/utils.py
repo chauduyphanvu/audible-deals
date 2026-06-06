@@ -181,6 +181,70 @@ def format_webhook_payload(
     return body.encode("utf-8"), headers
 
 
+def format_recap_payload(
+    payload: dict,
+    fmt: str,
+    currency: str = "$",
+) -> tuple[bytes, dict[str, str]]:
+    """Format recap payload for the given platform. Returns (body_bytes, headers)."""
+    days = payload.get("days", 0)
+    drops = payload.get("drops", [])
+    wishlist_hits = payload.get("wishlist_hits", [])
+    title_str = f"Audible Recap (last {days} days)"
+    if fmt == "generic":
+        body_str = json.dumps(payload, indent=2)
+        headers: dict[str, str] = {"Content-Type": "application/json"}
+    elif fmt == "slack":
+        lines = "\n".join(
+            f"• {d['title']} — {currency}{d['old_price']:.2f} -> {currency}{d['new_price']:.2f} (-{d['drop_pct']}%)"
+            for d in drops[:10]
+        )
+        footer = f"Wishlist at target: {len(wishlist_hits)}"
+        body_str = json.dumps({"text": f"*{title_str}*\n{lines}\n{footer}"})
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "discord":
+        lines = "\n".join(
+            f"• {d['title']} — {currency}{d['old_price']:.2f} -> {currency}{d['new_price']:.2f} (-{d['drop_pct']}%)"
+            for d in drops[:10]
+        )
+        footer = f"Wishlist at target: {len(wishlist_hits)}"
+        body_str = json.dumps({"content": f"**{title_str}**\n{lines}\n{footer}"})
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "teams":
+        text = "  \n".join(
+            f"• {d['title']} — {currency}{d['old_price']:.2f} -> {currency}{d['new_price']:.2f} (-{d['drop_pct']}%)"
+            for d in drops[:10]
+        )
+        footer = f"Wishlist at target: {len(wishlist_hits)}"
+        body_str = json.dumps(
+            {
+                "@type": "MessageCard",
+                "@context": "https://schema.org/extensions",
+                "summary": title_str,
+                "themeColor": "0078D7",
+                "title": title_str,
+                "sections": [{"text": f"{text}  \n{footer}"}],
+            }
+        )
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "ntfy":
+        lines = "\n".join(
+            f"• {d['title']} — {currency}{d['old_price']:.2f} -> {currency}{d['new_price']:.2f} (-{d['drop_pct']}%)"
+            for d in drops[:10]
+        )
+        footer = f"Wishlist at target: {len(wishlist_hits)}"
+        body_str = f"{title_str}\n{lines}\n{footer}"
+        headers = {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Title": title_str,
+            "Tags": "book",
+            "Priority": "default",
+        }
+    else:
+        raise ValueError(f"Unknown webhook format: {fmt!r}")
+    return body_str.encode("utf-8"), headers
+
+
 def parse_interval(value: str) -> int:
     """Parse an interval string into seconds. Accepts '30m', '2h', '1h30m', '90s', or a plain number (minutes)."""
     raw = value
