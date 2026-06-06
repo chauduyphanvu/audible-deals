@@ -19,7 +19,6 @@ if TYPE_CHECKING:
     import audible
 
 from audible_deals.constants import (
-    _atomic_write,
     AUTH_FILE,
     CATALOG_RESPONSE_GROUPS,
     CATEGORIES_CACHE_FILE,
@@ -28,6 +27,7 @@ from audible_deals.constants import (
     LOCALE_DOMAIN,
     MAX_PAGE_SIZE,
 )
+from audible_deals.storage import _atomic_write
 from audible_deals.product import (  # noqa: F401 — re-exported for back-compat
     Product,
     _base_price,

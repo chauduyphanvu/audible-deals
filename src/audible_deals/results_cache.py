@@ -8,8 +8,7 @@ import logging
 import click
 
 from audible_deals import constants
-from audible_deals.constants import _atomic_write
-from audible_deals.storage import load_json_file
+from audible_deals.storage import _atomic_write, load_json_file
 
 logger = logging.getLogger(__name__)
 

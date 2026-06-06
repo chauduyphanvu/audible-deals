@@ -10,8 +10,8 @@ from pathlib import Path
 
 from audible_deals import constants, wishlist
 from audible_deals.product import Product
-from audible_deals.constants import _ASIN_RE, _atomic_write
-from audible_deals.storage import load_json_file
+from audible_deals.constants import _ASIN_RE
+from audible_deals.storage import _atomic_write, load_json_file
 
 logger = logging.getLogger(__name__)
 

@@ -1,18 +1,14 @@
-"""Shared constants and base utilities for audible-deals.
+"""Shared constants for audible-deals.
 
-Consolidates file paths, locale maps, sort options, genre aliases,
-configuration schema, and the atomic-write utility used across the package.
-This module is a dependency-free leaf — it does not import from any other
-``audible_deals`` module, so it can safely be imported by all of them.
+Consolidates file paths, locale maps, sort options, genre aliases, and the
+configuration schema used across the package. Apart from the back-compat
+re-export at the bottom, this module is a dependency-free leaf, so it can
+safely be imported by all other ``audible_deals`` modules.
 """
 
 from __future__ import annotations
 
-import contextlib
-import os
 import re
-import tempfile
-import time
 from pathlib import Path
 
 # ---------------------------------------------------------------------------
@@ -209,92 +205,6 @@ _CONFIG_SCHEMA: dict[str, type] = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Atomic file write
-# ---------------------------------------------------------------------------
-
-
-def _atomic_write(path: Path, content: str) -> None:
-    """Write content to path atomically via temp file + rename."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
-    try:
-        with os.fdopen(fd, "w") as f:
-            f.write(content)
-        os.replace(tmp, path)
-    except BaseException:
-        os.unlink(tmp)
-        raise
-
-
-# ---------------------------------------------------------------------------
-# Run lock
-# ---------------------------------------------------------------------------
-
-_LOCK_STALE_SECONDS = 600  # 10 minutes
-
-
-class LockHeldError(Exception):
-    """Raised when the run lock is held by another process."""
-
-
-@contextlib.contextmanager
-def run_lock():
-    """Exclusive cross-process lock for unattended commands.
-
-    Acquires via O_CREAT|O_EXCL (atomic on POSIX and Windows NTFS).
-    Treats the lock as stale when its mtime is older than 10 minutes.
-    Raises LockHeldError when a fresh lock is held by another process.
-
-    PID-ownership: writes our PID to the lock file; the finally block only
-    unlinks the file when it still contains our PID, so we never remove
-    another process's lock on exit.
-
-    Stale-break: after unlinking a stale lock we retry the O_EXCL create
-    exactly once; if that create also fails, we lost the race and raise
-    LockHeldError rather than looping indefinitely.
-    """
-    my_pid = str(os.getpid()).encode()
-    LOCK_FILE.parent.mkdir(parents=True, exist_ok=True)
-
-    def _try_create() -> bool:
-        """Attempt O_EXCL create; return True on success, False on FileExistsError."""
-        try:
-            fd = os.open(str(LOCK_FILE), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            return False
-        try:
-            os.write(fd, my_pid)
-        except OSError:
-            os.close(fd)
-            LOCK_FILE.unlink(missing_ok=True)
-            raise
-        os.close(fd)
-        return True
-
-    if not _try_create():
-        # Lock file exists — check staleness
-        try:
-            age = time.time() - LOCK_FILE.stat().st_mtime
-        except FileNotFoundError:
-            age = _LOCK_STALE_SECONDS + 1  # vanished between checks; retry once
-
-        if age > _LOCK_STALE_SECONDS:
-            try:
-                LOCK_FILE.unlink()
-            except FileNotFoundError:
-                pass
-            # Retry once; if another racer beat us, raise immediately
-            if not _try_create():
-                raise LockHeldError(f"Lock held (mtime {age:.0f}s ago): {LOCK_FILE}")
-        else:
-            raise LockHeldError(f"Lock held (mtime {age:.0f}s ago): {LOCK_FILE}")
-
-    try:
-        yield
-    finally:
-        try:
-            if LOCK_FILE.read_bytes() == my_pid:
-                LOCK_FILE.unlink()
-        except (FileNotFoundError, OSError):
-            pass
+# Re-exported for back-compat; the lock lives in locking.py and resolves
+# LOCK_FILE (defined above) at call time. Must stay at module bottom.
+from audible_deals.locking import LockHeldError, run_lock  # noqa: E402, F401
