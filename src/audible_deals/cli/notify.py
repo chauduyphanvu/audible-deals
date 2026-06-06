@@ -226,6 +226,50 @@ def _empty_recap_payload(days: int, include_atl: bool) -> dict:
     return payload
 
 
+def _build_recap_payload(
+    days: int,
+    drops: list[tuple[str, str, float, float]],
+    new_items: list,
+    wishlist_hits: list[dict],
+    atl_hits: list[dict] | None,
+) -> dict:
+    """Build the JSON/webhook recap payload from scanned price changes."""
+
+    def _drop_pct(old: float, new: float) -> int:
+        return round((old - new) / old * 100) if old > 0 else 0
+
+    payload: dict = {
+        "days": days,
+        "drops": [
+            {
+                "asin": asin,
+                "title": title,
+                "old_price": old,
+                "new_price": new,
+                "drop_pct": _drop_pct(old, new),
+            }
+            for asin, title, old, new in sorted(
+                drops, key=lambda x: x[2] - x[3], reverse=True
+            )
+        ],
+        "new_count": len(new_items),
+        "wishlist_hits": [
+            {"asin": h["asin"], "title": h.get("title", "")} for h in wishlist_hits
+        ],
+    }
+    if atl_hits is not None:
+        payload["atl_hits"] = [
+            {
+                "asin": h["asin"],
+                "title": h.get("title", ""),
+                "price": h["price"],
+                "target": h.get("target"),
+            }
+            for h in atl_hits
+        ]
+    return payload
+
+
 def _recap_body(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_format):
     logger.info(
         "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
@@ -257,39 +301,7 @@ def _recap_body(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_f
         atl_hits = None
 
     if json_flag or webhook:
-
-        def _drop_pct(old: float, new: float) -> int:
-            return round((old - new) / old * 100) if old > 0 else 0
-
-        payload: dict = {
-            "days": days,
-            "drops": [
-                {
-                    "asin": asin,
-                    "title": title,
-                    "old_price": old,
-                    "new_price": new,
-                    "drop_pct": _drop_pct(old, new),
-                }
-                for asin, title, old, new in sorted(
-                    drops, key=lambda x: x[2] - x[3], reverse=True
-                )
-            ],
-            "new_count": len(new_items),
-            "wishlist_hits": [
-                {"asin": h["asin"], "title": h.get("title", "")} for h in wishlist_hits
-            ],
-        }
-        if atl_hits is not None:
-            payload["atl_hits"] = [
-                {
-                    "asin": h["asin"],
-                    "title": h.get("title", ""),
-                    "price": h["price"],
-                    "target": h.get("target"),
-                }
-                for h in atl_hits
-            ]
+        payload = _build_recap_payload(days, drops, new_items, wishlist_hits, atl_hits)
         if json_flag:
             click.echo(json_mod.dumps(payload, indent=2))
             return
@@ -374,34 +386,16 @@ def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
             ctx.exit(1)
 
 
-def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
-    logger.info(
-        "notify webhook_set=%s webhook_format=%s webhook_template=%s",
-        bool(webhook),
-        webhook_format,
-        webhook_template,
-    )
-    if webhook_template is not None and webhook_format != "generic":
-        raise click.UsageError(
-            "--webhook-template and --webhook-format are mutually exclusive"
-        )
-    if webhook_template is not None and not webhook:
-        raise click.UsageError("--webhook-template requires --webhook")
-    if webhook:
-        validate_webhook_url(webhook)
+def _collect_target_hits(
+    dc, asin_items: list[dict], author_items: list[dict]
+) -> tuple[list[dict], dict[str, dict], set[str]]:
+    """Fetch wishlist items and author searches, collecting at-target hits.
 
-    items = load_wishlist()
-    if not items:
-        console.print("[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]")
-        return
-
-    asin_items, author_items = partition_wishlist(items)
-
-    dc = _get_client(ctx.obj["locale"])
+    Returns (hits, extras keyed by asin, hit asins).
+    """
     targets = {item["asin"]: item.get("max_price") for item in asin_items}
 
-    cur = _currency(ctx)
-    hits = []
+    hits: list[dict] = []
     extras: dict[str, dict] = {}
     hit_asins: set[str] = set()
 
@@ -453,26 +447,83 @@ def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cool
                 if p.asin not in hit_asins:
                     add_hit(p, author_target, author=author_name)
 
+    return hits, extras, hit_asins
+
+
+def _apply_cooldown(
+    hits: list[dict], cooldown: int, today: datetime.date
+) -> tuple[list[dict], int, dict]:
+    """Drop hits already notified within the cooldown window unless cheaper.
+
+    Returns (kept hits, suppressed count, loaded notify state).
+    """
+    notify_state = load_notify_state()
+    suppressed = 0
+    kept: list[dict] = []
+    for hit in hits:
+        entry = notify_state.get(hit["asin"])
+        try:
+            if (
+                entry
+                and hit["price"] >= float(entry["price"])
+                and (today - datetime.date.fromisoformat(entry["date"])).days < cooldown
+            ):
+                suppressed += 1
+                continue
+        except (KeyError, ValueError, TypeError):
+            pass
+        kept.append(hit)
+    return kept, suppressed, notify_state
+
+
+def _persist_notify_state(
+    notify_state: dict,
+    hits: list[dict],
+    asin_items: list[dict],
+    hit_asins: set[str],
+    today: datetime.date,
+) -> None:
+    """Record notified hits and prune state to current wishlist/hit ASINs."""
+    wishlist_asins = {item["asin"] for item in asin_items}
+    today_iso = today.isoformat()
+    for hit in hits:
+        notify_state[hit["asin"]] = {"price": hit["price"], "date": today_iso}
+    keep_asins = wishlist_asins | hit_asins
+    notify_state = {k: v for k, v in notify_state.items() if k in keep_asins}
+    save_notify_state(notify_state)
+
+
+def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
+    logger.info(
+        "notify webhook_set=%s webhook_format=%s webhook_template=%s",
+        bool(webhook),
+        webhook_format,
+        webhook_template,
+    )
+    if webhook_template is not None and webhook_format != "generic":
+        raise click.UsageError(
+            "--webhook-template and --webhook-format are mutually exclusive"
+        )
+    if webhook_template is not None and not webhook:
+        raise click.UsageError("--webhook-template requires --webhook")
+    if webhook:
+        validate_webhook_url(webhook)
+
+    items = load_wishlist()
+    if not items:
+        console.print("[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]")
+        return
+
+    asin_items, author_items = partition_wishlist(items)
+
+    dc = _get_client(ctx.obj["locale"])
+    cur = _currency(ctx)
+    hits, extras, hit_asins = _collect_target_hits(dc, asin_items, author_items)
+
     suppressed = 0
     if cooldown is not None:
-        notify_state = load_notify_state()
         today = datetime.date.today()
-        kept: list[dict] = []
-        for hit in hits:
-            entry = notify_state.get(hit["asin"])
-            try:
-                if (
-                    entry
-                    and hit["price"] >= float(entry["price"])
-                    and (today - datetime.date.fromisoformat(entry["date"])).days
-                    < cooldown
-                ):
-                    suppressed += 1
-                    continue
-            except (KeyError, ValueError, TypeError):
-                pass
-            kept.append(hit)
-        hits = kept
+        hits, suppressed, notify_state = _apply_cooldown(hits, cooldown, today)
 
     if not hits:
         if not webhook:
@@ -512,10 +563,4 @@ def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cool
         click.echo(json_mod.dumps({"deals": hits, "count": len(hits)}, indent=2))
 
     if cooldown is not None:
-        wishlist_asins = {item["asin"] for item in asin_items}
-        today_iso = today.isoformat()
-        for hit in hits:
-            notify_state[hit["asin"]] = {"price": hit["price"], "date": today_iso}
-        keep_asins = wishlist_asins | hit_asins
-        notify_state = {k: v for k, v in notify_state.items() if k in keep_asins}
-        save_notify_state(notify_state)
+        _persist_notify_state(notify_state, hits, asin_items, hit_asins, today)
