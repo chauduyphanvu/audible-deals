@@ -190,38 +190,30 @@ def compare(ctx, asins, last_refs):
     display_comparison(products)
 
 
-@click.command()
-@click.pass_context
-def doctor(ctx):
-    """Diagnostic checks for auth, config, and marketplace reachability."""
-    rows: list[tuple[str, str, str]] = []
-    failures = 0
+_Row = tuple[str, str, str]  # (check, status token PASS/WARN/FAIL, detail)
 
-    def add(check, status, detail=""):
-        nonlocal failures
-        if status == "FAIL":
-            failures += 1
-            rendered = "[bold red]✗ FAIL[/bold red]"
-        elif status == "WARN":
-            rendered = "[yellow]⚠ WARN[/yellow]"
-        else:
-            rendered = "[green]✓ PASS[/green]"
-        rows.append((check, rendered, detail))
 
+def _auth_checks() -> tuple[list[_Row], bool]:
+    """Check config dir, auth file presence/parseability, and token expiry."""
+    rows: list[_Row] = []
     if constants.CONFIG_DIR.exists():
-        add("Config directory", "PASS", str(constants.CONFIG_DIR))
+        rows.append(("Config directory", "PASS", str(constants.CONFIG_DIR)))
     else:
-        add(
-            "Config directory",
-            "WARN",
-            f"Not found — will be created at {constants.CONFIG_DIR}",
+        rows.append(
+            (
+                "Config directory",
+                "WARN",
+                f"Not found — will be created at {constants.CONFIG_DIR}",
+            )
         )
 
     auth_ok = constants.AUTH_FILE.exists()
     if not auth_ok:
-        add("Auth file present", "FAIL", "Run 'deals login' or 'deals import-auth'")
+        rows.append(
+            ("Auth file present", "FAIL", "Run 'deals login' or 'deals import-auth'")
+        )
     else:
-        add("Auth file present", "PASS", str(constants.AUTH_FILE))
+        rows.append(("Auth file present", "PASS", str(constants.AUTH_FILE)))
 
     auth_data = None
     if auth_ok:
@@ -229,62 +221,82 @@ def doctor(ctx):
             auth_data = json_mod.loads(constants.AUTH_FILE.read_text())
             if not isinstance(auth_data, dict):
                 raise ValueError("not a JSON object")
-            add("Auth file parseable", "PASS")
+            rows.append(("Auth file parseable", "PASS", ""))
         except Exception as e:
-            add("Auth file parseable", "FAIL", str(e))
+            rows.append(("Auth file parseable", "FAIL", str(e)))
             auth_ok = False
 
     if auth_ok and auth_data is not None:
         expires = auth_data.get("expires")
         if expires is None:
-            add(
-                "Auth token expiry",
-                "WARN",
-                "expires field missing — token freshness unknown",
+            rows.append(
+                (
+                    "Auth token expiry",
+                    "WARN",
+                    "expires field missing — token freshness unknown",
+                )
             )
         else:
             try:
                 exp = float(expires)
                 now = time.time()
                 if exp < now:
-                    add(
-                        "Auth token expiry",
-                        "FAIL",
-                        "Token has expired — run 'deals login'",
+                    rows.append(
+                        (
+                            "Auth token expiry",
+                            "FAIL",
+                            "Token has expired — run 'deals login'",
+                        )
                     )
                     auth_ok = False
                 elif exp < now + 86400:
-                    add(
-                        "Auth token expiry",
-                        "WARN",
-                        "Token expires within 24h — consider refreshing",
+                    rows.append(
+                        (
+                            "Auth token expiry",
+                            "WARN",
+                            "Token expires within 24h — consider refreshing",
+                        )
                     )
                 else:
-                    add("Auth token expiry", "PASS")
+                    rows.append(("Auth token expiry", "PASS", ""))
             except (TypeError, ValueError):
-                add("Auth token expiry", "WARN", "Could not parse expires field")
+                rows.append(
+                    ("Auth token expiry", "WARN", "Could not parse expires field")
+                )
 
-    if auth_ok:
-        try:
-            dc = _get_client(ctx.obj["locale"])
-            with dc:
-                dc._api_get("1.0/catalog/products", num_results=1)
-            add("Marketplace reachable", "PASS")
-        except Exception as e:
-            add("Marketplace reachable", "FAIL", f"{type(e).__name__}: {e}")
-    else:
-        add("Marketplace reachable", "WARN", "Skipped — auth checks failed")
+    return rows, auth_ok
 
+
+def _connectivity_check(ctx, auth_ok: bool) -> _Row:
+    """Probe the marketplace API (skipped when auth checks failed)."""
+    if not auth_ok:
+        return ("Marketplace reachable", "WARN", "Skipped — auth checks failed")
+    try:
+        dc = _get_client(ctx.obj["locale"])
+        with dc:
+            dc._api_get("1.0/catalog/products", num_results=1)
+        return ("Marketplace reachable", "PASS", "")
+    except Exception as e:
+        return ("Marketplace reachable", "FAIL", f"{type(e).__name__}: {e}")
+
+
+def _config_checks() -> list[_Row]:
+    """Validate the config file schema and profile option keys."""
+    rows: list[_Row] = []
     if constants.CONFIG_FILE.exists():
         try:
             cfg = json_mod.loads(constants.CONFIG_FILE.read_text())
             if not isinstance(cfg, dict):
-                add(
-                    "Config file valid",
-                    "FAIL",
-                    f"Expected a JSON object, got {type(cfg).__name__}",
+                rows.append(
+                    (
+                        "Config file valid",
+                        "FAIL",
+                        f"Expected a JSON object, got {type(cfg).__name__}",
+                    )
                 )
-                add("Unknown config keys", "WARN", "Skipped — config file unparseable")
+                rows.append(
+                    ("Unknown config keys", "WARN", "Skipped — config file unparseable")
+                )
             else:
                 errors = [
                     f"{k}: expected {_CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
@@ -292,19 +304,21 @@ def doctor(ctx):
                     if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
                 ]
                 if errors:
-                    add("Config file valid", "FAIL", "; ".join(errors))
+                    rows.append(("Config file valid", "FAIL", "; ".join(errors)))
                 else:
-                    add("Config file valid", "PASS")
+                    rows.append(("Config file valid", "PASS", ""))
                 unknown = sorted(k for k in cfg if k not in _CONFIG_SCHEMA)
                 if unknown:
-                    add("Unknown config keys", "WARN", ", ".join(unknown))
+                    rows.append(("Unknown config keys", "WARN", ", ".join(unknown)))
                 else:
-                    add("Unknown config keys", "PASS")
+                    rows.append(("Unknown config keys", "PASS", ""))
         except Exception as e:
-            add("Config file valid", "FAIL", str(e))
-            add("Unknown config keys", "WARN", "Skipped — config file unparseable")
+            rows.append(("Config file valid", "FAIL", str(e)))
+            rows.append(
+                ("Unknown config keys", "WARN", "Skipped — config file unparseable")
+            )
     else:
-        add("Config file valid", "PASS", "No config file (using defaults)")
+        rows.append(("Config file valid", "PASS", "No config file (using defaults)"))
 
     if constants.PROFILES_FILE.exists():
         try:
@@ -319,12 +333,18 @@ def doctor(ctx):
                 detail = "; ".join(
                     f"{n}: {', '.join(ks)}" for n, ks in sorted(bad_profiles.items())
                 )
-                add("Unknown profile keys", "WARN", detail)
+                rows.append(("Unknown profile keys", "WARN", detail))
             else:
-                add("Unknown profile keys", "PASS")
+                rows.append(("Unknown profile keys", "PASS", ""))
         except Exception as e:
-            add("Unknown profile keys", "WARN", str(e))
+            rows.append(("Unknown profile keys", "WARN", str(e)))
 
+    return rows
+
+
+def _store_checks() -> list[_Row]:
+    """Check notify-state health and that local state files are parseable."""
+    rows: list[_Row] = []
     try:
         ns = load_notify_state()
         today = datetime.date.today()
@@ -350,46 +370,65 @@ def doctor(ctx):
                 parts.append(f"{malformed} malformed")
             if stale:
                 parts.append(f"{stale} stale (>365 days)")
-            add("Notify-state health", "WARN", "; ".join(parts))
+            rows.append(("Notify-state health", "WARN", "; ".join(parts)))
         elif ns:
-            add("Notify-state health", "PASS", f"{len(ns)} suppressed ASIN(s) tracked")
+            rows.append(
+                ("Notify-state health", "PASS", f"{len(ns)} suppressed ASIN(s) tracked")
+            )
         else:
-            add("Notify-state health", "PASS", "No entries")
+            rows.append(("Notify-state health", "PASS", "No entries"))
     except Exception as e:
-        add("Notify-state health", "WARN", str(e))
+        rows.append(("Notify-state health", "WARN", str(e)))
 
-    try:
-        load_wishlist()
-        add("Wishlist parseable", "PASS")
-    except Exception as e:
-        add("Wishlist parseable", "FAIL", str(e))
-
-    try:
-        load_profiles()
-        add("Profiles parseable", "PASS")
-    except Exception as e:
-        add("Profiles parseable", "FAIL", str(e))
-
-    try:
-        load_seen_asins()
-        add("Seen-ASINs parseable", "PASS")
-    except Exception as e:
-        add("Seen-ASINs parseable", "FAIL", str(e))
+    for check, loader in (
+        ("Wishlist parseable", load_wishlist),
+        ("Profiles parseable", load_profiles),
+        ("Seen-ASINs parseable", load_seen_asins),
+    ):
+        try:
+            loader()
+            rows.append((check, "PASS", ""))
+        except Exception as e:
+            rows.append((check, "FAIL", str(e)))
 
     if constants.HISTORY_DIR.exists():
         count = sum(1 for _ in constants.HISTORY_DIR.glob("*.json"))
-        add("Price history directory", "PASS", f"{count} ASIN(s) tracked")
+        rows.append(("Price history directory", "PASS", f"{count} ASIN(s) tracked"))
     else:
-        add("Price history directory", "PASS", "Not yet created (optional)")
+        rows.append(("Price history directory", "PASS", "Not yet created (optional)"))
 
+    return rows
+
+
+def _render_doctor_rows(rows: list[_Row]) -> int:
+    """Render the doctor table. Returns the number of FAIL rows."""
+    failures = 0
     table = Table(title="deals doctor")
     table.add_column("Check")
     table.add_column("Status")
     table.add_column("Detail", style="dim")
-    for r in rows:
-        table.add_row(*r)
+    for check, status, detail in rows:
+        if status == "FAIL":
+            failures += 1
+            rendered = "[bold red]✗ FAIL[/bold red]"
+        elif status == "WARN":
+            rendered = "[yellow]⚠ WARN[/yellow]"
+        else:
+            rendered = "[green]✓ PASS[/green]"
+        table.add_row(check, rendered, detail)
     console.print(table)
-    if failures:
+    return failures
+
+
+@click.command()
+@click.pass_context
+def doctor(ctx):
+    """Diagnostic checks for auth, config, and marketplace reachability."""
+    rows, auth_ok = _auth_checks()
+    rows.append(_connectivity_check(ctx, auth_ok))
+    rows.extend(_config_checks())
+    rows.extend(_store_checks())
+    if _render_doctor_rows(rows):
         ctx.exit(1)
 
 
