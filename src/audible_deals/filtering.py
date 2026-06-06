@@ -36,6 +36,7 @@ def filter_products(
     skip_plus: bool = False,
     only_plus: bool = False,
     exclude_keywords: tuple[str, ...] = (),
+    drop_zero_length: bool = False,
 ) -> tuple[list[Product], dict[str, int]]:
     """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
     filtered = products
@@ -47,6 +48,9 @@ def filter_products(
         filtered = [p for p in filtered if keep(p)]
         if removed := before - len(filtered):
             breakdown[label] = removed
+
+    if drop_zero_length:
+        _apply("no runtime", lambda p: p.length_minutes != 0)
 
     if skip_asins:
         _apply("owned", lambda p: p.asin not in skip_asins)

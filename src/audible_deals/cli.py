@@ -258,11 +258,9 @@ def _apply_filters(
     drop_zero_length: bool = True,
 ) -> tuple[list[Product], dict[str, int], int, int]:
     """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed)."""
-    no_runtime_count = sum(1 for p in all_products if p.length_minutes == 0)
-    if drop_zero_length and no_runtime_count:
-        all_products = [p for p in all_products if p.length_minutes != 0]
     filtered, filter_breakdown = filter_products(
         all_products,
+        drop_zero_length=drop_zero_length,
         max_price=max_price,
         min_rating=min_rating,
         min_ratings=min_ratings,
@@ -283,8 +281,6 @@ def _apply_filters(
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
-    if drop_zero_length and no_runtime_count:
-        filter_breakdown["no runtime"] = no_runtime_count
     filtered, editions_removed = dedupe_editions(filtered)
     series_collapsed = 0
     if first_in_series_only:
@@ -388,21 +384,14 @@ def _interactive_browse(products: list[Product], currency: str = "$") -> None:
         try:
             if len(parts) >= 1 and parts[0].lower() == "c":
                 if len(parts) != 3:
-                    console.print(
-                        "[dim]Invalid input. Enter a number, 'o #', 'w #', 'c # #', 'h #', or 'q'.[/dim]"
-                    )
-                    continue
+                    raise ValueError
                 action = "compare"
                 idx = int(parts[1]) - 1
                 idx2 = int(parts[2]) - 1
             elif len(parts) == 2 and parts[0].lower() in ("o", "w", "h"):
-                verb = parts[0].lower()
-                if verb == "o":
-                    action = "open"
-                elif verb == "w":
-                    action = "wishlist"
-                else:
-                    action = "history"
+                action = {"o": "open", "w": "wishlist", "h": "history"}[
+                    parts[0].lower()
+                ]
                 idx = int(parts[1]) - 1
             else:
                 idx = int(parts[0]) - 1
@@ -412,19 +401,15 @@ def _interactive_browse(products: list[Product], currency: str = "$") -> None:
             )
             continue
 
-        if action == "compare":
-            if idx < 0 or idx >= len(products) or idx2 < 0 or idx2 >= len(products):
-                console.print(f"[dim]Number must be 1-{len(products)}.[/dim]")
-                continue
-            display_comparison([products[idx], products[idx2]])
-            continue
-
-        if idx < 0 or idx >= len(products):
+        indices = [idx, idx2] if action == "compare" else [idx]
+        if not all(0 <= i < len(products) for i in indices):
             console.print(f"[dim]Number must be 1-{len(products)}.[/dim]")
             continue
 
         p = products[idx]
-        if action == "detail":
+        if action == "compare":
+            display_comparison([p, products[idx2]])
+        elif action == "detail":
             display_product_detail(p)
         elif action == "open":
             console.print(f"[dim]Opening {p.url}[/dim]")
@@ -2941,23 +2926,23 @@ def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
             }
 
     suppressed = 0
-    if cooldown is not None and hits:
+    if cooldown is not None:
         notify_state = load_notify_state()
         today = datetime.date.today()
         kept: list[dict] = []
         for hit in hits:
-            asin = hit["asin"]
-            entry = notify_state.get(asin)
-            if entry:
-                try:
-                    recorded_date = datetime.date.fromisoformat(entry["date"])
-                    recorded_price = float(entry["price"])
-                    age = (today - recorded_date).days
-                    if hit["price"] >= recorded_price and age < cooldown:
-                        suppressed += 1
-                        continue
-                except (KeyError, ValueError, TypeError):
-                    pass
+            entry = notify_state.get(hit["asin"])
+            try:
+                if (
+                    entry
+                    and hit["price"] >= float(entry["price"])
+                    and (today - datetime.date.fromisoformat(entry["date"])).days
+                    < cooldown
+                ):
+                    suppressed += 1
+                    continue
+            except (KeyError, ValueError, TypeError):
+                pass
             kept.append(hit)
         hits = kept
 
