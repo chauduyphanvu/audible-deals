@@ -84,15 +84,13 @@ from audible_deals.filtering import (
     sort_local,
 )
 from audible_deals.settings import Settings, _PROFILE_EXTRA_KEYS
-from audible_deals.utils import (
-    format_recap_payload,
-    format_webhook_payload,
+from audible_deals.parsing import parse_interval, parse_series_position
+from audible_deals.validation import (
     looks_like_person_name,
-    parse_interval,
-    parse_series_position,
     validate_asin,
     validate_webhook_url,
 )
+from audible_deals.webhooks import format_recap_payload, format_webhook_payload
 from audible_deals.serialization import (
     deserialize_product,
     export_products,

@@ -34,9 +34,9 @@ from audible_deals.state import (
     save_seen_asins as _save_seen_asins,
     resolve_last_references as _resolve_last_references,
 )
-from audible_deals.utils import (
+from audible_deals.parsing import parse_interval as _parse_interval
+from audible_deals.validation import (
     looks_like_person_name as _looks_like_person_name,
-    parse_interval as _parse_interval,
     validate_webhook_url as _validate_webhook_url,
 )
 from tests.conftest import make_product
@@ -1177,7 +1177,7 @@ class TestWebhookValidation:
         import socket
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("10.0.0.1", 0))],
         )
         with pytest.raises(click.BadParameter, match="non-public"):
@@ -1187,7 +1187,7 @@ class TestWebhookValidation:
         import socket
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("169.254.169.254", 0))],
         )
         with pytest.raises(click.BadParameter, match="non-public"):
@@ -1197,7 +1197,7 @@ class TestWebhookValidation:
         import socket
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
         )
         _validate_webhook_url("https://example.com/hook")  # should not raise
@@ -1206,7 +1206,7 @@ class TestWebhookValidation:
         import socket
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: (_ for _ in ()).throw(
                 socket.gaierror("Name not resolved")
             ),
@@ -5207,7 +5207,7 @@ class TestWebhookFormats:
         ]
 
     def test_generic_format(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         body, headers = format_webhook_payload(self._hits(), "generic")
         assert headers["Content-Type"] == "application/json"
@@ -5216,7 +5216,7 @@ class TestWebhookFormats:
         assert data["count"] == 1
 
     def test_slack_format_has_text_key(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         body, headers = format_webhook_payload(self._hits(), "slack")
         assert headers["Content-Type"] == "application/json"
@@ -5225,7 +5225,7 @@ class TestWebhookFormats:
         assert "My Book" in data["text"]
 
     def test_discord_format_has_content_key(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         body, headers = format_webhook_payload(self._hits(), "discord")
         assert headers["Content-Type"] == "application/json"
@@ -5234,7 +5234,7 @@ class TestWebhookFormats:
         assert "My Book" in data["content"]
 
     def test_teams_format_has_messagecardtype(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         body, headers = format_webhook_payload(self._hits(), "teams")
         assert headers["Content-Type"] == "application/json"
@@ -5243,7 +5243,7 @@ class TestWebhookFormats:
         assert "My Book" in str(data)
 
     def test_ntfy_format_is_plaintext(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         body, headers = format_webhook_payload(self._hits(), "ntfy")
         assert "text/plain" in headers["Content-Type"]
@@ -5251,7 +5251,7 @@ class TestWebhookFormats:
         assert headers["Tags"] == "book"
 
     def test_unknown_format_raises(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         with pytest.raises(ValueError, match="Unknown webhook format"):
             format_webhook_payload(self._hits(), "discord_v2")
@@ -5264,7 +5264,7 @@ class TestWebhookFormats:
         import audible_deals.cli as cli_mod
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
         )
 
@@ -5304,7 +5304,7 @@ class TestWebhookFormats:
         assert "text" in body
 
     def test_template_format_renders_hits(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         hits = [
             {
@@ -5323,7 +5323,7 @@ class TestWebhookFormats:
         assert body.decode("utf-8") == "My Book is $3.99"
 
     def test_template_multiple_hits_joined_with_newline(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         hits = [
             {
@@ -5349,7 +5349,7 @@ class TestWebhookFormats:
         assert body.decode("utf-8") == "Book A\nBook B"
 
     def test_template_unknown_key_raises_valueerror(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         hits = [
             {
@@ -5373,7 +5373,7 @@ class TestWebhookFormats:
         import socket
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
         )
         tmpl_file = tmp_path / "tmpl.txt"
@@ -5420,13 +5420,13 @@ class TestWebhookFormats:
         )
 
     def test_template_lib_rejects_non_generic_fmt(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         with pytest.raises(ValueError, match="non-generic"):
             format_webhook_payload([], "slack", template="{title}")
 
     def test_template_malformed_brace_raises_valueerror(self):
-        from audible_deals.utils import format_webhook_payload
+        from audible_deals.webhooks import format_webhook_payload
 
         hits = [{"asin": "B001", "title": "T", "price": 1.0, "target": 2.0, "url": "u"}]
         with pytest.raises(ValueError, match="Valid keys"):
@@ -6373,7 +6373,7 @@ class TestRecapWebhook:
         import datetime
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
         )
         today = datetime.date.today().isoformat()
@@ -6406,7 +6406,7 @@ class TestRecapWebhook:
         import socket
 
         monkeypatch.setattr(
-            "audible_deals.utils.socket.getaddrinfo",
+            "audible_deals.validation.socket.getaddrinfo",
             lambda host, port: [(socket.AF_INET, 0, 0, "", ("93.184.216.34", 0))],
         )
         captured = []
@@ -6443,7 +6443,7 @@ class TestFormatRecapPayload:
         }
 
     def test_generic_shape(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, headers = format_recap_payload(self._payload(), "generic")
         assert headers["Content-Type"] == "application/json"
@@ -6452,7 +6452,7 @@ class TestFormatRecapPayload:
         assert "drops" in data
 
     def test_slack_has_text_key(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, headers = format_recap_payload(self._payload(), "slack")
         assert headers["Content-Type"] == "application/json"
@@ -6461,7 +6461,7 @@ class TestFormatRecapPayload:
         assert "My Recap Book" in data["text"]
 
     def test_discord_has_content_key(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, headers = format_recap_payload(self._payload(), "discord")
         assert headers["Content-Type"] == "application/json"
@@ -6470,7 +6470,7 @@ class TestFormatRecapPayload:
         assert "My Recap Book" in data["content"]
 
     def test_teams_has_messagecardtype(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, headers = format_recap_payload(self._payload(), "teams")
         assert headers["Content-Type"] == "application/json"
@@ -6479,7 +6479,7 @@ class TestFormatRecapPayload:
         assert "My Recap Book" in str(data)
 
     def test_ntfy_is_plaintext(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, headers = format_recap_payload(self._payload(), "ntfy")
         assert "text/plain" in headers["Content-Type"]
@@ -6487,13 +6487,13 @@ class TestFormatRecapPayload:
         assert headers["Tags"] == "book"
 
     def test_unknown_format_raises(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         with pytest.raises(ValueError, match="Unknown webhook format"):
             format_recap_payload(self._payload(), "unknown_fmt")
 
     def test_title_includes_days(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, _ = format_recap_payload(self._payload(days=14), "slack")
         text = json.loads(body)["text"]
@@ -8096,7 +8096,7 @@ class TestFormatRecapPayloadAtlHits:
         }
 
     def test_slack_includes_atl_hits(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, _ = format_recap_payload(self._payload_with_atl(), "slack")
         text = json.loads(body)["text"]
@@ -8104,7 +8104,7 @@ class TestFormatRecapPayloadAtlHits:
         assert "2.99" in text
 
     def test_discord_includes_atl_hits(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, _ = format_recap_payload(self._payload_with_atl(), "discord")
         content = json.loads(body)["content"]
@@ -8112,14 +8112,14 @@ class TestFormatRecapPayloadAtlHits:
         assert "2.99" in content
 
     def test_teams_includes_atl_hits(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, _ = format_recap_payload(self._payload_with_atl(), "teams")
         data = json.loads(body)
         assert "ATL Book" in str(data)
 
     def test_ntfy_includes_atl_hits(self):
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         body, _ = format_recap_payload(self._payload_with_atl(), "ntfy")
         text = body.decode("utf-8")
@@ -8128,7 +8128,7 @@ class TestFormatRecapPayloadAtlHits:
 
     def test_no_atl_hits_key_renders_cleanly(self):
         """Payload without atl_hits key does not crash and renders normally."""
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         payload = {
             "days": 7,
@@ -8150,7 +8150,7 @@ class TestFormatRecapPayloadAtlHits:
 
     def test_empty_atl_hits_no_section(self):
         """Empty atl_hits list does not add an ATL section."""
-        from audible_deals.utils import format_recap_payload
+        from audible_deals.webhooks import format_recap_payload
 
         payload = {**self._payload_with_atl(), "atl_hits": []}
         body, _ = format_recap_payload(payload, "slack")

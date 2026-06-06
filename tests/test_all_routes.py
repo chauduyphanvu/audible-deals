@@ -1409,37 +1409,37 @@ class TestParseSeriesPosition:
     """Unit tests for the parse_series_position helper in utils."""
 
     def test_plain_integer(self):
-        from audible_deals.utils import parse_series_position
+        from audible_deals.parsing import parse_series_position
 
         assert parse_series_position("2") == 2.0
 
     def test_decimal(self):
-        from audible_deals.utils import parse_series_position
+        from audible_deals.parsing import parse_series_position
 
         assert parse_series_position("2.5") == 2.5
 
     def test_range_picks_first(self):
-        from audible_deals.utils import parse_series_position
+        from audible_deals.parsing import parse_series_position
 
         assert parse_series_position("1-3") == 1.0
 
     def test_prefixed(self):
-        from audible_deals.utils import parse_series_position
+        from audible_deals.parsing import parse_series_position
 
         assert parse_series_position("Book 2") == 2.0
 
     def test_empty_string_goes_last(self):
-        from audible_deals.utils import parse_series_position
+        from audible_deals.parsing import parse_series_position
 
         assert parse_series_position("") == float("inf")
 
     def test_unparseable_goes_last(self):
-        from audible_deals.utils import parse_series_position
+        from audible_deals.parsing import parse_series_position
 
         assert parse_series_position("Prequel") == float("inf")
 
     def test_sort_order(self):
-        from audible_deals.utils import parse_series_position
+        from audible_deals.parsing import parse_series_position
 
         positions = ["3", "1-3", "2.5", "Book 10", "", "Prequel"]
         sorted_pos = sorted(positions, key=parse_series_position)
