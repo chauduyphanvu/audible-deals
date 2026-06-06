@@ -8,8 +8,7 @@ import time
 import pytest
 
 from audible_deals.client import (
-    _extract_list_price,
-    _extract_price,
+    _extract_prices,
     _validate_category_id,
     parse_product,
 )
@@ -79,35 +78,27 @@ class TestProductProperties:
 class TestPriceExtraction:
     def test_lowest_price(self):
         raw = {"price": {"lowest_price": {"base": 2.99}, "list_price": {"base": 15.0}}}
-        assert _extract_price(raw) == 2.99
+        assert _extract_prices(raw) == (2.99, 15.0)
 
     def test_falls_back_to_list_price(self):
         raw = {"price": {"list_price": {"base": 15.0}}}
-        assert _extract_price(raw) == 15.0
+        assert _extract_prices(raw) == (15.0, 15.0)
 
     def test_simple_numeric_price(self):
         raw = {"price": 9.99}
-        assert _extract_price(raw) == 9.99
+        assert _extract_prices(raw) == (9.99, None)
 
     def test_no_price(self):
         raw = {}
-        assert _extract_price(raw) is None
+        assert _extract_prices(raw) == (None, None)
 
     def test_none_base(self):
         raw = {"price": {"lowest_price": {"base": None}, "list_price": {"base": None}}}
-        assert _extract_price(raw) is None
+        assert _extract_prices(raw) == (None, None)
 
-    def test_extract_list_price_nested(self):
-        raw = {"price": {"list_price": {"base": 20.0}}}
-        assert _extract_list_price(raw) == 20.0
-
-    def test_extract_list_price_top_level(self):
+    def test_list_price_top_level(self):
         raw = {"list_price": 25.0}
-        assert _extract_list_price(raw) == 25.0
-
-    def test_extract_list_price_missing(self):
-        raw = {}
-        assert _extract_list_price(raw) is None
+        assert _extract_prices(raw) == (None, 25.0)
 
 
 # ===================================================================

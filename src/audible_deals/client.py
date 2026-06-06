@@ -138,8 +138,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
 
     Handles the nested response format from Audible's catalog API.
     """
-    price = _extract_price(raw)
-    list_price = _extract_list_price(raw)
+    price, list_price = _extract_prices(raw)
 
     authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
     narrators = [
@@ -225,30 +224,22 @@ def _base_price(obj) -> float | None:
     return None
 
 
-def _extract_price(raw: dict) -> float | None:
-    """Extract current/sale price. Checks lowest_price first for deals."""
+def _extract_prices(raw: dict) -> tuple[float | None, float | None]:
+    """Extract (current/sale price, original list price). Checks lowest_price first for deals."""
     price_obj = raw.get("price")
+    price = list_price = None
     if isinstance(price_obj, dict):
-        val = _base_price(price_obj.get("lowest_price"))
-        if val is None:
-            val = _base_price(price_obj.get("list_price"))
-        return val
-    if isinstance(price_obj, (int, float)):
-        return float(price_obj)
-    return None
-
-
-def _extract_list_price(raw: dict) -> float | None:
-    """Extract original list price for discount calculation."""
-    price_obj = raw.get("price")
-    if isinstance(price_obj, dict):
-        val = _base_price(price_obj.get("list_price"))
-        if val is not None:
-            return val
-    lp = raw.get("list_price")
-    if isinstance(lp, (int, float)):
-        return float(lp)
-    return None
+        list_price = _base_price(price_obj.get("list_price"))
+        price = _base_price(price_obj.get("lowest_price"))
+        if price is None:
+            price = list_price
+    elif isinstance(price_obj, (int, float)):
+        price = float(price_obj)
+    if list_price is None:
+        lp = raw.get("list_price")
+        if isinstance(lp, (int, float)):
+            list_price = float(lp)
+    return price, list_price
 
 
 class DealsClient:

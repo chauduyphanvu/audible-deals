@@ -95,16 +95,16 @@ class TestDiscountColor:
 
 class TestPphStr:
     def test_normal(self):
-        assert _pph_str(10.0, 5.0) == "$2.00"
+        assert _pph_str(make_product(price=10.0, length_minutes=300)) == "$2.00"
 
     def test_none_price(self):
-        assert _pph_str(None, 5.0) == "-"
+        assert _pph_str(make_product(price=None, length_minutes=300)) == "-"
 
     def test_zero_hours(self):
-        assert _pph_str(10.0, 0.0) == "-"
+        assert _pph_str(make_product(price=10.0, length_minutes=0)) == "-"
 
     def test_cheap_per_hour(self):
-        assert _pph_str(1.0, 20.0) == "$0.05"
+        assert _pph_str(make_product(price=1.0, length_minutes=1200)) == "$0.05"
 
 
 # ===================================================================

@@ -149,18 +149,7 @@ def validate_config_key(key: str) -> str:
 
 def load_seen_asins() -> set[str]:
     """Load cumulative seen ASINs for exclusion."""
-    try:
-        data = json_mod.loads(SEEN_ASINS_FILE.read_text())
-        if isinstance(data, list):
-            logger.debug("loaded seen ASINs (%d) from %s", len(data), SEEN_ASINS_FILE)
-            return set(data)
-    except FileNotFoundError:
-        pass
-    except (json_mod.JSONDecodeError, OSError, KeyError, TypeError):
-        logger.warning(
-            "seen-asins at %s is corrupt, ignoring", SEEN_ASINS_FILE, exc_info=True
-        )
-    return set()
+    return set(_load_json_file(SEEN_ASINS_FILE, list, "seen ASINs"))
 
 
 def save_seen_asins(new_asins: set[str]) -> None:
@@ -285,7 +274,7 @@ def resolve_last_references(refs: tuple[str | int, ...]) -> list[tuple[str, str]
 # Price history
 # ---------------------------------------------------------------------------
 
-_history_dir_created = False
+_MAX_HISTORY_ENTRIES = 365
 
 
 def record_prices(products: list[Product]) -> None:
@@ -294,14 +283,11 @@ def record_prices(products: list[Product]) -> None:
     Batches writes: reads all existing files, updates in-memory,
     then writes only changed files.
     """
-    global _history_dir_created
     priced = [p for p in products if p.price is not None]
     if not priced:
         logger.debug("record_prices: no priced products (input=%d)", len(products))
         return
-    if not _history_dir_created:
-        HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        _history_dir_created = True
+    HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
     today = datetime.date.today().isoformat()
     to_write: dict[Path, list[dict]] = {}
@@ -326,7 +312,7 @@ def record_prices(products: list[Product]) -> None:
             skipped_today += 1
             continue
         entries.append({"date": today, "price": round(p.price, 2), "title": p.title})
-        to_write[hist_file] = entries[-365:]
+        to_write[hist_file] = entries[-_MAX_HISTORY_ENTRIES:]
 
     for path, entries in to_write.items():
         _atomic_write(path, json_mod.dumps(entries))

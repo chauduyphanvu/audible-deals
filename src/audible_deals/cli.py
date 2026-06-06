@@ -136,6 +136,16 @@ def _complete_genre_names(ctx, param, incomplete):
     return [CompletionItem(k) for k in GENRE_ALIASES if k.startswith(incomplete)]
 
 
+def _collect_asins(asins: tuple[str, ...], last_refs: tuple[str, ...]) -> list[str]:
+    """Combine positional ASINs with resolved --last references."""
+    all_asins = list(asins)
+    if last_refs:
+        for ref_asin, desc in resolve_last_references(last_refs):
+            console.print(f"[dim]{desc}[/dim]")
+            all_asins.append(ref_asin)
+    return all_asins
+
+
 def _resolve_single_last_ref(last_ref: str) -> tuple[str, str]:
     resolved = resolve_last_references((last_ref,))
     if len(resolved) != 1:
@@ -2079,12 +2089,7 @@ def compare(ctx, asins, last_refs):
         deals compare B00R6S1RCY B00I2VWW5U B019NMZ6FE
         deals compare --last 1 --last 3
     """
-    all_asins = list(asins)
-    if last_refs:
-        resolved = resolve_last_references(last_refs)
-        for ref_asin, desc in resolved:
-            console.print(f"[dim]{desc}[/dim]")
-            all_asins.append(ref_asin)
+    all_asins = _collect_asins(asins, last_refs)
 
     if len(all_asins) < 2:
         raise click.UsageError("Provide at least 2 ASINs to compare.")
@@ -2137,12 +2142,7 @@ def wishlist_add(ctx, asins, max_price, last_refs):
         deals wishlist add B00R6S1RCY B00I2VWW5U --max-price 5
         deals wishlist add --last 1 --last 2 --max-price 5
     """
-    all_asins = list(asins)
-    if last_refs:
-        resolved = resolve_last_references(last_refs)
-        for ref_asin, desc in resolved:
-            console.print(f"[dim]{desc}[/dim]")
-            all_asins.append(ref_asin)
+    all_asins = _collect_asins(asins, last_refs)
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or use --last N.")
 
@@ -2184,12 +2184,7 @@ def wishlist_add(ctx, asins, max_price, last_refs):
 )
 def wishlist_remove(asins, last_refs):
     """Remove ASINs from your wishlist."""
-    all_asins = list(asins)
-    if last_refs:
-        resolved = resolve_last_references(last_refs)
-        for ref_asin, desc in resolved:
-            console.print(f"[dim]{desc}[/dim]")
-            all_asins.append(ref_asin)
+    all_asins = _collect_asins(asins, last_refs)
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or use --last N.")
     for asin in all_asins:

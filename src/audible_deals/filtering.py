@@ -157,6 +157,10 @@ def filter_products(
     return filtered, breakdown
 
 
+def _price_or(p: Product, missing: float) -> float:
+    return p.price if p.price is not None else missing
+
+
 def price_per_hour(p: Product) -> float:
     """Calculate price per hour of audio. Returns inf for missing data."""
     if p.price is None or p.hours <= 0:
@@ -175,8 +179,8 @@ def value_score(p: Product) -> float:
 
 # sort name -> (key function, reverse). Missing prices always sort last.
 _SORT_KEYS = {
-    "price": (lambda p: p.price if p.price is not None else float("inf"), False),
-    "-price": (lambda p: p.price if p.price is not None else float("-inf"), True),
+    "price": (lambda p: _price_or(p, float("inf")), False),
+    "-price": (lambda p: _price_or(p, float("-inf")), True),
     "rating": (lambda p: p.rating, True),
     "length": (lambda p: p.length_minutes, True),
     "date": (lambda p: p.release_date or "", True),
@@ -210,13 +214,10 @@ def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
             continue
         key = (p.series_name.lower(), p.series_position.lower())
         existing = best.get(key)
-        if existing is None:
+        if existing is None or _price_or(p, float("inf")) < _price_or(
+            existing, float("inf")
+        ):
             best[key] = p
-        else:
-            p_price = p.price if p.price is not None else float("inf")
-            e_price = existing.price if existing.price is not None else float("inf")
-            if p_price < e_price:
-                best[key] = p
 
     best_asins = {p.asin for p in best.values()}
     result = []

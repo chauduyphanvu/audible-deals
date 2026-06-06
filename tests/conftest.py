@@ -186,7 +186,6 @@ def tmp_config(tmp_path, monkeypatch):
     # Patch state module where the implementations now live
     monkeypatch.setattr(state_mod, "WISHLIST_FILE", tmp_path / "wishlist.json")
     monkeypatch.setattr(state_mod, "HISTORY_DIR", tmp_path / "history")
-    monkeypatch.setattr(state_mod, "_history_dir_created", False)
     monkeypatch.setattr(state_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json")
     monkeypatch.setattr(state_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
     monkeypatch.setattr(state_mod, "CONFIG_FILE", tmp_path / "config.json")

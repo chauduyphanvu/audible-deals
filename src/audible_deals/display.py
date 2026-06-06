@@ -54,11 +54,12 @@ def _discount_color(pct: int) -> str:
     return "dim"
 
 
-def _pph_str(price: float | None, hours: float, currency: str = "$") -> str:
+def _pph_str(p: Product, currency: str = "$") -> str:
     """Format price-per-hour."""
-    if price is None or hours <= 0:
+    pph = price_per_hour(p)
+    if pph == float("inf"):
         return "-"
-    return f"{currency}{price / hours:.2f}"
+    return f"{currency}{pph:.2f}"
 
 
 def display_products(
@@ -140,7 +141,7 @@ def display_products(
             title_line,
             p_str,
             str(p.hours) if p.hours else "-",
-            _pph_str(p.price, p.hours, cur),
+            _pph_str(p, cur),
             rating_str(p.rating, p.num_ratings),
         ]
         if show_hist:
@@ -256,7 +257,7 @@ def display_comparison(products: list[Product]) -> None:
         ("List Price", [price_str(p.list_price, p.currency) for p in products]),
         ("Discount", [discount_str(p.discount_pct) or "-" for p in products]),
         ("Hours", [str(p.hours) if p.hours else "-" for p in products]),
-        (f"{cur}/hr", [_pph_str(p.price, p.hours, p.currency) for p in products]),
+        (f"{cur}/hr", [_pph_str(p, p.currency) for p in products]),
         ("Rating", [rating_str(p.rating, p.num_ratings) for p in products]),
         (
             "Series",
@@ -281,7 +282,7 @@ def display_comparison(products: list[Product]) -> None:
         best = min(priced, key=price_per_hour)
         console.print(
             f"\n  Best value: [bold green]{best.title}[/bold green] "
-            f"at {_pph_str(best.price, best.hours, best.currency)}/hr"
+            f"at {_pph_str(best, best.currency)}/hr"
         )
 
 
