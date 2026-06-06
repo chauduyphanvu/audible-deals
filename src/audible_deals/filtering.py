@@ -41,173 +41,112 @@ def filter_products(
     filtered = products
     breakdown: dict[str, int] = {}
 
-    if skip_asins:
+    def _apply(label: str, keep) -> None:
+        nonlocal filtered
         before = len(filtered)
-        filtered = [p for p in filtered if p.asin not in skip_asins]
+        filtered = [p for p in filtered if keep(p)]
         if removed := before - len(filtered):
-            breakdown["owned"] = removed
+            breakdown[label] = removed
+
+    if skip_asins:
+        _apply("owned", lambda p: p.asin not in skip_asins)
 
     if max_price is not None:
-        before = len(filtered)
-        filtered = [p for p in filtered if p.price is not None and p.price <= max_price]
-        if removed := before - len(filtered):
-            breakdown["max price"] = removed
+        _apply("max price", lambda p: p.price is not None and p.price <= max_price)
 
     if min_rating > 0:
-        before = len(filtered)
-        filtered = [p for p in filtered if p.rating >= min_rating]
-        if removed := before - len(filtered):
-            breakdown["min rating"] = removed
+        _apply("min rating", lambda p: p.rating >= min_rating)
 
     if min_ratings > 0:
-        before = len(filtered)
-        filtered = [p for p in filtered if p.num_ratings >= min_ratings]
-        if removed := before - len(filtered):
-            breakdown["min ratings"] = removed
+        _apply("min ratings", lambda p: p.num_ratings >= min_ratings)
 
     if min_hours > 0:
-        before = len(filtered)
-        filtered = [p for p in filtered if p.hours >= min_hours]
-        if removed := before - len(filtered):
-            breakdown["min hours"] = removed
+        _apply("min hours", lambda p: p.hours >= min_hours)
 
     if max_pph is not None:
-        before = len(filtered)
-        filtered = [p for p in filtered if price_per_hour(p) <= max_pph]
-        if removed := before - len(filtered):
-            breakdown["max $/hr"] = removed
+        _apply("max $/hr", lambda p: price_per_hour(p) <= max_pph)
 
     if language:
-        before = len(filtered)
         lang_lower = language.lower()
-        filtered = [p for p in filtered if p.language.lower() == lang_lower]
-        if removed := before - len(filtered):
-            breakdown["language"] = removed
+        _apply("language", lambda p: p.language.lower() == lang_lower)
 
     if narrator:
-        before = len(filtered)
         narrator_lower = narrator.lower()
-        filtered = [
-            p for p in filtered if any(narrator_lower in n.lower() for n in p.narrators)
-        ]
-        if removed := before - len(filtered):
-            breakdown["narrator"] = removed
+        _apply(
+            "narrator", lambda p: any(narrator_lower in n.lower() for n in p.narrators)
+        )
 
     if author:
-        before = len(filtered)
         author_lower = author.lower()
-        filtered = [
-            p for p in filtered if any(author_lower in a.lower() for a in p.authors)
-        ]
-        if removed := before - len(filtered):
-            breakdown["author"] = removed
+        _apply("author", lambda p: any(author_lower in a.lower() for a in p.authors))
 
     if series:
-        before = len(filtered)
         series_lower = series.lower()
-        filtered = [p for p in filtered if series_lower in p.series_name.lower()]
-        if removed := before - len(filtered):
-            breakdown["series"] = removed
+        _apply("series", lambda p: series_lower in p.series_name.lower())
 
     if publisher:
-        before = len(filtered)
         publisher_lower = publisher.lower()
-        filtered = [p for p in filtered if publisher_lower in p.publisher.lower()]
-        if removed := before - len(filtered):
-            breakdown["publisher"] = removed
+        _apply("publisher", lambda p: publisher_lower in p.publisher.lower())
 
     if exclude_authors:
-        before = len(filtered)
-        exclude_lower = [a.lower() for a in exclude_authors]
-        filtered = [
-            p
-            for p in filtered
-            if not any(
-                ex in author_lc
-                for author_lc in (a.lower() for a in p.authors)
-                for ex in exclude_lower
-            )
-        ]
-        if removed := before - len(filtered):
-            breakdown["excluded authors"] = removed
+        excl_authors = [a.lower() for a in exclude_authors]
+        _apply(
+            "excluded authors",
+            lambda p: (
+                not any(
+                    ex in a for a in map(str.lower, p.authors) for ex in excl_authors
+                )
+            ),
+        )
 
     if exclude_narrators:
-        before = len(filtered)
-        exclude_lower = [n.lower() for n in exclude_narrators]
-        filtered = [
-            p
-            for p in filtered
-            if not any(
-                ex in narrator_lc
-                for narrator_lc in (n.lower() for n in p.narrators)
-                for ex in exclude_lower
-            )
-        ]
-        if removed := before - len(filtered):
-            breakdown["excluded narrators"] = removed
+        excl_narrators = [n.lower() for n in exclude_narrators]
+        _apply(
+            "excluded narrators",
+            lambda p: (
+                not any(
+                    ex in n
+                    for n in map(str.lower, p.narrators)
+                    for ex in excl_narrators
+                )
+            ),
+        )
 
     if on_sale and min_discount <= 0:
-        before = len(filtered)
-        filtered = [
-            p for p in filtered if p.discount_pct is not None and p.discount_pct > 0
-        ]
-        if removed := before - len(filtered):
-            breakdown["on sale"] = removed
+        _apply("on sale", lambda p: p.discount_pct is not None and p.discount_pct > 0)
 
     if min_discount > 0:
-        before = len(filtered)
-        filtered = [
-            p
-            for p in filtered
-            if p.discount_pct is not None and p.discount_pct >= min_discount
-        ]
-        if removed := before - len(filtered):
-            breakdown["min discount"] = removed
+        _apply(
+            "min discount",
+            lambda p: p.discount_pct is not None and p.discount_pct >= min_discount,
+        )
 
     if exclude_category_ids:
-        before = len(filtered)
-        filtered = [
-            p
-            for p in filtered
-            if not any(cid in exclude_category_ids for cid in p.category_ids)
-        ]
-        if removed := before - len(filtered):
-            breakdown["excluded genres"] = removed
+        _apply(
+            "excluded genres",
+            lambda p: not any(cid in exclude_category_ids for cid in p.category_ids),
+        )
 
     if genre:
-        before = len(filtered)
         genre_lower = genre.lower()
-        filtered = [
-            p
-            for p in filtered
-            if any(genre_lower in cat.lower() for cat in p.categories)
-        ]
-        if removed := before - len(filtered):
-            breakdown["genre"] = removed
+        _apply("genre", lambda p: any(genre_lower in c.lower() for c in p.categories))
 
     if skip_plus:
-        before = len(filtered)
-        filtered = [p for p in filtered if not p.in_plus_catalog]
-        if removed := before - len(filtered):
-            breakdown["plus catalog"] = removed
+        _apply("plus catalog", lambda p: not p.in_plus_catalog)
     elif only_plus:
-        before = len(filtered)
-        filtered = [p for p in filtered if p.in_plus_catalog]
-        if removed := before - len(filtered):
-            breakdown["not plus"] = removed
+        _apply("not plus", lambda p: p.in_plus_catalog)
 
     if exclude_keywords:
-        before = len(filtered)
         keywords_lower = [k.lower() for k in exclude_keywords]
-        filtered = [
-            p
-            for p in filtered
-            if not any(
-                k in p.title.lower() or k in p.subtitle.lower() for k in keywords_lower
-            )
-        ]
-        if removed := before - len(filtered):
-            breakdown["excluded keywords"] = removed
+        _apply(
+            "excluded keywords",
+            lambda p: (
+                not any(
+                    k in p.title.lower() or k in p.subtitle.lower()
+                    for k in keywords_lower
+                )
+            ),
+        )
 
     logger.debug(
         "filter_products in=%d out=%d breakdown=%s",

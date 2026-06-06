@@ -25,7 +25,6 @@ import json as json_mod
 import logging
 import math
 import os
-import statistics
 
 try:
     import readline  # noqa: F401 — required on macOS for input() with long strings
@@ -103,6 +102,7 @@ from audible_deals.state import (
     load_seen_asins,
     load_wishlist,
     merge_seen_asins,
+    price_history_context,
     record_prices,
     resolve_last_references,
     save_config,
@@ -309,27 +309,7 @@ def _emit_output(
     if json_flag:
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
-        atl_asins: set[str] = set()
-        hist_context: dict[str, int] = {}
-        for p in filtered:
-            if p.price is None:
-                continue
-            entries = load_price_history(p.asin)
-            numeric = [
-                float(e["price"])
-                for e in entries
-                if isinstance(e.get("price"), (int, float))
-            ]
-            if not numeric:
-                continue
-            min_price = min(numeric)
-            if p.price <= min_price:
-                atl_asins.add(p.asin)
-            if len(numeric) >= 3:
-                median = statistics.median(numeric)
-                if median > 0:
-                    pct = round((p.price - median) / median * 100)
-                    hist_context[p.asin] = pct
+        atl_asins, hist_context = price_history_context(filtered)
         console.print()
         display_products(
             filtered,
@@ -705,6 +685,15 @@ def _common_filter_options(func):
     return func
 
 
+def _resolve_output_quiet(ctx: click.Context, output, json_flag, quiet) -> bool:
+    """Output file implies quiet (unless -q was given explicitly); JSON output moves console chatter to stderr."""
+    if output and ctx.get_parameter_source("quiet") != _CL:
+        quiet = True
+    if json_flag:
+        console.file = sys.stderr
+    return quiet
+
+
 def _build_scan_namespace(
     ctx: click.Context,
     profile_name: str | None,
@@ -719,10 +708,9 @@ def _build_scan_namespace(
     )
     ns = dict(kwargs)
     ns.update(dataclasses.asdict(s))
-    if ns.get("output") and ctx.get_parameter_source("quiet") != _CL:
-        ns["quiet"] = True
-    if ns.get("json_flag"):
-        console.file = sys.stderr
+    ns["quiet"] = _resolve_output_quiet(
+        ctx, ns.get("output"), ns.get("json_flag"), ns.get("quiet")
+    )
     if not ns.get("language") and not ns.get("all_languages"):
         ns["language"] = LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
     if logger.isEnabledFor(logging.DEBUG):
@@ -1519,10 +1507,7 @@ def library(
         narrator,
         genre,
     )
-    if output and ctx.get_parameter_source("quiet") != _CL:
-        quiet = True
-    if json_flag:
-        console.file = sys.stderr
+    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
     dc = _get_client(ctx.obj["locale"])
     all_products: list[Product] = []
@@ -1706,10 +1691,7 @@ def series(
         max_price,
         sort,
     )
-    if output and ctx.get_parameter_source("quiet") != _CL:
-        quiet = True
-    if json_flag:
-        console.file = sys.stderr
+    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
     s = Settings.resolve(
         ctx,
@@ -2091,12 +2073,9 @@ def last_cmd(
         cached_title, data = load_last_results()
         click.echo(len(data))
         return
-    if output and ctx.get_parameter_source("quiet") != _CL:
-        quiet = True
+    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     cached_title, data = load_last_results()
     products = [p for d in data if (p := deserialize_product(d)) is not None]
-    if json_flag:
-        console.file = sys.stderr
 
     effective_sort = sort or ""  # preserve original cache order when no --sort given
     cur = LOCALE_CURRENCY.get(ctx.obj["locale"], "$")

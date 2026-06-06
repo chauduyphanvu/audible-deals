@@ -218,21 +218,22 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     )
 
 
+def _base_price(obj) -> float | None:
+    """Pull the numeric base amount from a {'base': x} price dict."""
+    if isinstance(obj, dict) and obj.get("base") is not None:
+        return float(obj["base"])
+    return None
+
+
 def _extract_price(raw: dict) -> float | None:
     """Extract current/sale price. Checks lowest_price first for deals."""
     price_obj = raw.get("price")
     if isinstance(price_obj, dict):
-        lowest = price_obj.get("lowest_price")
-        if isinstance(lowest, dict) and "base" in lowest:
-            val = lowest["base"]
-            if val is not None:
-                return float(val)
-        lp = price_obj.get("list_price")
-        if isinstance(lp, dict) and "base" in lp:
-            val = lp["base"]
-            if val is not None:
-                return float(val)
-    elif isinstance(price_obj, (int, float)):
+        val = _base_price(price_obj.get("lowest_price"))
+        if val is None:
+            val = _base_price(price_obj.get("list_price"))
+        return val
+    if isinstance(price_obj, (int, float)):
         return float(price_obj)
     return None
 
@@ -241,11 +242,9 @@ def _extract_list_price(raw: dict) -> float | None:
     """Extract original list price for discount calculation."""
     price_obj = raw.get("price")
     if isinstance(price_obj, dict):
-        lp = price_obj.get("list_price")
-        if isinstance(lp, dict) and "base" in lp:
-            val = lp["base"]
-            if val is not None:
-                return float(val)
+        val = _base_price(price_obj.get("list_price"))
+        if val is not None:
+            return val
     lp = raw.get("list_price")
     if isinstance(lp, (int, float)):
         return float(lp)

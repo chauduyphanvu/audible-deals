@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 import json as json_mod
 import logging
+import statistics
 from pathlib import Path
 
 import click
@@ -30,31 +31,39 @@ from audible_deals.constants import (
 
 logger = logging.getLogger(__name__)
 
+
+def _load_json_file(path: Path, expected_type: type, desc: str):
+    """Load a JSON file, returning an empty expected_type if missing, corrupt, or wrong shape."""
+    if path.exists():
+        try:
+            data = json_mod.loads(path.read_text())
+            if isinstance(data, expected_type):
+                logger.debug("loaded %s (%d) from %s", desc, len(data), path)
+                return data
+            logger.warning(
+                "%s at %s is not a %s, ignoring", desc, path, expected_type.__name__
+            )
+        except (json_mod.JSONDecodeError, KeyError, OSError):
+            logger.warning("%s at %s is corrupt, ignoring", desc, path, exc_info=True)
+    return expected_type()
+
+
+def _save_json_file(path: Path, data, desc: str) -> None:
+    _atomic_write(path, json_mod.dumps(data, indent=2, ensure_ascii=False))
+    logger.debug("saved %s (%d) to %s", desc, len(data), path)
+
+
 # ---------------------------------------------------------------------------
 # Wishlist
 # ---------------------------------------------------------------------------
 
 
 def load_wishlist() -> list[dict]:
-    if WISHLIST_FILE.exists():
-        try:
-            data = json_mod.loads(WISHLIST_FILE.read_text())
-            if isinstance(data, list):
-                logger.debug(
-                    "loaded wishlist (%d items) from %s", len(data), WISHLIST_FILE
-                )
-                return data
-            logger.warning("wishlist at %s is not a list, ignoring", WISHLIST_FILE)
-        except (json_mod.JSONDecodeError, KeyError):
-            logger.warning(
-                "wishlist at %s is corrupt, ignoring", WISHLIST_FILE, exc_info=True
-            )
-    return []
+    return _load_json_file(WISHLIST_FILE, list, "wishlist")
 
 
 def save_wishlist(items: list[dict]) -> None:
-    _atomic_write(WISHLIST_FILE, json_mod.dumps(items, indent=2, ensure_ascii=False))
-    logger.debug("saved wishlist (%d items) to %s", len(items), WISHLIST_FILE)
+    _save_json_file(WISHLIST_FILE, items, "wishlist")
 
 
 def wishlist_entry(product: Product, max_price: float | None) -> dict:
@@ -73,23 +82,11 @@ def wishlist_entry(product: Product, max_price: float | None) -> dict:
 
 
 def load_profiles() -> dict[str, dict]:
-    if PROFILES_FILE.exists():
-        try:
-            data = json_mod.loads(PROFILES_FILE.read_text())
-            if isinstance(data, dict):
-                logger.debug("loaded profiles (%d) from %s", len(data), PROFILES_FILE)
-                return data
-            logger.warning("profiles at %s is not a dict, ignoring", PROFILES_FILE)
-        except (json_mod.JSONDecodeError, KeyError):
-            logger.warning(
-                "profiles at %s is corrupt, ignoring", PROFILES_FILE, exc_info=True
-            )
-    return {}
+    return _load_json_file(PROFILES_FILE, dict, "profiles")
 
 
 def save_profiles(profiles: dict[str, dict]) -> None:
-    _atomic_write(PROFILES_FILE, json_mod.dumps(profiles, indent=2, ensure_ascii=False))
-    logger.debug("saved profiles (%d) to %s", len(profiles), PROFILES_FILE)
+    _save_json_file(PROFILES_FILE, profiles, "profiles")
 
 
 # ---------------------------------------------------------------------------
@@ -98,23 +95,11 @@ def save_profiles(profiles: dict[str, dict]) -> None:
 
 
 def load_config() -> dict:
-    if CONFIG_FILE.exists():
-        try:
-            data = json_mod.loads(CONFIG_FILE.read_text())
-            if isinstance(data, dict):
-                logger.debug("loaded config (%d keys) from %s", len(data), CONFIG_FILE)
-                return data
-            logger.warning("config at %s is not a dict, ignoring", CONFIG_FILE)
-        except (json_mod.JSONDecodeError, KeyError, OSError):
-            logger.warning(
-                "config at %s is corrupt, ignoring", CONFIG_FILE, exc_info=True
-            )
-    return {}
+    return _load_json_file(CONFIG_FILE, dict, "config")
 
 
 def save_config(cfg: dict) -> None:
-    _atomic_write(CONFIG_FILE, json_mod.dumps(cfg, indent=2, ensure_ascii=False))
-    logger.debug("saved config (%d keys) to %s", len(cfg), CONFIG_FILE)
+    _save_json_file(CONFIG_FILE, cfg, "config")
 
 
 def coerce_config_value(key: str, raw: str):
@@ -421,6 +406,33 @@ def load_price_history(asin: str) -> list[dict]:
         return []
 
 
+def price_history_context(products: list[Product]) -> tuple[set[str], dict[str, int]]:
+    """Compute (atl_asins, hist_context) for priced products from their histories.
+
+    atl_asins: products at or below their all-time tracked low.
+    hist_context: percent of current price vs the historical median (≥3 entries).
+    """
+    atl_asins: set[str] = set()
+    hist_context: dict[str, int] = {}
+    for p in products:
+        if p.price is None:
+            continue
+        numeric = [
+            float(e["price"])
+            for e in load_price_history(p.asin)
+            if isinstance(e.get("price"), (int, float))
+        ]
+        if not numeric:
+            continue
+        if p.price <= min(numeric):
+            atl_asins.add(p.asin)
+        if len(numeric) >= 3:
+            median = statistics.median(numeric)
+            if median > 0:
+                hist_context[p.asin] = round((p.price - median) / median * 100)
+    return atl_asins, hist_context
+
+
 def scan_price_changes(
     days: int,
 ) -> tuple[list[tuple[str, str, float, float]], list[tuple[str, str, float]]]:
@@ -483,17 +495,20 @@ def scan_price_changes(
     return drops, new_items
 
 
+def _wishlist_with_history():
+    """Yield (item, price history entries) for wishlist items with valid ASINs."""
+    for item in load_wishlist():
+        if _ASIN_RE.fullmatch(item.get("asin", "")):
+            yield item, load_price_history(item["asin"])
+
+
 def find_wishlist_hits() -> list[dict]:
     """Find wishlist items whose latest tracked price is at or below target.
 
     Returns matching wishlist entry dicts.
     """
-    wishlist_items = load_wishlist()
     hits: list[dict] = []
-    for item in wishlist_items:
-        if not _ASIN_RE.fullmatch(item.get("asin", "")):
-            continue
-        entries = load_price_history(item["asin"])
+    for item, entries in _wishlist_with_history():
         if (
             entries
             and item.get("max_price") is not None
@@ -509,12 +524,8 @@ def find_wishlist_atl_hits() -> list[dict]:
     Requires ≥2 numeric history entries and the chronologically-latest entry
     to have a numeric price. Returns list of dicts with keys: asin, title, price, target.
     """
-    wishlist_items = load_wishlist()
     hits: list[dict] = []
-    for item in wishlist_items:
-        if not _ASIN_RE.fullmatch(item.get("asin", "")):
-            continue
-        entries = load_price_history(item["asin"])
+    for item, entries in _wishlist_with_history():
         if not entries:
             continue
         last_price = entries[-1].get("price")
