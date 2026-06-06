@@ -38,28 +38,21 @@ from pathlib import Path
 import click
 from rich.table import Table
 
+from audible_deals import constants
 from audible_deals.constants import (
     _CONFIG_SCHEMA,
-    AUTH_FILE,
     CLIENT_SORT_OPTIONS,
-    CONFIG_DIR,
-    CONFIG_FILE,
     DEEP_SORT_ORDERS,
     DEFAULT_LIMIT,
     GENRE_ALIASES,
-    HISTORY_DIR,
     LOCALE_CURRENCY,
     LOCALE_LANGUAGES,
     LockHeldError,
     MAX_PAGE_SIZE,
-    PROFILES_FILE,
     SORT_OPTIONS,
     run_lock,
     product_url,
 )
-
-# Re-exported so tests can reference these paths via the cli module namespace.
-from audible_deals.constants import LAST_RESULTS_FILE, SEEN_ASINS_FILE  # noqa: F401
 from audible_deals.client import DealsClient, Product
 from audible_deals.logging_setup import configure_logging
 from audible_deals.display import (
@@ -96,11 +89,17 @@ from audible_deals.serialization import (
     export_products,
     serialize_product,
 )
-from audible_deals.state import (
-    _expand_ref_string,
-    clear_last_results,
-    clear_seen_asins,
+from audible_deals.config_store import (
     coerce_config_value,
+    load_config,
+    load_notify_state,
+    load_profiles,
+    save_config,
+    save_notify_state,
+    save_profiles,
+    validate_config_key,
+)
+from audible_deals.price_history import (
     delete_price_histories,
     find_all_atl_hits,
     find_wishlist_atl_hits,
@@ -108,28 +107,28 @@ from audible_deals.state import (
     has_price_history,
     hist_percentiles,
     load_all_price_histories,
-    load_config,
-    load_last_results,
-    load_notify_state,
     load_price_history,
-    load_profiles,
-    load_seen_asins,
-    load_wishlist,
-    merge_seen_asins,
-    partition_wishlist,
     price_drop_pcts,
     price_history_context,
     purge_stale_history,
     record_prices,
-    resolve_last_references,
-    save_config,
-    save_last_results,
-    save_notify_state,
-    save_profiles,
-    save_seen_asins,
-    save_wishlist,
     scan_price_changes,
-    validate_config_key,
+)
+from audible_deals.results_cache import (
+    _expand_ref_string,
+    clear_last_results,
+    clear_seen_asins,
+    load_last_results,
+    load_seen_asins,
+    merge_seen_asins,
+    resolve_last_references,
+    save_last_results,
+    save_seen_asins,
+)
+from audible_deals.wishlist import (
+    load_wishlist,
+    partition_wishlist,
+    save_wishlist,
     wishlist_entry,
 )
 
@@ -3646,21 +3645,25 @@ def doctor(ctx):
             rendered = "[green]✓ PASS[/green]"
         rows.append((check, rendered, detail))
 
-    if CONFIG_DIR.exists():
-        add("Config directory", "PASS", str(CONFIG_DIR))
+    if constants.CONFIG_DIR.exists():
+        add("Config directory", "PASS", str(constants.CONFIG_DIR))
     else:
-        add("Config directory", "WARN", f"Not found — will be created at {CONFIG_DIR}")
+        add(
+            "Config directory",
+            "WARN",
+            f"Not found — will be created at {constants.CONFIG_DIR}",
+        )
 
-    auth_ok = AUTH_FILE.exists()
+    auth_ok = constants.AUTH_FILE.exists()
     if not auth_ok:
         add("Auth file present", "FAIL", "Run 'deals login' or 'deals import-auth'")
     else:
-        add("Auth file present", "PASS", str(AUTH_FILE))
+        add("Auth file present", "PASS", str(constants.AUTH_FILE))
 
     auth_data = None
     if auth_ok:
         try:
-            auth_data = json_mod.loads(AUTH_FILE.read_text())
+            auth_data = json_mod.loads(constants.AUTH_FILE.read_text())
             if not isinstance(auth_data, dict):
                 raise ValueError("not a JSON object")
             add("Auth file parseable", "PASS")
@@ -3709,9 +3712,9 @@ def doctor(ctx):
     else:
         add("Marketplace reachable", "WARN", "Skipped — auth checks failed")
 
-    if CONFIG_FILE.exists():
+    if constants.CONFIG_FILE.exists():
         try:
-            cfg = json_mod.loads(CONFIG_FILE.read_text())
+            cfg = json_mod.loads(constants.CONFIG_FILE.read_text())
             if not isinstance(cfg, dict):
                 add(
                     "Config file valid",
@@ -3740,7 +3743,7 @@ def doctor(ctx):
     else:
         add("Config file valid", "PASS", "No config file (using defaults)")
 
-    if PROFILES_FILE.exists():
+    if constants.PROFILES_FILE.exists():
         try:
             profiles = load_profiles()
             valid_profile_keys = set(_CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
@@ -3810,8 +3813,8 @@ def doctor(ctx):
     except Exception as e:
         add("Seen-ASINs parseable", "FAIL", str(e))
 
-    if HISTORY_DIR.exists():
-        count = sum(1 for _ in HISTORY_DIR.glob("*.json"))
+    if constants.HISTORY_DIR.exists():
+        count = sum(1 for _ in constants.HISTORY_DIR.glob("*.json"))
         add("Price history directory", "PASS", f"{count} ASIN(s) tracked")
     else:
         add("Price history directory", "PASS", "Not yet created (optional)")

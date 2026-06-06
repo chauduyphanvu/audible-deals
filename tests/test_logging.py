@@ -99,29 +99,32 @@ class TestVerboseFlag:
 
 class TestStateCorruptionWarnings:
     def test_load_wishlist_warns_on_corrupt(self, tmp_config, caplog):
-        import audible_deals.state as state_mod
+        import audible_deals.constants as constants_mod
+        import audible_deals.wishlist as wishlist_mod
 
-        state_mod.WISHLIST_FILE.write_text("not json")
-        with caplog.at_level(logging.WARNING, logger="audible_deals.state"):
-            data = state_mod.load_wishlist()
+        constants_mod.WISHLIST_FILE.write_text("not json")
+        with caplog.at_level(logging.WARNING, logger="audible_deals.storage"):
+            data = wishlist_mod.load_wishlist()
         assert data == []
         assert any("corrupt" in r.message for r in caplog.records)
 
     def test_load_config_warns_on_corrupt(self, tmp_config, caplog):
-        import audible_deals.state as state_mod
+        import audible_deals.config_store as config_store_mod
+        import audible_deals.constants as constants_mod
 
-        state_mod.CONFIG_FILE.write_text("not json")
-        with caplog.at_level(logging.WARNING, logger="audible_deals.state"):
-            data = state_mod.load_config()
+        constants_mod.CONFIG_FILE.write_text("not json")
+        with caplog.at_level(logging.WARNING, logger="audible_deals.storage"):
+            data = config_store_mod.load_config()
         assert data == {}
         assert any("corrupt" in r.message for r in caplog.records)
 
     def test_load_seen_asins_warns_on_corrupt(self, tmp_config, caplog):
-        import audible_deals.state as state_mod
+        import audible_deals.constants as constants_mod
+        import audible_deals.results_cache as results_cache_mod
 
-        state_mod.SEEN_ASINS_FILE.write_text("not json")
-        with caplog.at_level(logging.WARNING, logger="audible_deals.state"):
-            data = state_mod.load_seen_asins()
+        constants_mod.SEEN_ASINS_FILE.write_text("not json")
+        with caplog.at_level(logging.WARNING, logger="audible_deals.storage"):
+            data = results_cache_mod.load_seen_asins()
         assert data == set()
         assert any("corrupt" in r.message for r in caplog.records)
 

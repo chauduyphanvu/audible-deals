@@ -15,7 +15,7 @@ from click.testing import CliRunner
 from audible_deals.client import DealsClient
 from audible_deals.cli import cli
 from audible_deals.serialization import export_products as _export_products
-from audible_deals.state import record_prices as _record_prices
+from audible_deals.price_history import record_prices as _record_prices
 from tests.conftest import make_product, make_raw
 
 
