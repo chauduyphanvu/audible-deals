@@ -7,7 +7,6 @@ import logging
 import time
 
 import click
-from rich.table import Table
 
 from audible_deals.cli.helpers import (
     _collect_asins,
@@ -15,7 +14,12 @@ from audible_deals.cli.helpers import (
     _get_client,
     _safe_record_prices,
 )
-from audible_deals.display import console, display_watch_table, price_str
+from audible_deals.display import (
+    console,
+    display_watch_table,
+    display_wishlist,
+    price_str,
+)
 from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
 from audible_deals.validation import validate_asin
@@ -32,6 +36,31 @@ logger = logging.getLogger(__name__)
 @click.group()
 def wishlist():
     """Manage your audiobook wishlist."""
+
+
+def _add_author_watch(ctx, author: str, max_price: float) -> None:
+    """Add an author watch to the wishlist unless one already exists."""
+    items = load_wishlist()
+    author_lower = author.lower()
+    if any(
+        i.get("type") == "author" and i.get("author", "").lower() == author_lower
+        for i in items
+    ):
+        console.print(f"[dim]Already watching author: {author}[/dim]")
+        return
+    items.append(
+        {
+            "type": "author",
+            "author": author,
+            "max_price": max_price,
+            "added": datetime.date.today().isoformat(),
+        }
+    )
+    save_wishlist(items)
+    console.print(
+        f"[green]+[/green] Author watch: {author} "
+        f"(target {price_str(max_price, _currency(ctx))})"
+    )
 
 
 @wishlist.command("add")
@@ -68,27 +97,7 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
             )
         if max_price is None:
             raise click.UsageError("--max-price is required when using --author.")
-        items = load_wishlist()
-        author_lower = author.lower()
-        if any(
-            i.get("type") == "author" and i.get("author", "").lower() == author_lower
-            for i in items
-        ):
-            console.print(f"[dim]Already watching author: {author}[/dim]")
-            return
-        items.append(
-            {
-                "type": "author",
-                "author": author,
-                "max_price": max_price,
-                "added": datetime.date.today().isoformat(),
-            }
-        )
-        save_wishlist(items)
-        console.print(
-            f"[green]+[/green] Author watch: {author} "
-            f"(target {price_str(max_price, _currency(ctx))})"
-        )
+        _add_author_watch(ctx, author, max_price)
         return
 
     all_asins = _collect_asins(asins, last_refs)
@@ -249,34 +258,7 @@ def wishlist_list(ctx):
         )
         return
 
-    if asin_items:
-        table = Table(
-            title="Wishlist", show_lines=False, padding=(0, 1), title_style="bold"
-        )
-        table.add_column("ASIN", style="cyan", width=14)
-        table.add_column("Title", max_width=40)
-        table.add_column("Target", justify="right", width=10)
-
-        for item in asin_items:
-            target = price_str(item.get("max_price") or None, cur)
-            table.add_row(item.get("asin", ""), item.get("title", ""), target)
-
-        console.print(table)
-
-    if author_items:
-        atbl = Table(
-            title="Author watches",
-            show_lines=False,
-            padding=(0, 1),
-            title_style="bold",
-        )
-        atbl.add_column("Author", max_width=40)
-        atbl.add_column("Target", justify="right", width=10)
-        atbl.add_column("Added", width=12)
-        for item in author_items:
-            target = price_str(item.get("max_price") or None, cur)
-            atbl.add_row(item.get("author", ""), target, item.get("added", ""))
-        console.print(atbl)
+    display_wishlist(asin_items, author_items, cur)
 
 
 @wishlist.command("sync")

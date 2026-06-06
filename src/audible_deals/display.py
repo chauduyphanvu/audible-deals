@@ -490,6 +490,40 @@ def display_recap(
     console.print()
 
 
+def display_wishlist(
+    asin_items: list[dict], author_items: list[dict], currency: str = "$"
+) -> None:
+    """Display the wishlist ASIN and author-watch tables."""
+    if asin_items:
+        table = Table(
+            title="Wishlist", show_lines=False, padding=(0, 1), title_style="bold"
+        )
+        table.add_column("ASIN", style="cyan", width=14)
+        table.add_column("Title", max_width=40)
+        table.add_column("Target", justify="right", width=10)
+
+        for item in asin_items:
+            target = price_str(item.get("max_price") or None, currency)
+            table.add_row(item.get("asin", ""), item.get("title", ""), target)
+
+        console.print(table)
+
+    if author_items:
+        atbl = Table(
+            title="Author watches",
+            show_lines=False,
+            padding=(0, 1),
+            title_style="bold",
+        )
+        atbl.add_column("Author", max_width=40)
+        atbl.add_column("Target", justify="right", width=10)
+        atbl.add_column("Added", width=12)
+        for item in author_items:
+            target = price_str(item.get("max_price") or None, currency)
+            atbl.add_row(item.get("author", ""), target, item.get("added", ""))
+        console.print(atbl)
+
+
 def display_watch_table(
     products: list[Product],
     targets: dict[str, float | None],
