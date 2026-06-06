@@ -12,7 +12,8 @@ import click
 
 from audible_deals.cli.helpers import _load_profile, _safe_record_prices
 from audible_deals.cli.interactive import _interactive_browse
-from audible_deals.client import DealsClient, Product
+from audible_deals.client import DealsClient
+from audible_deals.product import Product
 from audible_deals.constants import LOCALE_LANGUAGES, MAX_PAGE_SIZE
 from audible_deals.display import (
     console,

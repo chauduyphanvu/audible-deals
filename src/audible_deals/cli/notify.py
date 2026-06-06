@@ -16,7 +16,7 @@ from audible_deals.cli.helpers import (
     _resolve_single_last_ref,
     _safe_record_prices,
 )
-from audible_deals.client import Product
+from audible_deals.product import Product
 from audible_deals.config_store import load_notify_state, save_notify_state
 from audible_deals.constants import LockHeldError, run_lock
 from audible_deals.display import console, display_price_history, display_recap

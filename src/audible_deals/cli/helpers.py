@@ -7,7 +7,8 @@ import sys
 
 import click
 
-from audible_deals.client import DealsClient, Product
+from audible_deals.client import DealsClient
+from audible_deals.product import Product
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.display import console

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import click
 
-from audible_deals.client import Product
+from audible_deals.product import Product
 from audible_deals.display import (
     console,
     display_comparison,

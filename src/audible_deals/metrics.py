@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from audible_deals.client import Product
+from audible_deals.product import Product
 
 
 def price_per_hour(p: Product) -> float:

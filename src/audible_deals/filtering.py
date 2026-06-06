@@ -9,7 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Callable
 
-from audible_deals.client import Product
+from audible_deals.product import Product
 from audible_deals.metrics import price_per_hour, value_score
 from audible_deals.parsing import parse_series_position
 

@@ -20,7 +20,7 @@ from rich.progress import (
 )
 from rich.table import Table
 
-from audible_deals.client import Product
+from audible_deals.product import Product
 from audible_deals.metrics import price_per_hour
 
 console = Console()

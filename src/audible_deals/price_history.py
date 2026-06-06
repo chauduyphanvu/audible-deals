@@ -9,7 +9,7 @@ import statistics
 from pathlib import Path
 
 from audible_deals import constants, wishlist
-from audible_deals.client import Product
+from audible_deals.product import Product
 from audible_deals.constants import _ASIN_RE, _atomic_write
 
 logger = logging.getLogger(__name__)

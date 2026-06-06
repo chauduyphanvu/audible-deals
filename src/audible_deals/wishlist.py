@@ -5,7 +5,7 @@ from __future__ import annotations
 import datetime
 
 from audible_deals import constants
-from audible_deals.client import Product
+from audible_deals.product import Product
 from audible_deals.storage import load_json_file, save_json_file
 
 

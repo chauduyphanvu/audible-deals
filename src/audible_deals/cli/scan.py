@@ -28,7 +28,8 @@ from audible_deals.cli.pipeline import (
     _print_dry_run_summary,
     _record_and_emit,
 )
-from audible_deals.client import DealsClient, Product
+from audible_deals.client import DealsClient
+from audible_deals.product import Product
 from audible_deals.constants import (
     CLIENT_SORT_OPTIONS,
     DEEP_SORT_ORDERS,
