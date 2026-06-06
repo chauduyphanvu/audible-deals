@@ -133,19 +133,8 @@ class Product:
         return product_url(self.asin, self.locale)
 
 
-def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
-    """Parse a raw API product dict into a Product.
-
-    Handles the nested response format from Audible's catalog API.
-    """
-    price, list_price = _extract_prices(raw)
-
-    authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
-    narrators = [
-        n.get("name", "") for n in (raw.get("narrators") or []) if n.get("name")
-    ]
-
-    # Rating - nested in overall_distribution
+def _extract_rating(raw: dict) -> tuple[float, int]:
+    """Extract (rating, num_ratings) from the nested overall_distribution."""
     rating_data = raw.get("rating") or {}
     rating = 0.0
     num_ratings = 0
@@ -161,8 +150,11 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
             num_ratings = int(dist.get("num_ratings", 0) or 0)
         except (ValueError, TypeError):
             logger.debug("parse_product %s: bad num_ratings", raw.get("asin"))
+    return rating, num_ratings
 
-    # Categories - flatten ladder structure
+
+def _extract_categories(raw: dict) -> tuple[list[str], list[str]]:
+    """Extract (category names, category ids) by flattening the ladder structure."""
     categories: list[str] = []
     category_ids: list[str] = []
     for ladder in raw.get("category_ladders") or []:
@@ -173,25 +165,43 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
                 categories.append(name)
             if cid and cid not in category_ids:
                 category_ids.append(cid)
+    return categories, category_ids
 
-    # Series info
-    series_name = ""
-    series_position = ""
-    series_asin = ""
+
+def _extract_series(raw: dict) -> tuple[str, str, str]:
+    """Extract (series_name, series_position, series_asin) from the first series entry."""
     series_list = raw.get("series") or []
     if series_list:
         s = series_list[0]
-        series_name = s.get("title", "")
-        series_position = s.get("sequence", "")
-        series_asin = s.get("asin", "")
+        return s.get("title", ""), s.get("sequence", ""), s.get("asin", "")
+    return "", "", ""
 
-    # Audible Plus detection
-    in_plus = False
+
+def _extract_plus(raw: dict) -> bool:
+    """Detect Audible Plus / AYCE plan membership."""
     for plan in raw.get("plans") or []:
         pname = plan.get("plan_name", "")
         if "Plus" in pname or "AYCE" in pname:
-            in_plus = True
-            break
+            return True
+    return False
+
+
+def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
+    """Parse a raw API product dict into a Product.
+
+    Handles the nested response format from Audible's catalog API.
+    """
+    price, list_price = _extract_prices(raw)
+
+    authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
+    narrators = [
+        n.get("name", "") for n in (raw.get("narrators") or []) if n.get("name")
+    ]
+
+    rating, num_ratings = _extract_rating(raw)
+    categories, category_ids = _extract_categories(raw)
+    series_name, series_position, series_asin = _extract_series(raw)
+    in_plus = _extract_plus(raw)
 
     return Product(
         asin=raw.get("asin", ""),
@@ -242,6 +252,68 @@ def _extract_prices(raw: dict) -> tuple[float | None, float | None]:
     return price, list_price
 
 
+_RETRY_DELAYS = (1.0, 2.0)
+
+
+def _retryable_status(exc: Exception) -> int | None:
+    """Pull an HTTP status code off an exception or its response, if present."""
+    return getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+
+
+def _retry_delay(attempt: int, exc: Exception, status: int | None) -> float:
+    """Jittered backoff delay for a retry, honoring a 429 Retry-After header."""
+    delay = max(0.0, _RETRY_DELAYS[attempt - 1] + random.uniform(-0.3, 0.3))
+    if status == 429:
+        resp = getattr(exc, "response", None)
+        headers = getattr(resp, "headers", None)
+        retry_after = headers.get("Retry-After", "") if headers else ""
+        if isinstance(retry_after, str) and retry_after.isdigit():
+            delay = max(delay, min(int(retry_after), 120))
+    return delay
+
+
+def _auth_from_libation(data: dict, locale: str) -> dict:
+    """Build Mkb79Auth-format auth data from Libation's AccountsSettings.json."""
+    accounts = data["Accounts"]
+    if not accounts:
+        raise ValueError("No accounts found in Libation settings")
+    tokens = accounts[0].get("IdentityTokens", {})
+    for key in ("access_token", "refresh_token"):
+        if not isinstance(tokens.get(key), str) or not tokens[key]:
+            raise ValueError(f"Libation auth missing required key: {key!r}")
+    return {
+        "website_cookies": tokens.get("website_cookies"),
+        "adp_token": tokens.get("adp_token"),
+        "access_token": tokens.get("access_token"),
+        "refresh_token": tokens.get("refresh_token"),
+        "device_private_key": tokens.get("device_private_key"),
+        "store_authentication_cookie": tokens.get("store_authentication_cookie"),
+        "device_info": tokens.get("device_info", {}),
+        "customer_info": tokens.get("customer_info", {}),
+        "expires": tokens.get("expires", 0),
+        "locale_code": tokens.get("locale_code", locale),
+        "with_username": tokens.get("with_username", False),
+        "encryption": False,
+    }
+
+
+def _validate_audible_cli_auth(data: dict) -> dict:
+    """Validate auth data already in audible-cli / Mkb79Auth format."""
+    for key in ("access_token", "refresh_token"):
+        if not isinstance(data.get(key), str) or not data[key]:
+            raise ValueError(f"Auth file missing required key: {key!r}")
+    if "locale_code" in data and data["locale_code"] not in LOCALE_DOMAIN:
+        raise ValueError(
+            f"Unknown locale_code: {data['locale_code']!r}. "
+            f"Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
+        )
+    if "encryption" not in data:
+        data["encryption"] = False
+    return data
+
+
 class DealsClient:
     """Audible API client for catalog browsing."""
 
@@ -256,7 +328,6 @@ class DealsClient:
     def _api_get(self, endpoint: str, **params: Any) -> dict:
         """Wrap self.client.get with timing + DEBUG logging + retry-with-backoff."""
         debug = logger.isEnabledFor(logging.DEBUG)
-        _RETRY_DELAYS = (1.0, 2.0)
         for attempt in range(1, 4):
             if debug:
                 logger.debug(
@@ -268,9 +339,7 @@ class DealsClient:
             except Exception as exc:
                 if isinstance(exc, click.ClickException):
                     raise
-                status = getattr(exc, "status_code", None) or getattr(
-                    getattr(exc, "response", None), "status_code", None
-                )
+                status = _retryable_status(exc)
                 if status is not None and 400 <= status < 500 and status != 429:
                     raise
                 if attempt >= 3:
@@ -282,13 +351,7 @@ class DealsClient:
                         exc,
                     )
                     raise
-                delay = max(0.0, _RETRY_DELAYS[attempt - 1] + random.uniform(-0.3, 0.3))
-                if status == 429:
-                    resp = getattr(exc, "response", None)
-                    headers = getattr(resp, "headers", None)
-                    retry_after = headers.get("Retry-After", "") if headers else ""
-                    if isinstance(retry_after, str) and retry_after.isdigit():
-                        delay = max(delay, min(int(retry_after), 120))
+                delay = _retry_delay(attempt, exc, status)
                 logger.warning(
                     "API GET %s failed (attempt %d/%d): %s; retrying in %.1fs",
                     endpoint,
@@ -411,43 +474,10 @@ class DealsClient:
 
         # Libation's AccountsSettings.json wraps tokens in an Accounts array.
         if "Accounts" in data:
-            accounts = data["Accounts"]
-            if not accounts:
-                raise ValueError("No accounts found in Libation settings")
-            tokens = accounts[0].get("IdentityTokens", {})
-            for key in ("access_token", "refresh_token"):
-                if not isinstance(tokens.get(key), str) or not tokens[key]:
-                    raise ValueError(f"Libation auth missing required key: {key!r}")
-            auth_data = {
-                "website_cookies": tokens.get("website_cookies"),
-                "adp_token": tokens.get("adp_token"),
-                "access_token": tokens.get("access_token"),
-                "refresh_token": tokens.get("refresh_token"),
-                "device_private_key": tokens.get("device_private_key"),
-                "store_authentication_cookie": tokens.get(
-                    "store_authentication_cookie"
-                ),
-                "device_info": tokens.get("device_info", {}),
-                "customer_info": tokens.get("customer_info", {}),
-                "expires": tokens.get("expires", 0),
-                "locale_code": tokens.get("locale_code", self.locale),
-                "with_username": tokens.get("with_username", False),
-                "encryption": False,
-            }
+            auth_data = _auth_from_libation(data, self.locale)
             source_format = "Libation"
         else:
-            # Already in audible-cli / Mkb79Auth format — validate required keys
-            for key in ("access_token", "refresh_token"):
-                if not isinstance(data.get(key), str) or not data[key]:
-                    raise ValueError(f"Auth file missing required key: {key!r}")
-            if "locale_code" in data and data["locale_code"] not in LOCALE_DOMAIN:
-                raise ValueError(
-                    f"Unknown locale_code: {data['locale_code']!r}. "
-                    f"Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
-                )
-            if "encryption" not in data:
-                data["encryption"] = False
-            auth_data = data
+            auth_data = _validate_audible_cli_auth(data)
             source_format = "audible-cli"
 
         _atomic_write(self.auth_file, json.dumps(auth_data, indent=2))

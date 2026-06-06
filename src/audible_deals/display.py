@@ -63,6 +63,59 @@ def _pph_str(p: Product, currency: str = "$") -> str:
     return f"{currency}{pph:.2f}"
 
 
+def _price_cell(
+    p: Product,
+    currency: str,
+    max_price: float | None,
+    atl_asins: set[str] | None,
+) -> str:
+    """Price cell: ATL star, threshold coloring, struck list price, and discount."""
+    p_str = price_str(p.price, currency)
+    if atl_asins and p.asin in atl_asins:
+        p_str = "[bold gold1]★[/bold gold1] " + p_str
+    if p.price is not None and max_price is not None:
+        if p.price <= max_price * 0.6:
+            p_str = f"[bold green]{p_str}[/bold green]"
+        elif p.price <= max_price:
+            p_str = f"[green]{p_str}[/green]"
+        else:
+            p_str = f"[red]{p_str}[/red]"
+    d = p.discount_pct
+    if d and d > 0 and p.list_price:
+        color = _discount_color(d)
+        p_str += f" [dim]{currency}{p.list_price:.0f}[/dim] [{color}]-{d}%[/{color}]"
+    return p_str
+
+
+def _title_cell(p: Product) -> str:
+    """Title cell: title + plus tag + series tag, with author/ASIN meta line."""
+    title_line = p.title
+    if p.in_plus_catalog:
+        title_line += " [magenta][+][/magenta]"
+    if p.series_name:
+        series_tag = p.series_name
+        if p.series_position:
+            series_tag += f" #{p.series_position}"
+        title_line += f" [dim italic]({series_tag})[/dim italic]"
+    meta = p.authors_str
+    if meta:
+        meta += f"  [cyan]{p.asin}[/cyan]"
+    else:
+        meta = f"[cyan]{p.asin}[/cyan]"
+    return title_line + f"\n[dim]{meta}[/dim]"
+
+
+def _hist_cell(pct: int | None) -> str:
+    """Cell showing current price vs the historical median."""
+    if pct is None:
+        return "[dim]-[/dim]"
+    if pct < 0:
+        return f"[green]{pct}%[/green]"
+    if pct == 0:
+        return "[dim]0%[/dim]"
+    return f"[dim]+{pct}%[/dim]"
+
+
 def display_products(
     products: list[Product],
     *,
@@ -105,57 +158,17 @@ def display_products(
 
     for i, p in enumerate(products, 1):
         cur = p.currency
-        # Price cell: combine current, original, and discount
-        p_str = price_str(p.price, cur)
-        if atl_asins and p.asin in atl_asins:
-            p_str = "[bold gold1]★[/bold gold1] " + p_str
-        if p.price is not None and max_price is not None:
-            if p.price <= max_price * 0.6:
-                p_str = f"[bold green]{p_str}[/bold green]"
-            elif p.price <= max_price:
-                p_str = f"[green]{p_str}[/green]"
-            else:
-                p_str = f"[red]{p_str}[/red]"
-        d = p.discount_pct
-        if d and d > 0 and p.list_price:
-            color = _discount_color(d)
-            p_str += f" [dim]{cur}{p.list_price:.0f}[/dim] [{color}]-{d}%[/{color}]"
-
-        # Title + series + author + ASIN combined
-        title_line = p.title
-        if p.in_plus_catalog:
-            title_line += " [magenta][+][/magenta]"
-        if p.series_name:
-            series_tag = p.series_name
-            if p.series_position:
-                series_tag += f" #{p.series_position}"
-            title_line += f" [dim italic]({series_tag})[/dim italic]"
-        meta = p.authors_str
-        if meta:
-            meta += f"  [cyan]{p.asin}[/cyan]"
-        else:
-            meta = f"[cyan]{p.asin}[/cyan]"
-        title_line += f"\n[dim]{meta}[/dim]"
-
         row = [
             str(i),
-            title_line,
-            p_str,
+            _title_cell(p),
+            _price_cell(p, cur, max_price, atl_asins),
             str(p.hours) if p.hours else "-",
             _pph_str(p, cur),
             rating_str(p.rating, p.num_ratings),
         ]
         if show_hist:
             pct = hist_context.get(p.asin) if hist_context else None
-            if pct is None:
-                hist_cell = "[dim]-[/dim]"
-            elif pct < 0:
-                hist_cell = f"[green]{pct}%[/green]"
-            elif pct == 0:
-                hist_cell = "[dim]0%[/dim]"
-            else:
-                hist_cell = f"[dim]+{pct}%[/dim]"
-            row.append(hist_cell)
+            row.append(_hist_cell(pct))
         if show_url:
             row.append(p.url)
         table.add_row(*row)
@@ -333,26 +346,37 @@ def display_summary(
     console.print("  " + "  ".join(parts))
 
 
+def _relative_date(date_str: str, today: datetime.date) -> str:
+    """Human-friendly age of an ISO date relative to today."""
+    try:
+        d = datetime.date.fromisoformat(date_str)
+        delta = (today - d).days
+        if delta == 0:
+            return "today"
+        elif delta == 1:
+            return "yesterday"
+        elif delta < 7:
+            return f"{delta}d ago"
+        elif delta < 30:
+            return f"{delta // 7}w ago"
+        else:
+            return f"{delta // 30}mo ago"
+    except ValueError:
+        return ""
+
+
+def _sparkline(prices: list[float]) -> str:
+    """Render prices as a unicode sparkline scaled between their min and max."""
+    sparks = " ▁▂▃▄▅▆▇█"
+    low, high = min(prices), max(prices)
+    if high == low:
+        return sparks[4] * len(prices)
+    return "".join(sparks[min(8, int((p - low) / (high - low) * 8))] for p in prices)
+
+
 def display_price_history(entries: list[dict], asin: str, currency: str = "$") -> None:
     """Display price history table with sparkline for an ASIN."""
     today = datetime.date.today()
-
-    def _relative_date(date_str: str) -> str:
-        try:
-            d = datetime.date.fromisoformat(date_str)
-            delta = (today - d).days
-            if delta == 0:
-                return "today"
-            elif delta == 1:
-                return "yesterday"
-            elif delta < 7:
-                return f"{delta}d ago"
-            elif delta < 30:
-                return f"{delta // 7}w ago"
-            else:
-                return f"{delta // 30}mo ago"
-        except ValueError:
-            return ""
 
     table = Table(
         title=f"Price History: {asin}",
@@ -379,7 +403,9 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
                 change = "[dim]-[/dim]"
         else:
             change = "[dim]-[/dim]"
-        table.add_row(entry["date"], _relative_date(entry["date"]), p_str, change)
+        table.add_row(
+            entry["date"], _relative_date(entry["date"], today), p_str, change
+        )
         prev_price = price
 
     console.print(table)
@@ -392,14 +418,7 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
     )
 
     if len(prices) > 1:
-        sparks = " ▁▂▃▄▅▆▇█"
-        if high == low:
-            line = sparks[4] * len(prices)
-        else:
-            line = "".join(
-                sparks[min(8, int((p - low) / (high - low) * 8))] for p in prices
-            )
-        console.print(f"  [dim]{line}[/dim]")
+        console.print(f"  [dim]{_sparkline(prices)}[/dim]")
 
 
 def display_recap(

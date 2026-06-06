@@ -7,12 +7,229 @@ They operate on ``list[Product]`` and return transformed lists.
 from __future__ import annotations
 
 import logging
+from typing import Callable
 
 from audible_deals.client import Product
 from audible_deals.metrics import price_per_hour, value_score
 from audible_deals.parsing import parse_series_position
 
 logger = logging.getLogger(__name__)
+
+# A filter spec is a (label, predicate) pair; products failing the predicate
+# are dropped and counted under the label in the breakdown.
+_FilterSpec = tuple[str, Callable[[Product], bool]]
+
+
+def _availability_specs(
+    drop_zero_length: bool,
+    skip_asins: set[str] | None,
+    max_price: float | None,
+) -> list[_FilterSpec]:
+    specs: list[_FilterSpec] = []
+    if drop_zero_length:
+        specs.append(("no runtime", lambda p: p.length_minutes != 0))
+    if skip_asins:
+        specs.append(("owned", lambda p: p.asin not in skip_asins))
+    if max_price is not None:
+        specs.append(
+            ("max price", lambda p: p.price is not None and p.price <= max_price)
+        )
+    return specs
+
+
+def _quality_specs(
+    min_rating: float,
+    min_ratings: int,
+    min_hours: float,
+    max_pph: float | None,
+) -> list[_FilterSpec]:
+    specs: list[_FilterSpec] = []
+    if min_rating > 0:
+        specs.append(("min rating", lambda p: p.rating >= min_rating))
+    if min_ratings > 0:
+        specs.append(("min ratings", lambda p: p.num_ratings >= min_ratings))
+    if min_hours > 0:
+        specs.append(("min hours", lambda p: p.hours >= min_hours))
+    if max_pph is not None:
+        specs.append(("max $/hr", lambda p: price_per_hour(p) <= max_pph))
+    return specs
+
+
+def _text_match_specs(
+    language: str,
+    narrator: str,
+    author: str,
+    series: str,
+    publisher: str,
+    exclude_authors: tuple[str, ...],
+    exclude_narrators: tuple[str, ...],
+) -> list[_FilterSpec]:
+    specs: list[_FilterSpec] = []
+    if language:
+        lang_lower = language.lower()
+        specs.append(("language", lambda p: p.language.lower() == lang_lower))
+    if narrator:
+        narrator_lower = narrator.lower()
+        specs.append(
+            (
+                "narrator",
+                lambda p: any(narrator_lower in n.lower() for n in p.narrators),
+            )
+        )
+    if author:
+        author_lower = author.lower()
+        specs.append(
+            ("author", lambda p: any(author_lower in a.lower() for a in p.authors))
+        )
+    if series:
+        series_lower = series.lower()
+        specs.append(("series", lambda p: series_lower in p.series_name.lower()))
+    if publisher:
+        publisher_lower = publisher.lower()
+        specs.append(("publisher", lambda p: publisher_lower in p.publisher.lower()))
+    if exclude_authors:
+        excl_authors = [a.lower() for a in exclude_authors]
+        specs.append(
+            (
+                "excluded authors",
+                lambda p: (
+                    not any(
+                        ex in a
+                        for a in map(str.lower, p.authors)
+                        for ex in excl_authors
+                    )
+                ),
+            )
+        )
+    if exclude_narrators:
+        excl_narrators = [n.lower() for n in exclude_narrators]
+        specs.append(
+            (
+                "excluded narrators",
+                lambda p: (
+                    not any(
+                        ex in n
+                        for n in map(str.lower, p.narrators)
+                        for ex in excl_narrators
+                    )
+                ),
+            )
+        )
+    return specs
+
+
+def _deal_specs(on_sale: bool, min_discount: int) -> list[_FilterSpec]:
+    specs: list[_FilterSpec] = []
+    if on_sale and min_discount <= 0:
+        specs.append(
+            ("on sale", lambda p: p.discount_pct is not None and p.discount_pct > 0)
+        )
+    if min_discount > 0:
+        specs.append(
+            (
+                "min discount",
+                lambda p: p.discount_pct is not None and p.discount_pct >= min_discount,
+            )
+        )
+    return specs
+
+
+def _catalog_specs(
+    exclude_category_ids: set[str] | None,
+    genre: str,
+    skip_plus: bool,
+    only_plus: bool,
+    exclude_keywords: tuple[str, ...],
+) -> list[_FilterSpec]:
+    specs: list[_FilterSpec] = []
+    if exclude_category_ids:
+        specs.append(
+            (
+                "excluded genres",
+                lambda p: (
+                    not any(cid in exclude_category_ids for cid in p.category_ids)
+                ),
+            )
+        )
+    if genre:
+        genre_lower = genre.lower()
+        specs.append(
+            ("genre", lambda p: any(genre_lower in c.lower() for c in p.categories))
+        )
+    if skip_plus:
+        specs.append(("plus catalog", lambda p: not p.in_plus_catalog))
+    elif only_plus:
+        specs.append(("not plus", lambda p: p.in_plus_catalog))
+    if exclude_keywords:
+        keywords_lower = [k.lower() for k in exclude_keywords]
+        specs.append(
+            (
+                "excluded keywords",
+                lambda p: (
+                    not any(
+                        k in p.title.lower() or k in p.subtitle.lower()
+                        for k in keywords_lower
+                    )
+                ),
+            )
+        )
+    return specs
+
+
+def _history_specs(
+    max_hist_percentile: int | None,
+    hist_percentile: dict[str, int] | None,
+    min_price_drop: float,
+    price_drops: dict[str, float] | None,
+    require_history: bool,
+) -> list[_FilterSpec]:
+    specs: list[_FilterSpec] = []
+    if max_hist_percentile is not None and hist_percentile is not None:
+        specs.append(
+            (
+                "hist percentile",
+                lambda p: (
+                    hist_percentile[p.asin] <= max_hist_percentile
+                    if p.asin in hist_percentile
+                    else not require_history
+                ),
+            )
+        )
+    if min_price_drop > 0 and price_drops is not None:
+        specs.append(
+            (
+                "price drop",
+                lambda p: (
+                    price_drops[p.asin] >= min_price_drop
+                    if p.asin in price_drops
+                    else not require_history
+                ),
+            )
+        )
+    return specs
+
+
+def _date_specs(released_after: str, released_before: str) -> list[_FilterSpec]:
+    specs: list[_FilterSpec] = []
+    if released_after:
+        specs.append(
+            (
+                "released after",
+                lambda p: (
+                    bool(p.release_date) and p.release_date[:10] >= released_after
+                ),
+            )
+        )
+    if released_before:
+        specs.append(
+            (
+                "released before",
+                lambda p: (
+                    bool(p.release_date) and p.release_date[:10] <= released_before
+                ),
+            )
+        )
+    return specs
 
 
 def filter_products(
@@ -51,147 +268,37 @@ def filter_products(
     filtered = products
     breakdown: dict[str, int] = {}
 
-    def _apply(label: str, keep) -> None:
-        nonlocal filtered
+    specs = [
+        *_availability_specs(drop_zero_length, skip_asins, max_price),
+        *_quality_specs(min_rating, min_ratings, min_hours, max_pph),
+        *_text_match_specs(
+            language,
+            narrator,
+            author,
+            series,
+            publisher,
+            exclude_authors,
+            exclude_narrators,
+        ),
+        *_deal_specs(on_sale, min_discount),
+        *_catalog_specs(
+            exclude_category_ids, genre, skip_plus, only_plus, exclude_keywords
+        ),
+        *_history_specs(
+            max_hist_percentile,
+            hist_percentile,
+            min_price_drop,
+            price_drops,
+            require_history,
+        ),
+        *_date_specs(released_after, released_before),
+    ]
+
+    for label, keep in specs:
         before = len(filtered)
         filtered = [p for p in filtered if keep(p)]
         if removed := before - len(filtered):
             breakdown[label] = removed
-
-    if drop_zero_length:
-        _apply("no runtime", lambda p: p.length_minutes != 0)
-
-    if skip_asins:
-        _apply("owned", lambda p: p.asin not in skip_asins)
-
-    if max_price is not None:
-        _apply("max price", lambda p: p.price is not None and p.price <= max_price)
-
-    if min_rating > 0:
-        _apply("min rating", lambda p: p.rating >= min_rating)
-
-    if min_ratings > 0:
-        _apply("min ratings", lambda p: p.num_ratings >= min_ratings)
-
-    if min_hours > 0:
-        _apply("min hours", lambda p: p.hours >= min_hours)
-
-    if max_pph is not None:
-        _apply("max $/hr", lambda p: price_per_hour(p) <= max_pph)
-
-    if language:
-        lang_lower = language.lower()
-        _apply("language", lambda p: p.language.lower() == lang_lower)
-
-    if narrator:
-        narrator_lower = narrator.lower()
-        _apply(
-            "narrator", lambda p: any(narrator_lower in n.lower() for n in p.narrators)
-        )
-
-    if author:
-        author_lower = author.lower()
-        _apply("author", lambda p: any(author_lower in a.lower() for a in p.authors))
-
-    if series:
-        series_lower = series.lower()
-        _apply("series", lambda p: series_lower in p.series_name.lower())
-
-    if publisher:
-        publisher_lower = publisher.lower()
-        _apply("publisher", lambda p: publisher_lower in p.publisher.lower())
-
-    if exclude_authors:
-        excl_authors = [a.lower() for a in exclude_authors]
-        _apply(
-            "excluded authors",
-            lambda p: (
-                not any(
-                    ex in a for a in map(str.lower, p.authors) for ex in excl_authors
-                )
-            ),
-        )
-
-    if exclude_narrators:
-        excl_narrators = [n.lower() for n in exclude_narrators]
-        _apply(
-            "excluded narrators",
-            lambda p: (
-                not any(
-                    ex in n
-                    for n in map(str.lower, p.narrators)
-                    for ex in excl_narrators
-                )
-            ),
-        )
-
-    if on_sale and min_discount <= 0:
-        _apply("on sale", lambda p: p.discount_pct is not None and p.discount_pct > 0)
-
-    if min_discount > 0:
-        _apply(
-            "min discount",
-            lambda p: p.discount_pct is not None and p.discount_pct >= min_discount,
-        )
-
-    if exclude_category_ids:
-        _apply(
-            "excluded genres",
-            lambda p: not any(cid in exclude_category_ids for cid in p.category_ids),
-        )
-
-    if genre:
-        genre_lower = genre.lower()
-        _apply("genre", lambda p: any(genre_lower in c.lower() for c in p.categories))
-
-    if skip_plus:
-        _apply("plus catalog", lambda p: not p.in_plus_catalog)
-    elif only_plus:
-        _apply("not plus", lambda p: p.in_plus_catalog)
-
-    if exclude_keywords:
-        keywords_lower = [k.lower() for k in exclude_keywords]
-        _apply(
-            "excluded keywords",
-            lambda p: (
-                not any(
-                    k in p.title.lower() or k in p.subtitle.lower()
-                    for k in keywords_lower
-                )
-            ),
-        )
-
-    if max_hist_percentile is not None and hist_percentile is not None:
-        _apply(
-            "hist percentile",
-            lambda p: (
-                hist_percentile[p.asin] <= max_hist_percentile
-                if p.asin in hist_percentile
-                else not require_history
-            ),
-        )
-
-    if min_price_drop > 0 and price_drops is not None:
-        _apply(
-            "price drop",
-            lambda p: (
-                price_drops[p.asin] >= min_price_drop
-                if p.asin in price_drops
-                else not require_history
-            ),
-        )
-
-    if released_after:
-        _apply(
-            "released after",
-            lambda p: bool(p.release_date) and p.release_date[:10] >= released_after,
-        )
-
-    if released_before:
-        _apply(
-            "released before",
-            lambda p: bool(p.release_date) and p.release_date[:10] <= released_before,
-        )
 
     logger.debug(
         "filter_products in=%d out=%d breakdown=%s",
