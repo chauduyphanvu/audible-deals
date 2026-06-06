@@ -624,6 +624,62 @@ def find(
     )
 
 
+def _fetch_library_with_progress(dc: DealsClient) -> list[Product]:
+    """Fetch the full library with a progress bar."""
+    all_products: list[Product] = []
+    with create_scan_progress() as progress:
+        task = progress.add_task("Fetching library", total=None, items=0)
+        page_count = 0
+        for page_products, page_num in dc.get_library_pages():
+            all_products.extend(page_products)
+            page_count = page_num
+            progress.update(task, completed=page_num, items=len(all_products))
+        progress.update(task, total=page_count, completed=page_count)
+    return all_products
+
+
+def _emit_library_output(
+    filtered: list[Product],
+    filter_breakdown: dict[str, int],
+    *,
+    stats: bool,
+    stats_products: list[Product],
+    total_before_limit: int,
+    output: Path | None,
+    json_flag: bool,
+    quiet: bool,
+    currency: str,
+) -> None:
+    """Write library results to file, JSON stdout, or the terminal table."""
+    if output:
+        export_products(filtered, output)
+        console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
+    if json_flag:
+        serialized = [serialize_product(p) for p in filtered]
+        click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
+    if not json_flag and not quiet:
+        console.print()
+        if stats:
+            display_library_stats(stats_products, currency)
+        else:
+            title = "Your Library"
+            display_products(filtered, title=title, currency=currency)
+            if filter_breakdown:
+                display_summary(
+                    len(filtered),
+                    filter_breakdown,
+                    currency=currency,
+                    total_before_limit=total_before_limit,
+                    noun="books",
+                )
+            elif total_before_limit > len(filtered):
+                console.print(
+                    f"  [bold]{len(filtered)}[/bold] of {total_before_limit} books shown"
+                )
+            else:
+                console.print(f"  [bold]{len(filtered)}[/bold] books in library")
+
+
 @click.command()
 @click.option(
     "--sort",
@@ -714,16 +770,8 @@ def library(
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
     dc = _get_client(ctx.obj["locale"])
-    all_products: list[Product] = []
     with dc:
-        with create_scan_progress() as progress:
-            task = progress.add_task("Fetching library", total=None, items=0)
-            page_count = 0
-            for page_products, page_num in dc.get_library_pages():
-                all_products.extend(page_products)
-                page_count = page_num
-                progress.update(task, completed=page_num, items=len(all_products))
-            progress.update(task, total=page_count, completed=page_count)
+        all_products = _fetch_library_with_progress(dc)
 
     filtered, filter_breakdown = filter_products(
         all_products,
@@ -743,33 +791,104 @@ def library(
 
     cur = _currency(ctx)
 
-    if output:
-        export_products(filtered, output)
-        console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
-    if json_flag:
-        serialized = [serialize_product(p) for p in filtered]
-        click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
-    if not json_flag and not quiet:
-        console.print()
-        if stats:
-            display_library_stats(stats_products, cur)
-        else:
-            title = "Your Library"
-            display_products(filtered, title=title, currency=cur)
-            if filter_breakdown:
-                display_summary(
-                    len(filtered),
-                    filter_breakdown,
-                    currency=cur,
-                    total_before_limit=total_before_limit,
-                    noun="books",
-                )
-            elif total_before_limit > len(filtered):
-                console.print(
-                    f"  [bold]{len(filtered)}[/bold] of {total_before_limit} books shown"
-                )
+    _emit_library_output(
+        filtered,
+        filter_breakdown,
+        stats=stats,
+        stats_products=stats_products,
+        total_before_limit=total_before_limit,
+        output=output,
+        json_flag=json_flag,
+        quiet=quiet,
+        currency=cur,
+    )
+
+
+def _invested_series(
+    lib_products: list[Product], *, min_books: int, series_filter: str
+) -> dict[str, list[Product]]:
+    """Group library books by series, keeping those with min_books+ owned."""
+    series_map: dict[str, list[Product]] = {}  # series_name -> [products]
+    for p in lib_products:
+        if not p.series_name:
+            continue
+        series_map.setdefault(p.series_name, []).append(p)
+
+    invested = {
+        name: books for name, books in series_map.items() if len(books) >= min_books
+    }
+
+    if series_filter:
+        filter_lower = series_filter.lower()
+        invested = {
+            name: books
+            for name, books in invested.items()
+            if filter_lower in name.lower()
+        }
+    return invested
+
+
+def _fetch_series_candidates(
+    dc: DealsClient,
+    invested_sorted: list[tuple[str, list[Product]]],
+    owned_asins: set[str],
+    *,
+    pages: int,
+) -> tuple[list[Product], dict[str, str]]:
+    """Fetch catalog entries for each invested series, skipping owned books.
+
+    Returns (candidates, asin -> series_name map).
+    """
+    all_candidates: list[Product] = []
+    candidate_series: dict[str, str] = {}  # asin -> series_name
+    seen_asins: set[str] = set(owned_asins)
+
+    with create_scan_progress() as progress:
+        task = progress.add_task(
+            f"Scanning {len(invested_sorted)} series",
+            total=len(invested_sorted),
+            items=0,
+        )
+
+        for series_idx, (sname, owned_books) in enumerate(invested_sorted):
+            series_asin = next(
+                (ob.series_asin for ob in owned_books if ob.series_asin), ""
+            )
+
+            if series_asin:
+                # Direct lookup via series ASIN
+                series_products = dc.get_series_products(series_asin)
             else:
-                console.print(f"  [bold]{len(filtered)}[/bold] books in library")
+                # Fallback: keyword search when no series ASIN available
+                series_products = []
+                author_hint = next(
+                    (ob.authors[0] for ob in owned_books if ob.authors), ""
+                )
+                keywords = f"{sname} {author_hint}".strip()
+                sname_lower = sname.lower()
+                for page_products, _, _ in dc.search_pages(
+                    keywords=keywords,
+                    sort_by="Relevance",
+                    max_pages=pages,
+                ):
+                    for p in page_products:
+                        if p.series_name and p.series_name.lower() == sname_lower:
+                            series_products.append(p)
+
+            for p in series_products:
+                if p.asin in seen_asins:
+                    continue
+                seen_asins.add(p.asin)
+                all_candidates.append(p)
+                candidate_series[p.asin] = sname
+
+            progress.update(task, completed=series_idx + 1, items=len(all_candidates))
+
+            # Rate limit between series lookups
+            if series_idx < len(invested_sorted) - 1:
+                time.sleep(0.3)
+
+    return all_candidates, candidate_series
 
 
 def _series_gaps_report(
@@ -1009,23 +1128,9 @@ def series(
         owned_asins = {p.asin for p in lib_products}
 
         # 2. Identify invested series (user owns min_books+ books)
-        series_map: dict[str, list[Product]] = {}  # series_name -> [products]
-        for p in lib_products:
-            if not p.series_name:
-                continue
-            series_map.setdefault(p.series_name, []).append(p)
-
-        invested = {
-            name: books for name, books in series_map.items() if len(books) >= min_books
-        }
-
-        if series_filter:
-            filter_lower = series_filter.lower()
-            invested = {
-                name: books
-                for name, books in invested.items()
-                if filter_lower in name.lower()
-            }
+        invested = _invested_series(
+            lib_products, min_books=min_books, series_filter=series_filter
+        )
 
         if not invested:
             if series_filter:
@@ -1055,56 +1160,9 @@ def series(
             )
 
         # 3. Fetch catalog entries for each series
-        all_candidates: list[Product] = []
-        candidate_series: dict[str, str] = {}  # asin -> series_name
-        seen_asins: set[str] = set(owned_asins)
-
-        with create_scan_progress() as progress:
-            task = progress.add_task(
-                f"Scanning {len(invested_sorted)} series",
-                total=len(invested_sorted),
-                items=0,
-            )
-
-            for series_idx, (sname, owned_books) in enumerate(invested_sorted):
-                series_asin = next(
-                    (ob.series_asin for ob in owned_books if ob.series_asin), ""
-                )
-
-                if series_asin:
-                    # Direct lookup via series ASIN
-                    series_products = dc.get_series_products(series_asin)
-                else:
-                    # Fallback: keyword search when no series ASIN available
-                    series_products = []
-                    author_hint = next(
-                        (ob.authors[0] for ob in owned_books if ob.authors), ""
-                    )
-                    keywords = f"{sname} {author_hint}".strip()
-                    sname_lower = sname.lower()
-                    for page_products, _, _ in dc.search_pages(
-                        keywords=keywords,
-                        sort_by="Relevance",
-                        max_pages=pages,
-                    ):
-                        for p in page_products:
-                            if p.series_name and p.series_name.lower() == sname_lower:
-                                series_products.append(p)
-
-                for p in series_products:
-                    if p.asin in seen_asins:
-                        continue
-                    seen_asins.add(p.asin)
-                    all_candidates.append(p)
-                    candidate_series[p.asin] = sname
-
-                progress.update(
-                    task, completed=series_idx + 1, items=len(all_candidates)
-                )
-
-                # Rate limit between series lookups
-                if series_idx < len(invested_sorted) - 1:
-                    time.sleep(0.3)
+        all_candidates, candidate_series = _fetch_series_candidates(
+            dc, invested_sorted, owned_asins, pages=pages
+        )
 
     # 4. Post-process using shared pipeline
     series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
