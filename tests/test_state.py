@@ -15,7 +15,10 @@ from audible_deals.price_history import (
     hist_percentiles,
     load_all_price_histories,
     price_drop_pcts,
+    price_history_context,
     purge_stale_history,
+    record_prices,
+    scan_price_changes,
 )
 from audible_deals.results_cache import (
     _expand_ref_string,
@@ -639,3 +642,170 @@ class TestFindAllAtlHits:
     def test_empty_history_dir_returns_empty(self, tmp_config):
         hits = find_all_atl_hits()
         assert hits == []
+
+
+# ===================================================================
+# scan_price_changes
+# ===================================================================
+
+
+def _make_hist(asin: str, dated_prices: list[tuple[str, float | None]]) -> dict:
+    return {
+        asin: [
+            {"date": d, "price": p, "title": f"Book {asin}"} for d, p in dated_prices
+        ]
+    }
+
+
+class TestScanPriceChanges:
+    def _day(self, offset: int) -> str:
+        return (datetime.date.today() - datetime.timedelta(days=offset)).isoformat()
+
+    def test_drop_across_cutoff(self):
+        # Entry before window at 10.0, entry within window at 7.0 → drop
+        histories = _make_hist("SC01", [(self._day(10), 10.0), (self._day(2), 7.0)])
+        drops, new_items = scan_price_changes(7, histories=histories)
+        assert len(drops) == 1
+        asin, title, old, new = drops[0]
+        assert asin == "SC01"
+        assert old == pytest.approx(10.0)
+        assert new == pytest.approx(7.0)
+        assert new_items == []
+
+    def test_all_within_window_with_drop(self):
+        # Both entries within window, price fell → in drops
+        histories = _make_hist("SC02", [(self._day(3), 10.0), (self._day(1), 6.0)])
+        drops, new_items = scan_price_changes(7, histories=histories)
+        assert any(d[0] == "SC02" for d in drops)
+        assert not any(n[0] == "SC02" for n in new_items)
+
+    def test_all_within_window_no_drop_goes_to_new_items(self):
+        # Both entries within window, price stable → new_item
+        histories = _make_hist("SC03", [(self._day(3), 8.0), (self._day(1), 8.0)])
+        drops, new_items = scan_price_changes(7, histories=histories)
+        assert not any(d[0] == "SC03" for d in drops)
+        assert any(n[0] == "SC03" for n in new_items)
+        match = next(n for n in new_items if n[0] == "SC03")
+        assert match[2] == pytest.approx(8.0)
+
+    def test_single_entry_within_window_is_new_item(self):
+        histories = _make_hist("SC04", [(self._day(2), 5.0)])
+        drops, new_items = scan_price_changes(7, histories=histories)
+        assert any(n[0] == "SC04" for n in new_items)
+        assert not any(d[0] == "SC04" for d in drops)
+
+    def test_none_price_and_missing_date_no_exception(self):
+        # Entry with None price and one with missing date key
+        histories = {
+            "SC05": [
+                {"price": None, "title": "T"},  # missing date
+                {"date": self._day(2), "price": None, "title": "T"},
+                {"date": self._day(1), "price": 5.0, "title": "T"},
+            ]
+        }
+        # Must not raise; results may be empty or partial, just no exception
+        drops, new_items = scan_price_changes(7, histories=histories)
+        # SC05 is skipped entirely: the dateless first entry causes len(entries) != len(recent),
+        # so the all-within-window branch is bypassed and before is empty, leaving SC05 in neither drops nor new_items
+        assert not any(d[0] == "SC05" for d in drops)
+        assert not any(n[0] == "SC05" for n in new_items)
+
+    def test_straddling_cutoff_price_increase_not_reported(self):
+        # Entry before window at 5.0, within window at 9.0 → not a drop, not new
+        histories = _make_hist("SC06", [(self._day(10), 5.0), (self._day(2), 9.0)])
+        drops, new_items = scan_price_changes(7, histories=histories)
+        assert not any(d[0] == "SC06" for d in drops)
+        assert not any(n[0] == "SC06" for n in new_items)
+
+
+# ===================================================================
+# price_history_context
+# ===================================================================
+
+
+class TestPriceHistoryContext:
+    def _write_history(self, tmp_config, asin, entries):
+        import audible_deals.constants as constants_mod
+
+        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+
+    def test_single_entry_today_not_atl(self, tmp_config):
+        today = datetime.date.today().isoformat()
+        self._write_history(
+            tmp_config, "PHC01", [{"date": today, "price": 5.0, "title": "T"}]
+        )
+        p = make_product(asin="PHC01", price=5.0)
+        atl_asins, _ = price_history_context([p])
+        assert "PHC01" not in atl_asins
+
+    def test_prior_higher_prices_current_at_new_low(self, tmp_config):
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        two_ago = (datetime.date.today() - datetime.timedelta(days=2)).isoformat()
+        today = datetime.date.today().isoformat()
+        self._write_history(
+            tmp_config,
+            "PHC02",
+            [
+                {"date": two_ago, "price": 10.0, "title": "T"},
+                {"date": yesterday, "price": 8.0, "title": "T"},
+                {"date": today, "price": 5.0, "title": "T"},
+            ],
+        )
+        p = make_product(asin="PHC02", price=5.0)
+        atl_asins, _ = price_history_context([p])
+        assert "PHC02" in atl_asins
+
+    def test_with_preloaded_histories(self, tmp_config):
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        histories = {
+            "PHC03": [
+                {"date": yesterday, "price": 12.0, "title": "T"},
+            ]
+        }
+        p = make_product(asin="PHC03", price=5.0)
+        atl_asins, _ = price_history_context([p], histories=histories)
+        assert "PHC03" in atl_asins
+
+    def test_price_not_atl_when_current_above_prior_min(self, tmp_config):
+        yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
+        today = datetime.date.today().isoformat()
+        self._write_history(
+            tmp_config,
+            "PHC04",
+            [
+                {"date": yesterday, "price": 5.0, "title": "T"},
+                {"date": today, "price": 8.0, "title": "T"},
+            ],
+        )
+        p = make_product(asin="PHC04", price=8.0)
+        atl_asins, _ = price_history_context([p])
+        assert "PHC04" not in atl_asins
+
+
+# ===================================================================
+# record_prices corrupt file → backup
+# ===================================================================
+
+
+class TestRecordPricesCorruptBackup:
+    def test_corrupt_file_backed_up(self, tmp_config):
+        import audible_deals.constants as constants_mod
+
+        hist_dir = constants_mod.HISTORY_DIR
+        hist_dir.mkdir(parents=True, exist_ok=True)
+        asin = "B00CORRUPT1"
+        hist_file = hist_dir / f"{asin}.json"
+        corrupt_text = "this is not valid json!!!"
+        hist_file.write_text(corrupt_text)
+
+        p = make_product(asin=asin, price=9.99)
+        record_prices([p])
+
+        bak_file = hist_dir / f"{asin}.json.bak"
+        assert bak_file.exists(), ".bak file should exist after corrupt-file reset"
+        assert bak_file.read_text() == corrupt_text
+
+        data = json.loads(hist_file.read_text())
+        assert len(data) == 1
+        assert data[0]["price"] == pytest.approx(9.99)

@@ -1146,7 +1146,7 @@ class TestZeroLengthFiltering:
             make_product(asin="NR3", length_minutes=0, price=3.99),
             make_product(asin="NR4", length_minutes=300, price=3.99),
         ]
-        _, breakdown, _, _ = _apply_filters(
+        _, breakdown, _, _, _ = _apply_filters(
             products,
             max_price=None,
             min_rating=0.0,

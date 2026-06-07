@@ -70,10 +70,11 @@ def _apply_filters(
     require_history: bool = False,
     released_after: str = "",
     released_before: str = "",
-) -> tuple[list[Product], dict[str, int], int, int]:
-    """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed)."""
+) -> tuple[list[Product], dict[str, int], int, int, dict[str, list[dict]] | None]:
+    """Filter, deduplicate, and sort products. Returns (filtered, breakdown, editions_removed, series_collapsed, histories)."""
     hist_percentile = None
     price_drops = None
+    histories: dict[str, list[dict]] | None = None
     if hist_below is not None or min_price_drop > 0:
         histories = {
             p.asin: load_price_history(p.asin)
@@ -119,7 +120,7 @@ def _apply_filters(
     if first_in_series_only:
         filtered, series_collapsed = first_in_series(filtered)
     filtered = sort_local(filtered, sort)
-    return filtered, filter_breakdown, editions_removed, series_collapsed
+    return filtered, filter_breakdown, editions_removed, series_collapsed, histories
 
 
 def _record_and_cache(
@@ -164,6 +165,7 @@ def _emit_output(
     currency: str = "$",
     interactive: bool = False,
     show_url: bool = False,
+    histories: dict[str, list[dict]] | None = None,
 ) -> None:
     """Write results to file, JSON stdout, or the terminal table."""
     if output:
@@ -172,7 +174,7 @@ def _emit_output(
     if json_flag:
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
-        atl_asins, hist_context = price_history_context(filtered)
+        atl_asins, hist_context = price_history_context(filtered, histories=histories)
         console.print()
         display_products(
             filtered,
@@ -212,6 +214,7 @@ def _record_and_emit(
     interactive: bool = False,
     show_url: bool = False,
     write_cache: bool = True,
+    histories: dict[str, list[dict]] | None = None,
 ) -> None:
     """Run the shared pipeline tail: record/cache/limit, then emit."""
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -235,6 +238,7 @@ def _record_and_emit(
         currency=currency,
         interactive=interactive,
         show_url=show_url,
+        histories=histories,
     )
 
 
@@ -287,7 +291,7 @@ def _apply_settings_filters(
     require_history: bool = False,
     released_after: str = "",
     released_before: str = "",
-) -> tuple[list[Product], dict[str, int], int, int]:
+) -> tuple[list[Product], dict[str, int], int, int, dict[str, list[dict]] | None]:
     """Run _apply_filters with all filter options taken from a resolved Settings."""
     return _apply_filters(
         products,

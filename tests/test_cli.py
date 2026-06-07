@@ -2689,8 +2689,8 @@ class TestRecapWithTitles:
         assert "Newly tracked: 1" in result.output
         assert "Hidden New Book" not in result.output
 
-    def test_recap_stable_price_not_classified_as_new(self, tmp_config):
-        """Items with 2+ entries and no price drop should not appear as newly tracked."""
+    def test_recap_stable_price_classified_as_new(self, tmp_config):
+        """Items with 2+ entries all within window and no drop appear as newly tracked."""
         import datetime
 
         today = datetime.date.today().isoformat()
@@ -2706,11 +2706,11 @@ class TestRecapWithTitles:
         runner = CliRunner()
         result = runner.invoke(cli, ["recap", "--days", "7", "--show-new"])
         assert result.exit_code == 0, result.output
-        assert "Stable Book" not in result.output
-        assert "STABLE01" not in result.output
+        assert "Stable Book" in result.output
+        assert "STABLE01" in result.output
 
-    def test_recap_price_increase_not_classified_as_new(self, tmp_config):
-        """Items with 2+ entries and a price increase should not appear as newly tracked."""
+    def test_recap_price_increase_classified_as_new(self, tmp_config):
+        """Items with 2+ entries all within window and a price increase appear as newly tracked."""
         import datetime
 
         today = datetime.date.today().isoformat()
@@ -2726,8 +2726,8 @@ class TestRecapWithTitles:
         runner = CliRunner()
         result = runner.invoke(cli, ["recap", "--days", "7", "--show-new"])
         assert result.exit_code == 0, result.output
-        assert "Price Up Book" not in result.output
-        assert "PRICEUP1" not in result.output
+        assert "Price Up Book" in result.output
+        assert "PRICEUP1" in result.output
 
 
 # ===================================================================

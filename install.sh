@@ -65,7 +65,7 @@ detect_platform() {
 
 resolve_version() {
     if [ -n "${VERSION:-}" ]; then
-        echo "$VERSION"
+        echo "${VERSION#v}"
         return
     fi
 
@@ -90,6 +90,12 @@ main() {
 
     platform="$(detect_platform)"
     version="$(resolve_version)"
+
+    if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?$ ]]; then
+        echo "Error: resolved version '${version}' does not look like a valid version." >&2
+        exit 1
+    fi
+
     artifact="deals-${platform}"
 
     echo "Installing audible-deals v${version} (${platform})..."

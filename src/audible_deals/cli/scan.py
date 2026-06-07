@@ -327,7 +327,7 @@ def search(
 
     cur = _currency(ctx)
     search_title = _search_title(queries, category_name)
-    filtered, filter_breakdown, editions_removed, series_collapsed = (
+    filtered, filter_breakdown, editions_removed, series_collapsed, histories = (
         _apply_settings_filters(
             all_products,
             s,
@@ -354,6 +354,7 @@ def search(
         currency=cur,
         interactive=s.interactive,
         show_url=show_url,
+        histories=histories,
     )
     display_query = queries[0] if len(queries) == 1 else None
     if (
@@ -595,7 +596,7 @@ def find(
         find_title += f" in {category_name}"
     if s.keywords:
         find_title += f' matching "{s.keywords}"'
-    filtered, filter_breakdown, editions_removed, series_collapsed = (
+    filtered, filter_breakdown, editions_removed, series_collapsed, histories = (
         _apply_settings_filters(
             all_products,
             s,
@@ -622,6 +623,7 @@ def find(
         currency=cur,
         interactive=s.interactive,
         show_url=show_url,
+        histories=histories,
     )
 
 
@@ -1167,7 +1169,7 @@ def series(
 
     # 4. Post-process using shared pipeline
     series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
-    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
+    filtered, filter_breakdown, editions_removed, series_collapsed, _ = _apply_filters(
         all_candidates,
         max_price=max_price,
         min_rating=min_rating,
@@ -1434,7 +1436,7 @@ def last_cmd(
 
     effective_sort = sort or ""  # preserve original cache order when no --sort given
     cur = _currency(ctx)
-    filtered, filter_breakdown, editions_removed, series_collapsed = _apply_filters(
+    filtered, filter_breakdown, editions_removed, series_collapsed, _ = _apply_filters(
         products,
         max_price=max_price,
         min_rating=min_rating,

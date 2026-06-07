@@ -46,7 +46,20 @@ def record_prices(products: list[Product]) -> None:
             try:
                 entries = json.loads(hist_file.read_text())
             except json.JSONDecodeError:
-                logger.warning("history at %s is corrupt, resetting", hist_file)
+                bak = hist_file.with_name(hist_file.name + ".bak")
+                try:
+                    hist_file.replace(bak)
+                except OSError:
+                    logger.warning(
+                        "history at %s is corrupt, resetting (could not back up)",
+                        hist_file,
+                    )
+                else:
+                    logger.warning(
+                        "history at %s is corrupt, resetting (backed up to %s)",
+                        hist_file,
+                        bak,
+                    )
                 corrupt += 1
                 entries = []
         if entries and entries[-1].get("date") == today:
@@ -118,24 +131,28 @@ def _atl_latest(entries: list[dict]) -> tuple[float, float] | None:
     return latest, prev_min
 
 
-def price_history_context(products: list[Product]) -> tuple[set[str], dict[str, int]]:
+def price_history_context(
+    products: list[Product], histories: dict[str, list[dict]] | None = None
+) -> tuple[set[str], dict[str, int]]:
     """Compute (atl_asins, hist_context) for priced products from their histories.
 
-    atl_asins: products at or below their all-time tracked low.
+    atl_asins: products at or below all previously recorded prices (ignores today's entry).
     hist_context: percent of current price vs the historical median (≥3 entries).
     """
     atl_asins: set[str] = set()
     hist_context: dict[str, int] = {}
+    today_iso = datetime.date.today().isoformat()
     for p in products:
         if p.price is None:
             continue
-        numeric = _numeric_prices(load_price_history(p.asin))
-        if not numeric:
-            continue
-        if p.price <= min(numeric):
+        entries = _history_entries(p.asin, histories)
+        prior = [e for e in entries if e.get("date") != today_iso]
+        numeric_prior = _numeric_prices(prior)
+        numeric_all = _numeric_prices(entries)
+        if numeric_prior and p.price <= min(numeric_prior):
             atl_asins.add(p.asin)
-        if len(numeric) >= 3:
-            median = statistics.median(numeric)
+        if len(numeric_all) >= 3:
+            median = statistics.median(numeric_all)
             if median > 0:
                 hist_context[p.asin] = round((p.price - median) / median * 100)
     return atl_asins, hist_context
@@ -210,26 +227,47 @@ def scan_price_changes(
 
     for asin, entries in histories.items():
         title = _latest_title(entries)
-        recent = [e for e in entries if e["date"] >= cutoff]
+        recent = [
+            e for e in entries if isinstance(e.get("date"), str) and e["date"] >= cutoff
+        ]
         if not recent:
             continue
 
-        if entries[0]["date"] >= cutoff and len(entries) == len(recent):
+        first_date = entries[0].get("date") if entries else None
+        all_within_window = (
+            isinstance(first_date, str)
+            and first_date >= cutoff
+            and len(entries) == len(recent)
+        )
+        if all_within_window:
             if len(entries) >= 2:
-                old_price = entries[0]["price"]
-                new_price = entries[-1]["price"]
-                if new_price < old_price:
-                    drops.append((asin, title, old_price, new_price))
+                old_price = entries[0].get("price")
+                new_price = entries[-1].get("price")
+                if isinstance(old_price, (int, float)) and isinstance(
+                    new_price, (int, float)
+                ):
+                    if new_price < old_price:
+                        drops.append((asin, title, float(old_price), float(new_price)))
+                        continue
+                if isinstance(new_price, (int, float)):
+                    new_items.append((asin, title, float(new_price)))
                 continue
-            new_items.append((asin, title, entries[-1]["price"]))
+            last_price = entries[-1].get("price")
+            if isinstance(last_price, (int, float)):
+                new_items.append((asin, title, float(last_price)))
             continue
 
-        before = [e for e in entries if e["date"] < cutoff]
+        before = [
+            e for e in entries if isinstance(e.get("date"), str) and e["date"] < cutoff
+        ]
         if before and recent:
-            old_price = before[-1]["price"]
-            new_price = recent[-1]["price"]
-            if new_price < old_price:
-                drops.append((asin, title, old_price, new_price))
+            old_price = before[-1].get("price")
+            new_price = recent[-1].get("price")
+            if isinstance(old_price, (int, float)) and isinstance(
+                new_price, (int, float)
+            ):
+                if new_price < old_price:
+                    drops.append((asin, title, float(old_price), float(new_price)))
 
     logger.debug(
         "scan_price_changes days=%d drops=%d new=%d",
