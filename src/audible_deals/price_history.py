@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 _MAX_HISTORY_ENTRIES = 365
 
 
+def _as_float(value) -> float | None:
+    """Return value as a float if it is numeric, else None."""
+    return float(value) if isinstance(value, (int, float)) else None
+
+
 def record_prices(products: list[Product]) -> None:
     """Append today's prices to per-ASIN history files.
 
@@ -241,33 +246,34 @@ def scan_price_changes(
         )
         if all_within_window:
             if len(entries) >= 2:
-                old_price = entries[0].get("price")
-                new_price = entries[-1].get("price")
-                if isinstance(old_price, (int, float)) and isinstance(
-                    new_price, (int, float)
+                old_price = _as_float(entries[0].get("price"))
+                new_price = _as_float(entries[-1].get("price"))
+                if (
+                    old_price is not None
+                    and new_price is not None
+                    and new_price < old_price
                 ):
-                    if new_price < old_price:
-                        drops.append((asin, title, float(old_price), float(new_price)))
-                        continue
-                if isinstance(new_price, (int, float)):
-                    new_items.append((asin, title, float(new_price)))
+                    drops.append((asin, title, old_price, new_price))
+                elif new_price is not None:
+                    new_items.append((asin, title, new_price))
                 continue
-            last_price = entries[-1].get("price")
-            if isinstance(last_price, (int, float)):
-                new_items.append((asin, title, float(last_price)))
+            last_price = _as_float(entries[-1].get("price"))
+            if last_price is not None:
+                new_items.append((asin, title, last_price))
             continue
 
         before = [
             e for e in entries if isinstance(e.get("date"), str) and e["date"] < cutoff
         ]
         if before and recent:
-            old_price = before[-1].get("price")
-            new_price = recent[-1].get("price")
-            if isinstance(old_price, (int, float)) and isinstance(
-                new_price, (int, float)
+            old_price = _as_float(before[-1].get("price"))
+            new_price = _as_float(recent[-1].get("price"))
+            if (
+                old_price is not None
+                and new_price is not None
+                and new_price < old_price
             ):
-                if new_price < old_price:
-                    drops.append((asin, title, float(old_price), float(new_price)))
+                drops.append((asin, title, old_price, new_price))
 
     logger.debug(
         "scan_price_changes days=%d drops=%d new=%d",

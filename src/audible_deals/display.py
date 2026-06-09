@@ -393,16 +393,12 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
     for entry in entries:
         price = entry["price"]
         p_str = f"{currency}{price:.2f}"
-        if prev_price is not None:
-            diff = price - prev_price
-            if diff < 0:
-                change = f"[green]{diff:+.2f}[/green]"
-            elif diff > 0:
-                change = f"[red]+{diff:.2f}[/red]"
-            else:
-                change = "[dim]-[/dim]"
-        else:
+        if prev_price is None or price == prev_price:
             change = "[dim]-[/dim]"
+        elif price < prev_price:
+            change = f"[green]{price - prev_price:+.2f}[/green]"
+        else:
+            change = f"[red]+{price - prev_price:.2f}[/red]"
         table.add_row(
             entry["date"], _relative_date(entry["date"], today), p_str, change
         )

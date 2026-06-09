@@ -20,6 +20,19 @@ logger = logging.getLogger(__name__)
 _FilterSpec = tuple[str, Callable[[Product], bool]]
 
 
+def _exclude_spec(
+    label: str, values: tuple[str, ...], get: Callable[[Product], list[str]]
+) -> _FilterSpec:
+    """Keep products whose ``get(p)`` field contains none of ``values`` (case-insensitive)."""
+    lowered = [v.lower() for v in values]
+    return (
+        label,
+        lambda p: (
+            not any(ex in item for item in map(str.lower, get(p)) for ex in lowered)
+        ),
+    )
+
+
 def _availability_specs(
     drop_zero_length: bool,
     skip_asins: set[str] | None,
@@ -88,31 +101,13 @@ def _text_match_specs(
         publisher_lower = publisher.lower()
         specs.append(("publisher", lambda p: publisher_lower in p.publisher.lower()))
     if exclude_authors:
-        excl_authors = [a.lower() for a in exclude_authors]
         specs.append(
-            (
-                "excluded authors",
-                lambda p: (
-                    not any(
-                        ex in a
-                        for a in map(str.lower, p.authors)
-                        for ex in excl_authors
-                    )
-                ),
-            )
+            _exclude_spec("excluded authors", exclude_authors, lambda p: p.authors)
         )
     if exclude_narrators:
-        excl_narrators = [n.lower() for n in exclude_narrators]
         specs.append(
-            (
-                "excluded narrators",
-                lambda p: (
-                    not any(
-                        ex in n
-                        for n in map(str.lower, p.narrators)
-                        for ex in excl_narrators
-                    )
-                ),
+            _exclude_spec(
+                "excluded narrators", exclude_narrators, lambda p: p.narrators
             )
         )
     return specs
