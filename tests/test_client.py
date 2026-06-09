@@ -8,7 +8,6 @@ from types import SimpleNamespace
 
 import pytest
 
-import audible_deals.client as client_mod
 from audible_deals.client import (
     DealsClient,
     _extract_prices,
@@ -472,34 +471,43 @@ class TestRetryAfterBackoff:
         dc = DealsClient(auth_file=api_fixture.tmp_path / "auth.json", locale="us")
         return dc
 
-    def test_429_with_retry_after_sleeps_at_least_header_value(self, api, monkeypatch):
+    @staticmethod
+    def _capture_retry_waits(monkeypatch, dc):
+        """Record retry delays without actually sleeping (never aborts)."""
         sleeps = []
-        monkeypatch.setattr(client_mod.time, "sleep", lambda s: sleeps.append(s))
+
+        def fake_wait(delay):
+            sleeps.append(delay)
+            return False
+
+        monkeypatch.setattr(dc._abort_fetch, "wait", fake_wait)
+        return sleeps
+
+    def test_429_with_retry_after_sleeps_at_least_header_value(self, api, monkeypatch):
         exc = _make_429_exc(retry_after="30")
         api.get_mock.side_effect = [exc, {"products": []}]
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        sleeps = self._capture_retry_waits(monkeypatch, dc)
         with dc:
             dc._api_get("library", num_results=1)
         assert sleeps, "expected at least one sleep"
         assert sleeps[0] >= 30
 
     def test_429_without_retry_after_uses_normal_delay(self, api, monkeypatch):
-        sleeps = []
-        monkeypatch.setattr(client_mod.time, "sleep", lambda s: sleeps.append(s))
         exc = _make_429_exc(retry_after=None)
         api.get_mock.side_effect = [exc, {"products": []}]
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        sleeps = self._capture_retry_waits(monkeypatch, dc)
         with dc:
             dc._api_get("library", num_results=1)
         assert sleeps, "expected at least one sleep"
         assert sleeps[0] < 30
 
     def test_429_retry_after_capped_at_120(self, api, monkeypatch):
-        sleeps = []
-        monkeypatch.setattr(client_mod.time, "sleep", lambda s: sleeps.append(s))
         exc = _make_429_exc(retry_after="9999")
         api.get_mock.side_effect = [exc, {"products": []}]
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+        sleeps = self._capture_retry_waits(monkeypatch, dc)
         with dc:
             dc._api_get("library", num_results=1)
         assert sleeps, "expected at least one sleep"

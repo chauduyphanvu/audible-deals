@@ -6,10 +6,13 @@ import contextlib
 import difflib
 import json
 import logging
+import math
 import os
 import random
 import re
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Iterator
 
@@ -73,7 +76,8 @@ def _validate_category_id(value: str) -> None:
 def _restrictive_umask():
     """Temporarily set umask to 0o177 so new files are created at 0o600.
 
-    umask is process-global; safe for this single-threaded CLI.
+    umask is process-global; only used during login/import, which never
+    run concurrently with fetch worker threads.
     """
     old = os.umask(0o177)
     try:
@@ -83,6 +87,10 @@ def _restrictive_umask():
 
 
 _RETRY_DELAYS = (1.0, 2.0)
+
+# Modest fan-out: enough to hide round-trip latency without tripping
+# Audible's rate limiting (429s back off per-thread in _api_get).
+_MAX_CONCURRENT_FETCHES = 4
 
 
 def _retryable_status(exc: Exception) -> int | None:
@@ -153,6 +161,7 @@ class DealsClient:
         self._client: audible.Client | None = None
         self._categories_cache: list[dict[str, str]] | None = None
         self._library_cache: set[str] | None = None
+        self._abort_fetch = threading.Event()
         logger.debug("DealsClient init locale=%s auth_file=%s", locale, auth_file)
 
     def _api_get(self, endpoint: str, **params: Any) -> dict:
@@ -190,7 +199,11 @@ class DealsClient:
                     exc,
                     delay,
                 )
-                time.sleep(delay)
+                # wait() doubles as an abort check: a scan being torn down
+                # wakes sleeping retries immediately instead of letting them
+                # run against a client that is about to go away.
+                if self._abort_fetch.wait(delay):
+                    raise
                 continue
             if isinstance(resp, tuple):
                 resp = resp[0]
@@ -380,18 +393,50 @@ class DealsClient:
         sort_by: str = "Price",
         max_pages: int = 10,
     ) -> Iterator[tuple[list[Product], int, int]]:
-        """Yield (products, page_num, total) for each page of results."""
-        for page_num in range(1, max_pages + 1):
-            products, total = self.search_catalog(
-                keywords=keywords,
-                category_id=category_id,
-                sort_by=sort_by,
-                page=page_num,
-            )
-            yield products, page_num, total
+        """Yield (products, page_num, total) for each page of results.
 
-            if page_num * MAX_PAGE_SIZE >= total or not products:
-                break
+        Page 1 is fetched first to learn the total (and to warm any auth
+        token refresh on a single thread); the remaining pages are fetched
+        concurrently and yielded in page order. Stops yielding after an
+        empty page, though later pages may already be in flight.
+        """
+        products, total = self.search_catalog(
+            keywords=keywords,
+            category_id=category_id,
+            sort_by=sort_by,
+            page=1,
+        )
+        yield products, 1, total
+
+        last_page = min(max_pages, math.ceil(total / MAX_PAGE_SIZE)) if total else 1
+        if not products or last_page < 2:
+            return
+
+        pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
+        try:
+            futures = {
+                page: pool.submit(
+                    self.search_catalog,
+                    keywords=keywords,
+                    category_id=category_id,
+                    sort_by=sort_by,
+                    page=page,
+                )
+                for page in range(2, last_page + 1)
+            }
+            for page in range(2, last_page + 1):
+                page_products, page_total = futures[page].result()
+                yield page_products, page, page_total
+                if not page_products:
+                    break
+        except BaseException:
+            self._abort_fetch.set()
+            raise
+        finally:
+            # wait=True: unwinding with reads still in flight lets the client
+            # get GC'd under them, stalling each until its 10s socket timeout.
+            pool.shutdown(wait=True, cancel_futures=True)
+            self._abort_fetch.clear()
 
     def get_library_asins(self) -> set[str]:
         """Fetch all ASINs in the user's Audible library.

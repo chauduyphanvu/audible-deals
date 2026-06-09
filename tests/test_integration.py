@@ -10,6 +10,8 @@ import csv
 import datetime
 import json
 
+import click
+import pytest
 from click.testing import CliRunner
 
 from audible_deals.client import DealsClient
@@ -69,17 +71,60 @@ class TestClientIntegration:
         assert api.get_mock.call_count == 2
 
     def test_search_pages_stops_on_empty(self, api):
-        """Pagination stops when a page returns no products."""
+        """Yielding stops at an empty page even when later pages were prefetched."""
         page1 = [make_raw(f"P{i}") for i in range(50)]
+        page3 = [make_raw(f"R{i}") for i in range(50)]
 
-        api.get_mock.side_effect = [
-            {"products": page1, "total_results": 200},
-            {"products": [], "total_results": 200},
-        ]
+        def mock_get(endpoint, **kwargs):
+            pages = {
+                1: page1,
+                2: [],
+                3: page3,
+                4: page3,
+            }
+            return {"products": pages[kwargs["page"]], "total_results": 200}
+
+        api.get_mock.side_effect = mock_get
         dc = self._make_client(api)
         results = list(dc.search_pages(max_pages=10))
         assert len(results) == 2
         assert len(results[1][0]) == 0
+
+    def test_search_pages_concurrent_yields_in_page_order(self, api):
+        """Pages 2+ are fetched concurrently but yielded in page order."""
+        import time as time_mod
+
+        def mock_get(endpoint, **kwargs):
+            page = kwargs["page"]
+            if page == 2:
+                time_mod.sleep(0.05)  # page 3 finishes first
+            products = [make_raw(f"P{page}-{i}") for i in range(50)]
+            return {"products": products, "total_results": 150}
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+        results = list(dc.search_pages(max_pages=10))
+        assert [page_num for _, page_num, _ in results] == [1, 2, 3]
+        assert results[1][0][0].asin == "P2-0"
+        assert results[2][0][0].asin == "P3-0"
+        assert api.get_mock.call_count == 3
+
+    def test_search_pages_propagates_page_error(self, api):
+        """A failed concurrent page fetch raises to the consumer."""
+        page1 = [make_raw(f"P{i}") for i in range(50)]
+
+        def mock_get(endpoint, **kwargs):
+            if kwargs["page"] == 3:
+                raise click.ClickException("boom")  # non-retryable
+            return {"products": page1, "total_results": 200}
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+        gen = dc.search_pages(max_pages=4)
+        products, page_num, _ = next(gen)
+        assert page_num == 1
+        with pytest.raises(click.ClickException):
+            list(gen)
 
     def test_get_products_batch_splits(self, api):
         """Batches of >50 are split into multiple API calls."""
