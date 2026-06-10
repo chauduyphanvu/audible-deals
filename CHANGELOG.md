@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.8.0] - 2026-06-10
+
+### Added
+- Credit-aware buy advice: `deals config set credit-price N` adds a **Buy** verdict (cash / credit / plus) to results tables, `watch`, `detail`, and `compare`; new `--max-effective-price` filter on `find`/`search`/`last` (effective price = the cheaper of cash and one credit); `notify` payloads gain `verdict` and `effective_price` keys. Output is unchanged when the key is unset
+- `deals track` — autonomous background price tracking: `install` registers a launchd agent (macOS), systemd user timer or crontab entry (Linux), or Scheduled Task (Windows) running `track run` on an interval (default 6h, min 10m); each run refreshes wishlist + author watches plus recently tracked ASINs (30-day window, 200 cap), records history, and sends cooldown-gated webhook alerts via new `webhook`/`webhook-format` config keys; `track status`/`track log` and new `deals doctor` rows surface schedule and last-run health; auth failures trigger a one-time "re-auth needed" webhook ping
+- `deals for-you` — personalized deals from a local taste profile built from the owned library (top authors, narrators, genres, in-progress series; cached 24h in `taste_cache.json`); scans series gaps, author searches, and genre bestsellers, ranks by fit (series-next > author > narrator > genre, ties by value score); a **Match** column explains each result and tags wishlisted items; supports `--dry-run`, `--refresh`, and the standard filter/export/interactive pipeline
+
 ## [0.7.0] - 2026-06-05
 
 ### Added
