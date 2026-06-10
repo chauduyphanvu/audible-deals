@@ -317,3 +317,12 @@ class TestForYouCommand:
         assert result.exit_code == 0, result.output
         asins = [d["asin"] for d in _json_payload(result.output)]
         assert asins == ["B00GAP0004"]
+
+    def test_narrow_terminal_folds_match_into_title(self, mock_client, tmp_config):
+        # Default test console is 80 cols — the reason should appear inline
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        runner = CliRunner()
+        result = runner.invoke(cli, ["for-you"])
+        assert result.exit_code == 0, result.output
+        assert "next in" in result.output

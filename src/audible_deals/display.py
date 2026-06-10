@@ -149,6 +149,12 @@ def display_products(
 
     term_width = console.width or 80
     title_max = max(30, min(term_width - 55, 80))
+    # On narrow terminals a Match column would be collapsed away by Rich;
+    # fold the reason into the title cell instead.
+    match_column = match_context is not None and term_width >= 100
+    match_inline = match_context is not None and not match_column
+    if match_column:
+        title_max = max(24, title_max - 18)
 
     show_hist = hist_context is not None and any(
         p.asin in hist_context for p in products
@@ -171,16 +177,19 @@ def display_products(
         table.add_column("Buy", width=7)
     if show_hist:
         table.add_column("vs hist", justify="right", width=8)
-    if match_context is not None:
-        table.add_column("Match", max_width=28, style="cyan")
+    if match_column:
+        table.add_column("Match", min_width=12, max_width=28, style="cyan")
     if show_url:
         table.add_column("URL", no_wrap=True, style="dim cyan")
 
     for i, p in enumerate(products, 1):
         cur = p.currency
+        title_cell = _title_cell(p)
+        if match_inline and (why := match_context.get(p.asin)):
+            title_cell += f"\n[cyan]{why}[/cyan]"
         row = [
             str(i),
-            _title_cell(p),
+            title_cell,
             _price_cell(p, cur, max_price, atl_asins),
             str(p.hours) if p.hours else "-",
             _pph_str(p, cur),
@@ -191,7 +200,7 @@ def display_products(
         if show_hist:
             pct = hist_context.get(p.asin) if hist_context else None
             row.append(_hist_cell(pct))
-        if match_context is not None:
+        if match_column:
             row.append(match_context.get(p.asin, ""))
         if show_url:
             row.append(p.url)
