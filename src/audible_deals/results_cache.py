@@ -99,6 +99,24 @@ def save_last_results(title: str, serialized: list[dict]) -> None:
     )
 
 
+def reorder_last_results(ordered_asins: list[str]) -> None:
+    """Reorder the last-results cache so entries match the given ASIN order.
+
+    Entries for ASINs in ordered_asins come first (in that order); remaining
+    entries follow in their original relative order. Best-effort: silently
+    ignores any error.
+    """
+    try:
+        title, data = load_last_results()
+        by_asin = {item["asin"]: item for item in data if "asin" in item}
+        reordered = [by_asin[a] for a in ordered_asins if a in by_asin]
+        seen = set(ordered_asins)
+        reordered.extend(item for item in data if item.get("asin") not in seen)
+        save_last_results(title, reordered)
+    except Exception:
+        pass
+
+
 def clear_last_results() -> bool:
     """Delete the last-results cache. Returns True if deleted."""
     try:

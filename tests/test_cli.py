@@ -727,6 +727,107 @@ class TestWishlistCommands:
         assert "Orphan Entry" not in result.output
 
 
+class TestWishlistListExport:
+    """Tests for wishlist list --json and -o FILE export."""
+
+    def _seed(self):
+        wishlist_mod.save_wishlist(
+            [
+                {
+                    "asin": "B001",
+                    "title": "A Book",
+                    "max_price": 5.0,
+                    "added": "2024-01-01",
+                },
+                {
+                    "type": "author",
+                    "author": "Terry Pratchett",
+                    "max_price": 3.0,
+                    "added": "2024-06-01",
+                },
+            ]
+        )
+
+    def test_json_flag_shape(self, tmp_config, mock_client):
+        """--json outputs the expected top-level structure with both entry types."""
+        self._seed()
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert "items" in data
+        assert "author_watches" in data
+        assert len(data["items"]) == 1
+        assert data["items"][0]["asin"] == "B001"
+        assert len(data["author_watches"]) == 1
+        assert data["author_watches"][0]["author"] == "Terry Pratchett"
+
+    def test_json_flag_suppresses_table(self, tmp_config, mock_client):
+        """--json suppresses the table; stdout is pure JSON."""
+        self._seed()
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list", "--json"])
+        assert result.exit_code == 0, result.output
+        # Must parse as JSON without error
+        json.loads(result.output)
+        # Rich table markers should not be in stdout
+        assert "Author watches" not in result.output
+
+    def test_json_empty_wishlist(self, tmp_config, mock_client):
+        """--json on an empty wishlist prints the empty structure, not an error."""
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list", "--json"])
+        assert result.exit_code == 0, result.output
+        data = json.loads(result.output)
+        assert data == {"items": [], "author_watches": []}
+
+    def test_output_json_file(self, tmp_config, mock_client, tmp_path):
+        """'-o FILE.json' writes JSON with the correct shape."""
+        self._seed()
+        out = tmp_path / "wl.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        assert "Exported" in result.output
+        data = json.loads(out.read_text())
+        assert len(data["items"]) == 1
+        assert len(data["author_watches"]) == 1
+
+    def test_output_csv_file(self, tmp_config, mock_client, tmp_path):
+        """'-o FILE.csv' writes CSV with expected header and rows."""
+        self._seed()
+        out = tmp_path / "wl.csv"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        assert "Exported" in result.output
+        lines = out.read_text().splitlines()
+        assert lines[0] == "type,asin,title,author,max_price,added"
+        # One item row + one author_watch row
+        assert len(lines) == 3
+        assert lines[1].startswith("item,B001,")
+        assert lines[2].startswith("author_watch,,")
+        assert "Terry Pratchett" in lines[2]
+
+    def test_output_bad_extension(self, tmp_config, mock_client, tmp_path):
+        """'-o FILE.txt' raises an error matching the style of other export commands."""
+        self._seed()
+        out = tmp_path / "wl.txt"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list", "-o", str(out)])
+        assert result.exit_code != 0
+        assert "Unsupported extension" in result.output
+
+    def test_output_empty_wishlist_writes_file(self, tmp_config, mock_client, tmp_path):
+        """'-o FILE.json' on empty wishlist writes the empty structure."""
+        out = tmp_path / "wl.json"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["wishlist", "list", "-o", str(out)])
+        assert result.exit_code == 0, result.output
+        data = json.loads(out.read_text())
+        assert data == {"items": [], "author_watches": []}
+
+
 class TestWishlistSyncCommand:
     def test_sync_adds_new_items(self, mock_client, tmp_config):
         """Items from Audible wishlist not in local are added."""
@@ -7616,6 +7717,72 @@ class TestInteractiveBrowse:
         assert result.exit_code == 0, result.output
         assert "?" in result.output
 
+    def test_sort_discount_reorders_and_rerenders(self, tmp_config):
+        """'s discount' re-sorts highest-discount first and re-renders the table."""
+        p1 = make_product(asin="SD1", title="FiftyPct Book", price=5.0, list_price=10.0)
+        p2 = make_product(
+            asin="SD2", title="NinetyPct Book", price=1.0, list_price=10.0
+        )
+        result = self._run([p1, p2], "s discount\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        # Table was re-rendered: both titles appear in correct relative order
+        assert "FiftyPct Book" in result.output
+        assert "NinetyPct Book" in result.output
+        assert result.output.index("NinetyPct Book") < result.output.index(
+            "FiftyPct Book"
+        )
+
+    def test_sort_updates_last_results_cache(self, tmp_config):
+        """'s discount' reorders the last-results cache to match the new screen order."""
+        from audible_deals.results_cache import load_last_results, save_last_results
+
+        p1 = make_product(asin="CR1", title="FiftyPct", price=5.0, list_price=10.0)
+        p2 = make_product(asin="CR2", title="NinetyPct", price=1.0, list_price=10.0)
+        # Seed cache with p1, p2, and a tail entry that is beyond the display limit
+        save_last_results(
+            "test",
+            [
+                {"asin": "CR1", "title": "FiftyPct"},
+                {"asin": "CR2", "title": "NinetyPct"},
+                {"asin": "CR3", "title": "TailEntry"},
+            ],
+        )
+        self._run([p1, p2], "s discount\nq\n", tmp_config)
+        _, data = load_last_results()
+        asins = [d["asin"] for d in data]
+        # After 's discount', p2 (90%) is first, p1 (50%) second; tail entry preserved at end
+        assert asins[0] == "CR2"
+        assert asins[1] == "CR1"
+        assert asins[2] == "CR3"
+
+    def test_sort_bogus_key_prints_error_no_crash(self, tmp_config):
+        """'s bogus' prints the valid-key error and continues without crashing."""
+        products = [make_product(asin="SB1")]
+        result = self._run(products, "s bogus\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "bogus" in result.output
+        assert "discount" in result.output  # valid keys listed
+
+    def test_not_interested_single_writes_to_seen(self, tmp_config):
+        """'n 1' appends that ASIN to the seen-ASINs store."""
+        products = [make_product(asin="NI1", title="Skip Me")]
+        result = self._run(products, "n 1\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        assert "NI1" in _load_seen_asins()
+        assert "exclude-seen" in result.output or "Won't show" in result.output
+
+    def test_not_interested_range_writes_both(self, tmp_config):
+        """'n 1-2' marks both ASINs in the seen store."""
+        products = [
+            make_product(asin="NR1", title="Skip One"),
+            make_product(asin="NR2", title="Skip Two"),
+        ]
+        result = self._run(products, "n 1-2\nq\n", tmp_config)
+        assert result.exit_code == 0, result.output
+        seen = _load_seen_asins()
+        assert "NR1" in seen
+        assert "NR2" in seen
+
 
 # ===================================================================
 # Feature 3 — deals wishlist purge --owned
@@ -8142,3 +8309,41 @@ class TestCreditAdviceInNotify:
         hit = json.loads(result.output)["deals"][0]
         assert "verdict" not in hit
         assert "effective_price" not in hit
+
+
+# ===================================================================
+# F3 — quiet+interactive passes atl/hist context to _interactive_browse
+# ===================================================================
+
+
+class TestQuietInteractiveContext:
+    def test_quiet_interactive_passes_context_to_browse(self, monkeypatch, tmp_config):
+        """_emit_output in quiet+interactive must compute and pass atl/hist context."""
+        from audible_deals.cli.pipeline import _emit_output
+        from audible_deals.serialization import serialize_product
+
+        captured: dict = {}
+
+        def fake_browse(products, **kwargs):
+            captured.update(kwargs)
+
+        monkeypatch.setattr(
+            "audible_deals.cli.pipeline._interactive_browse", fake_browse
+        )
+        p = make_product(asin="QI1", title="Quiet Interact", price=3.0)
+        _emit_output(
+            [p],
+            [serialize_product(p)],
+            title="T",
+            output=None,
+            json_flag=False,
+            quiet=True,
+            max_price=None,
+            filter_breakdown={},
+            editions_removed=0,
+            series_collapsed=0,
+            total_before_limit=1,
+            interactive=True,
+        )
+        assert "atl_asins" in captured
+        assert "hist_context" in captured

@@ -8,7 +8,52 @@ new platform means adding a formatter and a registry entry.
 from __future__ import annotations
 
 import json
+import logging
 from typing import Callable
+
+logger = logging.getLogger(__name__)
+
+
+def parse_webhook_headers(
+    raw: tuple[str, ...] | list[str], *, strict: bool
+) -> dict[str, str]:
+    """Parse 'Name: Value' strings into a headers dict.
+
+    strict=True raises ValueError on malformed entry / empty name / empty value /
+    Content-Type override. strict=False logs a warning and skips bad entries.
+    """
+    result: dict[str, str] = {}
+    for item in raw:
+        if ":" not in item:
+            msg = f"--webhook-header {item!r}: must be in 'Name: Value' format"
+            if strict:
+                raise ValueError(msg)
+            logger.warning("Skipping invalid webhook_headers entry: %r", item)
+            continue
+        name, _, value = item.partition(":")
+        name = name.strip()
+        value = value.strip()
+        if not name:
+            msg = f"--webhook-header {item!r}: header name must not be empty"
+            if strict:
+                raise ValueError(msg)
+            logger.warning("Skipping invalid webhook_headers entry: %r", item)
+            continue
+        if not value:
+            msg = f"--webhook-header {item!r}: header value must not be empty"
+            if strict:
+                raise ValueError(msg)
+            logger.warning("Skipping invalid webhook_headers entry: %r", item)
+            continue
+        if name.lower() == "content-type":
+            msg = "--webhook-header: Content-Type is set automatically and cannot be overridden"
+            if strict:
+                raise ValueError(msg)
+            logger.warning("Skipping invalid webhook_headers entry: %r", item)
+            continue
+        result[name] = value
+    return result
+
 
 _TEMPLATE_KEYS = "title, price, target, url, currency, asin, discount_pct"
 

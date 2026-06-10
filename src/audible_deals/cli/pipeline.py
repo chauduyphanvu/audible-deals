@@ -172,6 +172,8 @@ def _emit_output(
     histories: dict[str, list[dict]] | None = None,
     credit_price: float | None = None,
     match_context: dict[str, str] | None = None,
+    atl_asins: set[str] | None = None,
+    hist_context: dict[str, int] | None = None,
 ) -> None:
     """Write results to file, JSON stdout, or the terminal table."""
     if output:
@@ -179,8 +181,10 @@ def _emit_output(
         console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
     if json_flag:
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
-    if not json_flag and not quiet:
+    need_context = (not json_flag and not quiet) or interactive
+    if need_context and atl_asins is None and hist_context is None:
         atl_asins, hist_context = price_history_context(filtered, histories=histories)
+    if not json_flag and not quiet:
         console.print()
         display_products(
             filtered,
@@ -203,7 +207,17 @@ def _emit_output(
             total_before_limit=total_before_limit,
         )
     if interactive and filtered and not json_flag:
-        _interactive_browse(filtered, currency=currency, credit_price=credit_price)
+        _interactive_browse(
+            filtered,
+            currency=currency,
+            credit_price=credit_price,
+            title=title,
+            max_price=max_price,
+            show_url=show_url,
+            atl_asins=atl_asins,
+            hist_context=hist_context,
+            match_context=match_context,
+        )
 
 
 def _record_and_emit(
@@ -225,6 +239,8 @@ def _record_and_emit(
     histories: dict[str, list[dict]] | None = None,
     credit_price: float | None = None,
     match_context: dict[str, str] | None = None,
+    atl_asins: set[str] | None = None,
+    hist_context: dict[str, int] | None = None,
 ) -> None:
     """Run the shared pipeline tail: record/cache/limit, then emit."""
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -251,6 +267,8 @@ def _record_and_emit(
         histories=histories,
         credit_price=credit_price,
         match_context=match_context,
+        atl_asins=atl_asins,
+        hist_context=hist_context,
     )
 
 

@@ -15,6 +15,7 @@ REPO="chauduyphanvu/audible-deals"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 LIB_DIR="${LIB_DIR:-$HOME/.local/lib/deals}"
 BINARY_NAME="deals"
+FALLBACK_VERSION="0.8.0"
 
 # --- Detect platform ---
 
@@ -71,16 +72,26 @@ resolve_version() {
 
     local latest
     latest="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | grep '"tag_name"' | head -1 | cut -d'"' -f4)"
+        | grep '"tag_name"' | head -1 | cut -d'"' -f4)" || true
 
     if [ -z "$latest" ]; then
-        echo "Error: Could not determine latest version." >&2
-        echo "Set VERSION=0.2.0 explicitly, or check https://github.com/$REPO/releases" >&2
-        exit 1
+        echo "Warning: Could not determine latest version from GitHub API; falling back to v${FALLBACK_VERSION}" >&2
+        echo "${FALLBACK_VERSION}"
+        return
     fi
 
     # Strip leading 'v' if present
     echo "${latest#v}"
+}
+
+# --- Checksum helper ---
+
+sha256_file() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum "$1" | awk '{print $1}'
+    else
+        shasum -a 256 "$1" | awk '{print $1}'
+    fi
 }
 
 # --- Main ---
@@ -103,9 +114,10 @@ main() {
     url="https://github.com/$REPO/releases/download/v${version}/${artifact}.tar.gz"
 
     # Download to temp file
-    local tmpfile
+    local tmpfile tmpsha
     tmpfile="$(mktemp)"
-    trap 'rm -f "$tmpfile"' EXIT
+    tmpsha="$(mktemp)"
+    trap 'rm -f "$tmpfile" "$tmpsha"' EXIT
 
     if ! curl -fsSL -o "$tmpfile" "$url"; then
         echo "Error: Download failed." >&2
@@ -116,6 +128,21 @@ main() {
         echo "Alternatively, install from source (requires Python 3.11+):" >&2
         echo "  git clone https://github.com/$REPO.git && cd audible-deals && pip install ." >&2
         exit 1
+    fi
+
+    # Verify checksum if sidecar is available
+    if curl -fsSL -o "$tmpsha" "${url}.sha256" 2>/dev/null; then
+        local expected actual
+        expected="$(awk '{print $1}' "$tmpsha")"
+        actual="$(sha256_file "$tmpfile")"
+        if [ "$actual" != "$expected" ]; then
+            echo "Error: Checksum mismatch — download may be corrupt." >&2
+            echo "  Expected: $expected" >&2
+            echo "  Got:      $actual" >&2
+            exit 1
+        fi
+    else
+        echo "Warning: checksum file not found for v${version}; skipping verification." >&2
     fi
 
     # Remove previous installation if present

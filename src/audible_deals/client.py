@@ -695,20 +695,39 @@ class DealsClient:
         return self.get_products_batch(child_asins)
 
     def get_products_batch(self, asins: list[str]) -> list[Product]:
-        """Fetch multiple products in batches of up to 50.
+        """Fetch multiple products in batches of up to 50, concurrently.
 
         Uses the plural catalog endpoint with comma-separated ASINs.
         Returns products in arbitrary order; missing ASINs are silently skipped.
         """
-        results: list[Product] = []
-        for i in range(0, len(asins), MAX_PAGE_SIZE):
-            batch = asins[i : i + MAX_PAGE_SIZE]
-            resp = self._api_get(
+        batches = [
+            asins[i : i + MAX_PAGE_SIZE] for i in range(0, len(asins), MAX_PAGE_SIZE)
+        ]
+
+        def _fetch_batch(batch: list[str]) -> dict:
+            return self._api_get(
                 "1.0/catalog/products",
                 asins=",".join(batch),
                 num_results=len(batch),
                 response_groups=CATALOG_RESPONSE_GROUPS,
             )
+
+        if len(batches) <= 1:
+            resps = [_fetch_batch(batch) for batch in batches]
+        else:
+            pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
+            try:
+                futures = [pool.submit(_fetch_batch, batch) for batch in batches]
+                resps = [f.result() for f in futures]
+            except BaseException:
+                self._abort_fetch.set()
+                raise
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+                self._abort_fetch.clear()
+
+        results: list[Product] = []
+        for resp in resps:
             for raw in resp.get("products", []):
                 product = parse_product(raw, locale=self.locale)
                 if product.asin and product.title:

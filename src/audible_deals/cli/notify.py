@@ -5,7 +5,9 @@ from __future__ import annotations
 import datetime
 import json as json_mod
 import logging
+import random
 import sys
+import time
 from pathlib import Path
 
 import click
@@ -35,7 +37,11 @@ from audible_deals.price_history import (
     scan_price_changes,
 )
 from audible_deals.validation import validate_asin, validate_webhook_url
-from audible_deals.webhooks import format_recap_payload, format_webhook_payload
+from audible_deals.webhooks import (
+    format_recap_payload,
+    format_webhook_payload,
+    parse_webhook_headers as _parse_wh_headers,
+)
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
 logger = logging.getLogger(__name__)
@@ -149,17 +155,38 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
     display_price_history(entries, asin, cur)
 
 
+_WEBHOOK_RETRY_DELAYS = (2.0, 6.0)
+
+
+def _parse_webhook_headers(raw: tuple[str, ...]) -> dict[str, str]:
+    """Parse 'Name: Value' strings into a headers dict. Raises UsageError on bad input."""
+    try:
+        return _parse_wh_headers(raw, strict=True)
+    except ValueError as e:
+        raise click.UsageError(str(e))
+
+
 def _post_webhook(url: str, body: bytes, headers: dict[str, str]) -> None:
-    """POST body to url with headers. Raises ClickException on failure."""
+    """POST body to url with headers, retrying up to 3 times. Raises ClickException on failure."""
     import urllib.request
 
-    req = urllib.request.Request(url, data=body, headers=headers)
-    try:
-        logger.debug("webhook POST %s payload_bytes=%d", url, len(body))
-        urllib.request.urlopen(req, timeout=10)
-    except Exception as e:
-        logger.exception("webhook POST failed")
-        raise click.ClickException(f"Webhook failed: {e}")
+    last_exc: Exception | None = None
+    for attempt in range(1, 4):
+        req = urllib.request.Request(url, data=body, headers=headers)
+        try:
+            logger.debug(
+                "webhook POST %s attempt %d/3 payload_bytes=%d", url, attempt, len(body)
+            )
+            urllib.request.urlopen(req, timeout=10)
+            return
+        except Exception as e:
+            last_exc = e
+            if attempt < 3:
+                delay = _WEBHOOK_RETRY_DELAYS[attempt - 1] + random.uniform(-0.3, 0.3)
+                logger.warning("webhook POST attempt %d/3 failed: %s", attempt, e)
+                time.sleep(max(0.0, delay))
+    logger.error("webhook POST failed", exc_info=last_exc)
+    raise click.ClickException(f"Webhook failed: {last_exc}")
 
 
 @click.command()
@@ -202,17 +229,45 @@ def _post_webhook(url: str, body: bytes, headers: dict[str, str]) -> None:
     default="generic",
     help="Webhook payload format",
 )
+@click.option(
+    "--webhook-header",
+    "webhook_headers",
+    multiple=True,
+    metavar="'NAME: VALUE'",
+    help="Extra header for webhook POST (repeatable; requires --webhook)",
+)
 @click.pass_context
-def recap(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_format):
+def recap(
+    ctx,
+    days,
+    show_new,
+    atl,
+    atl_all,
+    json_flag,
+    webhook,
+    webhook_format,
+    webhook_headers,
+):
     """Show a recap of price changes across tracked items.
 
     Scans price history files and reports items that dropped in price,
     new items tracked, and wishlist items at target.
     """
+    if webhook_headers and not webhook:
+        raise click.UsageError("--webhook-header requires --webhook")
+    extra_headers = _parse_webhook_headers(webhook_headers) if webhook_headers else {}
     try:
         with run_lock():
             _recap_body(
-                ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_format
+                ctx,
+                days,
+                show_new,
+                atl,
+                atl_all,
+                json_flag,
+                webhook,
+                webhook_format,
+                extra_headers,
             )
     except LockHeldError:
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
@@ -272,7 +327,17 @@ def _build_recap_payload(
     return payload
 
 
-def _recap_body(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_format):
+def _recap_body(
+    ctx,
+    days,
+    show_new,
+    atl,
+    atl_all,
+    json_flag,
+    webhook,
+    webhook_format,
+    extra_headers=None,
+):
     logger.info(
         "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
     )
@@ -323,6 +388,8 @@ def _recap_body(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_f
                 )
             except ValueError as e:
                 raise click.ClickException(str(e))
+            if extra_headers:
+                headers = {**headers, **extra_headers}
             _post_webhook(webhook, body, headers)
             console.print("[green]Sent recap to webhook[/green]")
             return
@@ -365,8 +432,17 @@ def _recap_body(ctx, days, show_new, atl, atl_all, json_flag, webhook, webhook_f
     default=None,
     help="Suppress repeat notifications for N days unless the price drops further",
 )
+@click.option(
+    "--webhook-header",
+    "webhook_headers",
+    multiple=True,
+    metavar="'NAME: VALUE'",
+    help="Extra header for webhook POST (repeatable; requires --webhook)",
+)
 @click.pass_context
-def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
+def notify(
+    ctx, webhook, webhook_format, webhook_template, exit_code, cooldown, webhook_headers
+):
     """Check wishlist and send notifications for items at target price.
 
     \b
@@ -375,10 +451,19 @@ def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
         deals notify --webhook https://hooks.slack.com/... --webhook-format slack
         deals notify  (prints to stdout as JSON, useful for cron + mail)
     """
+    if webhook_headers and not webhook:
+        raise click.UsageError("--webhook-header requires --webhook")
+    extra_headers = _parse_webhook_headers(webhook_headers) if webhook_headers else {}
     try:
         with run_lock():
             _notify_body(
-                ctx, webhook, webhook_format, webhook_template, exit_code, cooldown
+                ctx,
+                webhook,
+                webhook_format,
+                webhook_template,
+                exit_code,
+                cooldown,
+                extra_headers,
             )
     except LockHeldError:
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
@@ -502,7 +587,15 @@ def _persist_notify_state(
     save_notify_state(notify_state)
 
 
-def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
+def _notify_body(
+    ctx,
+    webhook,
+    webhook_format,
+    webhook_template,
+    exit_code,
+    cooldown,
+    extra_headers=None,
+):
     logger.info(
         "notify webhook_set=%s webhook_format=%s webhook_template=%s",
         bool(webhook),
@@ -568,6 +661,8 @@ def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cool
             )
         except ValueError as e:
             raise click.ClickException(str(e))
+        if extra_headers:
+            headers = {**headers, **extra_headers}
         _post_webhook(webhook, body, headers)
         console.print(f"[green]Sent {len(hits)} deal(s) to webhook[/green]")
     else:

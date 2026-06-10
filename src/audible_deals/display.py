@@ -661,6 +661,44 @@ def display_series_gaps(gaps: list[dict], currency: str = "$") -> None:
             )
 
 
+def display_track_history(runs: list[dict]) -> None:
+    """Display a table of track run history entries (newest-first)."""
+    if not runs:
+        console.print("  [dim]No run history.[/dim]")
+        return
+
+    table = Table(
+        title="Run History",
+        show_lines=False,
+        padding=(0, 1),
+        title_style="bold",
+    )
+    table.add_column("When", width=22)
+    table.add_column("Duration", justify="right", width=10)
+    table.add_column("Checked", justify="right", width=14)
+    table.add_column("Hits", justify="right", width=6)
+    table.add_column("Status", min_width=12)
+
+    for run in runs:
+        at = run.get("at", "?")
+        dur = run.get("duration_s")
+        dur_str = f"{dur}s" if dur is not None else "-"
+        wishlist = run.get("wishlist_checked", 0) or 0
+        extra = run.get("extra_tracked_checked", 0) or 0
+        checked_str = f"{wishlist}+{extra}"
+        hits = str(run.get("hits", 0) or 0)
+        error = run.get("error")
+        if error:
+            status_cell = (
+                f"[red]{error[:60]}[/red]" if len(error) > 60 else f"[red]{error}[/red]"
+            )
+        else:
+            status_cell = "[green]ok[/green]"
+        table.add_row(at, dur_str, checked_str, hits, status_cell)
+
+    console.print(table)
+
+
 def display_library_stats(products: list[Product], currency: str = "$") -> None:
     """Display aggregate statistics for a library product list."""
     if not products:

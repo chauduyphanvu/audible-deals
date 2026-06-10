@@ -18,6 +18,7 @@ from audible_deals.cli.helpers import (
 from audible_deals.cli.notify import (
     _apply_cooldown,
     _collect_target_hits,
+    _parse_webhook_headers,
     _persist_notify_state,
     _post_webhook,
 )
@@ -26,7 +27,11 @@ from audible_deals.display import console
 from audible_deals.parsing import parse_interval
 from audible_deals.price_history import load_all_price_histories
 from audible_deals.storage import load_json_file, save_json_file
-from audible_deals.webhooks import format_webhook_message, format_webhook_payload
+from audible_deals.webhooks import (
+    format_webhook_message,
+    format_webhook_payload,
+    parse_webhook_headers as _parse_wh_headers,
+)
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
 logger = logging.getLogger(__name__)
@@ -36,6 +41,36 @@ _RECENT_HISTORY_DAYS = 30
 # Bound the per-run refresh so a large history dir can't blow up API usage
 _MAX_EXTRA_ASINS = 200
 _MIN_INTERVAL_SECONDS = 600
+_RUN_HISTORY_MAX = 10
+
+
+def _append_run(state: dict, entry: dict) -> None:
+    """Insert entry newest-first into state["run_history"], capped at _RUN_HISTORY_MAX."""
+    history = state.get("run_history", [])
+    history.insert(0, entry)
+    state["run_history"] = history[:_RUN_HISTORY_MAX]
+    state.pop("last_run", None)
+
+
+def _run_history(state: dict) -> list[dict]:
+    """Return run history entries, newest-first. Falls back to legacy last_run key."""
+    if "run_history" in state:
+        return state["run_history"]
+    last = state.get("last_run")
+    if last:
+        return [last]
+    return []
+
+
+def _parse_cfg_webhook_headers(raw_list: list) -> dict[str, str]:
+    """Parse stored webhook_headers config, skipping bad entries with a warning."""
+    str_items = []
+    for item in raw_list:
+        if not isinstance(item, str):
+            logger.warning("Skipping invalid webhook_headers entry: %r", item)
+            continue
+        str_items.append(item)
+    return _parse_wh_headers(str_items, strict=False)
 
 
 def _load_track_state() -> dict:
@@ -63,13 +98,26 @@ def _recent_history_asins(exclude: set[str]) -> list[str]:
 
 
 def _send_hits_webhook(
-    hits: list[dict], extras: dict, url: str, fmt: str, currency: str
+    hits: list[dict],
+    extras: dict,
+    url: str,
+    fmt: str,
+    currency: str,
+    extra_headers: dict[str, str] | None = None,
 ) -> None:
     body, headers = format_webhook_payload(hits, fmt, currency=currency, extras=extras)
+    if extra_headers:
+        headers = {**headers, **extra_headers}
     _post_webhook(url, body, headers)
 
 
-def _notify_auth_error(state: dict, error: str, url: str | None, fmt: str) -> None:
+def _notify_auth_error(
+    state: dict,
+    error: str,
+    url: str | None,
+    fmt: str,
+    extra_headers: dict[str, str] | None = None,
+) -> None:
     """One-time webhook ping when a background run hits an auth failure."""
     if not url or state.get("auth_error_notified"):
         return
@@ -79,6 +127,8 @@ def _notify_auth_error(state: dict, error: str, url: str | None, fmt: str) -> No
             fmt,
             title="audible-deals needs attention",
         )
+        if extra_headers:
+            headers = {**headers, **extra_headers}
         _post_webhook(url, body, headers)
         state["auth_error_notified"] = True
     except Exception:
@@ -108,31 +158,40 @@ def track():
 def track_run(ctx, cooldown):
     """Refresh tracked prices once (the command the scheduler runs)."""
     started = time.monotonic()
-    state = _load_track_state()
     cfg = ctx.obj.get("config", {})
     webhook = cfg.get("webhook")
     webhook_format = cfg.get("webhook_format") or "generic"
+    webhook_headers = _parse_cfg_webhook_headers(cfg.get("webhook_headers") or [])
 
     try:
         with run_lock():
-            _track_run_locked(ctx, state, cooldown, webhook, webhook_format, started)
+            state = _load_track_state()
+            _track_run_locked(
+                ctx, state, cooldown, webhook, webhook_format, started, webhook_headers
+            )
     except LockHeldError as e:
         console.print(f"[dim]Another run is in progress, skipping: {e}[/dim]")
     except click.ClickException:
         raise
     except Exception as e:
         logger.exception("track run failed")
-        state["last_run"] = {
-            "at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "duration_s": round(time.monotonic() - started, 1),
-            "error": f"{type(e).__name__}: {e}",
-        }
-        _notify_auth_error(state, str(e), webhook, webhook_format)
+        state = _load_track_state()
+        _append_run(
+            state,
+            {
+                "at": datetime.datetime.now().isoformat(timespec="seconds"),
+                "duration_s": round(time.monotonic() - started, 1),
+                "error": f"{type(e).__name__}: {e}",
+            },
+        )
+        _notify_auth_error(state, str(e), webhook, webhook_format, webhook_headers)
         _save_track_state(state)
         raise click.ClickException(f"track run failed: {e}")
 
 
-def _track_run_locked(ctx, state, cooldown, webhook, webhook_format, started):
+def _track_run_locked(
+    ctx, state, cooldown, webhook, webhook_format, started, webhook_headers=None
+):
     items = load_wishlist()
     asin_items, author_items = partition_wishlist(items)
     wishlist_asins = {i["asin"] for i in asin_items}
@@ -154,21 +213,26 @@ def _track_run_locked(ctx, state, cooldown, webhook, webhook_format, started):
     if webhook and hits:
         kept, suppressed, notify_state = _apply_cooldown(hits, cooldown, today)
         if kept:
-            _send_hits_webhook(kept, extras, webhook, webhook_format, _currency(ctx))
+            _send_hits_webhook(
+                kept, extras, webhook, webhook_format, _currency(ctx), webhook_headers
+            )
             webhook_sent = True
             _persist_notify_state(notify_state, kept, asin_items, hit_asins, today)
 
-    state["last_run"] = {
-        "at": datetime.datetime.now().isoformat(timespec="seconds"),
-        "duration_s": round(time.monotonic() - started, 1),
-        "wishlist_checked": len(asin_items),
-        "author_watches_checked": len(author_items),
-        "extra_tracked_checked": len(extra_asins),
-        "hits": len(hits),
-        "suppressed": suppressed,
-        "webhook_sent": webhook_sent,
-        "error": None,
-    }
+    _append_run(
+        state,
+        {
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "duration_s": round(time.monotonic() - started, 1),
+            "wishlist_checked": len(asin_items),
+            "author_watches_checked": len(author_items),
+            "extra_tracked_checked": len(extra_asins),
+            "hits": len(hits),
+            "suppressed": suppressed,
+            "webhook_sent": webhook_sent,
+            "error": None,
+        },
+    )
     state.pop("auth_error_notified", None)
     _save_track_state(state)
 
@@ -196,8 +260,15 @@ def _track_run_locked(ctx, state, cooldown, webhook, webhook_format, started):
     default=None,
     help="Webhook payload format (saved to config)",
 )
+@click.option(
+    "--webhook-header",
+    "webhook_headers",
+    multiple=True,
+    metavar="'NAME: VALUE'",
+    help="Extra header for webhook POST (repeatable; requires --webhook)",
+)
 @click.pass_context
-def track_install(ctx, every, webhook, webhook_format):
+def track_install(ctx, every, webhook, webhook_format, webhook_headers):
     """Install the OS schedule for background tracking.
 
     \b
@@ -212,6 +283,11 @@ def track_install(ctx, every, webhook, webhook_format):
             f"Minimum interval is 10m — '{every}' would hammer the API."
         )
 
+    if webhook_headers and not webhook:
+        raise click.UsageError("--webhook-header requires --webhook")
+    if webhook_headers:
+        _parse_webhook_headers(webhook_headers)
+
     if webhook:
         from audible_deals.config_store import load_config, save_config
         from audible_deals.validation import validate_webhook_url
@@ -221,6 +297,8 @@ def track_install(ctx, every, webhook, webhook_format):
         cfg["webhook"] = webhook
         if webhook_format:
             cfg["webhook_format"] = webhook_format
+        if webhook_headers:
+            cfg["webhook_headers"] = list(webhook_headers)
         save_config(cfg)
         console.print("[green]Webhook saved to config.[/green]")
     elif webhook_format:
@@ -263,8 +341,17 @@ def track_uninstall():
 
 
 @track.command("status")
-def track_status():
+@click.option(
+    "--history",
+    "show_history",
+    is_flag=True,
+    default=False,
+    help="Print full run history table",
+)
+def track_status(show_history):
     """Show schedule and last-run status for background tracking."""
+    from audible_deals.display import display_track_history
+
     state = _load_track_state()
     install_info = state.get("install")
     present, where = scheduler.installed()
@@ -287,20 +374,24 @@ def track_status():
             "background tracking.[/dim]"
         )
 
-    last = state.get("last_run")
+    runs = _run_history(state)
+    last = runs[0] if runs else None
     if not last:
         console.print("  [dim]Last run:[/dim]  never")
         return
     if last.get("error"):
         console.print(f"  [red]Last run:[/red]  {last.get('at')} — {last['error']}")
-        return
-    console.print(
-        f"  [dim]Last run:[/dim]  {last.get('at')} "
-        f"({last.get('duration_s', '?')}s, "
-        f"{last.get('wishlist_checked', 0)} wishlist + "
-        f"{last.get('extra_tracked_checked', 0)} tracked checked, "
-        f"{last.get('hits', 0)} at target)"
-    )
+    else:
+        console.print(
+            f"  [dim]Last run:[/dim]  {last.get('at')} "
+            f"({last.get('duration_s', '?')}s, "
+            f"{last.get('wishlist_checked', 0)} wishlist + "
+            f"{last.get('extra_tracked_checked', 0)} tracked checked, "
+            f"{last.get('hits', 0)} at target)"
+        )
+
+    if show_history:
+        display_track_history(runs)
 
 
 @track.command("log")

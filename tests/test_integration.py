@@ -154,6 +154,44 @@ class TestClientIntegration:
         assert len(products) == 2
         assert {p.asin for p in products} == {"OK1", "OK2"}
 
+    def test_get_products_batch_concurrent_all_products_returned(self, api):
+        """More than 50 ASINs triggers concurrent fetches; all products returned exactly once."""
+        call_counts: dict[str, int] = {}
+
+        def mock_get(endpoint, **kwargs):
+            batch_asins = kwargs.get("asins", "").split(",")
+            for a in batch_asins:
+                call_counts[a] = call_counts.get(a, 0) + 1
+            return {"products": [make_raw(a) for a in batch_asins]}
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+        asins = [f"C{i:03d}" for i in range(120)]
+        products = dc.get_products_batch(asins)
+
+        assert len(products) == 120
+        assert {p.asin for p in products} == set(asins)
+        assert api.get_mock.call_count == 3
+        assert all(v == 1 for v in call_counts.values())
+
+    def test_get_products_batch_concurrent_exception_propagates(self, api):
+        """An exception in one batch propagates and sets/clears the abort event."""
+
+        def mock_get(endpoint, **kwargs):
+            batch_asins = kwargs.get("asins", "").split(",")
+            if batch_asins[0] == "C050":  # second batch
+                raise click.ClickException("boom")
+            return {"products": [make_raw(a) for a in batch_asins]}
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+        asins = [f"C{i:03d}" for i in range(120)]
+
+        with pytest.raises(click.ClickException):
+            dc.get_products_batch(asins)
+
+        assert not dc._abort_fetch.is_set()
+
     def test_get_library_asins_multi_page(self, api):
         """Library pagination fetches multiple pages until <1000 items."""
         page1_items = [{"asin": f"LIB{i:04d}"} for i in range(1000)]

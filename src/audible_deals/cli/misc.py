@@ -403,6 +403,7 @@ def _store_checks() -> list[_Row]:
 
 def _track_checks() -> list[_Row]:
     """Check background-tracking schedule health."""
+    from audible_deals.cli.track import _run_history
     from audible_deals.storage import load_json_file
 
     state = load_json_file(constants.TRACK_STATE_FILE, dict, "track state")
@@ -440,11 +441,29 @@ def _track_checks() -> list[_Row]:
     except Exception as e:
         rows.append(("Background tracking", "WARN", str(e)))
 
-    last = state.get("last_run")
+    runs = _run_history(state)
+    last = runs[0] if runs else None
     if not last:
         rows.append(("Last tracked run", "WARN", "Never ran — check 'deals track log'"))
     elif last.get("error"):
-        rows.append(("Last tracked run", "FAIL", f"{last.get('at')}: {last['error']}"))
+        streak = 0
+        for r in runs:
+            if r.get("error"):
+                streak += 1
+            else:
+                break
+        if streak >= 3:
+            rows.append(
+                (
+                    "Last tracked run",
+                    "FAIL",
+                    f"Failing for {streak} consecutive runs (latest {last.get('at')}: {last['error']})",
+                )
+            )
+        else:
+            rows.append(
+                ("Last tracked run", "FAIL", f"{last.get('at')}: {last['error']}")
+            )
     else:
         detail = f"{last.get('at')} ({last.get('hits', 0)} at target)"
         try:

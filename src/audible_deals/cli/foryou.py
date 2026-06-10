@@ -19,7 +19,8 @@ from audible_deals.cli.pipeline import _record_and_emit
 from audible_deals.client import DealsClient
 from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
 from audible_deals.display import console, create_scan_progress
-from audible_deals.filtering import dedupe_editions, filter_products
+from audible_deals.filtering import dedupe_editions, filter_products, sort_local
+from audible_deals.price_history import load_price_history, price_history_context
 from audible_deals.product import Product
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
@@ -171,6 +172,54 @@ def _fetch_candidates(
     default=False,
     help="Show what would be scanned without making API calls",
 )
+@click.option(
+    "--sort",
+    type=click.Choice(
+        [
+            "price",
+            "-price",
+            "discount",
+            "price-per-hour",
+            "value",
+            "rating",
+            "length",
+            "date",
+            "title",
+            "author",
+            "asin",
+            "bestsellers",
+        ]
+    ),
+    default=None,
+    help="Re-sort results after fit ranking (default: fit rank order)",
+)
+@click.option(
+    "--narrator",
+    default="",
+    help="Filter by narrator name (substring match, client-side)",
+)
+@click.option(
+    "--exclude-author",
+    "exclude_authors",
+    multiple=True,
+    help="Exclude author (substring match, repeatable)",
+)
+@click.option(
+    "--exclude-narrator",
+    "exclude_narrators",
+    multiple=True,
+    help="Exclude narrator (substring match, repeatable)",
+)
+@click.option(
+    "--skip-plus/--no-skip-plus",
+    default=False,
+    help="Exclude Audible Plus catalog titles",
+)
+@click.option(
+    "--only-plus/--no-only-plus",
+    default=False,
+    help="Show only Audible Plus catalog titles",
+)
 @click.pass_context
 def for_you(
     ctx,
@@ -188,6 +237,12 @@ def for_you(
     show_url,
     interactive,
     dry_run,
+    sort,
+    narrator,
+    exclude_authors,
+    exclude_narrators,
+    skip_plus,
+    only_plus,
 ):
     """Personalized deals from your own library's taste profile.
 
@@ -206,6 +261,8 @@ def for_you(
     logger.info(
         "for-you refresh=%s max_price=%s dry_run=%s", refresh, max_price, dry_run
     )
+    if skip_plus and only_plus:
+        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     dc = _get_client(ctx.obj["locale"])
 
@@ -252,9 +309,26 @@ def for_you(
         min_hours=min_hours,
         on_sale=on_sale,
         language=language,
+        narrator=narrator,
+        exclude_authors=exclude_authors,
+        exclude_narrators=exclude_narrators,
+        skip_plus=skip_plus,
+        only_plus=only_plus,
     )
     filtered, editions_removed = dedupe_editions(filtered)
-    ranked, match_context = taste.rank_by_fit(filtered, profile, series_of)
+    histories = {
+        p.asin: load_price_history(p.asin) for p in filtered if p.price is not None
+    }
+    atl_asins, hist_context = price_history_context(filtered, histories=histories)
+    ranked, match_context = taste.rank_by_fit(
+        filtered,
+        profile,
+        series_of,
+        atl_asins=atl_asins,
+        hist_context=hist_context,
+    )
+    if sort:
+        ranked = sort_local(ranked, sort)
 
     wishlist_asins = {i["asin"] for i in partition_wishlist(load_wishlist())[0]}
     for asin in match_context:
@@ -277,4 +351,7 @@ def for_you(
         show_url=show_url,
         credit_price=credit_price,
         match_context=match_context,
+        histories=histories,
+        atl_asins=atl_asins,
+        hist_context=hist_context,
     )

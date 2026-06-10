@@ -174,6 +174,62 @@ class TestRankByFit:
         assert match["R1"] == "next in Bobiverse"
         assert "R5" not in match
 
+    def test_atl_bonus_appended_to_reason(self):
+        p = make_product(
+            asin="A1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
+        )
+        ranked, match = rank_by_fit([p], _profile(), {}, atl_asins={"A1"})
+        assert ranked == [p]
+        assert "all-time low" in match["A1"]
+
+    def test_below_median_bonus_appended_to_reason(self):
+        p = make_product(
+            asin="B1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
+        )
+        ranked, match = rank_by_fit([p], _profile(), {}, hist_context={"B1": -15})
+        assert ranked == [p]
+        assert "below median" in match["B1"]
+
+    def test_atl_takes_precedence_over_below_median(self):
+        # When asin is in atl_asins AND hist_context is negative, only ATL fires.
+        p = make_product(
+            asin="C1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
+        )
+        ranked, match = rank_by_fit(
+            [p], _profile(), {}, atl_asins={"C1"}, hist_context={"C1": -20}
+        )
+        assert "all-time low" in match["C1"]
+        assert "below median" not in match["C1"]
+
+    def test_zero_fit_not_rescued_by_price_signal(self):
+        p = make_product(
+            asin="Z1", authors=["Unknown"], narrators=["Y"], category_ids=[]
+        )
+        ranked, match = rank_by_fit(
+            [p], _profile(), {}, atl_asins={"Z1"}, hist_context={"Z1": -50}
+        )
+        assert ranked == []
+        assert "Z1" not in match
+
+    def test_price_signal_boosts_ranking(self):
+        # ATL item should rank above a higher-fit item when boost pushes score up.
+        # author_book: fit=3.0; atl_genre: fit=1.0+1.5=2.5 — author still wins
+        # but with a series+atl: fit=5+1.5=6.5 > author 3.0
+        series_atl = make_product(
+            asin="S1", authors=["X"], narrators=["Y"], category_ids=[], price=5.0
+        )
+        author_book = make_product(
+            asin="A1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
+        )
+        ranked, match = rank_by_fit(
+            [author_book, series_atl],
+            _profile(),
+            {"S1": "Bobiverse"},
+            atl_asins={"S1"},
+        )
+        assert ranked[0].asin == "S1"
+        assert "all-time low" in match["S1"]
+
 
 # ===================================================================
 # for-you command
@@ -219,7 +275,7 @@ def _wire_scans(mock_client):
     owned_book = make_product(asin="B00OWNED01", title="Owned")
     author_book = make_product(
         asin="B00AUTH001",
-        title="By Fav",
+        title="Zeppelin Book",
         authors=["Fav Author"],
         category_ids=[],
         categories=[],
@@ -228,7 +284,7 @@ def _wire_scans(mock_client):
     )
     genre_book = make_product(
         asin="B00GENRE01",
-        title="Genre Hit",
+        title="Alpha Book",
         authors=["Someone"],
         category_ids=["G1"],
         categories=["Science Fiction"],
@@ -326,3 +382,42 @@ class TestForYouCommand:
         result = runner.invoke(cli, ["for-you"])
         assert result.exit_code == 0, result.output
         assert "next in" in result.output
+
+    def test_narrator_filter_excludes_non_matching(self, mock_client, tmp_config):
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["for-you", "--json", "--narrator", "NoSuchNarrator"]
+        )
+        assert result.exit_code == 0, result.output
+        assert _json_payload(result.output) == []
+
+    def test_exclude_author_removes_matching(self, mock_client, tmp_config):
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["for-you", "--json", "--exclude-author", "Fav Author"]
+        )
+        assert result.exit_code == 0, result.output
+        asins = [d["asin"] for d in _json_payload(result.output)]
+        assert "B00AUTH001" not in asins
+
+    def test_skip_plus_and_only_plus_mutual_exclusion(self, mock_client, tmp_config):
+        _seed_profile_cache()
+        runner = CliRunner()
+        result = runner.invoke(cli, ["for-you", "--skip-plus", "--only-plus"])
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output.lower()
+
+    def test_sort_reorders_results(self, mock_client, tmp_config):
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        runner = CliRunner()
+        # Fit rank order is: Bobiverse 4, Zeppelin Book, Alpha Book (not alphabetical).
+        # --sort title must reorder to alphabetical regardless of fit rank.
+        result = runner.invoke(cli, ["for-you", "--json", "--sort", "title"])
+        assert result.exit_code == 0, result.output
+        titles = [d["title"] for d in _json_payload(result.output)]
+        assert titles == ["Alpha Book", "Bobiverse 4", "Zeppelin Book"]

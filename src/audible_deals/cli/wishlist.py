@@ -2,9 +2,13 @@
 
 from __future__ import annotations
 
+import csv
 import datetime
+import json as json_mod
 import logging
+import sys
 import time
+from pathlib import Path
 
 import click
 
@@ -245,13 +249,91 @@ def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
     console.print(f"\n[bold]{updated}[/bold] updated, {not_found} not found")
 
 
+_WISHLIST_CSV_FIELDS = ["type", "asin", "title", "author", "max_price", "added"]
+
+
+def _export_wishlist(
+    asin_items: list[dict],
+    author_items: list[dict],
+    path: Path,
+) -> int:
+    """Write wishlist to path as .json or .csv. Returns total entry count."""
+    suffix = path.suffix.lower()
+    total = len(asin_items) + len(author_items)
+
+    if suffix == ".json":
+        payload = {"items": asin_items, "author_watches": author_items}
+        path.write_text(
+            json_mod.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
+    elif suffix == ".csv":
+        rows: list[dict] = []
+        for item in asin_items:
+            rows.append(
+                {
+                    "type": "item",
+                    "asin": item.get("asin", ""),
+                    "title": item.get("title", ""),
+                    "author": "",
+                    "max_price": item.get("max_price", ""),
+                    "added": item.get("added", ""),
+                }
+            )
+        for item in author_items:
+            rows.append(
+                {
+                    "type": "author_watch",
+                    "asin": "",
+                    "title": "",
+                    "author": item.get("author", ""),
+                    "max_price": item.get("max_price", ""),
+                    "added": item.get("added", ""),
+                }
+            )
+        with open(path, "w", newline="", encoding="utf-8") as f:
+            writer = csv.DictWriter(f, fieldnames=_WISHLIST_CSV_FIELDS)
+            writer.writeheader()
+            writer.writerows(rows)
+    else:
+        raise click.BadParameter(
+            f"Unsupported extension '{suffix}'. Use .json or .csv.",
+            param_hint="--output",
+        )
+    return total
+
+
 @wishlist.command("list")
+@click.option(
+    "--output",
+    "-o",
+    type=click.Path(path_type=Path),
+    default=None,
+    help="Export wishlist to file (.json or .csv)",
+)
+@click.option(
+    "--json",
+    "json_flag",
+    is_flag=True,
+    default=False,
+    help="Output wishlist as JSON to stdout",
+)
 @click.pass_context
-def wishlist_list(ctx):
+def wishlist_list(ctx, output, json_flag):
     """Show your wishlist."""
     cur = _currency(ctx)
     items = load_wishlist()
     asin_items, author_items = partition_wishlist(items)
+
+    if json_flag:
+        console.file = sys.stderr
+        payload = {"items": asin_items, "author_watches": author_items}
+        click.echo(json_mod.dumps(payload, indent=2, ensure_ascii=False))
+        return
+
+    if output:
+        total = _export_wishlist(asin_items, author_items, output)
+        console.print(f"[green]Exported {total} entries to {output}[/green]")
+        return
 
     if not asin_items and not author_items:
         console.print(

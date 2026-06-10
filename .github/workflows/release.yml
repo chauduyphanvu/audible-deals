@@ -124,12 +124,20 @@ jobs:
           else
             7z a "${{ matrix.artifact }}.zip" "${{ matrix.artifact }}"
           fi
+          archive="${{ matrix.artifact }}.${{ matrix.archive_ext }}"
+          if command -v sha256sum >/dev/null 2>&1; then
+            sha256sum "$archive" > "${archive}.sha256"
+          else
+            shasum -a 256 "$archive" > "${archive}.sha256"
+          fi
 
       - name: Upload archive
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a  # v7.0.1
         with:
           name: ${{ matrix.artifact }}
-          path: dist/${{ matrix.artifact }}.${{ matrix.archive_ext }}
+          path: |
+            dist/${{ matrix.artifact }}.${{ matrix.archive_ext }}
+            dist/${{ matrix.artifact }}.${{ matrix.archive_ext }}.sha256
 
   publish:
     needs: [validate-and-tag, build-binaries]
@@ -152,5 +160,8 @@ jobs:
           files: |
             python-dist/*
             deals-linux-x64/deals-linux-x64.tar.gz
+            deals-linux-x64/deals-linux-x64.tar.gz.sha256
             deals-macos-arm64/deals-macos-arm64.tar.gz
+            deals-macos-arm64/deals-macos-arm64.tar.gz.sha256
             deals-windows-x64/deals-windows-x64.zip
+            deals-windows-x64/deals-windows-x64.zip.sha256

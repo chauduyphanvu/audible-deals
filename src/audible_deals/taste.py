@@ -28,6 +28,8 @@ _FIT_SERIES = 5.0
 _FIT_AUTHOR = 3.0
 _FIT_NARRATOR = 2.0
 _FIT_GENRE = 1.0
+_FIT_ATL = 1.5
+_FIT_BELOW_MEDIAN = 0.5
 
 
 def _top_counts(counter: collections.Counter[str], top_n: int) -> list[dict]:
@@ -147,14 +149,29 @@ def fit_score(
 
 
 def rank_by_fit(
-    products: list[Product], profile: dict, series_of: dict[str, str]
+    products: list[Product],
+    profile: dict,
+    series_of: dict[str, str],
+    *,
+    atl_asins: set[str] | None = None,
+    hist_context: dict[str, int] | None = None,
 ) -> tuple[list[Product], dict[str, str]]:
-    """Rank by (fit, value); drop zero-fit items. Returns (ranked, asin -> reason)."""
+    """Rank by (fit, value); drop zero-fit items. Returns (ranked, asin -> reason).
+
+    atl_asins and hist_context add price-signal boosts after taste scoring.
+    Items with base fit <= 0 are never rescued by price signals.
+    """
     scored: list[tuple[float, float, Product, str]] = []
     for p in products:
         points, reasons = fit_score(p, profile, series_of)
         if points <= 0:
             continue
+        if atl_asins and p.asin in atl_asins:
+            points += _FIT_ATL
+            reasons.append("all-time low")
+        elif hist_context and hist_context.get(p.asin, 0) < 0:
+            points += _FIT_BELOW_MEDIAN
+            reasons.append("below median")
         scored.append((points, value_score(p), p, ", ".join(reasons)))
     scored.sort(key=lambda t: (-t[0], -t[1]))
     return [p for _, _, p, _ in scored], {p.asin: why for _, _, p, why in scored}

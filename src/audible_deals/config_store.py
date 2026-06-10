@@ -72,6 +72,16 @@ def coerce_config_value(key: str, raw: str):
 
         validate_webhook_url(raw)
         return raw
+    if key == "webhook_headers":
+        from audible_deals.webhooks import parse_webhook_headers
+
+        try:
+            parse_webhook_headers((raw,), strict=True)
+        except ValueError as e:
+            raise click.ClickException(
+                f"Invalid webhook header {raw!r}: {e}. Use 'Name: Value' format."
+            )
+        return [raw]
     try:
         return typ(raw)
     except (ValueError, TypeError) as e:

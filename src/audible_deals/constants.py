@@ -208,6 +208,7 @@ _CONFIG_SCHEMA: dict[str, type] = {
     "credit_price": float,
     "webhook": str,
     "webhook_format": str,
+    "webhook_headers": list,
 }
 
 WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "ntfy")
