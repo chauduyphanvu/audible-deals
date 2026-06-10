@@ -140,6 +140,7 @@ def display_products(
     atl_asins: set[str] | None = None,
     hist_context: dict[str, int] | None = None,
     credit_price: float | None = None,
+    match_context: dict[str, str] | None = None,
 ) -> None:
     """Display products in a compact rich table."""
     if not products:
@@ -170,6 +171,8 @@ def display_products(
         table.add_column("Buy", width=7)
     if show_hist:
         table.add_column("vs hist", justify="right", width=8)
+    if match_context is not None:
+        table.add_column("Match", max_width=28, style="cyan")
     if show_url:
         table.add_column("URL", no_wrap=True, style="dim cyan")
 
@@ -188,6 +191,8 @@ def display_products(
         if show_hist:
             pct = hist_context.get(p.asin) if hist_context else None
             row.append(_hist_cell(pct))
+        if match_context is not None:
+            row.append(match_context.get(p.asin, ""))
         if show_url:
             row.append(p.url)
         table.add_row(*row)

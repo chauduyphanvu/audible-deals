@@ -30,6 +30,7 @@ except ImportError:
 import click
 
 from audible_deals.cli import config as config_commands
+from audible_deals.cli import foryou as foryou_commands
 from audible_deals.cli import misc as misc_commands
 from audible_deals.cli import notify as notify_commands
 from audible_deals.cli import scan as scan_commands
@@ -119,6 +120,7 @@ cli.add_command(misc_commands.doctor)
 cli.add_command(misc_commands.completions)
 cli.add_command(scan_commands.search)
 cli.add_command(scan_commands.find)
+cli.add_command(foryou_commands.for_you)
 cli.add_command(scan_commands.library)
 cli.add_command(scan_commands.series)
 cli.add_command(scan_commands.last_cmd)

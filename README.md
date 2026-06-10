@@ -5,6 +5,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 ## What it does
 
 - **Find deals** — scan hundreds of catalog pages and surface audiobooks under your price threshold
+- **For you** — builds a taste profile from the library you already own (favorite authors, narrators, genres, series in progress) and scans the catalog from those angles, ranked by fit
 - **Search** — keyword search with filters for genre, rating, length, narrator, language, and more
 - **Deep scan** — hit the catalog from multiple angles (bestsellers, newest, highest-rated) to maximize coverage (works on `find` and `search`)
 - **Last results** — re-sort and re-filter your most recent results without any API calls; reference items by number in other commands
@@ -142,6 +143,7 @@ deals search "Dune" --max-price 5 --show-url
 |---------|-------------|
 | `deals find` | Browse and filter deals (the main command) |
 | `deals search [QUERY]` | Search by keyword with filters (QUERY optional if `--genre`/`--category` is given) |
+| `deals for-you` | Personalized deals ranked by fit with your library's taste profile |
 | `deals library` | List all books in your Audible library (exportable) |
 | `deals last` | Re-display results from the last search or find (no API call) |
 | `deals detail ASIN` | Detailed info for a single audiobook |
@@ -245,6 +247,28 @@ deals profile delete my-scifi
 ```
 
 Profiles support all filter and sort flags, including `--skip-owned`, `--language`, `--interactive`, `--author`, `--series`, `--exclude-author`, `--exclude-narrator`, and `--deep`.
+
+## Personalized deals — `for-you`
+
+`deals for-you` answers "what should *I* buy?" instead of "what's cheap?". It builds a local taste profile from the books you already own — top authors, narrators, genres, and series you're partway through — then scans the catalog from those angles and ranks results by fit:
+
+```bash
+# Personalized scan (builds the profile on first run; cached for 24h)
+deals for-you
+
+# Only deals: cheap, discounted, well-rated
+deals for-you --max-price 5 --on-sale --min-rating 4
+
+# Rebuild the profile after buying new books
+deals for-you --refresh
+
+# Preview what it would scan, without API calls
+deals for-you --dry-run
+```
+
+Ranking: the next unowned book in a series you've started scores highest, then favorite authors, narrators, and genres; ties break by value (rating × hours / price). A **Match** column explains every result ("next in Bobiverse", "author: Andy Weir", "· wishlisted" for items already tracked). Owned books are always excluded, and results feed `deals last` and the price-history tracker like any other scan.
+
+The profile lives in `taste_cache.json`, is rebuilt automatically after 24 hours, and never leaves your machine.
 
 ## Last results
 
@@ -787,6 +811,7 @@ All data is stored locally in `~/.config/audible-deals/`:
 - `history/` — per-ASIN price history (one JSON file per book)
 - `categories_cache.*.json` — cached category listings per locale
 - `track_state.json`, `track.log` — background tracking state and log
+- `taste_cache.json` — the local taste profile behind `deals for-you`
 
 ## Acknowledgements
 

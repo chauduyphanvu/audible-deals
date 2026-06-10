@@ -171,6 +171,7 @@ def _emit_output(
     show_url: bool = False,
     histories: dict[str, list[dict]] | None = None,
     credit_price: float | None = None,
+    match_context: dict[str, str] | None = None,
 ) -> None:
     """Write results to file, JSON stdout, or the terminal table."""
     if output:
@@ -190,6 +191,7 @@ def _emit_output(
             atl_asins=atl_asins,
             hist_context=hist_context,
             credit_price=credit_price,
+            match_context=match_context,
         )
         display_summary(
             len(filtered),
@@ -222,6 +224,7 @@ def _record_and_emit(
     write_cache: bool = True,
     histories: dict[str, list[dict]] | None = None,
     credit_price: float | None = None,
+    match_context: dict[str, str] | None = None,
 ) -> None:
     """Run the shared pipeline tail: record/cache/limit, then emit."""
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -247,6 +250,7 @@ def _record_and_emit(
         show_url=show_url,
         histories=histories,
         credit_price=credit_price,
+        match_context=match_context,
     )
 
 

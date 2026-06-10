@@ -199,6 +199,7 @@ def tmp_config(tmp_path, monkeypatch):
         constants_mod, "TRACK_STATE_FILE", tmp_path / "track_state.json"
     )
     monkeypatch.setattr(constants_mod, "TRACK_LOG_FILE", tmp_path / "track.log")
+    monkeypatch.setattr(constants_mod, "TASTE_CACHE_FILE", tmp_path / "taste.json")
 
     # Replace the Rich console with one that writes to a fresh stderr-like
     # stream, so it doesn't conflict with Click's CliRunner file handling.
@@ -220,6 +221,7 @@ def tmp_config(tmp_path, monkeypatch):
 def _cli_console_modules():
     """All cli submodules that bind the shared Rich console by name."""
     import audible_deals.cli as cli_mod
+    import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.interactive as cli_interactive_mod
     import audible_deals.cli.misc as cli_misc_mod
@@ -239,12 +241,14 @@ def _cli_console_modules():
         cli_notify_mod,
         cli_misc_mod,
         cli_track_mod,
+        cli_foryou_mod,
     )
 
 
 @pytest.fixture
 def mock_client(monkeypatch):
     """Patch _get_client to return a mock that doesn't hit the network."""
+    import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.notify as cli_notify_mod
@@ -266,6 +270,7 @@ def mock_client(monkeypatch):
         cli_notify_mod,
         cli_misc_mod,
         cli_track_mod,
+        cli_foryou_mod,
     ):
         monkeypatch.setattr(mod, "_get_client", _get_mock)
     return client

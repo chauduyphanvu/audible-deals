@@ -28,6 +28,7 @@ NOTIFY_STATE_FILE = CONFIG_DIR / "notify_state.json"
 LOCK_FILE = CONFIG_DIR / ".deals.lock"
 TRACK_STATE_FILE = CONFIG_DIR / "track_state.json"
 TRACK_LOG_FILE = CONFIG_DIR / "track.log"
+TASTE_CACHE_FILE = CONFIG_DIR / "taste_cache.json"
 
 # ---------------------------------------------------------------------------
 # Locale maps
