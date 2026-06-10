@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/), and this project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+- `deals for-you` filter parity with `find`: `--sort`, `--narrator`, `--exclude-author`, `--exclude-narrator`, `--skip-plus`/`--only-plus`
+- Price signals in `for-you` ranking — candidates at an all-time low or below their historical median rank higher, with "all-time low" / "below median" match reasons
+- Interactive mode verbs: `s <key>` re-sorts the results in place (the last-results cache follows, so `--last` refs keep matching the screen); `n #[,#-#]` marks items not-interested so `--exclude-seen` hides them from future scans
+- `deals track status --history` — table of the last 10 background runs (ring buffer in `track_state.json` replaces the single `last_run` entry); `deals doctor` reports FAIL when 3+ consecutive runs failed
+- `--webhook-header 'Name: Value'` (repeatable) on `notify`, `recap`, and `track install` — custom headers for self-hosted receivers (Home Assistant, n8n, …); persisted to config by `track install`; `Content-Type` cannot be overridden
+- Webhook POSTs retry up to 3 attempts with jittered backoff before failing
+- `deals wishlist list --json` and `-o FILE` (`.json`/`.csv`) — machine-readable wishlist export
+- install.sh verifies downloads against SHA-256 sidecars (now uploaded by the release workflow) and falls back to a pinned version when the GitHub API is unreachable
+
+### Changed
+- `get_products_batch` fetches 50-ASIN batches concurrently (up to 4 in flight) — faster `track run`, `watch`, and `notify` with large wishlists
+
+### Fixed
+- Background tracking state is loaded under the run lock, so a failing run can no longer clobber a concurrent run's freshly saved state
+
 ## [0.8.0] - 2026-06-10
 
 ### Added
@@ -65,6 +83,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.8.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.8.0
 [0.7.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.7.0
 [0.6.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.6.0
 [0.1.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.1.0

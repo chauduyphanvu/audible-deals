@@ -5,7 +5,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 ## What it does
 
 - **Find deals** — scan hundreds of catalog pages and surface audiobooks under your price threshold
-- **For you** — builds a taste profile from the library you already own (favorite authors, narrators, genres, series in progress) and scans the catalog from those angles, ranked by fit
+- **For you** — builds a taste profile from the library you already own (favorite authors, narrators, genres, series in progress) and scans the catalog from those angles, ranked by fit; books at an all-time low or below their historical median rank higher
 - **Search** — keyword search with filters for genre, rating, length, narrator, language, and more
 - **Deep scan** — hit the catalog from multiple angles (bestsellers, newest, highest-rated) to maximize coverage (works on `find` and `search`)
 - **Last results** — re-sort and re-filter your most recent results without any API calls; reference items by number in other commands
@@ -32,7 +32,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 curl -fsSL https://raw.githubusercontent.com/chauduyphanvu/audible-deals/main/install.sh | bash
 ```
 
-This detects your OS and architecture, downloads the right binary, and installs it to `~/.local/bin`. If that directory isn't in your PATH, the script adds it automatically. You may need to restart your terminal (or run `source ~/.zshrc`) for the `deals` command to become available.
+This detects your OS and architecture, downloads the right binary (verifying its SHA-256 checksum when the release provides one), and installs it to `~/.local/bin`. If that directory isn't in your PATH, the script adds it automatically. You may need to restart your terminal (or run `source ~/.zshrc`) for the `deals` command to become available.
 
 **Manual download:**
 
@@ -262,11 +262,16 @@ deals for-you --max-price 5 --on-sale --min-rating 4
 # Rebuild the profile after buying new books
 deals for-you --refresh
 
+# Filter and re-sort like find: exclude an author, skip Plus titles, sort by discount
+deals for-you --exclude-author "Maas" --skip-plus --sort discount
+
 # Preview what it would scan, without API calls
 deals for-you --dry-run
 ```
 
-Ranking: the next unowned book in a series you've started scores highest, then favorite authors, narrators, and genres; ties break by value (rating × hours / price). A **Match** column explains every result ("next in Bobiverse", "author: Andy Weir", "· wishlisted" for items already tracked). Owned books are always excluded, and results feed `deals last` and the price-history tracker like any other scan.
+Ranking: the next unowned book in a series you've started scores highest, then favorite authors, narrators, and genres; ties break by value (rating × hours / price). Books at their all-time-low price or below their historical median get an extra boost. A **Match** column explains every result ("next in Bobiverse", "author: Andy Weir", "all-time low", "· wishlisted" for items already tracked). Owned books are always excluded, and results feed `deals last` and the price-history tracker like any other scan.
+
+Beyond the filters shown above, `for-you` accepts `--narrator`, `--exclude-author`/`--exclude-narrator` (repeatable), `--skip-plus`/`--only-plus`, and `--sort KEY` to re-order the ranked results (any local sort key: `price`, `discount`, `value`, `rating`, …).
 
 The profile lives in `taste_cache.json`, is rebuilt automatically after 24 hours, and never leaves your machine.
 
@@ -390,7 +395,11 @@ deals find --genre sci-fi --max-price 5 -i
 After the table displays, you can:
 - Type a **number** to view detailed info (e.g. `3`)
 - Type **`o 3`** to open that book's Audible page in your browser
-- Type **`w 3`** to add it to your wishlist (you'll be prompted for an optional target price)
+- Type **`w 3`** to add it to your wishlist (you'll be prompted for an optional target price; ranges like `w 1-3,5` work)
+- Type **`c 1 3`** to compare two results side-by-side
+- Type **`h 3`** to view a book's price history
+- Type **`s discount`** to re-sort the results in place (e.g. `s price`, `s value`) — `--last` references follow the new order
+- Type **`n 3`** to mark results "not interested" so future scans with `--exclude-seen` skip them (ranges work)
 - Type **`q`** to quit
 
 ## Library export
@@ -433,6 +442,10 @@ deals notify --webhook https://hooks.slack.com/services/...
 
 # View price history (recorded automatically during find/search)
 deals history B00R6S1RCY
+
+# Export the wishlist for scripts or backup
+deals wishlist list --json | jq -r '.items[].asin'
+deals wishlist list -o wishlist.csv
 ```
 
 `wishlist sync` pulls books you've already saved on Audible's website into the local watchlist. This is useful if you've been saving books on Audible and want to start tracking their prices without manually adding each ASIN. Items already tracked locally are skipped — re-running sync is safe. Use `--update` with `--max-price` to bulk-change the target price for items already on the local watchlist.
@@ -484,8 +497,14 @@ deals track install
 # Custom interval, with webhook alerts for wishlist items at target
 deals track install --every 3h --webhook https://ntfy.sh/mytopic --webhook-format ntfy
 
+# Custom auth header for self-hosted receivers (repeatable; saved to config)
+deals track install --webhook https://hooks.example.com/x --webhook-header 'Authorization: Bearer TOKEN'
+
 # See the schedule and the last run
 deals track status
+
+# Table of the last 10 runs
+deals track status --history
 
 # Tail the background log
 deals track log
@@ -499,7 +518,7 @@ deals track uninstall
 - refreshes prices for every wishlist item and author watch, recording history
 - also refreshes ASINs with recent price history (last 30 days, capped at 200 per run), so `vs hist`, ★ all-time-low, and `recap` stay meaningful
 - sends webhook alerts for items at or below target (1-day cooldown per item unless the price drops further), using the `webhook` / `webhook-format` saved in config
-- writes a summary to `track_state.json` — surfaced by `deals track status` and `deals doctor`
+- writes a summary to `track_state.json` — the last 10 runs are kept; `deals track status --history` shows them, and `deals doctor` flags 3+ consecutive failures
 
 If a background run hits an auth failure, it records the error and (when a webhook is configured) sends a one-time "re-auth needed" ping instead of rotting silently. The minimum interval is 10 minutes; runs are protected by the same cross-process lock as `notify`, so overlapping schedules skip cleanly.
 
@@ -547,6 +566,14 @@ deals notify --webhook https://ntfy.sh/your-topic --webhook-format ntfy
 | `discord` | `{"content": "..."}` with markdown links (embed previews suppressed) |
 | `teams` | Legacy `MessageCard` JSON for Teams incoming webhooks — works on tenants that still accept the deprecated O365 connector format, not on the newer Power Automate / Workflows webhooks (which need Adaptive Cards) |
 | `ntfy` | Plain-text body with `Title`, `Tags`, and `Priority` headers |
+
+If the receiver needs an auth or API-key header (Home Assistant, n8n, custom endpoints), add `--webhook-header 'Name: Value'` (repeatable) on `notify`, `recap`, or `track install`:
+
+```bash
+deals notify --webhook https://hooks.example.com/x --webhook-header 'Authorization: Bearer TOKEN'
+```
+
+`Content-Type` cannot be overridden. Webhook deliveries retry up to 3 attempts with short backoff before failing.
 
 For any other destination, supply a custom template with `--webhook-template PATH`:
 
