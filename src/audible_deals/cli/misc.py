@@ -401,6 +401,71 @@ def _store_checks() -> list[_Row]:
     return rows
 
 
+def _track_checks() -> list[_Row]:
+    """Check background-tracking schedule health."""
+    from audible_deals.storage import load_json_file
+
+    state = load_json_file(constants.TRACK_STATE_FILE, dict, "track state")
+    install_info = state.get("install")
+    if not install_info:
+        return [
+            (
+                "Background tracking",
+                "PASS",
+                "Not installed (optional — 'deals track install')",
+            )
+        ]
+
+    rows: list[_Row] = []
+    try:
+        from audible_deals import scheduler
+
+        present, where = scheduler.installed()
+        if present:
+            rows.append(
+                (
+                    "Background tracking",
+                    "PASS",
+                    f"every {install_info.get('every', '?')} via {install_info.get('method', '?')}",
+                )
+            )
+        else:
+            rows.append(
+                (
+                    "Background tracking",
+                    "WARN",
+                    f"Install record exists but schedule missing at {where}",
+                )
+            )
+    except Exception as e:
+        rows.append(("Background tracking", "WARN", str(e)))
+
+    last = state.get("last_run")
+    if not last:
+        rows.append(("Last tracked run", "WARN", "Never ran — check 'deals track log'"))
+    elif last.get("error"):
+        rows.append(("Last tracked run", "FAIL", f"{last.get('at')}: {last['error']}"))
+    else:
+        detail = f"{last.get('at')} ({last.get('hits', 0)} at target)"
+        try:
+            ran_at = datetime.datetime.fromisoformat(last["at"])
+            interval = float(install_info.get("interval_s", 0)) or 21600.0
+            age = (datetime.datetime.now() - ran_at).total_seconds()
+            if age > 2 * interval:
+                rows.append(
+                    (
+                        "Last tracked run",
+                        "WARN",
+                        f"Stale — last ran {last.get('at')} (expected every {install_info.get('every', '?')})",
+                    )
+                )
+                return rows
+        except (KeyError, ValueError, TypeError):
+            pass
+        rows.append(("Last tracked run", "PASS", detail))
+    return rows
+
+
 def _render_doctor_rows(rows: list[_Row]) -> int:
     """Render the doctor table. Returns the number of FAIL rows."""
     failures = 0
@@ -429,6 +494,7 @@ def doctor(ctx):
     rows.append(_connectivity_check(ctx, auth_ok))
     rows.extend(_config_checks())
     rows.extend(_store_checks())
+    rows.extend(_track_checks())
     if _render_doctor_rows(rows):
         ctx.exit(1)
 

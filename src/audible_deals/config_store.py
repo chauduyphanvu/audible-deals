@@ -5,7 +5,12 @@ from __future__ import annotations
 import click
 
 from audible_deals import constants
-from audible_deals.constants import _CONFIG_SCHEMA, ALL_SORT_OPTIONS, LOCALE_DOMAIN
+from audible_deals.constants import (
+    _CONFIG_SCHEMA,
+    ALL_SORT_OPTIONS,
+    LOCALE_DOMAIN,
+    WEBHOOK_FORMATS,
+)
 from audible_deals.storage import load_json_file, save_json_file
 
 
@@ -55,6 +60,17 @@ def coerce_config_value(key: str, raw: str):
             raise click.ClickException(
                 f"Invalid locale '{raw}'. Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
             )
+        return raw
+    if key == "webhook_format":
+        if raw not in WEBHOOK_FORMATS:
+            raise click.ClickException(
+                f"Invalid webhook format '{raw}'. Valid: {', '.join(WEBHOOK_FORMATS)}"
+            )
+        return raw
+    if key == "webhook":
+        from audible_deals.validation import validate_webhook_url
+
+        validate_webhook_url(raw)
         return raw
     try:
         return typ(raw)

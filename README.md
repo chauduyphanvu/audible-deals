@@ -12,6 +12,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - **Interactive mode** — browse results, view details, open in browser, or add to wishlist without leaving the CLI
 - **Wishlist & watch** — save ASINs you're eyeing and check back for price drops
 - **Price history** — automatically tracks prices over time with sparkline charts and relative dates; flags an all-time-low with a ★ badge and shows a `vs hist` column with the percent above/below the historical median
+- **Background tracking** — `deals track install` registers an OS schedule (launchd / systemd / cron / Task Scheduler) that refreshes tracked prices and fires webhook alerts without you lifting a finger
 - **Credit-aware buy advice** — tell it what a credit costs you and every table shows whether to pay cash, burn a credit, or grab it free on Plus
 - **Saved profiles** — save your favorite search configurations and reuse them with `--profile` (works on `find` and `search`)
 - **Global config** — set persistent defaults (max price, skip-owned, locale, etc.) applied to every command
@@ -151,6 +152,7 @@ deals search "Dune" --max-price 5 --show-url
 | `deals wishlist sync` | Pull your Audible account wishlist for local price tracking and alerts |
 | `deals watch` | Check wishlist prices — highlights items at/below target |
 | `deals notify` | Send deal notifications via webhook or JSON stdout |
+| `deals track install/run/status/log/uninstall` | Background price tracking on an OS schedule |
 | `deals profile save/list/show/delete` | Manage saved search profiles |
 | `deals config set/get/list/reset` | Manage global defaults applied to all commands |
 | `deals history ASIN` | View price history with sparkline chart |
@@ -446,6 +448,36 @@ You can also open any audiobook's Audible page directly:
 ```bash
 deals open B00R6S1RCY
 ```
+
+## Background tracking
+
+Price history only grows when prices actually get fetched. Instead of remembering to run scans (or hand-rolling a cron job), let the CLI install the schedule for you:
+
+```bash
+# Refresh tracked prices every 6 hours (the default)
+deals track install
+
+# Custom interval, with webhook alerts for wishlist items at target
+deals track install --every 3h --webhook https://ntfy.sh/mytopic --webhook-format ntfy
+
+# See the schedule and the last run
+deals track status
+
+# Tail the background log
+deals track log
+
+# Stop
+deals track uninstall
+```
+
+`track install` registers the right scheduler for your OS — a launchd agent on macOS, a systemd user timer (or crontab entry) on Linux, a Scheduled Task on Windows — that runs `deals track run` on the interval. Each run:
+
+- refreshes prices for every wishlist item and author watch, recording history
+- also refreshes ASINs with recent price history (last 30 days, capped at 200 per run), so `vs hist`, ★ all-time-low, and `recap` stay meaningful
+- sends webhook alerts for items at or below target (1-day cooldown per item unless the price drops further), using the `webhook` / `webhook-format` saved in config
+- writes a summary to `track_state.json` — surfaced by `deals track status` and `deals doctor`
+
+If a background run hits an auth failure, it records the error and (when a webhook is configured) sends a one-time "re-auth needed" ping instead of rotting silently. The minimum interval is 10 minutes; runs are protected by the same cross-process lock as `notify`, so overlapping schedules skip cleanly.
 
 ## Recap & notifications
 
@@ -754,6 +786,7 @@ All data is stored locally in `~/.config/audible-deals/`:
 - `last_results.json` — cached results from the most recent `find` or `search`
 - `history/` — per-ASIN price history (one JSON file per book)
 - `categories_cache.*.json` — cached category listings per locale
+- `track_state.json`, `track.log` — background tracking state and log
 
 ## Acknowledgements
 

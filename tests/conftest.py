@@ -195,6 +195,10 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(constants_mod, "HISTORY_DIR", tmp_path / "history")
     # Redirect the run lock so tests never collide with real lock files
     monkeypatch.setattr(constants_mod, "LOCK_FILE", tmp_path / ".deals.lock")
+    monkeypatch.setattr(
+        constants_mod, "TRACK_STATE_FILE", tmp_path / "track_state.json"
+    )
+    monkeypatch.setattr(constants_mod, "TRACK_LOG_FILE", tmp_path / "track.log")
 
     # Replace the Rich console with one that writes to a fresh stderr-like
     # stream, so it doesn't conflict with Click's CliRunner file handling.
@@ -222,6 +226,7 @@ def _cli_console_modules():
     import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.pipeline as cli_pipeline_mod
     import audible_deals.cli.scan as cli_scan_mod
+    import audible_deals.cli.track as cli_track_mod
     import audible_deals.cli.wishlist as cli_wishlist_mod
 
     return (
@@ -233,6 +238,7 @@ def _cli_console_modules():
         cli_wishlist_mod,
         cli_notify_mod,
         cli_misc_mod,
+        cli_track_mod,
     )
 
 
@@ -243,6 +249,7 @@ def mock_client(monkeypatch):
     import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.scan as cli_scan_mod
+    import audible_deals.cli.track as cli_track_mod
     import audible_deals.cli.wishlist as cli_wishlist_mod
 
     client = MagicMock()
@@ -258,6 +265,7 @@ def mock_client(monkeypatch):
         cli_wishlist_mod,
         cli_notify_mod,
         cli_misc_mod,
+        cli_track_mod,
     ):
         monkeypatch.setattr(mod, "_get_client", _get_mock)
     return client

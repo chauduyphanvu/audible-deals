@@ -26,6 +26,8 @@ CONFIG_FILE = CONFIG_DIR / "config.json"
 HISTORY_DIR = CONFIG_DIR / "history"
 NOTIFY_STATE_FILE = CONFIG_DIR / "notify_state.json"
 LOCK_FILE = CONFIG_DIR / ".deals.lock"
+TRACK_STATE_FILE = CONFIG_DIR / "track_state.json"
+TRACK_LOG_FILE = CONFIG_DIR / "track.log"
 
 # ---------------------------------------------------------------------------
 # Locale maps
@@ -203,7 +205,11 @@ _CONFIG_SCHEMA: dict[str, type] = {
     "skip_plus": bool,
     "only_plus": bool,
     "credit_price": float,
+    "webhook": str,
+    "webhook_format": str,
 }
+
+WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "ntfy")
 
 
 # Re-exported for back-compat; the lock lives in locking.py and resolves

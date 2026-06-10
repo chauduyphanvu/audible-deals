@@ -33,6 +33,7 @@ from audible_deals.cli import config as config_commands
 from audible_deals.cli import misc as misc_commands
 from audible_deals.cli import notify as notify_commands
 from audible_deals.cli import scan as scan_commands
+from audible_deals.cli import track as track_commands
 from audible_deals.cli import wishlist as wishlist_commands
 from audible_deals.cli.helpers import _CL
 from audible_deals.config_store import load_config
@@ -128,3 +129,4 @@ cli.add_command(config_commands.profile)
 cli.add_command(notify_commands.history)
 cli.add_command(notify_commands.recap)
 cli.add_command(notify_commands.notify)
+cli.add_command(track_commands.track)

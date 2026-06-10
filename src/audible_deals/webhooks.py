@@ -133,6 +133,44 @@ def format_webhook_payload(
     return body.encode("utf-8"), headers
 
 
+def format_webhook_message(
+    text: str, fmt: str, title: str = "Audible Deals"
+) -> tuple[bytes, dict[str, str]]:
+    """Format a plain status message (e.g. a re-auth warning) for the given platform."""
+    if fmt == "slack":
+        body = json.dumps({"text": f"*{title}*\n{text}"})
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "discord":
+        body = json.dumps({"content": f"**{title}**\n{text}"})
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "teams":
+        body = json.dumps(
+            {
+                "@type": "MessageCard",
+                "@context": "https://schema.org/extensions",
+                "summary": title,
+                "themeColor": "D70000",
+                "title": title,
+                "sections": [{"text": text}],
+            }
+        )
+        headers = {"Content-Type": "application/json"}
+    elif fmt == "ntfy":
+        body = text
+        headers = {
+            "Content-Type": "text/plain; charset=utf-8",
+            "Title": title,
+            "Tags": "warning",
+            "Priority": "high",
+        }
+    elif fmt == "generic":
+        body = json.dumps({"message": text, "title": title})
+        headers = {"Content-Type": "application/json"}
+    else:
+        raise ValueError(f"Unknown webhook format: {fmt!r}")
+    return body.encode("utf-8"), headers
+
+
 def _recap_title(payload: dict) -> str:
     return f"Audible Recap (last {payload.get('days', 0)} days)"
 
