@@ -10,7 +10,7 @@ from audible_deals.filtering import (
     first_in_series,
     sort_local,
 )
-from audible_deals.metrics import price_per_hour
+from audible_deals.metrics import buy_verdict, effective_price, price_per_hour
 from tests.conftest import make_product
 
 
@@ -661,3 +661,72 @@ class TestReleasedDateFilters:
         products = [make_product(asin="RI2", release_date="2024-01-01")]
         filtered, _ = filter_products(products, released_before="2024-01-01")
         assert len(filtered) == 1
+
+
+class TestEffectivePrice:
+    def test_cash_cheaper_than_credit(self):
+        assert effective_price(make_product(price=3.99), 11.25) == 3.99
+
+    def test_credit_cheaper_than_cash(self):
+        assert effective_price(make_product(price=24.99), 11.25) == 11.25
+
+    def test_missing_price(self):
+        assert effective_price(make_product(price=None), 11.25) is None
+
+    def test_no_credit_price_returns_cash(self):
+        assert effective_price(make_product(price=24.99), None) == 24.99
+
+
+class TestBuyVerdict:
+    def test_cash_below_credit_price(self):
+        assert buy_verdict(make_product(price=3.99), 11.25) == "cash"
+
+    def test_credit_above_credit_price(self):
+        assert buy_verdict(make_product(price=24.99), 11.25) == "credit"
+
+    def test_equal_price_uses_credit(self):
+        assert buy_verdict(make_product(price=11.25), 11.25) == "credit"
+
+    def test_plus_title(self):
+        assert buy_verdict(make_product(in_plus_catalog=True), 11.25) == "plus"
+
+    def test_missing_price(self):
+        assert buy_verdict(make_product(price=None), 11.25) is None
+
+
+class TestMaxEffectivePriceFilter:
+    def test_keeps_credit_buys_over_cash_cap(self):
+        products = [
+            make_product(asin="EP1", price=24.99),  # 1 credit -> 11.25 effective
+            make_product(asin="EP2", price=3.99),
+            make_product(asin="EP3", price=14.99, in_plus_catalog=True),
+        ]
+        filtered, breakdown = filter_products(
+            products, max_effective_price=12.0, credit_price=11.25
+        )
+        assert [p.asin for p in filtered] == ["EP1", "EP2", "EP3"]
+        assert "max effective price" not in breakdown
+
+    def test_drops_above_cap(self):
+        products = [make_product(asin="EP4", price=24.99)]
+        filtered, breakdown = filter_products(
+            products, max_effective_price=10.0, credit_price=11.25
+        )
+        assert filtered == []
+        assert breakdown["max effective price"] == 1
+
+    def test_without_credit_price_acts_as_price_cap(self):
+        products = [
+            make_product(asin="EP5", price=24.99),
+            make_product(asin="EP6", price=3.99),
+        ]
+        filtered, _ = filter_products(products, max_effective_price=5.0)
+        assert [p.asin for p in filtered] == ["EP6"]
+
+    def test_drops_missing_price(self):
+        products = [make_product(asin="EP7", price=None)]
+        filtered, breakdown = filter_products(
+            products, max_effective_price=12.0, credit_price=11.25
+        )
+        assert filtered == []
+        assert breakdown["max effective price"] == 1

@@ -21,7 +21,7 @@ from rich.progress import (
 from rich.table import Table
 
 from audible_deals.product import Product
-from audible_deals.metrics import price_per_hour
+from audible_deals.metrics import buy_verdict, price_per_hour
 
 console = Console()
 
@@ -53,6 +53,20 @@ def _discount_color(pct: int) -> str:
     elif pct >= 50:
         return "yellow"
     return "dim"
+
+
+_VERDICT_MARKUP = {
+    "cash": "[green]cash[/green]",
+    "credit": "[yellow]credit[/yellow]",
+    "plus": "[magenta]plus[/magenta]",
+}
+
+
+def _buy_cell(p: Product, credit_price: float) -> str:
+    verdict = buy_verdict(p, credit_price)
+    if verdict is None:
+        return "[dim]-[/dim]"
+    return _VERDICT_MARKUP[verdict]
 
 
 def _pph_str(p: Product, currency: str = "$") -> str:
@@ -125,6 +139,7 @@ def display_products(
     show_url: bool = False,
     atl_asins: set[str] | None = None,
     hist_context: dict[str, int] | None = None,
+    credit_price: float | None = None,
 ) -> None:
     """Display products in a compact rich table."""
     if not products:
@@ -151,6 +166,8 @@ def display_products(
     table.add_column("Hrs", justify="right", width=7)
     table.add_column(f"{currency}/hr", justify="right", width=9)
     table.add_column("Rating", justify="right", width=10)
+    if credit_price is not None:
+        table.add_column("Buy", width=7)
     if show_hist:
         table.add_column("vs hist", justify="right", width=8)
     if show_url:
@@ -166,6 +183,8 @@ def display_products(
             _pph_str(p, cur),
             rating_str(p.rating, p.num_ratings),
         ]
+        if credit_price is not None:
+            row.append(_buy_cell(p, credit_price))
         if show_hist:
             pct = hist_context.get(p.asin) if hist_context else None
             row.append(_hist_cell(pct))
@@ -194,7 +213,7 @@ def display_categories(
     console.print(table)
 
 
-def display_product_detail(p: Product) -> None:
+def display_product_detail(p: Product, credit_price: float | None = None) -> None:
     """Display detailed info for a single product."""
     lines: list[str] = []
     lines.append(f"[bold]{p.full_title}[/bold]")
@@ -216,6 +235,18 @@ def display_product_detail(p: Product) -> None:
     if p.discount_pct and p.discount_pct > 0:
         price_line += f"  [bold yellow]-{p.discount_pct}% off[/bold yellow]"
     lines.append(price_line)
+
+    if credit_price is not None and (verdict := buy_verdict(p, credit_price)):
+        buy_line = f"  [dim]Buy with:[/dim]   {_VERDICT_MARKUP[verdict]}"
+        if verdict == "cash":
+            buy_line += (
+                f"  [dim](cheaper than a {price_str(credit_price, cur)} credit)[/dim]"
+            )
+        elif verdict == "credit":
+            buy_line += f"  [dim](a {price_str(credit_price, cur)} credit beats the cash price)[/dim]"
+        else:
+            buy_line += "  [dim](free with membership)[/dim]"
+        lines.append(buy_line)
 
     lines.append(f"  [dim]Rating:[/dim]     {rating_str(p.rating, p.num_ratings)}")
     lines.append(f"  [dim]Length:[/dim]     {p.hours} hours ({p.length_minutes} min)")
@@ -248,7 +279,9 @@ def display_product_detail(p: Product) -> None:
     )
 
 
-def display_comparison(products: list[Product]) -> None:
+def display_comparison(
+    products: list[Product], credit_price: float | None = None
+) -> None:
     """Display a side-by-side comparison of multiple products."""
     cur = products[0].currency if products else "$"
 
@@ -284,6 +317,8 @@ def display_comparison(products: list[Product]) -> None:
         ("Released", [p.release_date or "-" for p in products]),
         ("Plus", ["Yes" if p.in_plus_catalog else "-" for p in products]),
     ]
+    if credit_price is not None:
+        rows.insert(6, ("Buy", [_buy_cell(p, credit_price) for p in products]))
 
     for label, values in rows:
         table.add_row(label, *values)
@@ -526,6 +561,7 @@ def display_watch_table(
     currency: str = "$",
     buy_only: bool = False,
     show_url: bool = False,
+    credit_price: float | None = None,
 ) -> int:
     """Display a wishlist price-check table. Returns the number of BUY hits."""
     table = Table(
@@ -538,6 +574,8 @@ def display_watch_table(
     table.add_column("Price", justify="right", width=12)
     table.add_column("Target", justify="right", width=10)
     table.add_column("Status", width=10)
+    if credit_price is not None:
+        table.add_column("Buy", width=7)
     if show_url:
         table.add_column("URL", max_width=50)
 
@@ -563,6 +601,8 @@ def display_watch_table(
             target_str,
             status,
         ]
+        if credit_price is not None:
+            row.append(_buy_cell(p, credit_price))
         if show_url:
             row.append(p.url)
         table.add_row(*row)

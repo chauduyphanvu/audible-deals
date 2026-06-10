@@ -8036,3 +8036,109 @@ class TestDisplayRecapAtlAllLabel:
         """atl_hits=None means no ATL section at all."""
         output = self._capture_recap(atl_hits=None)
         assert "all-time low" not in output.lower()
+
+
+# ===================================================================
+# Credit-aware buy advice
+# ===================================================================
+
+
+class TestCreditPriceConfig:
+    def test_set_and_get(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "credit-price", "11.25"])
+        assert result.exit_code == 0, result.output
+        cfg = config_store_mod.load_config()
+        assert cfg["credit_price"] == 11.25
+        assert isinstance(cfg["credit_price"], float)
+
+    def test_invalid_value_rejected(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "credit-price", "cheap"])
+        assert result.exit_code != 0
+
+
+class TestCreditAdviceInFind:
+    def test_buy_column_with_config(self, mock_client, tmp_config):
+        config_store_mod.save_config({"credit_price": 11.25})
+        products = [
+            make_product(asin="CR1", price=24.99, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["find", "--pages", "1", "--all-languages", "--max-price", "30"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Buy" in result.output
+        assert "credit" in result.output
+
+    def test_no_buy_column_without_config(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="CR2", price=3.99, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--pages", "1", "--all-languages"])
+        assert result.exit_code == 0, result.output
+        assert "Buy" not in result.output
+
+    def test_max_effective_price_filter(self, mock_client, tmp_config):
+        config_store_mod.save_config({"credit_price": 11.25})
+        products = [
+            make_product(asin="CR3", price=24.99, series_name="", series_position=""),
+            make_product(asin="CR4", price=14.99, series_name="", series_position=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / "eff.json"
+        runner = CliRunner()
+        result = runner.invoke(
+            cli,
+            [
+                "find",
+                "--pages",
+                "1",
+                "--all-languages",
+                "--max-price",
+                "30",
+                "--max-effective-price",
+                "12",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        asins = [d["asin"] for d in json.loads(out_file.read_text())]
+        # Both cost one credit (11.25 effective), so both pass the 12 cap
+        assert asins == ["CR3", "CR4"] or set(asins) == {"CR3", "CR4"}
+
+
+class TestCreditAdviceInNotify:
+    def test_hit_includes_verdict_and_effective_price(self, mock_client, tmp_config):
+        config_store_mod.save_config({"credit_price": 11.25})
+        wishlist_mod.save_wishlist(
+            [{"asin": "B001", "title": "X", "max_price": 5.0, "added": ""}]
+        )
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="B001", price=3.99, list_price=9.99)
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        hit = json.loads(result.output)["deals"][0]
+        assert hit["verdict"] == "cash"
+        assert hit["effective_price"] == 3.99
+
+    def test_hit_schema_unchanged_without_config(self, mock_client, tmp_config):
+        wishlist_mod.save_wishlist(
+            [{"asin": "B002", "title": "Y", "max_price": 5.0, "added": ""}]
+        )
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="B002", price=3.99)
+        ]
+        runner = CliRunner()
+        result = runner.invoke(cli, ["notify"])
+        assert result.exit_code == 0, result.output
+        hit = json.loads(result.output)["deals"][0]
+        assert "verdict" not in hit
+        assert "effective_price" not in hit

@@ -16,7 +16,11 @@ from audible_deals.results_cache import _expand_ref_string
 from audible_deals.wishlist import load_wishlist, save_wishlist, wishlist_entry
 
 
-def _interactive_browse(products: list[Product], currency: str = "$") -> None:
+def _interactive_browse(
+    products: list[Product],
+    currency: str = "$",
+    credit_price: float | None = None,
+) -> None:
     """Interactive mode: let user pick items to view details, open, or wishlist."""
     _HINT = (
         "\n  [dim]Enter a # for details, 'o #' open, 'w #[,#-#]' wishlist, "
@@ -119,9 +123,9 @@ def _interactive_browse(products: list[Product], currency: str = "$") -> None:
 
         p = products[idx]
         if action == "compare":
-            display_comparison([p, products[idx2]])
+            display_comparison([p, products[idx2]], credit_price=credit_price)
         elif action == "detail":
-            display_product_detail(p)
+            display_product_detail(p, credit_price=credit_price)
         elif action == "open":
             console.print(f"[dim]Opening {p.url}[/dim]")
             click.launch(p.url)

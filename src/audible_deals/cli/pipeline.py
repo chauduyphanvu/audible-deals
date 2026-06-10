@@ -44,6 +44,8 @@ def _apply_filters(
     all_products: list[Product],
     *,
     max_price: float | None,
+    max_effective_price: float | None = None,
+    credit_price: float | None = None,
     min_rating: float,
     min_ratings: int = 0,
     min_hours: float,
@@ -89,6 +91,8 @@ def _apply_filters(
         all_products,
         drop_zero_length=drop_zero_length,
         max_price=max_price,
+        max_effective_price=max_effective_price,
+        credit_price=credit_price,
         min_rating=min_rating,
         min_ratings=min_ratings,
         min_hours=min_hours,
@@ -166,6 +170,7 @@ def _emit_output(
     interactive: bool = False,
     show_url: bool = False,
     histories: dict[str, list[dict]] | None = None,
+    credit_price: float | None = None,
 ) -> None:
     """Write results to file, JSON stdout, or the terminal table."""
     if output:
@@ -184,6 +189,7 @@ def _emit_output(
             show_url=show_url,
             atl_asins=atl_asins,
             hist_context=hist_context,
+            credit_price=credit_price,
         )
         display_summary(
             len(filtered),
@@ -195,7 +201,7 @@ def _emit_output(
             total_before_limit=total_before_limit,
         )
     if interactive and filtered and not json_flag:
-        _interactive_browse(filtered, currency=currency)
+        _interactive_browse(filtered, currency=currency, credit_price=credit_price)
 
 
 def _record_and_emit(
@@ -215,6 +221,7 @@ def _record_and_emit(
     show_url: bool = False,
     write_cache: bool = True,
     histories: dict[str, list[dict]] | None = None,
+    credit_price: float | None = None,
 ) -> None:
     """Run the shared pipeline tail: record/cache/limit, then emit."""
     filtered, serialized, total_before_limit = _record_and_cache(
@@ -239,6 +246,7 @@ def _record_and_emit(
         interactive=interactive,
         show_url=show_url,
         histories=histories,
+        credit_price=credit_price,
     )
 
 
@@ -291,11 +299,15 @@ def _apply_settings_filters(
     require_history: bool = False,
     released_after: str = "",
     released_before: str = "",
+    max_effective_price: float | None = None,
+    credit_price: float | None = None,
 ) -> tuple[list[Product], dict[str, int], int, int, dict[str, list[dict]] | None]:
     """Run _apply_filters with all filter options taken from a resolved Settings."""
     return _apply_filters(
         products,
         max_price=s.max_price,
+        max_effective_price=max_effective_price,
+        credit_price=credit_price,
         min_rating=s.min_rating,
         min_ratings=s.min_ratings,
         min_hours=s.min_hours,

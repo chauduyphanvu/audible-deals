@@ -202,6 +202,7 @@ _CONFIG_SCHEMA: dict[str, type] = {
     "publisher": str,
     "skip_plus": bool,
     "only_plus": bool,
+    "credit_price": float,
 }
 
 

@@ -7,6 +7,7 @@ from io import StringIO
 from rich.console import Console
 
 from audible_deals.display import (
+    _buy_cell,
     _discount_color,
     _pph_str,
     discount_str,
@@ -378,3 +379,61 @@ class TestDisplayLibraryStats:
         products = [make_product(asin="S6", length_minutes=300, rating=0)]
         out = _capture(display_library_stats, products, currency="£")
         assert "empty" not in out.lower()
+
+
+class TestBuyCell:
+    def test_cash(self):
+        assert "cash" in _buy_cell(make_product(price=3.99), 11.25)
+
+    def test_credit(self):
+        assert "credit" in _buy_cell(make_product(price=24.99), 11.25)
+
+    def test_plus(self):
+        assert "plus" in _buy_cell(make_product(in_plus_catalog=True), 11.25)
+
+    def test_missing_price(self):
+        assert "-" in _buy_cell(make_product(price=None), 11.25)
+
+
+class TestCreditAwareDisplay:
+    def test_products_buy_column_with_credit_price(self):
+        products = [
+            make_product(asin="B001", price=3.99),
+            make_product(asin="B002", price=24.99),
+        ]
+        out = _capture(display_products, products, credit_price=11.25)
+        assert "Buy" in out
+        assert "cash" in out
+        assert "credit" in out
+
+    def test_products_no_buy_column_without_credit_price(self):
+        products = [make_product(asin="B003", price=3.99)]
+        out = _capture(display_products, products)
+        assert "Buy" not in out
+
+    def test_detail_buy_line(self):
+        out = _capture(
+            display_product_detail, make_product(price=24.99), credit_price=11.25
+        )
+        assert "Buy with" in out
+        assert "credit" in out
+
+    def test_detail_no_buy_line_without_credit_price(self):
+        out = _capture(display_product_detail, make_product(price=24.99))
+        assert "Buy with" not in out
+
+    def test_comparison_buy_row(self):
+        products = [
+            make_product(asin="B004", price=3.99),
+            make_product(asin="B005", price=24.99),
+        ]
+        out = _capture(display_comparison, products, credit_price=11.25)
+        assert "Buy" in out
+        assert "cash" in out
+        assert "credit" in out
+
+    def test_watch_table_buy_column(self):
+        products = [make_product(asin="B006", price=24.99)]
+        out = _capture(display_watch_table, products, {"B006": 5.0}, credit_price=11.25)
+        assert "Buy" in out
+        assert "credit" in out

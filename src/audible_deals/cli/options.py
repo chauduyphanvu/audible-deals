@@ -38,6 +38,13 @@ def _common_filter_options(func):
             help="Max price per hour (e.g. 0.50)",
         ),
         click.option(
+            "--max-effective-price",
+            "max_effective_price",
+            type=click.FloatRange(min=0),
+            default=None,
+            help="Max effective price — the cheaper of cash price and one credit (set 'deals config set credit-price' first)",
+        ),
+        click.option(
             "--exclude-genre",
             multiple=True,
             help="Genre(s) to exclude (repeatable, fuzzy match)",

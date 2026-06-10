@@ -15,6 +15,7 @@ from rich.table import Table
 from audible_deals import constants
 from audible_deals.cli.helpers import (
     _collect_asins,
+    _credit_price,
     _get_client,
     _resolve_single_last_ref,
 )
@@ -119,7 +120,7 @@ def detail(ctx, asin, last_ref):
         except ValueError as e:
             raise click.ClickException(str(e))
 
-    display_product_detail(product)
+    display_product_detail(product, credit_price=_credit_price(ctx))
 
 
 @click.command("open")
@@ -187,7 +188,7 @@ def compare(ctx, asins, last_refs):
     asin_order = {asin: i for i, asin in enumerate(all_asins)}
     products.sort(key=lambda p: asin_order.get(p.asin, 999))
 
-    display_comparison(products)
+    display_comparison(products, credit_price=_credit_price(ctx))
 
 
 _Row = tuple[str, str, str]  # (check, status token PASS/WARN/FAIL, detail)

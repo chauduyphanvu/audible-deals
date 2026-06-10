@@ -47,6 +47,12 @@ def _currency(ctx: click.Context) -> str:
     return LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
 
 
+def _credit_price(ctx: click.Context) -> float | None:
+    """Configured per-credit price ('deals config set credit-price'), if any."""
+    value = ctx.obj.get("config", {}).get("credit_price")
+    return float(value) if value is not None else None
+
+
 def _resolve_skip_asins(
     dc: DealsClient, skip_owned: bool, exclude_seen: bool
 ) -> set[str] | None:

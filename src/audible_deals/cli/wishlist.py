@@ -10,6 +10,7 @@ import click
 
 from audible_deals.cli.helpers import (
     _collect_asins,
+    _credit_price,
     _currency,
     _get_client,
     _safe_record_prices,
@@ -439,7 +440,9 @@ def _watch_once(
         products = sort_local(products, sort_by)
 
     cur = _currency(ctx)
-    return display_watch_table(products, targets, cur, buy_only, show_url)
+    return display_watch_table(
+        products, targets, cur, buy_only, show_url, credit_price=_credit_price(ctx)
+    )
 
 
 @click.command()

@@ -12,6 +12,7 @@ import click
 
 from audible_deals.cli.helpers import (
     _CL,
+    _credit_price,
     _currency,
     _get_client,
     _resolve_categories,
@@ -179,6 +180,7 @@ def search(
     query,
     max_price,
     max_pph,
+    max_effective_price,
     category,
     genre,
     exclude_genre,
@@ -326,6 +328,7 @@ def search(
             )
 
     cur = _currency(ctx)
+    credit_price = _credit_price(ctx)
     search_title = _search_title(queries, category_name)
     filtered, filter_breakdown, editions_removed, series_collapsed, histories = (
         _apply_settings_filters(
@@ -338,6 +341,8 @@ def search(
             require_history=require_history,
             released_after=released_after,
             released_before=released_before,
+            max_effective_price=max_effective_price,
+            credit_price=credit_price,
         )
     )
     _record_and_emit(
@@ -355,6 +360,7 @@ def search(
         interactive=s.interactive,
         show_url=show_url,
         histories=histories,
+        credit_price=credit_price,
     )
     display_query = queries[0] if len(queries) == 1 else None
     if (
@@ -427,6 +433,7 @@ def find(
     keywords,
     max_price,
     max_pph,
+    max_effective_price,
     sort,
     min_rating,
     min_ratings,
@@ -591,6 +598,7 @@ def find(
         )
 
     cur = _currency(ctx)
+    credit_price = _credit_price(ctx)
     find_title = f"Deals under {cur}{s.max_price:.2f}"
     if category_name:
         find_title += f" in {category_name}"
@@ -607,6 +615,8 @@ def find(
             require_history=require_history,
             released_after=released_after,
             released_before=released_before,
+            max_effective_price=max_effective_price,
+            credit_price=credit_price,
         )
     )
     _record_and_emit(
@@ -624,6 +634,7 @@ def find(
         interactive=s.interactive,
         show_url=show_url,
         histories=histories,
+        credit_price=credit_price,
     )
 
 
@@ -1214,6 +1225,7 @@ def series(
         max_price=max_price,
         currency=cur,
         interactive=interactive,
+        credit_price=_credit_price(ctx),
     )
 
 
@@ -1245,6 +1257,13 @@ def series(
     type=click.FloatRange(min=0),
     default=None,
     help="Max price per hour (e.g. 0.50)",
+)
+@click.option(
+    "--max-effective-price",
+    "max_effective_price",
+    type=click.FloatRange(min=0),
+    default=None,
+    help="Max effective price — the cheaper of cash price and one credit",
 )
 @click.option("--min-rating", type=float, default=0.0, help="Minimum rating")
 @click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
@@ -1362,6 +1381,7 @@ def last_cmd(
     sort,
     max_price,
     max_pph,
+    max_effective_price,
     min_rating,
     min_ratings,
     min_hours,
@@ -1436,9 +1456,12 @@ def last_cmd(
 
     effective_sort = sort or ""  # preserve original cache order when no --sort given
     cur = _currency(ctx)
+    credit_price = _credit_price(ctx)
     filtered, filter_breakdown, editions_removed, series_collapsed, _ = _apply_filters(
         products,
         max_price=max_price,
+        max_effective_price=max_effective_price,
+        credit_price=credit_price,
         min_rating=min_rating,
         min_ratings=min_ratings,
         min_hours=min_hours,
@@ -1475,4 +1498,5 @@ def last_cmd(
         interactive=interactive,
         show_url=show_url,
         write_cache=False,
+        credit_price=credit_price,
     )

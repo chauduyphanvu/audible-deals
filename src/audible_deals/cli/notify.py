@@ -11,11 +11,13 @@ from pathlib import Path
 import click
 
 from audible_deals.cli.helpers import (
+    _credit_price,
     _currency,
     _get_client,
     _resolve_single_last_ref,
     _safe_record_prices,
 )
+from audible_deals.metrics import buy_verdict, effective_price
 from audible_deals.product import Product
 from audible_deals.config_store import load_notify_state, save_notify_state
 from audible_deals.constants import LockHeldError, run_lock
@@ -387,7 +389,10 @@ def notify(ctx, webhook, webhook_format, webhook_template, exit_code, cooldown):
 
 
 def _collect_target_hits(
-    dc, asin_items: list[dict], author_items: list[dict]
+    dc,
+    asin_items: list[dict],
+    author_items: list[dict],
+    credit_price: float | None = None,
 ) -> tuple[list[dict], dict[str, dict], set[str]]:
     """Fetch wishlist items and author searches, collecting at-target hits.
 
@@ -410,6 +415,10 @@ def _collect_target_hits(
         }
         if author is not None:
             hit["author"] = author
+        if credit_price is not None:
+            hit["verdict"] = buy_verdict(p, credit_price)
+            eff = effective_price(p, credit_price)
+            hit["effective_price"] = round(eff, 2) if eff is not None else None
         hits.append(hit)
         extras[p.asin] = {
             "currency": p.currency,
@@ -518,7 +527,9 @@ def _notify_body(ctx, webhook, webhook_format, webhook_template, exit_code, cool
 
     dc = _get_client(ctx.obj["locale"])
     cur = _currency(ctx)
-    hits, extras, hit_asins = _collect_target_hits(dc, asin_items, author_items)
+    hits, extras, hit_asins = _collect_target_hits(
+        dc, asin_items, author_items, credit_price=_credit_price(ctx)
+    )
 
     suppressed = 0
     if cooldown is not None:

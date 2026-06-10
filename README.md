@@ -12,6 +12,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - **Interactive mode** — browse results, view details, open in browser, or add to wishlist without leaving the CLI
 - **Wishlist & watch** — save ASINs you're eyeing and check back for price drops
 - **Price history** — automatically tracks prices over time with sparkline charts and relative dates; flags an all-time-low with a ★ badge and shows a `vs hist` column with the percent above/below the historical median
+- **Credit-aware buy advice** — tell it what a credit costs you and every table shows whether to pay cash, burn a credit, or grab it free on Plus
 - **Saved profiles** — save your favorite search configurations and reuse them with `--profile` (works on `find` and `search`)
 - **Global config** — set persistent defaults (max price, skip-owned, locale, etc.) applied to every command
 - **Recap & notify** — get a summary of recent price drops, or send webhook notifications (Slack / Discord / Teams / ntfy) for deals at target
@@ -185,6 +186,7 @@ deals search "Dune" --max-price 5 --show-url
 | `--all-languages` | Include all languages |
 | `--first-in-series` | Only show book 1 of each series |
 | `--max-price-per-hour 0.50` | Only items under this $/hr threshold (e.g. `0.35` for heavy value filtering) |
+| `--max-effective-price 12` | Only items whose effective price — the cheaper of cash and one credit — is under this (see [Credit-aware buy advice](#credit-aware-buy-advice)) |
 | `--skip-owned` | Exclude books already in your library |
 | `--skip-plus` | Exclude Audible Plus catalog titles (free with membership) |
 | `--only-plus` | Show only Audible Plus catalog titles (mutually exclusive with `--skip-plus`) |
@@ -334,6 +336,22 @@ You can also set a default locale:
 ```bash
 deals config set locale uk    # always use the UK store
 ```
+
+## Credit-aware buy advice
+
+If you have an Audible membership, the real question is rarely "is this under $5?" — it's "cash, credit, or wait?" Tell the CLI what a credit costs you and it answers that everywhere:
+
+```bash
+deals config set credit-price 11.25
+```
+
+Once set:
+
+- Results tables (`find`, `search`, `last`, `series`), `watch`, `detail`, and `compare` gain a **Buy** column/line: **cash** (the sale price beats a credit), **credit** (the cash price exceeds one credit), or **plus** (free with membership).
+- `--max-effective-price` filters on the *effective* price — the cheaper of cash and one credit. `deals find --genre sci-fi --max-effective-price 12` keeps a $24.99 book, because to you it costs one $11.25 credit.
+- `deals notify` payloads include `verdict` and `effective_price` for each hit, so automations can tell "buy this for cash" from "use a credit".
+
+Unset it (`deals config reset credit-price`) and all of this disappears — output is unchanged for cash-only users.
 
 ## Interactive mode
 

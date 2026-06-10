@@ -10,7 +10,7 @@ import logging
 from typing import Callable
 
 from audible_deals.product import Product
-from audible_deals.metrics import price_per_hour, value_score
+from audible_deals.metrics import effective_price, price_per_hour, value_score
 from audible_deals.parsing import parse_series_position
 
 logger = logging.getLogger(__name__)
@@ -37,6 +37,8 @@ def _availability_specs(
     drop_zero_length: bool,
     skip_asins: set[str] | None,
     max_price: float | None,
+    max_effective_price: float | None,
+    credit_price: float | None,
 ) -> list[_FilterSpec]:
     specs: list[_FilterSpec] = []
     if drop_zero_length:
@@ -46,6 +48,16 @@ def _availability_specs(
     if max_price is not None:
         specs.append(
             ("max price", lambda p: p.price is not None and p.price <= max_price)
+        )
+    if max_effective_price is not None:
+        specs.append(
+            (
+                "max effective price",
+                lambda p: (
+                    (eff := effective_price(p, credit_price)) is not None
+                    and eff <= max_effective_price
+                ),
+            )
         )
     return specs
 
@@ -231,6 +243,8 @@ def filter_products(
     products: list[Product],
     *,
     max_price: float | None = None,
+    max_effective_price: float | None = None,
+    credit_price: float | None = None,
     min_rating: float = 0.0,
     min_ratings: int = 0,
     min_hours: float = 0.0,
@@ -264,7 +278,9 @@ def filter_products(
     breakdown: dict[str, int] = {}
 
     specs = [
-        *_availability_specs(drop_zero_length, skip_asins, max_price),
+        *_availability_specs(
+            drop_zero_length, skip_asins, max_price, max_effective_price, credit_price
+        ),
         *_quality_specs(min_rating, min_ratings, min_hours, max_pph),
         *_text_match_specs(
             language,
