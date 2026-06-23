@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-06-22
+
 ### Added
 - `deals for-you` filter parity with `find`: `--sort`, `--narrator`, `--exclude-author`, `--exclude-narrator`, `--skip-plus`/`--only-plus`
 - Price signals in `for-you` ranking — candidates at an all-time low or below their historical median rank higher, with "all-time low" / "below median" match reasons
@@ -20,7 +22,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `get_products_batch` fetches 50-ASIN batches concurrently (up to 4 in flight) — faster `track run`, `watch`, and `notify` with large wishlists
 
 ### Fixed
-- Background tracking state is loaded under the run lock, so a failing run can no longer clobber a concurrent run's freshly saved state
+A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each with a regression test:
+- Webhook POSTs no longer follow HTTP redirects — closes an SSRF bypass and stops `--webhook-header` secrets (e.g. `Authorization`) from leaking to a redirect target; the SSRF guard also now blocks CGNAT shared space (100.64.0.0/10)
+- `deals completions <shell>` emits a real completion script on the fallback path (when `deals` isn't yet on `PATH`) instead of writing CLI help text into your shell config, and fails loudly if generation fails
+- `deals notify --exit-code` returns 0 when an item hits target but is suppressed by `--cooldown` (matches the documented contract); `recap` validates `--json`/`--webhook` and the webhook URL before acquiring the run lock
+- `deals track` background runs only treat genuine auth failures (401/403/auth messages) as needing re-login, instead of pinging on every error; failure state is written under the run lock so a failing run can no longer clobber a concurrent run's freshly saved state
+- `deals track uninstall` removes systemd units even when the user D-Bus session is unavailable; `track install` rounds sub-hour cron intervals up to a divisor of 60 so a run never fires faster than requested
+- Non-numeric or missing prices in the Audible response no longer crash catalog/library fetches, price-history display, or wishlist target matching; a corrupt categories cache is handled gracefully
+- Category genres keep their correct names (id/name stay aligned) in taste profiles and `library --stats`; wishlist entries missing an ASIN or title are skipped
+- `deals config set` enforces the same numeric ranges as the equivalent flags; `profile save --sort` and the global `--locale` are now validated; `wishlist add/sync/author` reject negative `--max-price`; interactive target prices reject non-numeric and non-positive input
+- `$0.00` wishlist targets render as `$0.00` instead of as "no target"
 
 ## [0.8.0] - 2026-06-10
 
@@ -83,6 +94,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.9.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.0
 [0.8.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.8.0
 [0.7.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.7.0
 [0.6.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.6.0
