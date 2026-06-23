@@ -439,8 +439,12 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
     table.add_column("Change", justify="right", width=10)
 
     prev_price = None
+    prices: list[float] = []
     for entry in entries:
-        price = entry["price"]
+        raw = entry.get("price")
+        if not isinstance(raw, (int, float)):
+            continue
+        price = float(raw)
         p_str = f"{currency}{price:.2f}"
         if prev_price is None or price == prev_price:
             change = "[dim]-[/dim]"
@@ -449,13 +453,20 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
         else:
             change = f"[red]+{price - prev_price:.2f}[/red]"
         table.add_row(
-            entry["date"], _relative_date(entry["date"], today), p_str, change
+            entry.get("date", ""),
+            _relative_date(entry.get("date", ""), today),
+            p_str,
+            change,
         )
         prev_price = price
+        prices.append(price)
 
     console.print(table)
 
-    prices = [e["price"] for e in entries]
+    if not prices:
+        console.print("\n  [dim]No numeric prices in history.[/dim]")
+        return
+
     low, high = min(prices), max(prices)
     current = prices[-1]
     console.print(
@@ -530,7 +541,7 @@ def display_recap(
         else:
             console.print("    [dim]None at ATL[/dim]")
 
-    if not drops and not new_items and not wishlist_hits and not atl_hits:
+    if not drops and not new_items and not wishlist_hits and atl_hits is None:
         console.print("  [dim]Nothing to report.[/dim]")
     console.print()
 
@@ -548,7 +559,7 @@ def display_wishlist(
         table.add_column("Target", justify="right", width=10)
 
         for item in asin_items:
-            target = price_str(item.get("max_price") or None, currency)
+            target = price_str(item.get("max_price"), currency)
             table.add_row(item.get("asin", ""), item.get("title", ""), target)
 
         console.print(table)
@@ -564,7 +575,7 @@ def display_wishlist(
         atbl.add_column("Target", justify="right", width=10)
         atbl.add_column("Added", width=12)
         for item in author_items:
-            target = price_str(item.get("max_price") or None, currency)
+            target = price_str(item.get("max_price"), currency)
             atbl.add_row(item.get("author", ""), target, item.get("added", ""))
         console.print(atbl)
 

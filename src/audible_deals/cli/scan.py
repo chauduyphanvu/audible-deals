@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import collections
 import datetime
 import json as json_mod
 import logging
@@ -68,9 +69,18 @@ def _check_plus_flags(skip_plus: bool, only_plus: bool) -> None:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
 
 
-def _check_genre_category(genre: str, category: str) -> None:
-    if genre and category:
+def _resolve_genre_category(ctx, genre: str, category: str) -> str:
+    """Reconcile a (possibly profile-supplied) genre with a --category override.
+
+    The conflict only fires when --genre is given on the command line; an
+    explicit --category cleanly overrides a profile-supplied genre. Returns
+    the genre to use for category resolution.
+    """
+    if not category:
+        return genre
+    if ctx.get_parameter_source("genre") == _CL:
         raise click.UsageError("Use --genre or --category, not both.")
+    return ""
 
 
 def _fetch_multi_query(
@@ -270,7 +280,7 @@ def search(
         exclude_keywords=exclude_keywords,
     )
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    _check_genre_category(s.genre, category)
+    effective_genre = _resolve_genre_category(ctx, s.genre, category)
 
     dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(s.sort, "Relevance")
@@ -278,7 +288,7 @@ def search(
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
-            dc, s.genre, category, s.exclude_genre
+            dc, effective_genre, category, s.exclude_genre
         )
 
         if dry_run:
@@ -536,7 +546,7 @@ def find(
         exclude_keywords=exclude_keywords,
     )
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    _check_genre_category(s.genre, category)
+    effective_genre = _resolve_genre_category(ctx, s.genre, category)
 
     dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(s.sort, "BestSellers")
@@ -544,7 +554,7 @@ def find(
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
-            dc, s.genre, category, s.exclude_genre
+            dc, effective_genre, category, s.exclude_genre
         )
 
         if subcategories and not category:
@@ -652,6 +662,34 @@ def _fetch_library_with_progress(dc: DealsClient) -> list[Product]:
     return all_products
 
 
+def _library_stats_json(products: list[Product]) -> dict:
+    """JSON-serializable form of the aggregates shown by display_library_stats."""
+    total = len(products)
+    total_hours = sum(p.hours for p in products)
+    rated = [p.rating for p in products if p.rating > 0]
+
+    def _top(counter: collections.Counter[str]) -> list[dict]:
+        return [{"name": name, "count": c} for name, c in counter.most_common(5)]
+
+    genre_counts: collections.Counter[str] = collections.Counter()
+    author_counts: collections.Counter[str] = collections.Counter()
+    narrator_counts: collections.Counter[str] = collections.Counter()
+    for p in products:
+        genre_counts.update(p.categories)
+        author_counts.update(p.authors)
+        narrator_counts.update(p.narrators)
+
+    return {
+        "total_books": total,
+        "total_hours": round(total_hours, 1),
+        "avg_hours": round(total_hours / total, 1) if total else 0.0,
+        "avg_rating": round(sum(rated) / len(rated), 2) if rated else 0.0,
+        "top_genres": _top(genre_counts),
+        "top_authors": _top(author_counts),
+        "top_narrators": _top(narrator_counts),
+    }
+
+
 def _emit_library_output(
     filtered: list[Product],
     filter_breakdown: dict[str, int],
@@ -669,8 +707,11 @@ def _emit_library_output(
         export_products(filtered, output)
         console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
     if json_flag:
-        serialized = [serialize_product(p) for p in filtered]
-        click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
+        if stats:
+            payload: object = _library_stats_json(stats_products)
+        else:
+            payload = [serialize_product(p) for p in filtered]
+        click.echo(json_mod.dumps(payload, indent=2, ensure_ascii=False))
     if not json_flag and not quiet:
         console.print()
         if stats:

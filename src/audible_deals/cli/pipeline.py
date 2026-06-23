@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+import datetime
 import json as json_mod
 import logging
 import math
@@ -153,6 +154,24 @@ def _record_and_cache(
     return filtered, serialized, total_before_limit
 
 
+def _prior_histories(
+    products: list[Product], histories: dict[str, list[dict]] | None
+) -> dict[str, list[dict]]:
+    """Histories with today's entry stripped, so the 'vs median' badge ignores
+    today's just-recorded price — matching the ATL logic and making it
+    independent of whether a pre-record snapshot was passed in."""
+    today_iso = datetime.date.today().isoformat()
+    source = histories
+    if source is None:
+        source = {
+            p.asin: load_price_history(p.asin) for p in products if p.price is not None
+        }
+    return {
+        asin: [e for e in entries if e.get("date") != today_iso]
+        for asin, entries in source.items()
+    }
+
+
 def _emit_output(
     filtered: list[Product],
     serialized: list[dict],
@@ -183,7 +202,9 @@ def _emit_output(
         click.echo(json_mod.dumps(serialized, indent=2, ensure_ascii=False))
     need_context = (not json_flag and not quiet) or interactive
     if need_context and atl_asins is None and hist_context is None:
-        atl_asins, hist_context = price_history_context(filtered, histories=histories)
+        atl_asins, hist_context = price_history_context(
+            filtered, histories=_prior_histories(filtered, histories)
+        )
     if not json_flag and not quiet:
         console.print()
         display_products(

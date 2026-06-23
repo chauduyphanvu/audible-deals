@@ -122,10 +122,20 @@ def _interactive_browse(
                     default="",
                     show_default=False,
                 ).strip()
-                if raw:
-                    target_price = float(raw)
-            except (ValueError, EOFError):
-                pass
+            except EOFError:
+                raw = ""
+            if raw:
+                try:
+                    parsed = float(raw)
+                except ValueError:
+                    console.print("[dim]Invalid price, no target set[/dim]")
+                else:
+                    if parsed > 0:
+                        target_price = parsed
+                    else:
+                        console.print(
+                            "[dim]Target must be greater than 0, no target set[/dim]"
+                        )
 
             for z in to_add:
                 p = products[z]

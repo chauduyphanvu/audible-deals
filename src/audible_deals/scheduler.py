@@ -174,7 +174,12 @@ def _systemd_uninstall() -> bool:
 def generate_cron_line(cmd: list[str], interval_s: int, log_path: Path) -> str:
     minutes = max(1, round(interval_s / 60))
     if minutes < 60:
-        schedule = f"*/{min(minutes, 59)} * * * *"
+        # cron's */N step restarts at minute 0 each hour, so when N does not
+        # divide 60 the gap across the hour boundary is shorter than N. Round
+        # up to the next divisor of 60 to keep every gap >= the requested
+        # interval.
+        step = next(n for n in range(minutes, 61) if 60 % n == 0)
+        schedule = "0 * * * *" if step == 60 else f"*/{step} * * * *"
     else:
         hours = min(max(1, round(minutes / 60)), 23)
         schedule = f"0 */{hours} * * *"
@@ -258,7 +263,10 @@ def uninstall() -> bool:
     if sys.platform == "darwin":
         return _launchd_uninstall()
     if sys.platform.startswith("linux"):
-        removed = _systemd_uninstall() if _systemd_available() else False
+        # Remove unit files whenever they exist, mirroring installed()'s
+        # file-existence check; _systemd_uninstall is safe when the user bus
+        # is unavailable (it runs systemctl with check=False).
+        removed = _systemd_uninstall()
         return _cron_uninstall() or removed
     if sys.platform == "win32":
         return _schtasks_uninstall()

@@ -441,7 +441,10 @@ def _track_checks() -> list[_Row]:
     except Exception as e:
         rows.append(("Background tracking", "WARN", str(e)))
 
-    runs = _run_history(state)
+    history = _run_history(state)
+    runs = (
+        [r for r in history if isinstance(r, dict)] if isinstance(history, list) else []
+    )
     last = runs[0] if runs else None
     if not last:
         rows.append(("Last tracked run", "WARN", "Never ran — check 'deals track log'"))
@@ -536,21 +539,24 @@ def completions(shell):
 
     deals_bin = shutil.which("deals")
     if deals_bin:
-        result = subprocess.run(
-            [deals_bin],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        cmd = [deals_bin]
     else:
-        result = subprocess.run(
-            [sys.executable, "-m", "audible_deals"],
-            capture_output=True,
-            text=True,
-            env=env,
-        )
+        # Spawn with a fixed prog_name so Click derives the same _DEALS_COMPLETE
+        # var; "python -m audible_deals" would derive a different var and emit
+        # plain help text instead of a completion script.
+        cmd = [
+            sys.executable,
+            "-c",
+            "from audible_deals.cli import cli; cli(prog_name='deals')",
+        ]
 
-    if result.stdout:
-        click.echo(result.stdout)
-    else:
-        click.echo(result.stderr, err=True)
+    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
+
+    # A real completion script never contains the CLI's "Usage:" banner; if it
+    # does (or the subprocess failed / produced nothing), surface the error
+    # instead of echoing help text or an empty script into the shell config.
+    if result.returncode != 0 or not result.stdout.strip() or "Usage:" in result.stdout:
+        raise click.ClickException(
+            result.stderr.strip() or "failed to generate completion script"
+        )
+    click.echo(result.stdout)

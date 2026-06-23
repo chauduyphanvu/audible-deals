@@ -176,7 +176,11 @@ def resolve_last_references(refs: tuple[str | int, ...]) -> list[tuple[str, str]
                 f"--last {ref} is out of range (cache has {len(data)} result(s))."
             )
         item = data[ref - 1]
-        asin = item["asin"]
+        asin = item.get("asin")
+        if not asin:
+            raise click.ClickException(
+                f"--last {ref} points to a cache entry with no ASIN (cache may be corrupt)."
+            )
         item_title = item.get("title", asin)
         desc = f"Result #{ref} from '{title}': {item_title} ({asin})"
         results.append((asin, desc))

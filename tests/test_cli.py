@@ -6149,8 +6149,12 @@ class TestNotifyCooldown:
         assert result.exit_code == 0, result.output
         assert not constants_mod.NOTIFY_STATE_FILE.exists()
 
-    def test_all_suppressed_exit_code_exits_1(self, mock_client, tmp_config):
-        """All hits suppressed by cooldown + --exit-code → exit 1."""
+    def test_all_suppressed_exit_code_exits_0(self, mock_client, tmp_config):
+        """Items hit target but all suppressed by cooldown + --exit-code → exit 0.
+
+        --exit-code documents "exit 0 if any items hit target"; cooldown only
+        suppresses the notification, not the fact that an item was at target.
+        """
 
         self._setup_wishlist_and_product(mock_client, "CD05", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
@@ -6160,7 +6164,7 @@ class TestNotifyCooldown:
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "3", "--exit-code"])
-        assert result.exit_code == 1, result.output
+        assert result.exit_code == 0, result.output
 
     def test_state_updated_after_send(self, mock_client, tmp_config):
         """Notify state is updated with new price and date after a successful send."""

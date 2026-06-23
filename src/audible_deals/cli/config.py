@@ -14,6 +14,7 @@ from audible_deals.config_store import (
     save_profiles,
     validate_config_key,
 )
+from audible_deals.constants import ALL_SORT_OPTIONS
 from audible_deals.display import console
 
 
@@ -141,6 +142,11 @@ def profile_save(ctx, name, **kwargs):
     profiles = load_profiles()
     # Only save values explicitly passed on the command line
     saved = {k: v for k, v in kwargs.items() if ctx.get_parameter_source(k) == _CL}
+    if "sort" in saved and saved["sort"] not in ALL_SORT_OPTIONS:
+        raise click.ClickException(
+            f"Invalid sort {saved['sort']!r}. Choose from: "
+            f"{', '.join(sorted(ALL_SORT_OPTIONS))}."
+        )
     profiles[name] = saved
     save_profiles(profiles)
     console.print(f"[green]Profile '{name}' saved[/green] ({len(saved)} options)")

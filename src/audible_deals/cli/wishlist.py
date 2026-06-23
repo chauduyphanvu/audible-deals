@@ -71,7 +71,10 @@ def _add_author_watch(ctx, author: str, max_price: float) -> None:
 @wishlist.command("add")
 @click.argument("asins", nargs=-1, required=False)
 @click.option(
-    "--max-price", type=float, default=None, help="Alert when price drops below this"
+    "--max-price",
+    type=click.FloatRange(min=0),
+    default=None,
+    help="Alert when price drops below this",
 )
 @click.option(
     "--last",
@@ -236,12 +239,12 @@ def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
         if clear_target:
             entry["max_price"] = None
             console.print(
-                f"[yellow]~[/yellow] {entry['title']} ({asin}) → target cleared"
+                f"[yellow]~[/yellow] {entry.get('title', '')} ({asin}) → target cleared"
             )
         else:
             entry["max_price"] = max_price
             console.print(
-                f"[yellow]~[/yellow] {entry['title']} ({asin}) → target {price_str(max_price, cur)}"
+                f"[yellow]~[/yellow] {entry.get('title', '')} ({asin}) → target {price_str(max_price, cur)}"
             )
         updated += 1
 
@@ -347,7 +350,7 @@ def wishlist_list(ctx, output, json_flag):
 @wishlist.command("sync")
 @click.option(
     "--max-price",
-    type=float,
+    type=click.FloatRange(min=0),
     default=None,
     help="Set target price for all synced items",
 )
@@ -395,7 +398,9 @@ def wishlist_sync(ctx, max_price, update):
             else:
                 skipped += 1
             continue
-        local_items.append(wishlist_entry(product, max_price))
+        entry = wishlist_entry(product, max_price)
+        local_items.append(entry)
+        local_by_asin[product.asin] = entry
         added += 1
         console.print(f"[green]+[/green] {product.title} ({product.asin})")
 

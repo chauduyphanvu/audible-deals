@@ -90,18 +90,19 @@ def _extract_rating(raw: dict) -> tuple[float, int]:
 
 
 def _extract_categories(raw: dict) -> tuple[list[str], list[str]]:
-    """Extract (category names, category ids) by flattening the ladder structure."""
-    categories: list[str] = []
-    category_ids: list[str] = []
+    """Extract (category names, category ids) by flattening the ladder structure.
+
+    Pairs are deduped on id in one pass so categories[i] always corresponds to
+    category_ids[i]; build_profile relies on that positional alignment.
+    """
+    by_id: dict[str, str] = {}
     for ladder in raw.get("category_ladders") or []:
         for cat in ladder.get("ladder") or []:
-            name = cat.get("name", "")
             cid = cat.get("id", "")
-            if name and name not in categories:
-                categories.append(name)
-            if cid and cid not in category_ids:
-                category_ids.append(cid)
-    return categories, category_ids
+            name = cat.get("name", "")
+            if cid and name and cid not in by_id:
+                by_id[cid] = name
+    return list(by_id.values()), list(by_id.keys())
 
 
 def _extract_series(raw: dict) -> tuple[str, str, str]:
@@ -166,7 +167,10 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
 def _base_price(obj) -> float | None:
     """Pull the numeric base amount from a {'base': x} price dict."""
     if isinstance(obj, dict) and obj.get("base") is not None:
-        return float(obj["base"])
+        try:
+            return float(obj["base"])
+        except (ValueError, TypeError):
+            return None
     return None
 
 

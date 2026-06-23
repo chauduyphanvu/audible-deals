@@ -13,6 +13,19 @@ from audible_deals.constants import (
 )
 from audible_deals.storage import load_json_file, save_json_file
 
+# Mirror the ranges the equivalent CLI options enforce so config set and the
+# flags agree. (lo, hi); None means unbounded on that side.
+_NUMERIC_BOUNDS: dict[str, tuple[float | None, float | None]] = {
+    "pages": (1, None),
+    "min_discount": (0, 100),
+    "limit": (0, None),
+    "max_price": (0, None),
+    "max_pph": (0, None),
+    "min_rating": (0, None),
+    "min_ratings": (0, None),
+    "min_hours": (0, None),
+}
+
 
 def load_profiles() -> dict[str, dict]:
     return load_json_file(constants.PROFILES_FILE, dict, "profiles")
@@ -83,11 +96,22 @@ def coerce_config_value(key: str, raw: str):
             )
         return [raw]
     try:
-        return typ(raw)
+        result = typ(raw)
     except (ValueError, TypeError) as e:
         raise click.ClickException(
             f"Invalid value for '{key}' (expected {typ.__name__}): {e}"
         )
+    bounds = _NUMERIC_BOUNDS.get(key)
+    if bounds is not None:
+        lo, hi = bounds
+        if (lo is not None and result < lo) or (hi is not None and result > hi):
+            rng = f"{lo}" if hi is None else f"{lo}-{hi}"
+            raise click.ClickException(
+                f"Value for '{key}' out of range: {result} (expected >= {rng})"
+                if hi is None
+                else f"Value for '{key}' out of range: {result} (expected {rng})"
+            )
+    return result
 
 
 def validate_config_key(key: str) -> str:

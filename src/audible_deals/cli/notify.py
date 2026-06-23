@@ -8,6 +8,7 @@ import logging
 import random
 import sys
 import time
+import urllib.request
 from pathlib import Path
 
 import click
@@ -158,6 +159,21 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
 _WEBHOOK_RETRY_DELAYS = (2.0, 6.0)
 
 
+class _NoRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Refuse to follow redirects: a 3xx is raised as an error instead.
+
+    validate_webhook_url only vets the original URL, so following a redirect
+    would reach unvetted (possibly internal/metadata) hosts and resend the
+    request headers — leaking secrets from --webhook-header.
+    """
+
+    def redirect_request(self, *args, **kwargs):
+        return None
+
+
+urllib.request.install_opener(urllib.request.build_opener(_NoRedirectHandler))
+
+
 def _parse_webhook_headers(raw: tuple[str, ...]) -> dict[str, str]:
     """Parse 'Name: Value' strings into a headers dict. Raises UsageError on bad input."""
     try:
@@ -255,6 +271,10 @@ def recap(
     """
     if webhook_headers and not webhook:
         raise click.UsageError("--webhook-header requires --webhook")
+    if json_flag and webhook:
+        raise click.UsageError("--json and --webhook are mutually exclusive")
+    if webhook:
+        validate_webhook_url(webhook)
     extra_headers = _parse_webhook_headers(webhook_headers) if webhook_headers else {}
     try:
         with run_lock():
@@ -341,10 +361,6 @@ def _recap_body(
     logger.info(
         "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
     )
-    if json_flag and webhook:
-        raise click.UsageError("--json and --webhook are mutually exclusive")
-    if webhook:
-        validate_webhook_url(webhook)
     if json_flag:
         console.file = sys.stderr
     cur = _currency(ctx)
@@ -623,6 +639,7 @@ def _notify_body(
     hits, extras, hit_asins = _collect_target_hits(
         dc, asin_items, author_items, credit_price=_credit_price(ctx)
     )
+    had_hits = bool(hits)
 
     suppressed = 0
     if cooldown is not None:
@@ -642,7 +659,7 @@ def _notify_body(
                     "[dim]No items at target price. Nothing sent to webhook.[/dim]"
                 )
         if exit_code:
-            ctx.exit(1)
+            ctx.exit(0 if had_hits else 1)
         return
 
     if webhook:

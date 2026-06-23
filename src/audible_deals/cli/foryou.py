@@ -267,6 +267,20 @@ def for_you(
     dc = _get_client(ctx.obj["locale"])
 
     profile = None if refresh else taste.load_cached_profile()
+    if dry_run:
+        if profile is None:
+            raise click.ClickException(
+                "No cached taste profile — run `deals for-you` (without --dry-run) "
+                "to build it first."
+            )
+        authors, genres, series = _scan_plan(profile)
+        if not (authors or genres or series):
+            raise click.ClickException(
+                "Could not derive a taste profile from your library."
+            )
+        _print_for_you_plan(profile, authors, genres, series)
+        return
+
     with dc:
         if profile is None:
             from audible_deals.cli.scan import _fetch_library_with_progress
@@ -288,10 +302,6 @@ def for_you(
             raise click.ClickException(
                 "Could not derive a taste profile from your library."
             )
-
-        if dry_run:
-            _print_for_you_plan(profile, authors, genres, series)
-            return
 
         owned = set(profile.get("owned_asins", []))
         candidates, series_of = _fetch_candidates(dc, authors, genres, series, owned)

@@ -376,10 +376,12 @@ def find_wishlist_hits() -> list[dict]:
     """
     hits: list[dict] = []
     for item, entries in _wishlist_with_history():
+        last = entries[-1].get("price") if entries else None
+        max_price = item.get("max_price")
         if (
-            entries
-            and item.get("max_price") is not None
-            and entries[-1]["price"] <= item["max_price"]
+            isinstance(last, (int, float))
+            and isinstance(max_price, (int, float))
+            and last <= max_price
         ):
             hits.append(item)
     return hits

@@ -111,6 +111,39 @@ def _send_hits_webhook(
     _post_webhook(url, body, headers)
 
 
+def _is_auth_error(exc: Exception) -> bool:
+    """True when an exception signals the user must re-run 'deals login'."""
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status in (401, 403):
+        return True
+    msg = str(exc).lower()
+    return "not authenticated" in msg or "deals login" in msg
+
+
+def _record_failure(
+    exc: Exception,
+    started: float,
+    webhook: str | None,
+    webhook_format: str,
+    webhook_headers: dict[str, str] | None,
+) -> None:
+    """Append a failed-run entry and ping only on genuine auth failures."""
+    state = _load_track_state()
+    _append_run(
+        state,
+        {
+            "at": datetime.datetime.now().isoformat(timespec="seconds"),
+            "duration_s": round(time.monotonic() - started, 1),
+            "error": f"{type(exc).__name__}: {exc}",
+        },
+    )
+    if _is_auth_error(exc):
+        _notify_auth_error(state, str(exc), webhook, webhook_format, webhook_headers)
+    _save_track_state(state)
+
+
 def _notify_auth_error(
     state: dict,
     error: str,
@@ -175,17 +208,12 @@ def track_run(ctx, cooldown):
         raise
     except Exception as e:
         logger.exception("track run failed")
-        state = _load_track_state()
-        _append_run(
-            state,
-            {
-                "at": datetime.datetime.now().isoformat(timespec="seconds"),
-                "duration_s": round(time.monotonic() - started, 1),
-                "error": f"{type(e).__name__}: {e}",
-            },
-        )
-        _notify_auth_error(state, str(e), webhook, webhook_format, webhook_headers)
-        _save_track_state(state)
+        try:
+            with run_lock():
+                _record_failure(e, started, webhook, webhook_format, webhook_headers)
+        except LockHeldError:
+            # Best-effort save when a concurrent run holds the lock.
+            _record_failure(e, started, webhook, webhook_format, webhook_headers)
         raise click.ClickException(f"track run failed: {e}")
 
 

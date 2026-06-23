@@ -38,6 +38,7 @@ from audible_deals.cli import track as track_commands
 from audible_deals.cli import wishlist as wishlist_commands
 from audible_deals.cli.helpers import _CL
 from audible_deals.config_store import load_config
+from audible_deals.constants import LOCALE_DOMAIN
 from audible_deals.display import console
 from audible_deals.logging_setup import configure_logging
 
@@ -101,6 +102,11 @@ def cli(ctx, locale, verbose):
         cfg_locale = cfg.get("locale")
         if cfg_locale:
             locale = cfg_locale
+    if locale not in LOCALE_DOMAIN:
+        raise click.BadParameter(
+            f"Invalid locale {locale!r}. Valid: {', '.join(sorted(LOCALE_DOMAIN))}",
+            param_hint="--locale",
+        )
     ctx.obj["locale"] = locale
     logger.debug("cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand)
     if ctx.invoked_subcommand is None:

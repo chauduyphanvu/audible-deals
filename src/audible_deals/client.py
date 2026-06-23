@@ -519,11 +519,14 @@ class DealsClient:
                 response_groups=CATALOG_RESPONSE_GROUPS,
                 sort_by="-DateAdded",
             )
+            raw_products = resp.get("products", [])
             products = [
-                parse_product(p, locale=self.locale) for p in resp.get("products", [])
+                parse_product(p, locale=self.locale)
+                for p in raw_products
+                if p.get("asin") and p.get("title")
             ]
             all_products.extend(products)
-            if len(products) < MAX_PAGE_SIZE:
+            if len(raw_products) < MAX_PAGE_SIZE:
                 break
             page += 1
         logger.debug("wishlist fetched count=%d", len(all_products))
@@ -604,6 +607,8 @@ class DealsClient:
             return None
         try:
             data = json.loads(cache_file.read_text())
+            if not isinstance(data, dict):
+                raise ValueError("categories cache is not a dict")
             age = time.time() - data.get("ts", 0)
             if age < CATEGORIES_CACHE_TTL:
                 logger.debug(
@@ -616,7 +621,7 @@ class DealsClient:
             logger.debug(
                 "categories cache stale (age=%.0fs > %ds)", age, CATEGORIES_CACHE_TTL
             )
-        except (json.JSONDecodeError, KeyError):
+        except (json.JSONDecodeError, KeyError, ValueError):
             logger.warning("categories cache corrupt: %s", cache_file, exc_info=True)
         return None
 
