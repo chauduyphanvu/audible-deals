@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import collections
 import datetime
-import sys
 
 from rich.console import Console
 from rich.panel import Panel
@@ -23,12 +22,6 @@ from rich.table import Table
 
 from audible_deals.product import Product
 from audible_deals.metrics import buy_verdict, price_per_hour
-
-# On Windows, Rich has encoding issues with cp1252.
-# Force UTF-8 encoding by redirecting stdout if needed.
-if sys.platform == "win32" and sys.stdout.encoding != "utf-8":
-    import io
-    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8")
 
 console = Console()
 
