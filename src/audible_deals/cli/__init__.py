@@ -21,6 +21,7 @@ Usage:
 from __future__ import annotations
 
 import logging
+import sys
 
 try:
     import readline  # noqa: F401 — required on macOS for input() with long strings
@@ -43,6 +44,26 @@ from audible_deals.display import console
 from audible_deals.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
+
+
+def _force_utf8_output() -> None:
+    """Reconfigure the standard streams to UTF-8 on Windows.
+
+    Windows consoles often default to a legacy code page (e.g. cp1252) that
+    cannot encode the Unicode glyphs Rich renders, which otherwise crashes the
+    CLI with UnicodeEncodeError. reconfigure() mutates the existing stream in
+    place; guarded because captured/redirected/frozen streams may not support it.
+    """
+    if sys.platform != "win32":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError):
+            pass
+
+
+_force_utf8_output()
 
 
 class _HandleAuthErrors(click.Group):
