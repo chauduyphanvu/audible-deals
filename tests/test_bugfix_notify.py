@@ -1,9 +1,11 @@
-"""Regression tests for confirmed bugs in audible_deals.cli.notify."""
+"""Regression tests for the notification workflow."""
 
 from __future__ import annotations
 
 import datetime
 import json
+import subprocess
+import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
@@ -11,11 +13,20 @@ import click
 import pytest
 from click.testing import CliRunner
 
-import audible_deals.cli.notify as notify_mod
+import audible_deals.notification_workflow as notify_mod
 import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
 from audible_deals.cli import cli
 from tests.conftest import make_product
+
+
+def test_notification_workflow_imports_in_fresh_interpreter():
+    result = subprocess.run(
+        [sys.executable, "-c", "import audible_deals.notification_workflow"],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, result.stderr
 
 
 # ===================================================================
@@ -76,7 +87,7 @@ class TestWebhookNoRedirect:
 
         try:
             with pytest.raises(click.ClickException, match="Webhook failed"):
-                notify_mod._post_webhook(
+                notify_mod.post_webhook(
                     f"http://127.0.0.1:{port}/hook",
                     b"body",
                     {

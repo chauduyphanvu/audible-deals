@@ -34,8 +34,13 @@ from audible.exceptions import RequestError
 from audible_deals.cli import config as config_commands
 from audible_deals.cli import foryou as foryou_commands
 from audible_deals.cli import misc as misc_commands
+from audible_deals.cli import catalog as catalog_commands
+from audible_deals.cli import history as history_commands
+from audible_deals.cli import last as last_commands
+from audible_deals.cli import library as library_commands
 from audible_deals.cli import notify as notify_commands
-from audible_deals.cli import scan as scan_commands
+from audible_deals.cli import recap as recap_commands
+from audible_deals.cli import series as series_commands
 from audible_deals.cli import track as track_commands
 from audible_deals.cli import wishlist as wishlist_commands
 from audible_deals.cli.helpers import _CL
@@ -154,17 +159,17 @@ cli.add_command(misc_commands.open_cmd)
 cli.add_command(misc_commands.compare)
 cli.add_command(misc_commands.doctor)
 cli.add_command(misc_commands.completions)
-cli.add_command(scan_commands.search)
-cli.add_command(scan_commands.find)
+cli.add_command(catalog_commands.search)
+cli.add_command(catalog_commands.find)
 cli.add_command(foryou_commands.for_you)
-cli.add_command(scan_commands.library)
-cli.add_command(scan_commands.series)
-cli.add_command(scan_commands.last_cmd)
+cli.add_command(library_commands.library)
+cli.add_command(series_commands.series)
+cli.add_command(last_commands.last_cmd)
 cli.add_command(wishlist_commands.wishlist)
 cli.add_command(wishlist_commands.watch)
 cli.add_command(config_commands.config_cmd)
 cli.add_command(config_commands.profile)
-cli.add_command(notify_commands.history)
-cli.add_command(notify_commands.recap)
+cli.add_command(history_commands.history)
+cli.add_command(recap_commands.recap)
 cli.add_command(notify_commands.notify)
 cli.add_command(track_commands.track)

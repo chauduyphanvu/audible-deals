@@ -585,7 +585,7 @@ class TestDoctorTrackStreak:
 
 class TestPostWebhookRetry:
     def test_succeeds_on_second_attempt(self, monkeypatch):
-        import audible_deals.cli.notify as notify_mod
+        import audible_deals.notification_workflow as notify_mod
 
         calls = []
 
@@ -597,10 +597,11 @@ class TestPostWebhookRetry:
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
         sleep_calls = []
         monkeypatch.setattr(
-            "audible_deals.cli.notify.time.sleep", lambda s: sleep_calls.append(s)
+            "audible_deals.notification_workflow.time.sleep",
+            lambda s: sleep_calls.append(s),
         )
 
-        notify_mod._post_webhook(
+        notify_mod.post_webhook(
             "https://example.com/hook", b"body", {"Content-Type": "application/json"}
         )
         assert len(calls) == 2
@@ -609,31 +610,34 @@ class TestPostWebhookRetry:
     def test_exhausts_retries_and_raises(self, monkeypatch):
         import pytest
         import click
-        import audible_deals.cli.notify as notify_mod
+        import audible_deals.notification_workflow as notify_mod
 
         monkeypatch.setattr(
             "urllib.request.urlopen",
             lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")),
         )
-        monkeypatch.setattr("audible_deals.cli.notify.time.sleep", lambda s: None)
+        monkeypatch.setattr(
+            "audible_deals.notification_workflow.time.sleep", lambda s: None
+        )
 
         with pytest.raises(click.ClickException, match="Webhook failed"):
-            notify_mod._post_webhook(
+            notify_mod.post_webhook(
                 "https://example.com/hook",
                 b"body",
                 {"Content-Type": "application/json"},
             )
 
     def test_succeeds_first_attempt_no_sleep(self, monkeypatch):
-        import audible_deals.cli.notify as notify_mod
+        import audible_deals.notification_workflow as notify_mod
 
         monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: None)
         sleep_calls = []
         monkeypatch.setattr(
-            "audible_deals.cli.notify.time.sleep", lambda s: sleep_calls.append(s)
+            "audible_deals.notification_workflow.time.sleep",
+            lambda s: sleep_calls.append(s),
         )
 
-        notify_mod._post_webhook(
+        notify_mod.post_webhook(
             "https://example.com/hook", b"body", {"Content-Type": "application/json"}
         )
         assert sleep_calls == []
@@ -646,62 +650,62 @@ class TestPostWebhookRetry:
 
 class TestParseWebhookHeaders:
     def test_valid_header(self):
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
-        result = _parse_webhook_headers(("Authorization: Bearer tok",))
+        result = parse_webhook_headers(("Authorization: Bearer tok",))
         assert result == {"Authorization": "Bearer tok"}
 
     def test_multiple_headers(self):
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
-        result = _parse_webhook_headers(("X-Key: abc", "X-Other: def"))
+        result = parse_webhook_headers(("X-Key: abc", "X-Other: def"))
         assert result["X-Key"] == "abc"
         assert result["X-Other"] == "def"
 
     def test_rejects_missing_colon(self):
         import pytest
         import click
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError, match="Name: Value"):
-            _parse_webhook_headers(("BadHeader",))
+            parse_webhook_headers(("BadHeader",))
 
     def test_rejects_empty_name(self):
         import pytest
         import click
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError):
-            _parse_webhook_headers((": value",))
+            parse_webhook_headers((": value",))
 
     def test_rejects_empty_value(self):
         import pytest
         import click
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError):
-            _parse_webhook_headers(("X-Key: ",))
+            parse_webhook_headers(("X-Key: ",))
 
     def test_rejects_content_type(self):
         import pytest
         import click
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError, match="Content-Type"):
-            _parse_webhook_headers(("content-type: application/xml",))
+            parse_webhook_headers(("content-type: application/xml",))
 
     def test_rejects_content_type_mixed_case(self):
         import pytest
         import click
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError, match="Content-Type"):
-            _parse_webhook_headers(("Content-Type: text/plain",))
+            parse_webhook_headers(("Content-Type: text/plain",))
 
     def test_value_with_colon_preserved(self):
-        from audible_deals.cli.notify import _parse_webhook_headers
+        from audible_deals.notification_workflow import parse_webhook_headers
 
-        result = _parse_webhook_headers(("Authorization: Bearer a:b:c",))
+        result = parse_webhook_headers(("Authorization: Bearer a:b:c",))
         assert result["Authorization"] == "Bearer a:b:c"
 
 
@@ -745,7 +749,7 @@ class TestWebhookHeaderOption:
 
         monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
         monkeypatch.setattr(
-            "audible_deals.cli.notify.validate_webhook_url", lambda url: None
+            "audible_deals.notification_workflow.validate_webhook_url", lambda url: None
         )
 
         runner = CliRunner()

@@ -11,6 +11,11 @@ from audible_deals.constants import DEFAULT_LIMIT, GENRE_ALIASES
 from audible_deals.serialization import validate_export_path
 
 
+def _check_plus_flags(skip_plus: bool, only_plus: bool) -> None:
+    if skip_plus and only_plus:
+        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+
+
 def _validate_output_path(ctx, param, value):
     validate_export_path(value)
     return value

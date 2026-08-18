@@ -285,9 +285,9 @@ def for_you(
 
     with dc:
         if profile is None:
-            from audible_deals.cli.scan import _fetch_library_with_progress
+            from audible_deals.cli.library import fetch_library_with_progress
 
-            lib_products = _fetch_library_with_progress(dc)
+            lib_products = fetch_library_with_progress(dc)
             if not lib_products:
                 raise click.ClickException(
                     "Your library is empty — for-you learns your taste from books you own."

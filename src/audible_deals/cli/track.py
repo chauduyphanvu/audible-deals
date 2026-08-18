@@ -15,12 +15,12 @@ from audible_deals.cli.helpers import (
     _get_client,
     _safe_record_prices,
 )
-from audible_deals.cli.notify import (
-    _apply_cooldown,
-    _collect_target_hits,
-    _parse_webhook_headers,
-    _persist_notify_state,
-    _post_webhook,
+from audible_deals.notification_workflow import (
+    apply_cooldown,
+    collect_target_hits,
+    parse_webhook_headers,
+    persist_notify_state,
+    post_webhook,
 )
 from audible_deals.constants import LockHeldError, run_lock
 from audible_deals.display import console
@@ -108,7 +108,7 @@ def _send_hits_webhook(
     body, headers = format_webhook_payload(hits, fmt, currency=currency, extras=extras)
     if extra_headers:
         headers = {**headers, **extra_headers}
-    _post_webhook(url, body, headers)
+    post_webhook(url, body, headers)
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -162,7 +162,7 @@ def _notify_auth_error(
         )
         if extra_headers:
             headers = {**headers, **extra_headers}
-        _post_webhook(url, body, headers)
+        post_webhook(url, body, headers)
         state["auth_error_notified"] = True
     except Exception:
         logger.exception("auth-error webhook ping failed")
@@ -225,8 +225,12 @@ def _track_run_locked(
     wishlist_asins = {i["asin"] for i in asin_items}
 
     dc = _get_client(ctx.obj["locale"])
-    hits, extras, hit_asins = _collect_target_hits(
-        dc, asin_items, author_items, credit_price=_credit_price(ctx)
+    hits, extras, hit_asins = collect_target_hits(
+        dc,
+        asin_items,
+        author_items,
+        _safe_record_prices,
+        credit_price=_credit_price(ctx),
     )
 
     extra_asins = _recent_history_asins(exclude=wishlist_asins)
@@ -239,13 +243,13 @@ def _track_run_locked(
     webhook_sent = False
     today = datetime.date.today()
     if webhook and hits:
-        kept, suppressed, notify_state = _apply_cooldown(hits, cooldown, today)
+        kept, suppressed, notify_state = apply_cooldown(hits, cooldown, today)
         if kept:
             _send_hits_webhook(
                 kept, extras, webhook, webhook_format, _currency(ctx), webhook_headers
             )
             webhook_sent = True
-            _persist_notify_state(notify_state, kept, asin_items, hit_asins, today)
+            persist_notify_state(notify_state, kept, asin_items, hit_asins, today)
 
     _append_run(
         state,
@@ -314,7 +318,7 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
     if webhook_headers and not webhook:
         raise click.UsageError("--webhook-header requires --webhook")
     if webhook_headers:
-        _parse_webhook_headers(webhook_headers)
+        parse_webhook_headers(webhook_headers)
 
     if webhook:
         from audible_deals.config_store import load_config, save_config

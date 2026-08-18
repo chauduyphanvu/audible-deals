@@ -42,9 +42,7 @@ class TestAuthErrorClassification:
             "connection timed out"
         )
         posts = []
-        monkeypatch.setattr(
-            track_mod, "_post_webhook", lambda *a, **kw: posts.append(a)
-        )
+        monkeypatch.setattr(track_mod, "post_webhook", lambda *a, **kw: posts.append(a))
 
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "run"])
@@ -64,9 +62,7 @@ class TestAuthErrorClassification:
             "Not authenticated. Run 'deals login' first."
         )
         posts = []
-        monkeypatch.setattr(
-            track_mod, "_post_webhook", lambda *a, **kw: posts.append(a)
-        )
+        monkeypatch.setattr(track_mod, "post_webhook", lambda *a, **kw: posts.append(a))
 
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "run"])
@@ -82,9 +78,7 @@ class TestAuthErrorClassification:
         _seed_wishlist()
         _config_with_webhook()
         posts = []
-        monkeypatch.setattr(
-            track_mod, "_post_webhook", lambda *a, **kw: posts.append(a)
-        )
+        monkeypatch.setattr(track_mod, "post_webhook", lambda *a, **kw: posts.append(a))
         runner = CliRunner()
 
         mock_client.get_products_batch.side_effect = RuntimeError("network reset")
@@ -107,9 +101,7 @@ class TestAuthErrorClassification:
 
         mock_client.get_products_batch.side_effect = _AuthHTTPError("unauthorized")
         posts = []
-        monkeypatch.setattr(
-            track_mod, "_post_webhook", lambda *a, **kw: posts.append(a)
-        )
+        monkeypatch.setattr(track_mod, "post_webhook", lambda *a, **kw: posts.append(a))
 
         runner = CliRunner()
         runner.invoke(cli, ["track", "run"])
@@ -131,9 +123,7 @@ class TestWebhookFormattingError:
 
         monkeypatch.setattr(track_mod, "format_webhook_payload", _boom)
         posts = []
-        monkeypatch.setattr(
-            track_mod, "_post_webhook", lambda *a, **kw: posts.append(a)
-        )
+        monkeypatch.setattr(track_mod, "post_webhook", lambda *a, **kw: posts.append(a))
 
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "run"])

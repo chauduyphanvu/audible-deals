@@ -72,10 +72,10 @@ class TestCliRegressionFixes:
     def test_last_rejects_bad_output_before_reading_cache(
         self, tmp_config, monkeypatch
     ):
-        import audible_deals.cli.scan as scan_mod
+        import audible_deals.cli.last as last_mod
 
         monkeypatch.setattr(
-            scan_mod,
+            last_mod,
             "load_last_results",
             lambda: pytest.fail("read cache before validating output"),
         )
@@ -94,13 +94,13 @@ class TestCliRegressionFixes:
     def test_resolved_profile_plus_flags_are_mutually_exclusive(
         self, tmp_config, monkeypatch
     ):
-        import audible_deals.cli.scan as scan_mod
+        import audible_deals.cli.catalog as catalog_mod
 
         config_store_mod.save_profiles(
             {"conflict": {"skip_plus": True, "only_plus": True}}
         )
         monkeypatch.setattr(
-            scan_mod,
+            catalog_mod,
             "_get_client",
             lambda locale: pytest.fail("constructed client with invalid settings"),
         )
@@ -132,8 +132,8 @@ class TestCliRegressionFixes:
     @pytest.mark.parametrize(
         ("command", "module_name"),
         [
-            (["library", "--output", "bad.txt"], "audible_deals.cli.scan"),
-            (["series", "--output", "bad.txt"], "audible_deals.cli.scan"),
+            (["library", "--output", "bad.txt"], "audible_deals.cli.library"),
+            (["series", "--output", "bad.txt"], "audible_deals.cli.series"),
             (["for-you", "--output", "bad.txt"], "audible_deals.cli.foryou"),
         ],
     )
@@ -181,11 +181,11 @@ class TestCliRegressionFixes:
     def test_search_profile_genre_dry_run_needs_no_client(
         self, tmp_config, monkeypatch
     ):
-        import audible_deals.cli.scan as scan_mod
+        import audible_deals.cli.catalog as catalog_mod
 
         config_store_mod.save_profiles({"genre-only": {"genre": "fantasy"}})
         monkeypatch.setattr(
-            scan_mod,
+            catalog_mod,
             "_get_client",
             lambda locale: pytest.fail("dry run constructed a client"),
         )
@@ -4786,7 +4786,7 @@ class TestNotifyEmpty:
         ]
         # Use a valid-looking but unreachable webhook; should never be called
         monkeypatch.setattr(
-            "audible_deals.cli.notify.validate_webhook_url", lambda url: None
+            "audible_deals.notification_workflow.validate_webhook_url", lambda url: None
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--webhook", "https://example.com/hook"])
@@ -4905,10 +4905,10 @@ class TestDryRunFind:
         self, tmp_config, monkeypatch
     ):
         """Dry runs do not resolve categories through the authenticated client."""
-        import audible_deals.cli.scan as scan_mod
+        import audible_deals.cli.catalog as catalog_mod
 
         monkeypatch.setattr(
-            scan_mod,
+            catalog_mod,
             "_get_client",
             lambda locale: pytest.fail("dry run constructed a client"),
         )
@@ -4940,10 +4940,10 @@ class TestDryRunSearch:
     def test_search_dry_run_rejects_empty_or_query_before_planning(
         self, tmp_config, monkeypatch
     ):
-        import audible_deals.cli.scan as scan_mod
+        import audible_deals.cli.catalog as catalog_mod
 
         monkeypatch.setattr(
-            scan_mod,
+            catalog_mod,
             "_get_client",
             lambda locale: pytest.fail("dry run constructed a client"),
         )
@@ -4955,10 +4955,10 @@ class TestDryRunSearch:
     def test_find_dry_run_subcategories_marks_live_count_unknown(
         self, tmp_config, monkeypatch
     ):
-        import audible_deals.cli.scan as scan_mod
+        import audible_deals.cli.catalog as catalog_mod
 
         monkeypatch.setattr(
-            scan_mod,
+            catalog_mod,
             "_get_client",
             lambda locale: pytest.fail("dry run constructed a client"),
         )
@@ -5060,7 +5060,7 @@ class TestFilterSeries:
 class TestSeriesCommand:
     @pytest.fixture(autouse=True)
     def _no_sleep(self, monkeypatch):
-        monkeypatch.setattr("audible_deals.cli.scan.time.sleep", lambda _: None)
+        monkeypatch.setattr("audible_deals.cli.series.time.sleep", lambda _: None)
 
     def test_series_direct_lookup(self, tmp_config, mock_client):
         """With series_asin, uses direct lookup via get_series_products."""
@@ -8171,7 +8171,7 @@ class TestHistBelowZero:
 class TestReleasedDateNormalization:
     def test_compact_released_after_is_normalized(self, mock_client, tmp_config):
         """Compact ISO form '20240101' parses and normalizes to '2024-01-01'."""
-        from audible_deals.cli.scan import _validate_history_filter_options
+        from audible_deals.cli.catalog import _validate_history_filter_options
 
         after, before = _validate_history_filter_options(
             False, None, 0.0, "20240101", ""
@@ -8181,7 +8181,7 @@ class TestReleasedDateNormalization:
 
     def test_compact_released_before_is_normalized(self, mock_client, tmp_config):
         """Compact ISO form '20241231' normalizes to '2024-12-31'."""
-        from audible_deals.cli.scan import _validate_history_filter_options
+        from audible_deals.cli.catalog import _validate_history_filter_options
 
         after, before = _validate_history_filter_options(
             False, None, 0.0, "", "20241231"
@@ -8191,7 +8191,7 @@ class TestReleasedDateNormalization:
 
     def test_dashed_dates_pass_through_unchanged(self, mock_client, tmp_config):
         """Standard dashed dates are returned as-is."""
-        from audible_deals.cli.scan import _validate_history_filter_options
+        from audible_deals.cli.catalog import _validate_history_filter_options
 
         after, before = _validate_history_filter_options(
             False, None, 0.0, "2024-06-01", "2024-12-31"

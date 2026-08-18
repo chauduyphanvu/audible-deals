@@ -225,20 +225,26 @@ def _cli_console_modules():
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.interactive as cli_interactive_mod
     import audible_deals.cli.misc as cli_misc_mod
-    import audible_deals.cli.notify as cli_notify_mod
+    import audible_deals.cli.catalog as cli_catalog_mod
+    import audible_deals.cli.last as cli_last_mod
+    import audible_deals.cli.library as cli_library_mod
     import audible_deals.cli.pipeline as cli_pipeline_mod
-    import audible_deals.cli.scan as cli_scan_mod
+    import audible_deals.cli.series as cli_series_mod
     import audible_deals.cli.track as cli_track_mod
     import audible_deals.cli.wishlist as cli_wishlist_mod
+    import audible_deals.notification_workflow as notification_workflow_mod
 
     return (
         cli_mod,
         cli_helpers_mod,
         cli_pipeline_mod,
         cli_interactive_mod,
-        cli_scan_mod,
+        cli_catalog_mod,
+        cli_library_mod,
+        cli_series_mod,
+        cli_last_mod,
         cli_wishlist_mod,
-        cli_notify_mod,
+        notification_workflow_mod,
         cli_misc_mod,
         cli_track_mod,
         cli_foryou_mod,
@@ -251,8 +257,10 @@ def mock_client(monkeypatch):
     import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.misc as cli_misc_mod
+    import audible_deals.cli.catalog as cli_catalog_mod
+    import audible_deals.cli.library as cli_library_mod
     import audible_deals.cli.notify as cli_notify_mod
-    import audible_deals.cli.scan as cli_scan_mod
+    import audible_deals.cli.series as cli_series_mod
     import audible_deals.cli.track as cli_track_mod
     import audible_deals.cli.wishlist as cli_wishlist_mod
 
@@ -265,9 +273,11 @@ def mock_client(monkeypatch):
 
     for mod in (
         cli_helpers_mod,
-        cli_scan_mod,
-        cli_wishlist_mod,
+        cli_catalog_mod,
+        cli_library_mod,
+        cli_series_mod,
         cli_notify_mod,
+        cli_wishlist_mod,
         cli_misc_mod,
         cli_track_mod,
         cli_foryou_mod,
