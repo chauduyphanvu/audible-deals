@@ -15,7 +15,7 @@ REPO="chauduyphanvu/audible-deals"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 LIB_DIR="${LIB_DIR:-$HOME/.local/lib/deals}"
 BINARY_NAME="deals"
-FALLBACK_VERSION="0.8.0"
+FALLBACK_VERSION="0.9.1"
 
 # --- Detect platform ---
 

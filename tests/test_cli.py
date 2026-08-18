@@ -48,6 +48,170 @@ def _mock_library_pages(mock_client, products):
     mock_client.get_library_pages.return_value = iter([(products, 1)])
 
 
+class TestCliRegressionFixes:
+    def test_last_does_not_record_cached_prices(self, tmp_config, monkeypatch):
+        import audible_deals.cli.pipeline as pipeline_mod
+
+        constants_mod.LAST_RESULTS_FILE.write_text(
+            json.dumps(
+                {
+                    "title": "Cached",
+                    "results": [_serialize_product(make_product(price=4.99))],
+                }
+            )
+        )
+        record_prices = monkeypatch.setattr(
+            pipeline_mod,
+            "_safe_record_prices",
+            lambda products: pytest.fail("last recorded cached prices"),
+        )
+        assert record_prices is None
+        result = CliRunner().invoke(cli, ["last", "--json"])
+        assert result.exit_code == 0, result.output
+
+    def test_last_rejects_bad_output_before_reading_cache(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.scan as scan_mod
+
+        monkeypatch.setattr(
+            scan_mod,
+            "load_last_results",
+            lambda: pytest.fail("read cache before validating output"),
+        )
+        result = CliRunner().invoke(cli, ["last", "--output", "bad.txt"])
+        assert result.exit_code != 0
+        assert "Unsupported extension" in result.output
+
+    def test_profile_save_rejects_negative_pages(self, tmp_config):
+        result = CliRunner().invoke(
+            cli, ["profile", "save", "bad-pages", "--pages", "-1"]
+        )
+        assert result.exit_code != 0
+        assert "Invalid value" in result.output
+        assert "bad-pages" not in config_store_mod.load_profiles()
+
+    def test_resolved_profile_plus_flags_are_mutually_exclusive(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.scan as scan_mod
+
+        config_store_mod.save_profiles(
+            {"conflict": {"skip_plus": True, "only_plus": True}}
+        )
+        monkeypatch.setattr(
+            scan_mod,
+            "_get_client",
+            lambda locale: pytest.fail("constructed client with invalid settings"),
+        )
+        result = CliRunner().invoke(cli, ["find", "--profile", "conflict"])
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
+    def test_network_error_is_rendered_as_click_error(self, mock_client, tmp_config):
+        from audible.exceptions import NetworkError
+
+        mock_client.search_pages.side_effect = NetworkError()
+        result = CliRunner().invoke(cli, ["find"])
+        assert result.exit_code != 0
+        assert "Audible request failed" in result.output
+        assert "Traceback" not in result.output
+
+    @pytest.mark.parametrize("error_name", ["NetworkError", "NotResponding"])
+    def test_request_errors_are_rendered_as_click_errors(
+        self, mock_client, tmp_config, error_name
+    ):
+        import audible.exceptions as audible_exceptions
+
+        mock_client.search_pages.side_effect = getattr(audible_exceptions, error_name)()
+        result = CliRunner().invoke(cli, ["find"])
+        assert result.exit_code != 0
+        assert "Audible request failed" in result.output
+        assert "Traceback" not in result.output
+
+    @pytest.mark.parametrize(
+        ("command", "module_name"),
+        [
+            (["library", "--output", "bad.txt"], "audible_deals.cli.scan"),
+            (["series", "--output", "bad.txt"], "audible_deals.cli.scan"),
+            (["for-you", "--output", "bad.txt"], "audible_deals.cli.foryou"),
+        ],
+    )
+    def test_bad_export_extension_does_not_construct_client(
+        self, tmp_config, monkeypatch, command, module_name
+    ):
+        module = __import__(module_name, fromlist=["_get_client"])
+        monkeypatch.setattr(
+            module,
+            "_get_client",
+            lambda locale: pytest.fail("constructed client before output validation"),
+        )
+        result = CliRunner().invoke(cli, command)
+        assert result.exit_code != 0
+        assert "Unsupported extension" in result.output
+
+    def test_export_write_failure_prevents_scan_state_commits(
+        self, mock_client, tmp_config
+    ):
+        mock_client.search_pages.return_value = iter([([make_product()], 1, 1)])
+        output_dir = tmp_config / "output.json"
+        output_dir.mkdir()
+        result = CliRunner().invoke(
+            cli, ["find", "--output", str(output_dir), "--all-languages"]
+        )
+        assert result.exit_code != 0
+        assert "Filesystem error" in result.output
+        assert not constants_mod.LAST_RESULTS_FILE.exists()
+        assert not constants_mod.SEEN_ASINS_FILE.exists()
+        assert not constants_mod.HISTORY_DIR.exists()
+
+    def test_search_profile_genre_is_resolved_after_settings(
+        self, mock_client, tmp_config
+    ):
+        config_store_mod.save_profiles({"genre-only": {"genre": "fantasy"}})
+        mock_client.resolve_genre.return_value = ("cat1", "Fantasy")
+        mock_client.search_pages.return_value = iter([([make_product()], 1, 1)])
+        result = CliRunner().invoke(
+            cli,
+            ["search", "--profile", "genre-only", "--all-languages", "--quiet"],
+        )
+        assert result.exit_code == 0, result.output
+        mock_client.resolve_genre.assert_called_once_with("fantasy")
+
+    def test_search_profile_genre_dry_run_needs_no_client(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.scan as scan_mod
+
+        config_store_mod.save_profiles({"genre-only": {"genre": "fantasy"}})
+        monkeypatch.setattr(
+            scan_mod,
+            "_get_client",
+            lambda locale: pytest.fail("dry run constructed a client"),
+        )
+        result = CliRunner().invoke(
+            cli, ["search", "--profile", "genre-only", "--dry-run"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Category: fantasy" in result.output
+
+    def test_search_multi_query_dry_run_multiplies_estimates(self, tmp_config):
+        result = CliRunner().invoke(
+            cli, ["search", "one | two", "--pages", "2", "--deep", "--dry-run"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Max items: ~600" in result.output
+        assert "API calls: 12" in result.output
+
+    def test_config_max_price_per_hour_alias_round_trips(self, tmp_config):
+        runner = CliRunner()
+        result = runner.invoke(cli, ["config", "set", "max-price-per-hour", "0.5"])
+        assert result.exit_code == 0, result.output
+        assert config_store_mod.load_config()["max_pph"] == 0.5
+        help_result = runner.invoke(cli, ["config", "set", "--help"])
+        assert "max-price-per-hour" in help_result.output
+
+
 # ===================================================================
 # _filter_products
 # ===================================================================
@@ -369,6 +533,12 @@ class TestExportProducts:
         path = tmp_path / "empty.csv"
         _export_products([], path)
         assert path.read_text() == ""
+
+    @pytest.mark.parametrize("suffix", ["json", "csv"])
+    def test_export_uses_utf8_for_non_ascii_text(self, tmp_path, suffix):
+        path = tmp_path / f"out.{suffix}"
+        _export_products([make_product(title="Café 東京")], path)
+        assert "Café 東京" in path.read_text(encoding="utf-8")
 
     def test_unsupported_format(self, tmp_path):
         import click
@@ -4731,6 +4901,22 @@ class TestDryRunFind:
         assert "Dry run" in result.output
         mock_client.search_pages.assert_not_called()
 
+    def test_find_dry_run_with_category_never_constructs_client(
+        self, tmp_config, monkeypatch
+    ):
+        """Dry runs do not resolve categories through the authenticated client."""
+        import audible_deals.cli.scan as scan_mod
+
+        monkeypatch.setattr(
+            scan_mod,
+            "_get_client",
+            lambda locale: pytest.fail("dry run constructed a client"),
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["find", "--category", "cat1", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "resolved during scan" in result.output
+
 
 class TestDryRunSearch:
     def test_search_dry_run_shows_summary(self, mock_client, tmp_config):
@@ -4750,6 +4936,38 @@ class TestDryRunSearch:
         result = runner.invoke(cli, ["search", "test", "--dry-run"])
         assert result.exit_code == 0, result.output
         mock_client.search_catalog.assert_not_called()
+
+    def test_search_dry_run_rejects_empty_or_query_before_planning(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.scan as scan_mod
+
+        monkeypatch.setattr(
+            scan_mod,
+            "_get_client",
+            lambda locale: pytest.fail("dry run constructed a client"),
+        )
+        runner = CliRunner()
+        result = runner.invoke(cli, ["search", " | ", "--dry-run"])
+        assert result.exit_code != 0
+        assert "No keywords found" in result.output
+
+    def test_find_dry_run_subcategories_marks_live_count_unknown(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.scan as scan_mod
+
+        monkeypatch.setattr(
+            scan_mod,
+            "_get_client",
+            lambda locale: pytest.fail("dry run constructed a client"),
+        )
+        runner = CliRunner()
+        result = runner.invoke(
+            cli, ["find", "--genre", "fantasy", "--subcategories", "--dry-run"]
+        )
+        assert result.exit_code == 0, result.output
+        assert "Subcategories: unknown" in result.output
 
 
 # ===================================================================
@@ -6657,8 +6875,10 @@ class TestFindSubcategories:
         assert asins.count("DEDUP") == 1
         assert "UNIQ" in asins
 
-    def test_subcategories_dry_run_multiplied(self, mock_client, tmp_config):
-        """Dry run with subcategories shows multiplied API-call count and subcategory count."""
+    def test_subcategories_dry_run_marks_live_counts_unknown(
+        self, mock_client, tmp_config
+    ):
+        """Dry run with subcategories avoids fetching the live category tree."""
         mock_client.resolve_genre.return_value = ("parent4", "Romance")
         mock_client.get_categories.return_value = [
             {"id": "r1", "name": "Contemporary"},
@@ -6680,8 +6900,9 @@ class TestFindSubcategories:
             ],
         )
         assert result.exit_code == 0, result.output
-        assert "Subcategories: 3" in result.output
-        assert "API calls: 6" in result.output
+        assert "Subcategories: unknown" in result.output
+        assert "API calls: unknown" in result.output
+        mock_client.get_categories.assert_not_called()
 
 
 # ===================================================================

@@ -133,10 +133,12 @@ def _record_and_cache(
     *,
     title: str,
     write_cache: bool = True,
+    record_prices: bool = True,
     limit: int | None,
 ) -> tuple[list[Product], list[dict], int]:
     """Record prices, persist cache, apply limit. Returns (filtered_limited, serialized, total_before_limit)."""
-    _safe_record_prices(filtered)
+    if record_prices:
+        _safe_record_prices(filtered)
     serialized_all = [serialize_product(p) for p in filtered]
     if write_cache:
         try:
@@ -257,6 +259,7 @@ def _record_and_emit(
     interactive: bool = False,
     show_url: bool = False,
     write_cache: bool = True,
+    record_prices: bool = True,
     histories: dict[str, list[dict]] | None = None,
     credit_price: float | None = None,
     match_context: dict[str, str] | None = None,
@@ -264,17 +267,23 @@ def _record_and_emit(
     hist_context: dict[str, int] | None = None,
 ) -> None:
     """Run the shared pipeline tail: record/cache/limit, then emit."""
+    if output:
+        export_products(filtered[:limit] if limit and limit > 0 else filtered, output)
+        console.print(
+            f"[green]Exported {min(len(filtered), limit) if limit and limit > 0 else len(filtered)} items to {output}[/green]"
+        )
     filtered, serialized, total_before_limit = _record_and_cache(
         filtered,
         title=title,
         write_cache=write_cache,
+        record_prices=record_prices,
         limit=limit,
     )
     _emit_output(
         filtered,
         serialized,
         title=title,
-        output=output,
+        output=None,
         json_flag=json_flag,
         quiet=quiet,
         max_price=max_price,
@@ -386,6 +395,8 @@ def _print_dry_run_summary(
     sort_orders: list[str],
     pages: int,
     subcategory_count: int | None = None,
+    subcategories_unknown: bool = False,
+    query_count: int = 1,
 ) -> None:
     """Print a dry-run scan summary."""
     sort_label = ", ".join(sort_orders)
@@ -395,14 +406,22 @@ def _print_dry_run_summary(
         console.print(f"  Category: {category_name}")
     if subcategory_count is not None:
         console.print(f"  Subcategories: {subcategory_count}")
+    elif subcategories_unknown:
+        console.print("  Subcategories: unknown (resolved during scan)")
     if query:
         console.print(f"  Query: {query}")
     console.print(f"  Sort orders: {sort_label}")
     console.print(f"  Pages per sort: {pages}")
-    console.print(
-        f"  Max items: ~{pages * len(sort_orders) * MAX_PAGE_SIZE * multiplier}"
-    )
-    console.print(f"  API calls: {pages * len(sort_orders) * multiplier}")
+    if subcategories_unknown:
+        console.print("  Max items: unknown (depends on subcategory count)")
+        console.print("  API calls: unknown (depends on subcategory count)")
+    else:
+        console.print(
+            f"  Max items: ~{pages * len(sort_orders) * MAX_PAGE_SIZE * multiplier * query_count}"
+        )
+        console.print(
+            f"  API calls: {pages * len(sort_orders) * multiplier * query_count}"
+        )
 
 
 def _fetch_with_progress(

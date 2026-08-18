@@ -22,6 +22,7 @@ from audible_deals.display import console, create_scan_progress
 from audible_deals.filtering import dedupe_editions, filter_products, sort_local
 from audible_deals.price_history import load_price_history, price_history_context
 from audible_deals.product import Product
+from audible_deals.serialization import validate_export_path
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
 logger = logging.getLogger(__name__)
@@ -263,6 +264,7 @@ def for_you(
     )
     if skip_plus and only_plus:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     dc = _get_client(ctx.obj["locale"])
 

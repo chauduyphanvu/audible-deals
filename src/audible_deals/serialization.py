@@ -36,6 +36,15 @@ def serialize_product(p: Product) -> dict:
 PRODUCT_FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Product))
 
 
+def validate_export_path(path: Path | None) -> None:
+    """Reject unsupported export formats before command side effects."""
+    if path is not None and path.suffix.lower() not in {".json", ".csv"}:
+        raise click.BadParameter(
+            f"Unsupported extension '{path.suffix.lower()}'. Use .json or .csv.",
+            param_hint="--output",
+        )
+
+
 def deserialize_product(d: dict) -> Product | None:
     """Reconstruct a Product from a serialized dict, ignoring computed fields."""
     try:
@@ -49,26 +58,24 @@ def deserialize_product(d: dict) -> Product | None:
 
 def export_products(products: list[Product], path: Path) -> None:
     """Export products to file, detecting format from extension."""
+    validate_export_path(path)
     suffix = path.suffix.lower()
     rows = [serialize_product(p) for p in products]
     logger.debug("export_products format=%s count=%d path=%s", suffix, len(rows), path)
 
     if suffix == ".json":
-        path.write_text(json_mod.dumps(rows, indent=2, ensure_ascii=False))
+        path.write_text(
+            json_mod.dumps(rows, indent=2, ensure_ascii=False), encoding="utf-8"
+        )
     elif suffix == ".csv":
         if not rows:
-            path.write_text("")
+            path.write_text("", encoding="utf-8")
             return
         for row in rows:
             for key in ("authors", "narrators", "categories", "category_ids"):
                 if isinstance(row[key], list):
                     row[key] = "; ".join(str(v) for v in row[key])
-        with open(path, "w", newline="") as f:
+        with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
-    else:
-        raise click.BadParameter(
-            f"Unsupported extension '{suffix}'. Use .json or .csv.",
-            param_hint="--output",
-        )

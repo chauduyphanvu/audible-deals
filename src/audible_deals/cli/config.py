@@ -30,9 +30,12 @@ def config_set(key, value):
     """Set a global default. KEY uses hyphens or underscores.
 
     \b
-    Valid keys: skip-owned, max-price, min-rating, min-ratings, min-hours,
-                language, locale, sort, pages, on-sale, deep, first-in-series,
-                all-languages, interactive, limit, narrator
+    Valid keys: skip-owned, max-price, max-pph (or max-price-per-hour), min-rating,
+                min-ratings, min-hours, min-discount, language, locale, sort,
+                pages, on-sale, deep, first-in-series, all-languages,
+                interactive, limit, narrator, author, series, publisher,
+                skip-plus, only-plus, credit-price, webhook, webhook-format,
+                webhook-headers
     Example:
         deals config set max-price 5
         deals config set skip-owned true
@@ -101,11 +104,11 @@ def profile():
 @click.option("--genre", default="")
 @click.option("--exclude-genre", multiple=True)
 @click.option("--keywords", default="")
-@click.option("--max-price", type=float, default=None)
+@click.option("--max-price", type=click.FloatRange(min=0), default=None)
 @click.option("--sort", default="")
-@click.option("--min-rating", type=float, default=0.0)
-@click.option("--min-ratings", type=int, default=0)
-@click.option("--min-hours", type=float, default=0.0)
+@click.option("--min-rating", type=click.FloatRange(min=0), default=0.0)
+@click.option("--min-ratings", type=click.IntRange(min=0), default=0)
+@click.option("--min-hours", type=click.FloatRange(min=0), default=0.0)
 @click.option("--narrator", default="")
 @click.option("--author", default="")
 @click.option("--series", default="")
@@ -118,7 +121,7 @@ def profile():
 )
 @click.option("--publisher", default="")
 @click.option("--deep/--no-deep", default=False)
-@click.option("--pages", type=int, default=None)
+@click.option("--pages", type=click.IntRange(min=1), default=None)
 @click.option("--first-in-series/--no-first-in-series", default=False)
 @click.option("--all-languages/--no-all-languages", default=False)
 @click.option("--limit", "-n", type=click.IntRange(min=0), default=None)

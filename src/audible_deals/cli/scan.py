@@ -57,6 +57,7 @@ from audible_deals.serialization import (
     deserialize_product,
     export_products,
     serialize_product,
+    validate_export_path,
 )
 from audible_deals.settings import Settings
 from audible_deals.validation import looks_like_person_name
@@ -241,9 +242,6 @@ def search(
         sort,
         deep,
     )
-    if not query and not genre and not category:
-        raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
-    _check_plus_flags(skip_plus, only_plus)
     released_after, released_before = _validate_history_filter_options(
         require_history, hist_below, min_price_drop, released_after, released_before
     )
@@ -279,36 +277,42 @@ def search(
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
+    _check_plus_flags(s.skip_plus, s.only_plus)
+    if not query and not s.genre and not category:
+        raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     effective_genre = _resolve_genre_category(ctx, s.genre, category)
-
-    dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(s.sort, "Relevance")
     sort_orders = DEEP_SORT_ORDERS if s.deep else [server_sort]
+
+    queries = (
+        [q.strip() for q in query.split("|") if q.strip()] if "|" in query else [query]
+    )
+    if "|" in query and not queries:
+        raise click.UsageError("No keywords found after splitting on '|'.")
+
+    if dry_run:
+        requested_category = category or effective_genre
+        category_label = (
+            f"{requested_category} (resolved during scan)" if requested_category else ""
+        )
+        _print_dry_run_summary(
+            category_name=category_label,
+            query=" | ".join(queries),
+            sort_orders=sort_orders,
+            pages=s.pages,
+            query_count=len(queries),
+        )
+        return
+
+    dc = _get_client(ctx.obj["locale"])
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
             dc, effective_genre, category, s.exclude_genre
         )
 
-        if dry_run:
-            _print_dry_run_summary(
-                category_name=category_name,
-                query=query,
-                sort_orders=sort_orders,
-                pages=s.pages,
-            )
-            return
-
         skip_asins = _resolve_skip_asins(dc, s.skip_owned, exclude_seen)
-
-        queries = (
-            [q.strip() for q in query.split("|") if q.strip()]
-            if "|" in query
-            else [query]
-        )
-        if not queries:
-            raise click.UsageError("No keywords found after splitting on '|'.")
 
         if len(queries) > 1:
             all_products = _fetch_multi_query(
@@ -509,7 +513,6 @@ def find(
         sort,
         deep,
     )
-    _check_plus_flags(skip_plus, only_plus)
     released_after, released_before = _validate_history_filter_options(
         require_history, hist_below, min_price_drop, released_after, released_before
     )
@@ -545,36 +548,38 @@ def find(
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
+    _check_plus_flags(s.skip_plus, s.only_plus)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     effective_genre = _resolve_genre_category(ctx, s.genre, category)
-
-    dc = _get_client(ctx.obj["locale"])
     server_sort = SORT_OPTIONS.get(s.sort, "BestSellers")
     sort_orders = DEEP_SORT_ORDERS if s.deep else [server_sort]
+
+    if subcategories and not (category or effective_genre):
+        raise click.UsageError("--subcategories requires --genre or --category")
+    if dry_run:
+        requested_category = category or effective_genre
+        _print_dry_run_summary(
+            category_name=f"{requested_category} (resolved during scan)"
+            if requested_category
+            else "",
+            query=s.keywords,
+            sort_orders=sort_orders,
+            pages=s.pages,
+            subcategories_unknown=subcategories,
+        )
+        return
+
+    dc = _get_client(ctx.obj["locale"])
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
             dc, effective_genre, category, s.exclude_genre
         )
 
-        if subcategories and not category:
-            raise click.UsageError("--subcategories requires --genre or --category")
-
         child_ids: list[str] = []
         if subcategories and category:
             children = dc.get_categories(root=category)
             child_ids = [c["id"] for c in children if c.get("id")]
-
-        if dry_run:
-            sub_count = len(child_ids) if subcategories and child_ids else None
-            _print_dry_run_summary(
-                category_name=category_name,
-                query=s.keywords,
-                sort_orders=sort_orders,
-                pages=s.pages,
-                subcategory_count=sub_count,
-            )
-            return
 
         skip_asins = _resolve_skip_asins(dc, s.skip_owned, exclude_seen)
 
@@ -822,6 +827,7 @@ def library(
         narrator,
         genre,
     )
+    validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
     dc = _get_client(ctx.obj["locale"])
@@ -1151,6 +1157,7 @@ def series(
         sort,
         gaps_mode,
     )
+    validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
     s = Settings.resolve(
@@ -1471,6 +1478,7 @@ def last_cmd(
         clear_seen,
         count_only,
     )
+    validate_export_path(output)
     _check_plus_flags(skip_plus, only_plus)
     did_clear = False
     if clear_seen:
@@ -1539,5 +1547,6 @@ def last_cmd(
         interactive=interactive,
         show_url=show_url,
         write_cache=False,
+        record_prices=False,
         credit_price=credit_price,
     )

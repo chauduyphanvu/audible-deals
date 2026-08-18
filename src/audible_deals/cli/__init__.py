@@ -29,6 +29,7 @@ except ImportError:
     pass  # unavailable on Windows
 
 import click
+from audible.exceptions import RequestError
 
 from audible_deals.cli import config as config_commands
 from audible_deals.cli import foryou as foryou_commands
@@ -76,6 +77,14 @@ class _HandleAuthErrors(click.Group):
             if "Not authenticated" in str(e):
                 raise click.ClickException(str(e))
             raise
+        except RequestError:
+            raise click.ClickException(
+                "Audible request failed. Check your network connection and authentication, then try again."
+            )
+        except BrokenPipeError:
+            raise
+        except OSError as e:
+            raise click.ClickException(f"Filesystem error: {e}")
 
 
 def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
@@ -86,7 +95,7 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 
         v = _pkg_version("audible-deals")
     except Exception:
-        v = "0.8.0"  # fallback for PyInstaller frozen builds
+        v = "0.9.1"  # fallback for PyInstaller frozen builds
     click.echo(f"deals, version {v}")
     ctx.exit()
 

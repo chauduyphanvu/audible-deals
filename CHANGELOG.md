@@ -6,8 +6,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.9.1] - 2026-08-17
+
 ### Fixed
 - Windows: CLI crashed with `UnicodeEncodeError` when the console used a legacy code page (e.g. cp1252) and could not encode the Unicode glyphs Rich renders. The standard streams are now reconfigured to UTF-8 at startup.
+- `deals last` no longer records cached prices as current observations, preventing stale results from corrupting price history.
+- `find` and `search` dry runs no longer construct an authenticated client or fetch category data; multi-query estimates now include every query.
+- Export formats are validated before API calls, and export write failures occur before price-history or result-cache updates. JSON and CSV files now always use UTF-8.
+- Saved-profile numeric ranges and resolved `--skip-plus`/`--only-plus` conflicts are validated consistently; profile-supplied genres now work with `search`.
+- Audible request and filesystem failures now render concise CLI errors instead of tracebacks while preserving normal broken-pipe behavior.
+- Version fallbacks, config help and aliases, and the `--min-price-drop` help text are current and consistent.
 
 ## [0.9.0] - 2026-06-22
 
@@ -97,6 +105,7 @@ A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.9.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.1
 [0.9.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.0
 [0.8.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.8.0
 [0.7.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.7.0

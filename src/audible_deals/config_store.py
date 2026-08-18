@@ -117,6 +117,8 @@ def coerce_config_value(key: str, raw: str):
 def validate_config_key(key: str) -> str:
     """Normalize and validate a config key. Returns the snake_case key or raises."""
     norm = key.replace("-", "_")
+    if norm == "max_price_per_hour":
+        return "max_pph"
     if norm not in _CONFIG_SCHEMA:
         valid = ", ".join(sorted(k.replace("_", "-") for k in _CONFIG_SCHEMA))
         raise click.ClickException(f"Unknown config key '{key}'. Valid keys: {valid}")

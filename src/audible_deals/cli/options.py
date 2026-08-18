@@ -8,6 +8,12 @@ import click
 
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import DEFAULT_LIMIT, GENRE_ALIASES
+from audible_deals.serialization import validate_export_path
+
+
+def _validate_output_path(ctx, param, value):
+    validate_export_path(value)
+    return value
 
 
 def _complete_profile_names(ctx, param, incomplete):
@@ -127,6 +133,7 @@ def _common_filter_options(func):
             "-o",
             type=click.Path(path_type=Path),
             default=None,
+            callback=_validate_output_path,
             help="Export results to file (.json or .csv)",
         ),
         click.option(
@@ -196,7 +203,7 @@ def _common_filter_options(func):
             "min_price_drop",
             type=click.FloatRange(min=0),
             default=0.0,
-            help="Keep only items whose price dropped by at least PCT%% from their last tracked price (no history = pass through)",
+            help="Keep only items whose price dropped by at least PCT% from their last tracked price (no history = pass through)",
         ),
         click.option(
             "--require-history",
