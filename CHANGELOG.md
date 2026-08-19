@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- Background-run locking is now crash-safe across processes and platforms, including safe handoff from legacy PID locks; failure-state writes remain protected by the same lock.
+- Price history is isolated by marketplace and serialized across concurrent writers, preventing one locale from overwriting another. Legacy unscoped history is archived instead of assigned to an arbitrary marketplace, and stale-history purges revalidate entries before deletion.
+- Scheduled tracking rejects intervals that cron or Windows Task Scheduler cannot represent exactly; Windows schedules now preserve supported minute and daily cadences.
+- `deals notify --exit-code` now returns 1 for an empty wishlist, consistently indicating that no item hit its target.
+
 ## [0.9.1] - 2026-08-17
 
 ### Fixed
