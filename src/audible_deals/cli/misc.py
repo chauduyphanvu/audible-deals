@@ -5,15 +5,18 @@ from __future__ import annotations
 import datetime
 import json as json_mod
 import os
+import stat
 import sys
-import time
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 import click
 from rich.table import Table
 
 from audible_deals import constants
+from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli.helpers import (
+    _CL,
     _collect_asins,
     _credit_price,
     _get_client,
@@ -40,7 +43,15 @@ from audible_deals.wishlist import load_wishlist
 
 @click.command()
 @click.option(
-    "--external", is_flag=True, help="Login via external browser (for captcha/2FA)"
+    "--external/--credentials",
+    default=True,
+    help="Use browser sign-in (default) or enter Audible credentials in the terminal.",
+)
+@click.option(
+    "--open/--no-open",
+    "open_browser",
+    default=True,
+    help="Open the sign-in URL in your browser (default: open).",
 )
 @click.option(
     "--via-file",
@@ -49,25 +60,111 @@ from audible_deals.wishlist import load_wishlist
     help="File path for the callback URL (you save the URL there after login, then press Enter)",
 )
 @click.pass_context
-def login(ctx, external, via_file):
+def login(ctx, external, open_browser, via_file):
     """Authenticate with Audible.
 
     \b
-    Recommended flow for macOS:
-        deals login --external --via-file /tmp/url.txt
-    This prints the sign-in URL, waits for you to log in and save the
-    callback URL to the file, then press Enter to finish auth.
+    Browser sign-in is the default. After signing in, a "page not found"
+    response is expected; copy its full URL back to this terminal.
+
+    \b
+    For a remote terminal or long callback URL:
+        deals login --no-open --via-file /tmp/url.txt
     """
+    if not external:
+        if via_file is not None:
+            raise click.UsageError("--via-file is only available with browser sign-in.")
+        if ctx.get_parameter_source("open_browser") == _CL:
+            raise click.UsageError(
+                "--open/--no-open is only available with browser sign-in."
+            )
+
     dc = _get_client(ctx.obj["locale"])
 
     if external:
-        dc.login_external(callback_url_file=via_file)
+        dc.login_external(login_url_callback=_login_callback(via_file, open_browser))
     else:
         username = click.prompt("Audible email")
         password = click.prompt("Audible password", hide_input=True)
         dc.login(username, password)
 
     console.print(f"[green]Authenticated.[/green] Auth saved to {dc.auth_file}")
+
+
+def _login_callback(via_file: Path | None, open_browser: bool):
+    """Build the callback URL collector used by the external auth library."""
+
+    def callback(oauth_url: str) -> str:
+        click.echo()
+        click.echo("Open this URL in your browser and sign in:")
+        click.echo()
+        click.echo(oauth_url)
+        click.echo()
+        if open_browser:
+            try:
+                if click.launch(oauth_url) != 0:
+                    click.echo("Could not open a browser; use the URL above.", err=True)
+            except Exception:
+                click.echo("Could not open a browser; use the URL above.", err=True)
+        click.echo("A 'Page not found' page after sign-in is expected.")
+
+        if via_file is not None:
+            click.echo(f"Save the full callback URL to {via_file}, then return here.")
+            click.prompt(
+                "Press Enter once the file is saved", default="", show_default=False
+            )
+            try:
+                file_stat = via_file.stat()
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise click.ClickException("Callback path must be a regular file.")
+                if file_stat.st_size > 65_536:
+                    raise click.ClickException("Callback file is unexpectedly large.")
+                if file_stat.st_mode & (stat.S_IRGRP | stat.S_IROTH):
+                    click.echo(
+                        "Warning: callback file is readable by other users.", err=True
+                    )
+                callback_url = via_file.read_text().strip()
+            except OSError as exc:
+                raise click.ClickException(
+                    f"Could not read callback file: {exc}"
+                ) from exc
+            except UnicodeError as exc:
+                raise click.ClickException(
+                    "Could not read callback file: expected UTF-8 text."
+                ) from exc
+            click.echo(
+                "The callback file contains a sign-in code; delete it after this command finishes."
+            )
+        else:
+            callback_url = click.prompt(
+                "Paste the full callback URL",
+                default="",
+                show_default=False,
+                hide_input=True,
+            ).strip()
+        if not callback_url:
+            raise click.ClickException(
+                "No callback URL provided. Try 'deals login' again."
+            )
+        return _validate_callback_url(callback_url)
+
+    return callback
+
+
+def _validate_callback_url(callback_url: str) -> str:
+    """Validate the redirect shape expected by the Audible login flow."""
+    try:
+        parsed = urlparse(callback_url)
+        code = parse_qs(parsed.query).get("openid.oa2.authorization_code", [])
+    except ValueError as exc:
+        raise click.ClickException("The callback URL is not valid.") from exc
+    if parsed.scheme != "https" or not parsed.netloc:
+        raise click.ClickException("The callback URL must be a complete HTTPS URL.")
+    if not code or not code[0].strip():
+        raise click.ClickException(
+            "The callback URL does not contain an Audible authorization code."
+        )
+    return callback_url
 
 
 @click.command("import-auth")
@@ -213,62 +310,36 @@ def _auth_checks() -> tuple[list[_Row], bool]:
             )
         )
 
-    auth_ok = constants.AUTH_FILE.exists()
-    if not auth_ok:
+    inspection = inspect_auth_file()
+    auth_ok = inspection.is_usable
+    if inspection.status == "missing":
         rows.append(
             ("Auth file present", "FAIL", "Run 'deals login' or 'deals import-auth'")
         )
     else:
         rows.append(("Auth file present", "PASS", str(constants.AUTH_FILE)))
 
-    auth_data = None
-    if auth_ok:
-        try:
-            auth_data = json_mod.loads(constants.AUTH_FILE.read_text())
-            if not isinstance(auth_data, dict):
-                raise ValueError("not a JSON object")
-            rows.append(("Auth file parseable", "PASS", ""))
-        except Exception as e:
-            rows.append(("Auth file parseable", "FAIL", str(e)))
-            auth_ok = False
+    if inspection.status == "malformed":
+        rows.append(("Auth file parseable", "FAIL", inspection.error))
+    elif inspection.status != "missing":
+        rows.append(("Auth file parseable", "PASS", ""))
 
-    if auth_ok and auth_data is not None:
-        expires = auth_data.get("expires")
-        if expires is None:
-            rows.append(
-                (
-                    "Auth token expiry",
-                    "WARN",
-                    "expires field missing — token freshness unknown",
-                )
+    if inspection.status == "expired":
+        rows.append(
+            ("Auth token expiry", "FAIL", "Token has expired — run 'deals login'")
+        )
+    elif inspection.status == "expiring":
+        rows.append(
+            (
+                "Auth token expiry",
+                "WARN",
+                "Token expires within 24h — consider refreshing",
             )
-        else:
-            try:
-                exp = float(expires)
-                now = time.time()
-                if exp < now:
-                    rows.append(
-                        (
-                            "Auth token expiry",
-                            "FAIL",
-                            "Token has expired — run 'deals login'",
-                        )
-                    )
-                    auth_ok = False
-                elif exp < now + 86400:
-                    rows.append(
-                        (
-                            "Auth token expiry",
-                            "WARN",
-                            "Token expires within 24h — consider refreshing",
-                        )
-                    )
-                else:
-                    rows.append(("Auth token expiry", "PASS", ""))
-            except (TypeError, ValueError):
-                rows.append(
-                    ("Auth token expiry", "WARN", "Could not parse expires field")
-                )
+        )
+    elif inspection.status == "valid":
+        rows.append(("Auth token expiry", "PASS", ""))
+    elif inspection.status == "unknown_expiry":
+        rows.append(("Auth token expiry", "WARN", "Token freshness unknown"))
 
     return rows, auth_ok
 

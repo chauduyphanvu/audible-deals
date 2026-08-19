@@ -62,10 +62,11 @@ class TestRootGroup:
         result = _run(CliRunner(), ["--version"])
         assert result.exit_code == 0
 
-    def test_no_subcommand_shows_help(self, tmp_config):
+    def test_no_subcommand_shows_dashboard(self, tmp_config):
         result = _run(CliRunner(), [])
         assert result.exit_code == 0
-        assert "Quick start" in result.output
+        assert "Authentication is not set up" in result.output
+        assert "deals login" in result.output
 
 
 # ===========================================================================

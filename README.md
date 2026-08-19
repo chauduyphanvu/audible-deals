@@ -35,10 +35,10 @@ Windows users should install from source. See the [installation guide](docs/inst
 ### Authenticate
 
 ```bash
-deals login --external --via-file /tmp/url.txt
+deals login
 ```
 
-After signing in, the browser may land on a “page not found.” That is expected: copy that URL into `/tmp/url.txt`, then return to the terminal and press Enter.
+Your browser opens the sign-in page. After signing in, it may land on a “page not found” page; that is expected. Copy the full URL from the address bar and paste it into the terminal when prompted. On a remote terminal, use `deals login --no-open --via-file /tmp/url.txt` instead, then delete the callback file when login finishes.
 
 You can also import existing credentials from audible-cli or Libation. See [authentication options](docs/installation.md#authenticate).
 

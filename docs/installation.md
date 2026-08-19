@@ -50,10 +50,10 @@ Installing from source is recommended on Windows because the pre-built binary ma
 The external browser flow works across platforms:
 
 ```bash
-deals login --external --via-file /tmp/url.txt
+deals login
 ```
 
-After signing in, the browser may land on a “page not found.” This is expected. Copy that URL, save it to `/tmp/url.txt`, and press Enter in the terminal.
+The command opens the sign-in page in your browser. After signing in, it may land on a “page not found” page; this is expected. Copy the full URL from the address bar and paste it into the terminal when prompted. For a remote terminal or an unusually long callback URL, use `deals login --no-open --via-file /tmp/url.txt` instead, then delete the callback file when login finishes.
 
 Alternatively, import credentials from audible-cli or Libation:
 

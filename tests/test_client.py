@@ -512,3 +512,12 @@ class TestRetryAfterBackoff:
             dc._api_get("library", num_results=1)
         assert sleeps, "expected at least one sleep"
         assert sleeps[0] <= 120
+
+    def test_missing_auth_is_not_retried(self, tmp_path, monkeypatch):
+        dc = DealsClient(auth_file=tmp_path / "missing.json", locale="us")
+        sleeps = self._capture_retry_waits(monkeypatch, dc)
+
+        with pytest.raises(RuntimeError, match="Not authenticated"):
+            dc._api_get("library", num_results=1)
+
+        assert sleeps == []

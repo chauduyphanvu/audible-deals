@@ -14,7 +14,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, Iterator
+from typing import TYPE_CHECKING, Any, Callable, Iterator
 
 import click
 
@@ -178,6 +178,8 @@ class DealsClient:
             except Exception as exc:
                 if isinstance(exc, click.ClickException):
                     raise
+                if isinstance(exc, RuntimeError) and "Not authenticated" in str(exc):
+                    raise
                 status = _retryable_status(exc)
                 if status is not None and 400 <= status < 500 and status != 429:
                     raise
@@ -248,7 +250,11 @@ class DealsClient:
         os.chmod(self.auth_file, 0o600)
         logger.info("login complete, auth written to %s", self.auth_file)
 
-    def login_external(self, callback_url_file: Path | None = None) -> None:
+    def login_external(
+        self,
+        callback_url_file: Path | None = None,
+        login_url_callback: Callable[[str], str] | None = None,
+    ) -> None:
         """Login via external browser (for captcha/2FA). Persists tokens.
 
         Uses the audible package's login_url_callback parameter to control
@@ -258,11 +264,11 @@ class DealsClient:
         """
         import audible
 
-        logger.info(
-            "login_external locale=%s via_file=%s",
-            self.locale,
-            callback_url_file,
-        )
+        if callback_url_file is not None and login_url_callback is not None:
+            raise ValueError(
+                "Use either callback_url_file or login_url_callback, not both"
+            )
+        logger.info("login_external locale=%s", self.locale)
         self._prepare_auth_dir()
 
         if callback_url_file:
@@ -290,6 +296,11 @@ class DealsClient:
             auth = audible.Authenticator.from_login_external(
                 locale=self.locale,
                 login_url_callback=_file_callback,
+            )
+        elif login_url_callback is not None:
+            auth = audible.Authenticator.from_login_external(
+                locale=self.locale,
+                login_url_callback=login_url_callback,
             )
         else:
             auth = audible.Authenticator.from_login_external(

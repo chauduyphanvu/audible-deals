@@ -18,9 +18,12 @@ from audible_deals.constants import ALL_SORT_OPTIONS
 from audible_deals.display import console
 
 
-@click.group("config")
-def config_cmd():
+@click.group("config", invoke_without_command=True)
+@click.pass_context
+def config_cmd(ctx):
     """Manage global defaults for deals commands."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(config_list)
 
 
 @config_cmd.command("set")
@@ -94,9 +97,12 @@ def config_reset(key):
         console.print(f"[dim]Config key '{norm_key}' was not set.[/dim]")
 
 
-@click.group()
-def profile():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def profile(ctx):
     """Manage saved search profiles."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(profile_list)
 
 
 @profile.command("save")

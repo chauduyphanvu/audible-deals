@@ -199,8 +199,9 @@ def _notify_auth_error(
         logger.exception("auth-error webhook ping failed")
 
 
-@click.group()
-def track():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def track(ctx):
     """Background price tracking on an OS schedule.
 
     'deals track install' registers a launchd agent (macOS), systemd user
@@ -209,6 +210,8 @@ def track():
     wishlist, author watches, and recently tracked ASINs, records history,
     and sends webhook alerts for items at target.
     """
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(track_status)
 
 
 @track.command("run")

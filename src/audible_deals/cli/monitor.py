@@ -377,9 +377,12 @@ def _estimate_label(definition: dict) -> str:
         return "invalid"
 
 
-@click.group()
-def monitor():
-    """Manage saved-search monitors run by ``deals track run``."""
+@click.group(invoke_without_command=True)
+@click.pass_context
+def monitor(ctx):
+    """Manage saved-search monitors run by deals track run."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(list_monitors)
 
 
 def _monitor_filter_options(func):

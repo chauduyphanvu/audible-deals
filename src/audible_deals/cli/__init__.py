@@ -32,6 +32,7 @@ except ImportError:
 import click
 from audible.exceptions import RequestError
 
+from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli import catalog as catalog_commands
 from audible_deals.cli import config as config_commands
 from audible_deals.cli import foryou as foryou_commands
@@ -48,7 +49,6 @@ from audible_deals.cli import wishlist as wishlist_commands
 from audible_deals.cli.helpers import _CL
 from audible_deals.config_store import load_config
 from audible_deals.constants import LOCALE_DOMAIN
-from audible_deals.display import console
 from audible_deals.logging_setup import configure_logging
 
 logger = logging.getLogger(__name__)
@@ -93,6 +93,37 @@ class _HandleAuthErrors(click.Group):
         except OSError as e:
             raise click.ClickException(f"Filesystem error: {e}")
 
+    def format_commands(self, ctx, formatter):
+        """Render command help in workflows rather than one long alphabetic list."""
+        groups = (
+            ("Discover", ("find", "search", "for-you", "series", "categories")),
+            (
+                "Library & Results",
+                ("library", "last", "detail", "compare", "open"),
+            ),
+            (
+                "Watch & Automate",
+                ("wishlist", "watch", "history", "recap", "notify", "monitor", "track"),
+            ),
+            (
+                "Setup & Support",
+                ("login", "import-auth", "profile", "config", "doctor", "completions"),
+            ),
+        )
+        classified = {name for _, names in groups for name in names}
+
+        for heading, names in (*groups, ("Other", tuple(self.list_commands(ctx)))):
+            rows = []
+            for name in names:
+                if heading == "Other" and name in classified:
+                    continue
+                command = self.get_command(ctx, name)
+                if command is not None and not command.hidden:
+                    rows.append((name, command.get_short_help_str(limit=10_000)))
+            if rows:
+                with formatter.section(heading):
+                    formatter.write_dl(rows)
+
 
 def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
     if not value or ctx.resilient_parsing:
@@ -131,7 +162,6 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 @click.pass_context
 def cli(ctx, locale, verbose):
     """Audible deal finder - find cheap audiobooks during sales."""
-    configure_logging(verbose)
     ctx.ensure_object(dict)
     cfg = load_config()
     ctx.obj["config"] = cfg
@@ -145,12 +175,44 @@ def cli(ctx, locale, verbose):
             param_hint="--locale",
         )
     ctx.obj["locale"] = locale
-    logger.debug("cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand)
     if ctx.invoked_subcommand is None:
-        click.echo(ctx.get_help())
-        console.print(
-            "\n  [dim]Quick start: deals find --genre sci-fi --max-price 5[/dim]"
-        )
+        _print_dashboard(locale)
+        return
+    configure_logging(verbose)
+    logger.debug("cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand)
+
+
+def _print_dashboard(locale: str) -> None:
+    """Print a useful, local-only starting point for a bare invocation."""
+    inspection = inspect_auth_file()
+    click.echo(f"audible-deals · marketplace: {locale}")
+
+    if inspection.status in {"missing", "malformed", "expired"}:
+        if inspection.status == "missing":
+            click.echo("Authentication is not set up.")
+        elif inspection.status == "expired":
+            click.echo("Authentication has expired.")
+        else:
+            click.echo("Saved authentication cannot be read.")
+        click.echo("Start with: deals login")
+        click.echo("Or import existing credentials: deals import-auth PATH")
+        click.echo("Diagnose setup: deals doctor")
+    else:
+        click.echo("Authentication is available.")
+        if inspection.status == "expiring":
+            click.echo(
+                "Warning: authentication expires within 24 hours; run deals login to refresh it."
+            )
+        elif inspection.status == "unknown_expiry":
+            click.echo(
+                "Warning: authentication expiry is unknown; run deals login if requests fail."
+            )
+        click.echo("Try: deals find --genre sci-fi --max-price 5")
+        click.echo('     deals search "Brandon Sanderson"')
+        click.echo("     deals for-you --max-price 5")
+        click.echo("     deals wishlist")
+        click.echo("     deals track")
+    click.echo("Run deals --help for the complete reference.")
 
 
 cli.add_command(misc_commands.login)

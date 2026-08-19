@@ -38,9 +38,12 @@ from audible_deals.wishlist import (
 logger = logging.getLogger(__name__)
 
 
-@click.group()
-def wishlist():
+@click.group(invoke_without_command=True)
+@click.pass_context
+def wishlist(ctx):
     """Manage your audiobook wishlist."""
+    if ctx.invoked_subcommand is None:
+        ctx.invoke(wishlist_list)
 
 
 def _add_author_watch(ctx, author: str, max_price: float) -> None:

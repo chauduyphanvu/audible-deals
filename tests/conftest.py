@@ -177,6 +177,7 @@ def tmp_config(tmp_path, monkeypatch):
     import audible_deals.constants as constants_mod
 
     monkeypatch.setattr(client_mod, "AUTH_FILE", tmp_path / "auth.json")
+    monkeypatch.setattr(constants_mod, "AUTH_FILE", tmp_path / "auth.json")
     monkeypatch.setattr(
         client_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json"
     )
@@ -220,7 +221,6 @@ def tmp_config(tmp_path, monkeypatch):
 
 def _cli_console_modules():
     """All cli submodules that bind the shared Rich console by name."""
-    import audible_deals.cli as cli_mod
     import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.interactive as cli_interactive_mod
@@ -235,7 +235,6 @@ def _cli_console_modules():
     import audible_deals.notification_workflow as notification_workflow_mod
 
     return (
-        cli_mod,
         cli_helpers_mod,
         cli_pipeline_mod,
         cli_interactive_mod,

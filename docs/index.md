@@ -32,10 +32,10 @@ See [Installation and authentication](installation.md) for Windows instructions,
 ## Authenticate
 
 ```bash
-deals login --external --via-file /tmp/url.txt
+deals login
 ```
 
-After signing in, the browser may land on a “page not found.” That is expected. Copy the URL into `/tmp/url.txt`, return to the terminal, and press Enter.
+The command opens the sign-in page in your browser. After signing in, it may land on a “page not found” page; that is expected. Copy the full URL from the address bar and paste it into the terminal when prompted. For a remote terminal, use `deals login --no-open --via-file /tmp/url.txt`, then delete the callback file when login finishes.
 
 ## Find a deal
 

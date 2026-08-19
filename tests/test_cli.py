@@ -3097,16 +3097,15 @@ class TestBareInvocation:
         result = runner.invoke(cli, [])
         assert result.exit_code == 0
 
-    def test_bare_invocation_shows_help(self):
+    def test_bare_invocation_shows_dashboard(self):
         runner = CliRunner()
         result = runner.invoke(cli, [])
-        assert "find" in result.output
-        assert "search" in result.output
+        assert "marketplace:" in result.output
 
-    def test_bare_invocation_shows_hint(self):
+    def test_bare_invocation_shows_reference_hint(self):
         runner = CliRunner()
         result = runner.invoke(cli, [])
-        assert "Quick start" in result.output
+        assert "deals --help" in result.output
 
 
 # ===================================================================
@@ -5973,7 +5972,16 @@ class TestDoctorCommand:
 
         self._patch_auth(monkeypatch, tmp_config)
         auth_file = tmp_config / "auth.json"
-        auth_file.write_text(json.dumps({"expires": time.time() - 3600}))
+        auth_file.write_text(
+            json.dumps(
+                {
+                    "access_token": "at",
+                    "refresh_token": "rt",
+                    "locale_code": "us",
+                    "expires": time.time() - 3600,
+                }
+            )
+        )
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "FAIL" in result.output
@@ -5984,7 +5992,16 @@ class TestDoctorCommand:
 
         self._patch_auth(monkeypatch, tmp_config)
         auth_file = tmp_config / "auth.json"
-        auth_file.write_text(json.dumps({"expires": time.time() + 3600}))
+        auth_file.write_text(
+            json.dumps(
+                {
+                    "access_token": "at",
+                    "refresh_token": "rt",
+                    "locale_code": "us",
+                    "expires": time.time() + 3600,
+                }
+            )
+        )
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "WARN" in result.output
@@ -5994,7 +6011,16 @@ class TestDoctorCommand:
 
         self._patch_auth(monkeypatch, tmp_config)
         auth_file = tmp_config / "auth.json"
-        auth_file.write_text(json.dumps({"expires": time.time() + 86400 * 30}))
+        auth_file.write_text(
+            json.dumps(
+                {
+                    "access_token": "at",
+                    "refresh_token": "rt",
+                    "locale_code": "us",
+                    "expires": time.time() + 86400 * 30,
+                }
+            )
+        )
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert result.exit_code == 0
