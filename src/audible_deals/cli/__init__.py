@@ -32,14 +32,14 @@ except ImportError:
 import click
 from audible.exceptions import RequestError
 
+from audible_deals.cli import catalog as catalog_commands
 from audible_deals.cli import config as config_commands
 from audible_deals.cli import foryou as foryou_commands
-from audible_deals.cli import misc as misc_commands
-from audible_deals.cli import monitor as monitor_commands
-from audible_deals.cli import catalog as catalog_commands
 from audible_deals.cli import history as history_commands
 from audible_deals.cli import last as last_commands
 from audible_deals.cli import library as library_commands
+from audible_deals.cli import misc as misc_commands
+from audible_deals.cli import monitor as monitor_commands
 from audible_deals.cli import notify as notify_commands
 from audible_deals.cli import recap as recap_commands
 from audible_deals.cli import series as series_commands
@@ -102,7 +102,7 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 
         v = _pkg_version("audible-deals")
     except Exception:
-        v = "0.9.1"  # fallback for PyInstaller frozen builds
+        v = "0.10.0"  # fallback for PyInstaller frozen builds
     click.echo(f"deals, version {v}")
     ctx.exit()
 

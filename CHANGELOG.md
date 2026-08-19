@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-08-19
+
 ### Added
 - `deals monitor` creates frozen, locale-specific profile (`find`) or direct-query (`search`) saved searches that `deals track run` checks alongside the wishlist. First runs establish a silent baseline; later runs report new matches and price drops through the configured webhook. Scheduled monitors use a deterministic 60-page-call shared budget.
 
@@ -114,6 +116,7 @@ A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.10.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.10.0
 [0.9.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.1
 [0.9.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.0
 [0.8.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.8.0
