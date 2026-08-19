@@ -82,6 +82,19 @@ def _fetch_multi_query(
     return all_products
 
 
+def monitor_scan_plan(s, mode: str, query: str) -> tuple[list[str], list[str]]:
+    """Return catalog query/sort segments for a monitor without any side effects."""
+    if mode == "search":
+        queries = [part.strip() for part in query.split("|") if part.strip()]
+        if not queries:
+            raise click.UsageError("--query must contain at least one keyword.")
+        fallback = "Relevance"
+    else:
+        queries = [s.keywords]
+        fallback = "BestSellers"
+    return queries, DEEP_SORT_ORDERS if s.deep else [SORT_OPTIONS.get(s.sort, fallback)]
+
+
 def _search_title(queries: list[str], category_name: str) -> str:
     if len(queries) > 1:
         combined_query = " | ".join(queries)

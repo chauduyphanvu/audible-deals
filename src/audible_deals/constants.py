@@ -27,6 +27,8 @@ HISTORY_DIR = CONFIG_DIR / "history"
 NOTIFY_STATE_FILE = CONFIG_DIR / "notify_state.json"
 LOCK_FILE = CONFIG_DIR / ".deals.lock"
 TRACK_STATE_FILE = CONFIG_DIR / "track_state.json"
+MONITORS_FILE = CONFIG_DIR / "monitors.json"
+MONITOR_STATE_FILE = CONFIG_DIR / "monitor_state.json"
 TRACK_LOG_FILE = CONFIG_DIR / "track.log"
 TASTE_CACHE_FILE = CONFIG_DIR / "taste_cache.json"
 

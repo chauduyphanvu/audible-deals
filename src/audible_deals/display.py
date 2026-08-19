@@ -684,11 +684,12 @@ def display_track_history(runs: list[dict]) -> None:
         padding=(0, 1),
         title_style="bold",
     )
-    table.add_column("When", width=22)
-    table.add_column("Duration", justify="right", width=10)
-    table.add_column("Checked", justify="right", width=14)
-    table.add_column("Hits", justify="right", width=6)
-    table.add_column("Status", min_width=12)
+    table.add_column("When", width=19)
+    table.add_column("Duration", justify="right", width=8)
+    table.add_column("Checked", justify="right", width=10)
+    table.add_column("Hits", justify="right", width=5)
+    table.add_column("Monitors", justify="right", width=8)
+    table.add_column("Status", min_width=4)
 
     for run in runs:
         at = run.get("at", "?")
@@ -698,6 +699,15 @@ def display_track_history(runs: list[dict]) -> None:
         extra = run.get("extra_tracked_checked", 0) or 0
         checked_str = f"{wishlist}+{extra}"
         hits = str(run.get("hits", 0) or 0)
+        if any(
+            key in run
+            for key in ("monitors_checked", "monitor_events", "monitor_failures")
+        ):
+            failures = run.get("monitor_failures", [])
+            failure_count = len(failures) if isinstance(failures, list) else 0
+            monitors = f"{run.get('monitors_checked', 0) or 0}/{run.get('monitor_events', 0) or 0}/{failure_count}"
+        else:
+            monitors = "-"
         error = run.get("error")
         if error:
             status_cell = (
@@ -705,7 +715,7 @@ def display_track_history(runs: list[dict]) -> None:
             )
         else:
             status_cell = "[green]ok[/green]"
-        table.add_row(at, dur_str, checked_str, hits, status_cell)
+        table.add_row(at, dur_str, checked_str, hits, monitors, status_cell)
 
     console.print(table)
 

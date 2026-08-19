@@ -109,6 +109,17 @@ Each run:
 - applies a one-day alert cooldown unless the price falls further; and
 - stores the last 10 run summaries in `track_state.json`.
 
+Saved-search monitors run in the same scheduled command. Create either a frozen profile-backed browse monitor or a direct search monitor:
+
+```bash
+deals monitor add sci-fi-steals --profile my-scifi
+deals monitor add sanderson --query "Brandon Sanderson" --max-price 6
+deals monitor list
+deals monitor test sci-fi-steals
+```
+
+The first successful monitor run is a silent baseline. Later runs alert on new matches and price drops. Monitor definitions and independent snapshots live in `monitors.json` and `monitor_state.json`; enabled monitors rotate through a shared 60 catalog-page-call budget per scheduled run.
+
 Runs share a cross-process lock with `notify`, so overlapping schedules exit cleanly. Authentication failures are recorded and can trigger a one-time reauthentication alert. `deals doctor` reports three or more consecutive tracking failures.
 
 ## Recap

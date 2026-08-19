@@ -8,6 +8,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - Get personalized recommendations from the authors, narrators, genres, and unfinished series in your library.
 - Compare cash prices with the cost of an Audible credit.
 - Track wishlist prices and receive Slack, Discord, Teams, ntfy, or generic webhook alerts.
+- Monitor saved catalog searches for new matches and price drops on the same schedule.
 - Re-filter recent results locally and export them as JSON or CSV.
 - Use the correct currency and Audible store across all nine supported marketplaces.
 
@@ -72,6 +73,7 @@ Add `-i` to `find` or `search` to browse results interactively. Run `deals --hel
 | Browse your library | `deals library` |
 | Manage tracked books | `deals wishlist`, `deals watch`, `deals history` |
 | Automate price checks | `deals track`, `deals notify`, `deals recap` |
+| Monitor a saved search | `deals monitor add --profile NAME`, `deals monitor add --query QUERY` |
 | Save preferences | `deals profile`, `deals config` |
 | Check the installation | `deals doctor` |
 
@@ -93,7 +95,7 @@ pip install -e ".[dev]"
 pytest tests/ -v
 ```
 
-The tool uses the [audible](https://github.com/mkb79/Audible) Python package to query Audible’s catalog API. Results are filtered and re-sorted locally because the API does not support price sorting. Configuration, cached results, wishlists, and price history stay in `~/.config/audible-deals/`.
+The tool uses the [audible](https://github.com/mkb79/Audible) Python package to query Audible’s catalog API. Results are filtered and re-sorted locally because the API does not support price sorting. Configuration, cached results, wishlists, monitor definitions and snapshots, and price history stay in `~/.config/audible-deals/`.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 

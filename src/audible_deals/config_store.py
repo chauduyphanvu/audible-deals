@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 import click
 
 from audible_deals import constants
@@ -12,6 +14,8 @@ from audible_deals.constants import (
     WEBHOOK_FORMATS,
 )
 from audible_deals.storage import load_json_file, save_json_file
+
+logger = logging.getLogger(__name__)
 
 # Mirror the ranges the equivalent CLI options enforce so config set and the
 # flags agree. (lo, hi); None means unbounded on that side.
@@ -33,6 +37,38 @@ def load_profiles() -> dict[str, dict]:
 
 def save_profiles(profiles: dict[str, dict]) -> None:
     save_json_file(constants.PROFILES_FILE, profiles, "profiles")
+
+
+def load_monitors() -> dict[str, dict]:
+    return load_json_file(constants.MONITORS_FILE, dict, "monitors")
+
+
+def save_monitors(monitors: dict[str, dict]) -> None:
+    save_json_file(constants.MONITORS_FILE, monitors, "monitors")
+
+
+def load_monitor_state() -> dict:
+    state = load_json_file(constants.MONITOR_STATE_FILE, dict, "monitor state")
+    if not state:
+        return {"version": 1, "monitors": {}}
+    if state.get("version") != 1:
+        logger.warning(
+            "monitor state has unsupported version %r; resetting", state.get("version")
+        )
+        return {"version": 1, "monitors": {}}
+    if "monitors" not in state:
+        logger.warning("monitor state is missing monitors; repairing")
+        state["monitors"] = {}
+    elif not isinstance(state["monitors"], dict):
+        logger.warning("monitor state monitors is malformed; repairing")
+        state["monitors"] = {}
+    return state
+
+
+def save_monitor_state(state: dict) -> None:
+    state["version"] = 1
+    state.setdefault("monitors", {})
+    save_json_file(constants.MONITOR_STATE_FILE, state, "monitor state")
 
 
 def load_config() -> dict:

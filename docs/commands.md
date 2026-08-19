@@ -21,6 +21,7 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals history ASIN` | View local price history |
 | `deals notify` | Print or send alerts for wishlist deals |
 | `deals track` | Install and manage background price tracking |
+| `deals monitor` | Save catalog searches and alert on new matches or price drops |
 | `deals recap` | Summarize recent price changes |
 | `deals profile` | Manage saved search profiles |
 | `deals config` | Manage global defaults |
@@ -214,6 +215,26 @@ deals profile delete my-scifi
 ```
 
 Most filter and sort flags can be saved. An explicit CLI option overrides the profile value.
+
+## Saved-search monitors
+
+Monitors freeze resolved settings and locale when created. Create either a profile-backed `find` monitor or a direct-query `search` monitor; `--profile` and `--query` are mutually exclusive. `track run` checks enabled monitors under its normal run lock. The first successful scan is a silent baseline; later scans emit `new` and `price_drop` events. Monitors with no price are omitted because they cannot produce a purchasable-deal alert.
+
+The catalog-page estimate printed by `add`, `list`, and `show` is used to keep scheduled scans bounded: enabled monitors share a 60-call page-scan budget per run. When the total is larger, runs rotate deterministically through the monitor list.
+
+```bash
+deals monitor add sci-fi-steals --profile my-scifi
+deals monitor add sanderson --query "Brandon Sanderson" --max-price 6
+deals monitor add sanderson --query "Brandon Sanderson | Martha Wells" --webhook https://example.invalid/hook
+deals monitor list
+deals monitor show sci-fi-steals
+deals monitor test sci-fi-steals
+deals monitor pause sci-fi-steals
+deals monitor resume sci-fi-steals
+deals monitor remove sci-fi-steals --yes
+```
+
+For monitor creation, explicit supported filter options (such as `--max-price`, `--pages`, `--sort`, `--genre`, `--author`, `--on-sale`, and `--skip-owned`) override profile and global values before the settings are frozen. Monitor-specific webhooks never receive global custom webhook headers.
 
 ## Global defaults
 

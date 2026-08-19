@@ -58,6 +58,16 @@ def parse_webhook_headers(
 _TEMPLATE_KEYS = "title, price, target, url, currency, asin, discount_pct"
 
 
+def _webhook_heading(hits: list[dict]) -> str:
+    """Return an event-aware heading while preserving ordinary deal payloads."""
+    monitor = hits[0].get("monitor") if hits else None
+    return f"Audible Deals — {monitor}" if monitor else "Audible Deals"
+
+
+def _webhook_item_prefix(hit: dict) -> str:
+    return f"[{hit['event']}] " if hit.get("event") else ""
+
+
 def _render_webhook_template(
     hits: list[dict],
     template: str,
@@ -98,34 +108,36 @@ def _webhook_generic(hits: list[dict], currency: str) -> tuple[str, dict[str, st
 
 def _webhook_slack(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
     lines = "\n".join(
-        f"• <{h['url']}|{h['title']}> — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+        f"• {_webhook_item_prefix(h)}<{h['url']}|{h['title']}> — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
         for h in hits
     )
-    body = json.dumps({"text": f"*Audible Deals ({len(hits)})*\n{lines}"})
+    body = json.dumps({"text": f"*{_webhook_heading(hits)} ({len(hits)})*\n{lines}"})
     return body, {"Content-Type": "application/json"}
 
 
 def _webhook_discord(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
     lines = "\n".join(
-        f"• [{h['title']}](<{h['url']}>) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+        f"• {_webhook_item_prefix(h)}[{h['title']}](<{h['url']}>) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
         for h in hits
     )
-    body = json.dumps({"content": f"**Audible Deals ({len(hits)})**\n{lines}"})
+    body = json.dumps(
+        {"content": f"**{_webhook_heading(hits)} ({len(hits)})**\n{lines}"}
+    )
     return body, {"Content-Type": "application/json"}
 
 
 def _webhook_teams(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
     text = "  \n".join(
-        f"• [{h['title']}]({h['url']}) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+        f"• {_webhook_item_prefix(h)}[{h['title']}]({h['url']}) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
         for h in hits
     )
     body = json.dumps(
         {
             "@type": "MessageCard",
             "@context": "https://schema.org/extensions",
-            "summary": "Audible Deals",
+            "summary": _webhook_heading(hits),
             "themeColor": "0078D7",
-            "title": f"Audible Deals ({len(hits)})",
+            "title": f"{_webhook_heading(hits)} ({len(hits)})",
             "sections": [{"text": text}],
         }
     )
@@ -135,12 +147,14 @@ def _webhook_teams(hits: list[dict], currency: str) -> tuple[str, dict[str, str]
 def _webhook_ntfy(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
     n = len(hits)
     lines = "\n".join(
-        f"• {h['title']} — {currency}{h['price']:.2f} ({h['url']})" for h in hits
+        f"• {_webhook_item_prefix(h)}{h['title']} — {currency}{h['price']:.2f} ({h['url']})"
+        for h in hits
     )
-    body = f"Audible Deals ({n})\n{lines}"
+    heading = _webhook_heading(hits)
+    body = f"{heading} ({n})\n{lines}"
     headers = {
         "Content-Type": "text/plain; charset=utf-8",
-        "Title": f"Audible Deals ({n})",
+        "Title": f"{heading} ({n})",
         "Tags": "book",
         "Priority": "default",
     }
@@ -176,6 +190,25 @@ def format_webhook_payload(
         raise ValueError(f"Unknown webhook format: {fmt!r}")
     body, headers = formatter(hits, currency)
     return body.encode("utf-8"), headers
+
+
+def format_monitor_webhook_payload(
+    events: list[dict], fmt: str, *, locale: str, currency: str = "$"
+) -> tuple[bytes, dict[str, str]]:
+    """Format monitor events without changing the wishlist payload contract."""
+    if fmt == "generic":
+        monitor = events[0].get("monitor", "") if events else ""
+        body = json.dumps(
+            {
+                "monitor": monitor,
+                "locale": locale,
+                "events": events,
+                "count": len(events),
+            },
+            indent=2,
+        )
+        return body.encode("utf-8"), {"Content-Type": "application/json"}
+    return format_webhook_payload(events, fmt, currency=currency)
 
 
 def format_webhook_message(

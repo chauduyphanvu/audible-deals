@@ -13,6 +13,7 @@ Usage:
     deals watch                    Check wishlist for price drops
     deals notify [--webhook URL]   Send notifications for deals at target
     deals profile save/list/delete Manage saved search profiles
+    deals monitor add/list/show/remove Manage saved-search monitors
     deals history ASIN             View price history with sparkline
     deals recap [--days N]         Recap of recent price changes
     deals completions SHELL        Generate shell completions
@@ -34,6 +35,7 @@ from audible.exceptions import RequestError
 from audible_deals.cli import config as config_commands
 from audible_deals.cli import foryou as foryou_commands
 from audible_deals.cli import misc as misc_commands
+from audible_deals.cli import monitor as monitor_commands
 from audible_deals.cli import catalog as catalog_commands
 from audible_deals.cli import history as history_commands
 from audible_deals.cli import last as last_commands
@@ -173,3 +175,4 @@ cli.add_command(history_commands.history)
 cli.add_command(recap_commands.recap)
 cli.add_command(notify_commands.notify)
 cli.add_command(track_commands.track)
+cli.add_command(monitor_commands.monitor)

@@ -19,7 +19,12 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_single_last_ref,
 )
-from audible_deals.config_store import load_notify_state, load_profiles
+from audible_deals.config_store import (
+    load_monitor_state,
+    load_monitors,
+    load_notify_state,
+    load_profiles,
+)
 from audible_deals.constants import _CONFIG_SCHEMA, product_url
 from audible_deals.display import (
     console,
@@ -384,6 +389,7 @@ def _store_checks() -> list[_Row]:
     for check, loader in (
         ("Wishlist parseable", load_wishlist),
         ("Profiles parseable", load_profiles),
+        ("Monitors parseable", load_monitors),
         ("Seen-ASINs parseable", load_seen_asins),
     ):
         try:
@@ -488,6 +494,39 @@ def _track_checks() -> list[_Row]:
     return rows
 
 
+def _monitor_checks() -> list[_Row]:
+    """Report saved-search monitor health without reading webhook configuration."""
+    monitors = load_monitors()
+    if not monitors:
+        return [("Saved-search monitors", "PASS", "No monitors configured")]
+    state = load_monitor_state().get("monitors", {})
+    enabled = [
+        name
+        for name, definition in monitors.items()
+        if isinstance(definition, dict) and definition.get("enabled", True)
+    ]
+    failed = [
+        name
+        for name in enabled
+        if isinstance(state.get(name), dict) and state[name].get("last_error")
+    ]
+    if failed:
+        return [
+            (
+                "Saved-search monitors",
+                "WARN",
+                f"{len(failed)} enabled monitor(s) failed: {', '.join(failed)}",
+            )
+        ]
+    return [
+        (
+            "Saved-search monitors",
+            "PASS",
+            f"{len(enabled)} enabled, {len(monitors) - len(enabled)} paused",
+        )
+    ]
+
+
 def _render_doctor_rows(rows: list[_Row]) -> int:
     """Render the doctor table. Returns the number of FAIL rows."""
     failures = 0
@@ -517,6 +556,7 @@ def doctor(ctx):
     rows.extend(_config_checks())
     rows.extend(_store_checks())
     rows.extend(_track_checks())
+    rows.extend(_monitor_checks())
     if _render_doctor_rows(rows):
         ctx.exit(1)
 

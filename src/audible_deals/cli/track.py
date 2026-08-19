@@ -29,10 +29,17 @@ from audible_deals.price_history import load_all_price_histories
 from audible_deals.storage import load_json_file, save_json_file
 from audible_deals.webhooks import (
     format_webhook_message,
+    format_monitor_webhook_payload,
     format_webhook_payload,
     parse_webhook_headers as _parse_wh_headers,
 )
 from audible_deals.wishlist import load_wishlist, partition_wishlist
+from audible_deals.cli.monitor import (
+    record_monitor_error,
+    run_monitor,
+    select_monitors_for_run,
+)
+from audible_deals.config_store import load_monitors
 
 logger = logging.getLogger(__name__)
 
@@ -109,6 +116,30 @@ def _send_hits_webhook(
     if extra_headers:
         headers = {**headers, **extra_headers}
     post_webhook(url, body, headers)
+
+
+def _send_monitor_events(
+    events: list[dict],
+    monitor: dict,
+    global_webhook: str | None,
+    global_format: str,
+    global_headers: dict[str, str] | None,
+) -> None:
+    """Deliver one monitor's events without leaking global headers to overrides."""
+    destination = monitor.get("webhook") or global_webhook
+    if not destination:
+        return
+    headers = global_headers if destination == global_webhook else None
+    currency = constants.LOCALE_CURRENCY.get(monitor["locale"], "$")
+    body, payload_headers = format_monitor_webhook_payload(
+        events,
+        monitor.get("webhook_format") or global_format,
+        locale=monitor["locale"],
+        currency=currency,
+    )
+    if headers:
+        payload_headers = {**payload_headers, **headers}
+    post_webhook(destination, body, payload_headers)
 
 
 def _is_auth_error(exc: Exception) -> bool:
@@ -254,6 +285,25 @@ def _track_run_locked(
             webhook_sent = True
             persist_notify_state(notify_state, kept, asin_items, hit_asins, today)
 
+    monitor_checked = monitor_events = 0
+    monitor_failures: list[str] = []
+    scheduled_monitors = select_monitors_for_run(load_monitors(), state)
+    for name, definition in scheduled_monitors:
+        monitor_checked += 1
+        try:
+
+            def deliver(events, monitor):
+                _send_monitor_events(
+                    events, monitor, webhook, webhook_format, webhook_headers
+                )
+
+            events, _baseline = run_monitor(definition, deliver=deliver)
+            monitor_events += len(events)
+        except Exception as exc:
+            logger.exception("monitor %s failed", name)
+            monitor_failures.append(f"{name}: {type(exc).__name__}: {exc}")
+            record_monitor_error(name, exc)
+
     _append_run(
         state,
         {
@@ -265,6 +315,10 @@ def _track_run_locked(
             "hits": len(hits),
             "suppressed": suppressed,
             "webhook_sent": webhook_sent,
+            "monitors_checked": monitor_checked,
+            "monitors_scheduled": len(scheduled_monitors),
+            "monitor_events": monitor_events,
+            "monitor_failures": monitor_failures,
             "error": None,
         },
     )
@@ -279,6 +333,10 @@ def _track_run_locked(
         summary += " (webhook sent)"
     elif suppressed:
         summary += f" ({suppressed} suppressed by cooldown)"
+    if monitor_checked:
+        summary += f"; {monitor_checked} monitor(s), {monitor_events} event(s)"
+    if monitor_failures:
+        summary += f" ({len(monitor_failures)} monitor failure(s))"
     console.print(f"[dim]{summary}[/dim]")
 
 
@@ -411,6 +469,28 @@ def track_status(show_history):
 
     runs = _run_history(state)
     last = runs[0] if runs else None
+    from audible_deals.config_store import load_monitor_state, load_monitors
+
+    monitors = load_monitors()
+    monitor_state = load_monitor_state().get("monitors", {})
+    enabled = [
+        name
+        for name, definition in monitors.items()
+        if isinstance(definition, dict) and definition.get("enabled", True)
+    ]
+    failed = [
+        name
+        for name in enabled
+        if isinstance(monitor_state.get(name), dict)
+        and monitor_state[name].get("last_error")
+    ]
+    if enabled:
+        detail = f"  [dim]Monitors:[/dim]  {len(enabled)} enabled"
+        if failed:
+            detail += (
+                f", [yellow]{len(failed)} with errors: {', '.join(failed)}[/yellow]"
+            )
+        console.print(detail)
     if not last:
         console.print("  [dim]Last run:[/dim]  never")
         return
@@ -422,7 +502,9 @@ def track_status(show_history):
             f"({last.get('duration_s', '?')}s, "
             f"{last.get('wishlist_checked', 0)} wishlist + "
             f"{last.get('extra_tracked_checked', 0)} tracked checked, "
-            f"{last.get('hits', 0)} at target)"
+            f"{last.get('hits', 0)} at target, "
+            f"{last.get('monitors_checked', 0)} monitor(s), "
+            f"{last.get('monitor_events', 0)} event(s))"
         )
 
     if show_history:
