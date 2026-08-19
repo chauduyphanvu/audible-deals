@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Changed
+- `deals for-you` is now `deals for-me`. The old spelling remains as a deprecated alias for one minor release and prints a warning.
 - Bare `deals` now shows a local, state-aware dashboard; top-level help is organized by workflow; and bare wishlist, profile, config, monitor, and track groups show their current state.
 - `deals login` now defaults to browser sign-in, opens the browser when possible, and accepts the callback URL directly. `--credentials` retains terminal credential entry and `--via-file` remains available for remote terminals.
 

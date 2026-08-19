@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import time
+from inspect import cleandoc
 from pathlib import Path
 
 import click
@@ -44,7 +45,7 @@ def _scan_plan(profile: dict) -> tuple[list[str], list[dict], list[dict]]:
     return authors, genres, series
 
 
-def _print_for_you_plan(
+def _print_for_me_plan(
     profile: dict, authors: list[str], genres: list[dict], series: list[dict]
 ) -> None:
     console.print("\n[bold]Dry run[/bold] — would scan, based on your library:")
@@ -115,7 +116,7 @@ def _fetch_candidates(
     return list(candidates.values()), series_of
 
 
-@click.command("for-you")
+@click.command("for-me")
 @click.option(
     "--refresh",
     is_flag=True,
@@ -226,7 +227,7 @@ def _fetch_candidates(
     help="Show only Audible Plus catalog titles",
 )
 @click.pass_context
-def for_you(
+def for_me(
     ctx,
     refresh,
     max_price,
@@ -258,13 +259,13 @@ def for_you(
 
     \b
     Examples:
-        deals for-you
-        deals for-you --max-price 5 --on-sale
-        deals for-you --refresh          # rebuild the profile from your library
-        deals for-you --dry-run          # show the scan plan
+        deals for-me
+        deals for-me --max-price 5 --on-sale
+        deals for-me --refresh          # rebuild the profile from your library
+        deals for-me --dry-run          # show the scan plan
     """
     logger.info(
-        "for-you refresh=%s max_price=%s dry_run=%s", refresh, max_price, dry_run
+        "for-me refresh=%s max_price=%s dry_run=%s", refresh, max_price, dry_run
     )
     if skip_plus and only_plus:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
@@ -276,7 +277,7 @@ def for_you(
     if dry_run:
         if profile is None:
             raise click.ClickException(
-                "No cached taste profile — run `deals for-you` (without --dry-run) "
+                "No cached taste profile — run `deals for-me` (without --dry-run) "
                 "to build it first."
             )
         authors, genres, series = _scan_plan(profile)
@@ -284,7 +285,7 @@ def for_you(
             raise click.ClickException(
                 "Could not derive a taste profile from your library."
             )
-        _print_for_you_plan(profile, authors, genres, series)
+        _print_for_me_plan(profile, authors, genres, series)
         return
 
     with dc:
@@ -294,7 +295,7 @@ def for_you(
             lib_products = fetch_library_with_progress(dc)
             if not lib_products:
                 raise click.ClickException(
-                    "Your library is empty — for-you learns your taste from books you own."
+                    "Your library is empty — for-me learns your taste from books you own."
                 )
             profile = taste.build_profile(lib_products)
             taste.save_profile(profile)
@@ -373,3 +374,23 @@ def for_you(
         atl_asins=atl_asins,
         hist_context=hist_context,
     )
+
+
+@click.pass_context
+def _deprecated_for_you(ctx, **kwargs):
+    click.echo("Warning: `deals for-you` is deprecated; use `deals for-me`.", err=True)
+    return for_me.callback(**kwargs)
+
+
+for_you = click.Command(
+    name="for-you",
+    callback=_deprecated_for_you,
+    params=for_me.params,
+    help=(
+        "Deprecated: use `deals for-me` instead. This alias will be removed in "
+        "a future release.\n\n"
+        f"{cleandoc(for_me.help or '')}"
+    ),
+    short_help="Deprecated alias for `deals for-me`.",
+    hidden=True,
+)

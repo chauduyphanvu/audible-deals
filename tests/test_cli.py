@@ -136,7 +136,7 @@ class TestCliRegressionFixes:
         [
             (["library", "--output", "bad.txt"], "audible_deals.cli.library"),
             (["series", "--output", "bad.txt"], "audible_deals.cli.series"),
-            (["for-you", "--output", "bad.txt"], "audible_deals.cli.foryou"),
+            (["for-me", "--output", "bad.txt"], "audible_deals.cli.foryou"),
         ],
     )
     def test_bad_export_extension_does_not_construct_client(

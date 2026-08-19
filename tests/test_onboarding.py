@@ -6,6 +6,7 @@ import json
 import time
 from unittest.mock import MagicMock
 
+import click
 from click.testing import CliRunner
 
 from audible_deals.auth_state import inspect_auth_file
@@ -99,7 +100,7 @@ def test_bare_dashboard_is_auth_aware_and_local(tmp_config, monkeypatch):
     assert result.exit_code == 0
     assert "marketplace: uk" in result.output
     assert "Authentication is available" in result.output
-    assert "deals for-you" in result.output
+    assert "deals for-me" in result.output
     assert "deals wishlist" in result.output
     assert "deals track" in result.output
 
@@ -132,6 +133,16 @@ def test_top_level_help_uses_workflow_groups(tmp_config):
         "Diagnostic checks for auth, config, and marketplace reachability." in help_text
     )
     assert "..." not in result.output.split("Discover:", 1)[1]
+
+
+def test_for_me_is_visible_and_for_you_is_hidden_from_completion(tmp_config):
+    result = CliRunner().invoke(cli, ["--help"])
+    assert result.exit_code == 0
+    assert "for-me" in result.output
+    assert "for-you" not in result.output
+
+    completions = cli.shell_complete(click.Context(cli), "for-")
+    assert [item.value for item in completions] == ["for-me"]
 
 
 def test_bare_groups_delegate_to_safe_status_commands(tmp_config):

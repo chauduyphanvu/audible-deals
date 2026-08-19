@@ -64,7 +64,7 @@ deals watch --exit-code
 
 ## Price history
 
-Every ASIN returned by `find`, `search`, `for-you`, or `series` records at most one price per day, retained for up to 365 days.
+Every ASIN returned by `find`, `search`, `for-me`, or `series` records at most one price per day, retained for up to 365 days.
 
 ```bash
 deals history B00R6S1RCY

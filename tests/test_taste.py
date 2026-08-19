@@ -1,4 +1,4 @@
-"""Tests for the taste profile, fit scoring, and the for-you command."""
+"""Tests for the taste profile, fit scoring, and the for-me command."""
 
 from __future__ import annotations
 
@@ -232,7 +232,7 @@ class TestRankByFit:
 
 
 # ===================================================================
-# for-you command
+# for-me command
 # ===================================================================
 
 
@@ -301,13 +301,13 @@ def _wire_scans(mock_client):
     mock_client.search_pages.side_effect = fake_search_pages
 
 
-class TestForYouCommand:
+class TestForMeCommand:
     def test_ranked_results_with_match_column(self, mock_client, tmp_config):
         _seed_profile_cache()
         _wire_scans(mock_client)
         _widen_console()
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you"])
+        result = runner.invoke(cli, ["for-me"])
         assert result.exit_code == 0, result.output
         assert "For you" in result.output
         assert "Match" in result.output
@@ -318,7 +318,7 @@ class TestForYouCommand:
         _seed_profile_cache()
         _wire_scans(mock_client)
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you", "--json"])
+        result = runner.invoke(cli, ["for-me", "--json"])
         assert result.exit_code == 0, result.output
         asins = [d["asin"] for d in _json_payload(result.output)]
         assert asins == ["B00GAP0004", "B00AUTH001", "B00GENRE01"]
@@ -326,7 +326,7 @@ class TestForYouCommand:
     def test_dry_run_makes_no_api_calls(self, mock_client, tmp_config):
         _seed_profile_cache()
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you", "--dry-run"])
+        result = runner.invoke(cli, ["for-me", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert "Bobiverse" in result.output
         assert "Fav Author" in result.output
@@ -341,7 +341,7 @@ class TestForYouCommand:
         mock_client.get_library_pages.return_value = iter([(lib, 1)])
         _wire_scans(mock_client)
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you"])
+        result = runner.invoke(cli, ["for-me"])
         assert result.exit_code == 0, result.output
         assert "Taste profile built from 2 books" in result.output
         assert constants_mod.TASTE_CACHE_FILE.exists()
@@ -349,7 +349,7 @@ class TestForYouCommand:
     def test_empty_library_errors(self, mock_client, tmp_config):
         mock_client.get_library_pages.return_value = iter([])
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you"])
+        result = runner.invoke(cli, ["for-me"])
         assert result.exit_code != 0
         assert "library is empty" in result.output.lower()
 
@@ -361,7 +361,7 @@ class TestForYouCommand:
             [{"asin": "B00GAP0004", "title": "Bobiverse 4", "max_price": 5.0}]
         )
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you"])
+        result = runner.invoke(cli, ["for-me"])
         assert result.exit_code == 0, result.output
         assert "wishlisted" in result.output
 
@@ -369,7 +369,7 @@ class TestForYouCommand:
         _seed_profile_cache()
         _wire_scans(mock_client)
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you", "--json", "--max-price", "5"])
+        result = runner.invoke(cli, ["for-me", "--json", "--max-price", "5"])
         assert result.exit_code == 0, result.output
         asins = [d["asin"] for d in _json_payload(result.output)]
         assert asins == ["B00GAP0004"]
@@ -379,7 +379,7 @@ class TestForYouCommand:
         _seed_profile_cache()
         _wire_scans(mock_client)
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you"])
+        result = runner.invoke(cli, ["for-me"])
         assert result.exit_code == 0, result.output
         assert "next in" in result.output
 
@@ -388,7 +388,7 @@ class TestForYouCommand:
         _wire_scans(mock_client)
         runner = CliRunner()
         result = runner.invoke(
-            cli, ["for-you", "--json", "--narrator", "NoSuchNarrator"]
+            cli, ["for-me", "--json", "--narrator", "NoSuchNarrator"]
         )
         assert result.exit_code == 0, result.output
         assert _json_payload(result.output) == []
@@ -398,7 +398,7 @@ class TestForYouCommand:
         _wire_scans(mock_client)
         runner = CliRunner()
         result = runner.invoke(
-            cli, ["for-you", "--json", "--exclude-author", "Fav Author"]
+            cli, ["for-me", "--json", "--exclude-author", "Fav Author"]
         )
         assert result.exit_code == 0, result.output
         asins = [d["asin"] for d in _json_payload(result.output)]
@@ -407,7 +407,7 @@ class TestForYouCommand:
     def test_skip_plus_and_only_plus_mutual_exclusion(self, mock_client, tmp_config):
         _seed_profile_cache()
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you", "--skip-plus", "--only-plus"])
+        result = runner.invoke(cli, ["for-me", "--skip-plus", "--only-plus"])
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output.lower()
 
@@ -417,7 +417,28 @@ class TestForYouCommand:
         runner = CliRunner()
         # Fit rank order is: Bobiverse 4, Zeppelin Book, Alpha Book (not alphabetical).
         # --sort title must reorder to alphabetical regardless of fit rank.
-        result = runner.invoke(cli, ["for-you", "--json", "--sort", "title"])
+        result = runner.invoke(cli, ["for-me", "--json", "--sort", "title"])
         assert result.exit_code == 0, result.output
         titles = [d["title"] for d in _json_payload(result.output)]
         assert titles == ["Alpha Book", "Bobiverse 4", "Zeppelin Book"]
+
+    def test_deprecated_for_you_alias_warns_and_remains_available(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+        runner = CliRunner()
+        result = runner.invoke(cli, ["for-you", "--dry-run"])
+        assert result.exit_code == 0, result.output
+        assert "Bobiverse" in result.output
+        assert result.stderr == (
+            "Warning: `deals for-you` is deprecated; use `deals for-me`.\n"
+        )
+
+    def test_deprecated_for_you_alias_help_explains_migration(self, tmp_config):
+        result = CliRunner().invoke(cli, ["for-you", "--help"])
+        assert result.exit_code == 0, result.output
+        help_text = " ".join(result.output.split())
+        assert "Deprecated: use `deals for-me` instead." in help_text
+        assert "will be removed in a future release" in help_text
+        assert "\n  Builds a local profile" in result.output
+        assert "\n  Examples:" in result.output

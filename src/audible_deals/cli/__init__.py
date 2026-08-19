@@ -96,7 +96,7 @@ class _HandleAuthErrors(click.Group):
     def format_commands(self, ctx, formatter):
         """Render command help in workflows rather than one long alphabetic list."""
         groups = (
-            ("Discover", ("find", "search", "for-you", "series", "categories")),
+            ("Discover", ("find", "search", "for-me", "series", "categories")),
             (
                 "Library & Results",
                 ("library", "last", "detail", "compare", "open"),
@@ -209,7 +209,7 @@ def _print_dashboard(locale: str) -> None:
             )
         click.echo("Try: deals find --genre sci-fi --max-price 5")
         click.echo('     deals search "Brandon Sanderson"')
-        click.echo("     deals for-you --max-price 5")
+        click.echo("     deals for-me --max-price 5")
         click.echo("     deals wishlist")
         click.echo("     deals track")
     click.echo("Run deals --help for the complete reference.")
@@ -225,6 +225,7 @@ cli.add_command(misc_commands.doctor)
 cli.add_command(misc_commands.completions)
 cli.add_command(catalog_commands.search)
 cli.add_command(catalog_commands.find)
+cli.add_command(foryou_commands.for_me)
 cli.add_command(foryou_commands.for_you)
 cli.add_command(library_commands.library)
 cli.add_command(series_commands.series)

@@ -8,7 +8,7 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 |---------|-------------|
 | `deals find` | Browse and filter catalog deals |
 | `deals search [QUERY]` | Search by keyword; the query is optional with `--genre` or `--category` |
-| `deals for-you` | Rank personalized deals using your library taste profile |
+| `deals for-me` | Rank personalized deals using your library taste profile |
 | `deals series` | Find continuation books in series represented in your library |
 | `deals library` | List or export books in your Audible library |
 | `deals last` | Re-display and re-filter the last search or find without an API call |
@@ -121,16 +121,16 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 
 ## Personalized deals
 
-`deals for-you` builds a local taste profile from your library, including favorite authors, narrators, genres, and series in progress.
+`deals for-me` builds a local taste profile from your library, including favorite authors, narrators, genres, and series in progress.
 
 ```bash
-deals for-you
-deals for-you --max-price 5 --on-sale --min-rating 4
-deals for-you --exclude-author "Maas" --skip-plus --sort discount
-deals for-you --refresh
+deals for-me
+deals for-me --max-price 5 --on-sale --min-rating 4
+deals for-me --exclude-author "Maas" --skip-plus --sort discount
+deals for-me --refresh
 
-# Requires a cached profile; run deals for-you once first
-deals for-you --dry-run
+# Requires a cached profile; run deals for-me once first
+deals for-me --dry-run
 ```
 
 The next unowned book in a series you started scores highest, followed by favorite authors, narrators, and genres. Price-history signals boost books at an all-time low or below their historical median. The `Match` column explains each result.
@@ -159,7 +159,7 @@ Use `--max-series` to cap the number of series scanned and `--pages` to control 
 
 ## Last results
 
-`deals last` reuses the most recent results produced by `find`, `search`, `for-you`, or the flat `series` view without making an API call.
+`deals last` reuses the most recent results produced by `find`, `search`, `for-me`, or the flat `series` view without making an API call.
 
 ```bash
 deals last
@@ -337,7 +337,7 @@ All application data is stored in `~/.config/audible-deals/`:
 | `history/` | Per-ASIN price history |
 | `categories_cache.*.json` | Per-locale category caches |
 | `track_state.json`, `track.log` | Background tracking state and log |
-| `taste_cache.json` | Local taste profile for `for-you` |
+| `taste_cache.json` | Local taste profile for `for-me` |
 
 ## Related guides
 

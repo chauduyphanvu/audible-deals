@@ -13,7 +13,7 @@ from tests.conftest import make_product
 
 
 # ===================================================================
-# Bug 24: for-you --dry-run must make no API calls and no state changes
+# Bug 24: for-me --dry-run must make no API calls and no state changes
 # ===================================================================
 
 
@@ -31,13 +31,14 @@ def _seed_profile_cache():
     return profile
 
 
-class TestForYouDryRunNoSideEffects:
+class TestForMeDryRunNoSideEffects:
     def test_dry_run_no_cache_does_not_fetch_or_write(self, mock_client, tmp_config):
         # No cached profile: --dry-run must not hit the library API nor write
         # the taste cache; it should error telling the user to build first.
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you", "--dry-run"])
+        result = runner.invoke(cli, ["for-me", "--dry-run"])
         assert result.exit_code != 0
+        assert "deals for-me" in result.output
         mock_client.get_library_pages.assert_not_called()
         assert not constants_mod.TASTE_CACHE_FILE.exists()
 
@@ -46,7 +47,7 @@ class TestForYouDryRunNoSideEffects:
         # make no API calls and must not overwrite the existing cache.
         seeded = _seed_profile_cache()
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you", "--refresh", "--dry-run"])
+        result = runner.invoke(cli, ["for-me", "--refresh", "--dry-run"])
         assert result.exit_code != 0
         mock_client.get_library_pages.assert_not_called()
         # The on-disk cache is untouched.
@@ -55,7 +56,7 @@ class TestForYouDryRunNoSideEffects:
     def test_dry_run_with_cache_still_prints_plan(self, mock_client, tmp_config):
         _seed_profile_cache()
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-you", "--dry-run"])
+        result = runner.invoke(cli, ["for-me", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert "Bobiverse" in result.output
         mock_client.get_library_pages.assert_not_called()

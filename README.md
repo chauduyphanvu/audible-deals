@@ -55,7 +55,7 @@ deals find --min-hours 10 --max-price 5
 deals search "Brandon Sanderson" --sort price
 
 # Personalized recommendations based on your library
-deals for-you --max-price 5 --on-sale
+deals for-me --max-price 5 --on-sale
 ```
 
 Add `-i` to `find` or `search` to browse results interactively. Run `deals --help` or `deals COMMAND --help` for the complete CLI reference.
@@ -66,7 +66,7 @@ Add `-i` to `find` or `search` to browse results interactively. Run `deals --hel
 |------|---------|
 | Find catalog deals | `deals find` |
 | Search by keyword | `deals search [QUERY]` |
-| Get personalized picks | `deals for-you` |
+| Get personalized picks | `deals for-me` |
 | Continue series you own | `deals series` |
 | Revisit recent results | `deals last` |
 | Inspect or compare books | `deals detail`, `deals compare`, `deals open` |

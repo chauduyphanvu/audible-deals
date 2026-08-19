@@ -50,7 +50,7 @@ deals find --min-hours 10 --max-price 5
 deals search "Brandon Sanderson" --sort price
 
 # Personalized recommendations based on your library
-deals for-you --max-price 5 --on-sale
+deals for-me --max-price 5 --on-sale
 ```
 
 Add `-i` to `find` or `search` to browse results interactively. Run `deals --help` or `deals COMMAND --help` for help in the terminal.
