@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+import threading
 
 import pytest
 from click.testing import CliRunner
@@ -14,6 +15,7 @@ from audible_deals.price_history import (
     find_wishlist_atl_hits,
     hist_percentiles,
     load_all_price_histories,
+    load_price_history,
     price_drop_pcts,
     price_history_context,
     purge_stale_history,
@@ -193,7 +195,9 @@ class TestFindWishlistAtlHits:
             {"date": f"2024-01-{i + 1:02d}", "price": p, "title": f"Book {asin}"}
             for i, p in enumerate(prices)
         ]
-        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+        (hist_dir / f"{asin}.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
 
     def test_returns_atl_hit(self, tmp_config):
         self._write_wishlist(
@@ -238,7 +242,9 @@ class TestFindWishlistAtlHits:
             {"date": "2024-01-01", "price": None, "title": "T"},
             {"date": "2024-01-02", "price": 3.99, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "B00ATL0004.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / "B00ATL0004.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         assert find_wishlist_atl_hits() == []
 
     def test_latest_non_numeric_returns_empty(self, tmp_config):
@@ -253,7 +259,9 @@ class TestFindWishlistAtlHits:
             {"date": "2024-01-02", "price": 3.99, "title": "T"},
             {"date": "2024-01-03", "price": None, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "B00ATL0005.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / "B00ATL0005.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         assert find_wishlist_atl_hits() == []
 
 
@@ -270,7 +278,9 @@ def _write_history(tmp_config, asin: str, prices: list[float]) -> None:
         {"date": f"2024-01-{i + 1:02d}", "price": p, "title": "T"}
         for i, p in enumerate(prices)
     ]
-    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+        json.dumps({"marketplaces": {"us": entries}})
+    )
 
 
 class TestHistPercentiles:
@@ -330,7 +340,9 @@ class TestHistPercentiles:
             {"date": "2024-01-04", "price": 4.0, "title": "T"},
             {"date": "2024-01-05", "price": 5.0, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "HP07.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / "HP07.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         # 4 numeric entries — fewer than 5, should be excluded
         p = make_product(asin="HP07", price=3.0)
         result = hist_percentiles([p])
@@ -399,7 +411,9 @@ class TestPriceDropPcts:
             {"date": yesterday, "price": 10.0, "title": "T"},
             {"date": today, "price": 8.0, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "PD08.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / "PD08.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         p = make_product(asin="PD08", price=8.0)
         result = price_drop_pcts([p])
         # reference is yesterday's 10.0; drop from 10.0 to 8.0 = 20%
@@ -412,7 +426,9 @@ class TestPriceDropPcts:
         today = datetime.date.today().isoformat()
         constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         entries = [{"date": today, "price": 10.0, "title": "T"}]
-        (constants_mod.HISTORY_DIR / "PD09.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / "PD09.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         p = make_product(asin="PD09", price=8.0)
         result = price_drop_pcts([p])
         assert "PD09" not in result
@@ -450,7 +466,9 @@ class TestLoadAllPriceHistories:
         import audible_deals.constants as constants_mod
 
         constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / "EMPTY01.json").write_text("[]")
+        (constants_mod.HISTORY_DIR / "EMPTY01.json").write_text(
+            '{"marketplaces": {"us": []}}'
+        )
         _write_history(tmp_config, "VALID01", [4.0])
         result = load_all_price_histories()
         assert "EMPTY01" not in result
@@ -469,7 +487,9 @@ def _write_history_with_dates(
 
     constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     entries = [{"date": d, "price": price, "title": "T"} for d in dates]
-    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+        json.dumps({"marketplaces": {"us": entries}})
+    )
 
 
 class TestPurgeStaleHistory:
@@ -521,6 +541,58 @@ class TestPurgeStaleHistory:
         assert "DRY01" in affected
         assert (constants_mod.HISTORY_DIR / "DRY01.json").exists()
 
+    def test_rechecks_fresh_history_under_lock_before_deleting(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.price_history as history_mod
+
+        old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
+        _write_history_with_dates(tmp_config, "RACE01", [old_date])
+        real_purge = history_mod._purge_stale_history_file
+
+        def _record_before_locked_recheck(hist_file, cutoff, locale):
+            record_prices(
+                [make_product(asin="RACE01", locale="us", price=4.0, title="Fresh")]
+            )
+            return real_purge(hist_file, cutoff, locale)
+
+        monkeypatch.setattr(
+            history_mod, "_purge_stale_history_file", _record_before_locked_recheck
+        )
+
+        count, affected = purge_stale_history(90)
+
+        assert count == 0
+        assert affected == []
+        assert (
+            load_price_history("RACE01", "us")[-1]["date"]
+            == datetime.date.today().isoformat()
+        )
+
+    def test_purge_only_removes_requested_marketplace(self, tmp_config):
+        import audible_deals.constants as constants_mod
+
+        old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
+        fresh_date = datetime.date.today().isoformat()
+        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        (constants_mod.HISTORY_DIR / "MARKETS01.json").write_text(
+            json.dumps(
+                {
+                    "marketplaces": {
+                        "us": [{"date": old_date, "price": 5.0, "title": "US"}],
+                        "uk": [{"date": fresh_date, "price": 4.0, "title": "UK"}],
+                    }
+                }
+            )
+        )
+
+        count, affected = purge_stale_history(90, locale="us")
+
+        assert count == 1
+        assert affected == ["MARKETS01"]
+        assert load_price_history("MARKETS01", "us") == []
+        assert load_price_history("MARKETS01", "uk")[0]["price"] == 4.0
+
     def test_corrupt_file_is_skipped(self, tmp_config):
         import audible_deals.constants as constants_mod
 
@@ -566,7 +638,9 @@ class TestFindAllAtlHits:
             {"date": f"2024-01-{i + 1:02d}", "price": p, "title": f"Book {asin}"}
             for i, p in enumerate(prices)
         ]
-        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+        (hist_dir / f"{asin}.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
 
     def _write_wishlist(self, tmp_config, items):
         import audible_deals.constants as constants_mod
@@ -592,7 +666,9 @@ class TestFindAllAtlHits:
 
         constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         entries = [{"date": "2024-01-01", "price": 5.99, "title": "T"}]
-        (constants_mod.HISTORY_DIR / "B00ALL0003.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / "B00ALL0003.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         hits = find_all_atl_hits()
         assert hits == []
 
@@ -635,7 +711,9 @@ class TestFindAllAtlHits:
             {"date": "2024-01-01", "price": 9.99, "title": "T"},
             {"date": "2024-01-02", "price": None, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "B00ALL0008.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / "B00ALL0008.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         hits = find_all_atl_hits()
         assert hits == []
 
@@ -728,7 +806,9 @@ class TestPriceHistoryContext:
         import audible_deals.constants as constants_mod
 
         constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+        (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
 
     def test_single_entry_today_not_atl(self, tmp_config):
         today = datetime.date.today().isoformat()
@@ -759,7 +839,7 @@ class TestPriceHistoryContext:
     def test_with_preloaded_histories(self, tmp_config):
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
         histories = {
-            "PHC03": [
+            "us:PHC03": [
                 {"date": yesterday, "price": 12.0, "title": "T"},
             ]
         }
@@ -807,5 +887,52 @@ class TestRecordPricesCorruptBackup:
         assert bak_file.read_text() == corrupt_text
 
         data = json.loads(hist_file.read_text())
-        assert len(data) == 1
-        assert data[0]["price"] == pytest.approx(9.99)
+        assert len(data["marketplaces"]["us"]) == 1
+        assert data["marketplaces"]["us"][0]["price"] == pytest.approx(9.99)
+
+
+class TestRecordPricesMarketplaceLocking:
+    def test_concurrent_marketplace_updates_preserve_both_locales(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.price_history as history_mod
+
+        asin = "B00LOCKED1"
+        first_write_started = threading.Event()
+        allow_first_write = threading.Event()
+        real_atomic_write = history_mod._atomic_write
+        writes = 0
+
+        def _paused_first_write(path, content):
+            nonlocal writes
+            writes += 1
+            if writes == 1:
+                first_write_started.set()
+                assert allow_first_write.wait(timeout=2)
+            real_atomic_write(path, content)
+
+        monkeypatch.setattr(history_mod, "_atomic_write", _paused_first_write)
+        failures = []
+
+        def _record(locale, price):
+            try:
+                record_prices(
+                    [make_product(asin=asin, locale=locale, price=price, title=locale)]
+                )
+            except Exception as exc:
+                failures.append(exc)
+
+        us = threading.Thread(target=_record, args=("us", 10.0))
+        uk = threading.Thread(target=_record, args=("uk", 5.0))
+        us.start()
+        assert first_write_started.wait(timeout=2)
+        uk.start()
+        allow_first_write.set()
+        us.join(timeout=2)
+        uk.join(timeout=2)
+
+        assert not us.is_alive()
+        assert not uk.is_alive()
+        assert not failures
+        assert load_price_history(asin, "us")[0]["price"] == 10.0
+        assert load_price_history(asin, "uk")[0]["price"] == 5.0

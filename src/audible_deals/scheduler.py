@@ -172,16 +172,33 @@ def _systemd_uninstall() -> bool:
 
 
 def generate_cron_line(cmd: list[str], interval_s: int, log_path: Path) -> str:
-    minutes = max(1, round(interval_s / 60))
+    if interval_s % 60:
+        raise SchedulerError(
+            "cron cannot represent intervals with seconds; use a whole number of minutes"
+        )
+    minutes = interval_s // 60
+    if minutes < 1:
+        raise SchedulerError("cron interval must be at least one minute")
     if minutes < 60:
-        # cron's */N step restarts at minute 0 each hour, so when N does not
-        # divide 60 the gap across the hour boundary is shorter than N. Round
-        # up to the next divisor of 60 to keep every gap >= the requested
-        # interval.
-        step = next(n for n in range(minutes, 61) if 60 % n == 0)
-        schedule = "0 * * * *" if step == 60 else f"*/{step} * * * *"
+        if 60 % minutes:
+            raise SchedulerError(
+                f"cron cannot represent an exact {minutes}-minute interval"
+            )
+        schedule = f"*/{minutes} * * * *"
+    elif minutes == 60:
+        schedule = "0 * * * *"
+    elif minutes == 24 * 60:
+        schedule = "0 0 * * *"
     else:
-        hours = min(max(1, round(minutes / 60)), 23)
+        if minutes % 60:
+            raise SchedulerError(
+                f"cron cannot represent an exact {minutes}-minute interval"
+            )
+        hours = minutes // 60
+        if hours > 24 or 24 % hours:
+            raise SchedulerError(
+                f"cron cannot represent an exact {hours}-hour interval"
+            )
         schedule = f"0 */{hours} * * *"
     exec_cmd = " ".join(shlex.quote(c) for c in cmd)
     return f"{schedule} {exec_cmd} >> {shlex.quote(str(log_path))} 2>&1 {CRON_MARKER}"
@@ -226,11 +243,28 @@ def _cron_uninstall() -> bool:
 
 def _schtasks_install(interval_s: int, log_path: Path) -> str:
     cmd = " ".join(f'"{c}"' for c in track_command())
-    minutes = max(1, round(interval_s / 60))
-    if minutes < 60:
-        schedule = ["/SC", "MINUTE", "/MO", str(min(minutes, 1439))]
+    if interval_s % 60:
+        raise SchedulerError(
+            "Windows Task Scheduler cannot represent intervals with seconds; use a whole number of minutes"
+        )
+    minutes = interval_s // 60
+    if minutes < 1:
+        raise SchedulerError(
+            "Windows Task Scheduler interval must be at least one minute"
+        )
+    if minutes < 60 * 24:
+        schedule = ["/SC", "MINUTE", "/MO", str(minutes)]
     else:
-        schedule = ["/SC", "HOURLY", "/MO", str(min(max(1, round(minutes / 60)), 23))]
+        if minutes % (60 * 24):
+            raise SchedulerError(
+                f"Windows Task Scheduler cannot represent an exact {minutes}-minute interval"
+            )
+        days = minutes // (60 * 24)
+        if days > 365:
+            raise SchedulerError(
+                "Windows Task Scheduler supports intervals up to 365 days"
+            )
+        schedule = ["/SC", "DAILY", "/MO", str(days)]
     _run(["schtasks", "/Create", "/F", "/TN", SCHTASKS_NAME, "/TR", cmd, *schedule])
     return f"scheduled task {SCHTASKS_NAME}"
 

@@ -20,7 +20,11 @@ from audible_deals.client import DealsClient
 from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
 from audible_deals.display import console, create_scan_progress
 from audible_deals.filtering import dedupe_editions, filter_products, sort_local
-from audible_deals.price_history import load_price_history, price_history_context
+from audible_deals.price_history import (
+    history_key,
+    load_price_history,
+    price_history_context,
+)
 from audible_deals.product import Product
 from audible_deals.serialization import validate_export_path
 from audible_deals.wishlist import load_wishlist, partition_wishlist
@@ -329,7 +333,9 @@ def for_you(
     )
     filtered, editions_removed = dedupe_editions(filtered)
     histories = {
-        p.asin: load_price_history(p.asin) for p in filtered if p.price is not None
+        history_key(p.asin, p.locale): load_price_history(p.asin, p.locale)
+        for p in filtered
+        if p.price is not None
     }
     atl_asins, hist_context = price_history_context(filtered, histories=histories)
     ranked, match_context = taste.rank_by_fit(

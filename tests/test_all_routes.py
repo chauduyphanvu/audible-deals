@@ -846,7 +846,9 @@ class TestHistoryCommand:
             {"date": "2024-01-01", "price": 9.99, "title": "Hist Book"},
             {"date": "2024-01-15", "price": 4.99, "title": "Hist Book"},
         ]
-        (hist_dir / "H001.json").write_text(json.dumps(entries))
+        (hist_dir / "H001.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         result = _run(CliRunner(), ["history", "H001"])
         assert result.exit_code == 0
         assert "9.99" in result.output
@@ -871,7 +873,9 @@ class TestHistoryCommand:
         hist_dir = tmp_config / "history"
         hist_dir.mkdir()
         entries = [{"date": "2024-01-01", "price": 9.99, "title": "Book"}]
-        (hist_dir / "H003.json").write_text(json.dumps(entries))
+        (hist_dir / "H003.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         result = _run(CliRunner(), ["history", "H003", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -888,8 +892,8 @@ class TestHistoryCommand:
         hist_dir.mkdir()
         e1 = [{"date": "2024-01-01", "price": 1.0, "title": "A"}]
         e2 = [{"date": "2024-01-02", "price": 2.0, "title": "B"}]
-        (hist_dir / "H004.json").write_text(json.dumps(e1))
-        (hist_dir / "H005.json").write_text(json.dumps(e2))
+        (hist_dir / "H004.json").write_text(json.dumps({"marketplaces": {"us": e1}}))
+        (hist_dir / "H005.json").write_text(json.dumps({"marketplaces": {"us": e2}}))
         result = _run(CliRunner(), ["history", "--all", "--json"])
         assert result.exit_code == 0
         data = json.loads(result.output)
@@ -912,7 +916,9 @@ class TestHistoryCommand:
         hist_dir.mkdir()
         old_date = (dt.date.today() - dt.timedelta(days=200)).isoformat()
         entries = [{"date": old_date, "price": 5.0, "title": "Old"}]
-        (hist_dir / "POLD01.json").write_text(json.dumps(entries))
+        (hist_dir / "POLD01.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         result = _run(CliRunner(), ["history", "--purge-older-than", "90", "--dry-run"])
         assert result.exit_code == 0
         assert "Would remove" in result.output
@@ -925,11 +931,48 @@ class TestHistoryCommand:
         hist_dir.mkdir()
         old_date = (dt.date.today() - dt.timedelta(days=200)).isoformat()
         entries = [{"date": old_date, "price": 5.0, "title": "Old"}]
-        (hist_dir / "POLD02.json").write_text(json.dumps(entries))
+        (hist_dir / "POLD02.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         result = _run(CliRunner(), ["history", "--purge-older-than", "90", "--yes"])
         assert result.exit_code == 0
         assert "Removed" in result.output
         assert not (hist_dir / "POLD02.json").exists()
+
+    def test_history_purge_confirmation_rechecks_before_deleting(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        import datetime as dt
+        import audible_deals.cli.history as history_cli_mod
+        import audible_deals.price_history as history_mod
+
+        hist_dir = tmp_config / "history"
+        hist_dir.mkdir()
+        old_date = (dt.date.today() - dt.timedelta(days=200)).isoformat()
+        (hist_dir / "PRACE01.json").write_text(
+            json.dumps({"marketplaces": {"us": [{"date": old_date, "price": 5.0}]}})
+        )
+        real_purge = history_cli_mod.purge_stale_history
+
+        def _freshen_after_confirmation(days, dry_run=False, locale="us", asins=None):
+            if asins is not None:
+                history_mod.record_prices(
+                    [make_product(asin="PRACE01", locale="us", price=4.0)]
+                )
+            return real_purge(days, dry_run=dry_run, locale=locale, asins=asins)
+
+        monkeypatch.setattr(
+            history_cli_mod, "purge_stale_history", _freshen_after_confirmation
+        )
+
+        result = _run(CliRunner(), ["history", "--purge-older-than", "90"], input="y\n")
+
+        assert result.exit_code == 0
+        assert "Removed 0" in result.output
+        assert (
+            history_mod.load_price_history("PRACE01", "us")[-1]["date"]
+            == dt.date.today().isoformat()
+        )
 
     def test_history_purge_combined_with_json_errors(self, tmp_config, mock_client):
         result = CliRunner().invoke(
@@ -950,7 +993,9 @@ class TestHistoryCommand:
 
         fresh = dt.date.today().isoformat()
         entries = [{"date": fresh, "price": 5.0, "title": "New"}]
-        (hist_dir / "FRESH02.json").write_text(json.dumps(entries))
+        (hist_dir / "FRESH02.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         result = _run(CliRunner(), ["history", "--purge-older-than", "90", "--dry-run"])
         assert result.exit_code == 0
         assert "No history" in result.output
@@ -978,7 +1023,9 @@ class TestRecapCommand:
             {"date": yesterday, "price": 9.99, "title": "Recap Book"},
             {"date": today, "price": 4.99, "title": "Recap Book"},
         ]
-        (hist_dir / "R001.json").write_text(json.dumps(entries))
+        (hist_dir / "R001.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         result = _run(CliRunner(), ["recap"])
         assert result.exit_code == 0
 
@@ -993,7 +1040,9 @@ class TestRecapCommand:
 
         today = datetime.date.today().isoformat()
         entries = [{"date": today, "price": 4.99, "title": "New Item"}]
-        (hist_dir / "R002.json").write_text(json.dumps(entries))
+        (hist_dir / "R002.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
         result = _run(CliRunner(), ["recap", "--show-new"])
         assert result.exit_code == 0
 
@@ -1337,7 +1386,9 @@ class TestInteractiveBrowseVerbs:
         from audible_deals.cli.interactive import _interactive_browse
         import audible_deals.cli.interactive as interactive_mod
 
-        monkeypatch.setattr(interactive_mod, "load_price_history", lambda asin: [])
+        monkeypatch.setattr(
+            interactive_mod, "load_price_history", lambda asin, locale: []
+        )
         p = make_product(asin="IH01", title="History Book", price=5.0)
         inputs = iter(["h 1", "q"])
         monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))

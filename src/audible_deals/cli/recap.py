@@ -99,6 +99,7 @@ def recap(
                 webhook_format,
                 _currency(ctx),
                 extra_headers,
+                ctx.obj["locale"],
             )
     except LockHeldError:
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)

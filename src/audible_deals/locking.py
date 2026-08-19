@@ -3,31 +3,141 @@
 from __future__ import annotations
 
 import contextlib
+import errno
 import os
 import time
 
-_LOCK_STALE_SECONDS = 600  # 10 minutes
+
+_LEGACY_PARTIAL_STALE_SECONDS = 600
 
 
 class LockHeldError(Exception):
     """Raised when the run lock is held by another process."""
 
 
+def _acquire(fd: int) -> None:
+    """Acquire a non-blocking exclusive advisory lock for *fd*."""
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        try:
+            msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        except OSError as e:
+            raise LockHeldError("lock held by another process") from e
+        return
+
+    import fcntl
+
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError as e:
+        raise LockHeldError("lock held by another process") from e
+
+
+def _release(fd: int) -> None:
+    if os.name == "nt":
+        import msvcrt
+
+        os.lseek(fd, 0, os.SEEK_SET)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
+
+
+@contextlib.contextmanager
+def advisory_lock(lock_file, *, wait: bool = False):
+    """Acquire a crash-safe advisory lock on a dedicated lock file."""
+    lock_file.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(lock_file), os.O_CREAT | os.O_RDWR, 0o600)
+    if os.fstat(fd).st_size == 0:
+        os.write(fd, b"\0")
+        os.lseek(fd, 0, os.SEEK_SET)
+    while True:
+        try:
+            _acquire(fd)
+            break
+        except LockHeldError:
+            if not wait:
+                os.close(fd)
+                raise
+            time.sleep(0.01)
+        except Exception:
+            os.close(fd)
+            raise
+    try:
+        yield
+    finally:
+        try:
+            _release(fd)
+        finally:
+            os.close(fd)
+
+
+def _pid_is_alive(pid: int) -> bool:
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError as e:
+        return e.errno != errno.ESRCH
+    return True
+
+
+def _legacy_file_is_fresh(lock_file) -> bool:
+    try:
+        return time.time() - lock_file.stat().st_mtime < _LEGACY_PARTIAL_STALE_SECONDS
+    except FileNotFoundError:
+        return False
+    except OSError:
+        return True
+
+
+def _write_advisory_marker(fd: int) -> None:
+    os.ftruncate(fd, 0)
+    os.write(fd, f"advisory:{os.getpid()}".encode())
+
+
+def _acquire_existing_lock(lock_file):
+    try:
+        fd = os.open(str(lock_file), os.O_RDWR)
+    except FileNotFoundError:
+        return None
+    try:
+        content = os.read(fd, os.fstat(fd).st_size).decode(errors="replace")
+        if not content.startswith("advisory:"):
+            if content.strip().isdigit() and _pid_is_alive(int(content.strip())):
+                raise LockHeldError("lock held by a running legacy process")
+            if not content.strip() and _legacy_file_is_fresh(lock_file):
+                raise LockHeldError("lock file is being created by another process")
+        _acquire(fd)
+        try:
+            same_file = os.path.samestat(os.fstat(fd), lock_file.stat())
+        except FileNotFoundError:
+            same_file = False
+        if not same_file:
+            _release(fd)
+            os.close(fd)
+            return None
+        _write_advisory_marker(fd)
+        return fd
+    except Exception:
+        os.close(fd)
+        raise
+
+
 @contextlib.contextmanager
 def run_lock():
-    """Exclusive cross-process lock for unattended commands.
+    """Acquire an exclusive, crash-safe lock for unattended commands.
 
-    Acquires via O_CREAT|O_EXCL (atomic on POSIX and Windows NTFS).
-    Treats the lock as stale when its mtime is older than 10 minutes.
-    Raises LockHeldError when a fresh lock is held by another process.
-
-    PID-ownership: writes our PID to the lock file; the finally block only
-    unlinks the file when it still contains our PID, so we never remove
-    another process's lock on exit.
-
-    Stale-break: after unlinking a stale lock we retry the O_EXCL create
-    exactly once; if that create also fails, we lost the race and raise
-    LockHeldError rather than looping indefinitely.
+    The operating system releases the advisory lock if its owner exits or
+    crashes. The lock-file timestamp is deliberately not used: a legitimate
+    catalog run may take longer than any fixed stale threshold.
     """
     # Imported here to break the cycle with constants, which re-exports
     # run_lock/LockHeldError for back-compat. LOCK_FILE is resolved at call
@@ -35,47 +145,37 @@ def run_lock():
     from audible_deals import constants
 
     lock_file = constants.LOCK_FILE
-    my_pid = str(os.getpid()).encode()
     lock_file.parent.mkdir(parents=True, exist_ok=True)
-
-    def _try_create() -> bool:
-        """Attempt O_EXCL create; return True on success, False on FileExistsError."""
-        try:
-            fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
-        except FileExistsError:
-            return False
-        try:
-            os.write(fd, my_pid)
-        except OSError:
-            os.close(fd)
-            lock_file.unlink(missing_ok=True)
-            raise
-        os.close(fd)
-        return True
-
-    if not _try_create():
-        # Lock file exists — check staleness
-        try:
-            age = time.time() - lock_file.stat().st_mtime
-        except FileNotFoundError:
-            age = _LOCK_STALE_SECONDS + 1  # vanished between checks; retry once
-
-        if age > _LOCK_STALE_SECONDS:
+    try:
+        fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+    except FileExistsError:
+        fd = _acquire_existing_lock(lock_file)
+        if fd is None:
             try:
-                lock_file.unlink()
-            except FileNotFoundError:
-                pass
-            # Retry once; if another racer beat us, raise immediately
-            if not _try_create():
-                raise LockHeldError(f"Lock held (mtime {age:.0f}s ago): {lock_file}")
-        else:
-            raise LockHeldError(f"Lock held (mtime {age:.0f}s ago): {lock_file}")
+                fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
+            except FileExistsError:
+                fd = _acquire_existing_lock(lock_file)
+                if fd is None:
+                    raise LockHeldError("lock file disappeared while acquiring")
+            else:
+                try:
+                    _acquire(fd)
+                    _write_advisory_marker(fd)
+                except Exception:
+                    os.close(fd)
+                    raise
+    else:
+        try:
+            _acquire(fd)
+            _write_advisory_marker(fd)
+        except Exception:
+            os.close(fd)
+            raise
 
     try:
         yield
     finally:
         try:
-            if lock_file.read_bytes() == my_pid:
-                lock_file.unlink()
-        except (FileNotFoundError, OSError):
-            pass
+            _release(fd)
+        finally:
+            os.close(fd)

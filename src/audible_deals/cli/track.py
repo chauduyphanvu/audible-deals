@@ -81,13 +81,13 @@ def _save_track_state(state: dict) -> None:
     save_json_file(constants.TRACK_STATE_FILE, state, "track state")
 
 
-def _recent_history_asins(exclude: set[str]) -> list[str]:
+def _recent_history_asins(exclude: set[str], locale: str) -> list[str]:
     """ASINs with a history entry in the last _RECENT_HISTORY_DAYS, oldest-checked first."""
     cutoff = (
         datetime.date.today() - datetime.timedelta(days=_RECENT_HISTORY_DAYS)
     ).isoformat()
     candidates: list[tuple[str, str]] = []
-    for asin, entries in load_all_price_histories().items():
+    for asin, entries in load_all_price_histories(locale=locale).items():
         if asin in exclude or not entries:
             continue
         last_date = entries[-1].get("date", "")
@@ -212,8 +212,9 @@ def track_run(ctx, cooldown):
             with run_lock():
                 _record_failure(e, started, webhook, webhook_format, webhook_headers)
         except LockHeldError:
-            # Best-effort save when a concurrent run holds the lock.
-            _record_failure(e, started, webhook, webhook_format, webhook_headers)
+            logger.warning(
+                "Could not record failed run because another run holds the lock"
+            )
         raise click.ClickException(f"track run failed: {e}")
 
 
@@ -233,7 +234,9 @@ def _track_run_locked(
         credit_price=_credit_price(ctx),
     )
 
-    extra_asins = _recent_history_asins(exclude=wishlist_asins)
+    extra_asins = _recent_history_asins(
+        exclude=wishlist_asins, locale=ctx.obj["locale"]
+    )
     if extra_asins:
         with dc:
             extra_products = dc.get_products_batch(extra_asins)

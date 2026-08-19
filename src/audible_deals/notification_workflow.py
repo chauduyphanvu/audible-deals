@@ -146,15 +146,16 @@ def run_recap(
     webhook_format,
     currency,
     extra_headers=None,
+    locale="us",
 ):
     logger.info(
         "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
     )
     if json_flag:
         console.file = sys.stderr
-    histories = load_all_price_histories()
+    histories = load_all_price_histories(locale)
     drops, new_items = scan_price_changes(days, histories=histories)
-    if not drops and not new_items and not has_price_history():
+    if not drops and not new_items and not has_price_history(locale):
         if json_flag:
             empty = empty_recap_payload(days, atl or atl_all)
             click.echo(json_mod.dumps(empty, indent=2))
@@ -163,11 +164,13 @@ def run_recap(
             "[dim]No price history yet. Run 'deals find' or 'deals search' to start tracking.[/dim]"
         )
         return
-    wishlist_hits = find_wishlist_hits()
+    wishlist_hits = find_wishlist_hits(locale)
     if atl_all:
-        atl_hits: list[dict] | None = find_all_atl_hits(histories=histories)
+        atl_hits: list[dict] | None = find_all_atl_hits(
+            histories=histories, locale=locale
+        )
     elif atl:
-        atl_hits = find_wishlist_atl_hits()
+        atl_hits = find_wishlist_atl_hits(locale)
     else:
         atl_hits = None
 

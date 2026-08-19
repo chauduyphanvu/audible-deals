@@ -29,6 +29,7 @@ from audible_deals.filtering import (
     sort_local,
 )
 from audible_deals.price_history import (
+    history_key,
     hist_percentiles,
     load_price_history,
     price_drop_pcts,
@@ -80,7 +81,7 @@ def _apply_filters(
     histories: dict[str, list[dict]] | None = None
     if hist_below is not None or min_price_drop > 0:
         histories = {
-            p.asin: load_price_history(p.asin)
+            history_key(p.asin, p.locale): load_price_history(p.asin, p.locale)
             for p in all_products
             if p.price is not None
         }
@@ -166,11 +167,13 @@ def _prior_histories(
     source = histories
     if source is None:
         source = {
-            p.asin: load_price_history(p.asin) for p in products if p.price is not None
+            history_key(p.asin, p.locale): load_price_history(p.asin, p.locale)
+            for p in products
+            if p.price is not None
         }
     return {
-        asin: [e for e in entries if e.get("date") != today_iso]
-        for asin, entries in source.items()
+        key: [e for e in entries if e.get("date") != today_iso]
+        for key, entries in source.items()
     }
 
 

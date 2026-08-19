@@ -79,7 +79,7 @@ def notify(
                 get_client=_get_client,
                 record_products=_safe_record_prices,
             )
-            if exit_code and had_hits is not None:
+            if exit_code:
                 ctx.exit(0 if had_hits else 1)
     except LockHeldError:
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)

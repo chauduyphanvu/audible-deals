@@ -5,6 +5,8 @@ from __future__ import annotations
 import datetime as _datetime
 import json
 import os
+import subprocess
+import sys
 
 import click
 import pytest
@@ -2870,7 +2872,9 @@ class TestRecapWithTitles:
 
         hist_dir = constants_mod.HISTORY_DIR
         hist_dir.mkdir(parents=True, exist_ok=True)
-        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+        (hist_dir / f"{asin}.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
 
     def test_recap_shows_title_in_price_drop(self, tmp_config):
         """recap displays the book title alongside the ASIN for price drops."""
@@ -2920,7 +2924,7 @@ class TestRecapWithTitles:
         _record_prices([p])
 
         hist_file = constants_mod.HISTORY_DIR / "RC01.json"
-        entries = json.loads(hist_file.read_text())
+        entries = json.loads(hist_file.read_text())["marketplaces"]["us"]
         assert len(entries) == 1
         assert entries[0]["title"] == "My Title Book"
 
@@ -6153,7 +6157,7 @@ class TestDoctorUnknownKeys:
 
 class TestRunLock:
     def test_acquire_and_release(self, tmp_path):
-        """Lock is acquired then the file is removed on exit."""
+        """Lock is acquired and its durable lock file remains after exit."""
         import audible_deals.constants as constants_mod
 
         lock_file = tmp_path / ".deals.lock"
@@ -6162,10 +6166,10 @@ class TestRunLock:
 
         with run_lock():
             assert lock_file.exists()
-        assert not lock_file.exists()
+        assert lock_file.exists()
 
     def test_pid_written_to_lock(self, tmp_path):
-        """The lock file contains the current PID."""
+        """The lock file records the current PID for diagnostics."""
         import os
         import audible_deals.constants as constants_mod
 
@@ -6174,7 +6178,7 @@ class TestRunLock:
         from audible_deals.constants import run_lock
 
         with run_lock():
-            assert lock_file.read_text() == str(os.getpid())
+            assert lock_file.read_text() == f"advisory:{os.getpid()}"
 
     def test_contention_raises_lock_held_error(self, tmp_path):
         """A held (fresh) lock raises LockHeldError."""
@@ -6183,13 +6187,13 @@ class TestRunLock:
 
         lock_file = tmp_path / ".deals.lock"
         constants_mod.LOCK_FILE = lock_file
-        lock_file.write_text("99999")
-        with pytest.raises(LockHeldError):
-            with run_lock():
-                pass
+        with run_lock():
+            with pytest.raises(LockHeldError):
+                with run_lock():
+                    pass
 
-    def test_stale_lock_broken(self, tmp_path):
-        """A lock file older than 10 minutes is removed and the lock is acquired."""
+    def test_old_unlocked_lock_file_is_acquired(self, tmp_path):
+        """An old lock-file timestamp does not affect advisory lock acquisition."""
         import time
         import audible_deals.constants as constants_mod
         from audible_deals.constants import run_lock
@@ -6201,10 +6205,118 @@ class TestRunLock:
         os.utime(str(lock_file), (old_mtime, old_mtime))
         with run_lock():
             assert lock_file.exists()
-        assert not lock_file.exists()
+        assert lock_file.exists()
+
+    def test_active_lock_is_not_broken_when_older_than_ten_minutes(self, tmp_path):
+        import time
+        import audible_deals.constants as constants_mod
+        from audible_deals.constants import LockHeldError, run_lock
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        with run_lock():
+            old_mtime = time.time() - 700
+            os.utime(str(lock_file), (old_mtime, old_mtime))
+            with pytest.raises(LockHeldError):
+                with run_lock():
+                    pass
+
+    def test_legacy_lock_probe_handles_disappearing_file(self, tmp_path, monkeypatch):
+        import audible_deals.locking as locking_mod
+        import audible_deals.constants as constants_mod
+
+        lock_file = tmp_path / ".deals.lock"
+        lock_file.write_text("99999")
+        constants_mod.LOCK_FILE = lock_file
+        real_open = locking_mod.os.open
+        removed = False
+
+        def _disappearing_open(path, flags, mode=0o777):
+            nonlocal removed
+            fd = real_open(path, flags, mode)
+            if path == str(lock_file) and not flags & os.O_EXCL and not removed:
+                lock_file.unlink()
+                removed = True
+            return fd
+
+        monkeypatch.setattr(locking_mod.os, "open", _disappearing_open)
+
+        with locking_mod.run_lock():
+            assert lock_file.exists()
+
+    def test_live_legacy_owner_remains_protected(self, tmp_path):
+        import audible_deals.constants as constants_mod
+        from audible_deals.constants import LockHeldError, run_lock
+
+        lock_file = tmp_path / ".deals.lock"
+        lock_file.write_text(str(os.getpid()))
+        constants_mod.LOCK_FILE = lock_file
+
+        with pytest.raises(LockHeldError, match="legacy"):
+            with run_lock():
+                pass
+
+    def test_legacy_creator_winning_create_race_is_not_overwritten(
+        self, tmp_path, monkeypatch
+    ):
+        import audible_deals.constants as constants_mod
+        import audible_deals.locking as locking_mod
+        from audible_deals.constants import LockHeldError
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        real_open = locking_mod.os.open
+
+        def _legacy_wins(path, flags, mode=0o777):
+            if path == str(lock_file) and flags & os.O_EXCL and not lock_file.exists():
+                lock_file.write_text(str(os.getpid()))
+            return real_open(path, flags, mode)
+
+        monkeypatch.setattr(locking_mod.os, "open", _legacy_wins)
+
+        with pytest.raises(LockHeldError, match="legacy"):
+            with locking_mod.run_lock():
+                pass
+        assert lock_file.read_text() == str(os.getpid())
+
+    def test_subprocess_contention_releases_after_crash(self, tmp_path):
+        import audible_deals.constants as constants_mod
+        from audible_deals.constants import LockHeldError, run_lock
+
+        lock_file = tmp_path / ".deals.lock"
+        constants_mod.LOCK_FILE = lock_file
+        script = """
+import sys
+import time
+from pathlib import Path
+import audible_deals.constants as constants
+from audible_deals.locking import run_lock
+
+constants.LOCK_FILE = Path(sys.argv[1])
+with run_lock():
+    print("locked", flush=True)
+    time.sleep(60)
+"""
+        proc = subprocess.Popen(
+            [sys.executable, "-c", script, str(lock_file)],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        try:
+            assert proc.stdout is not None
+            assert proc.stdout.readline().strip() == "locked"
+            with pytest.raises(LockHeldError):
+                with run_lock():
+                    pass
+        finally:
+            proc.kill()
+            proc.wait(timeout=2)
+        with run_lock():
+            pass
 
     def test_lock_released_on_exception(self, tmp_path):
-        """Lock file is removed even when the body raises."""
+        """Lock is released even when the body raises."""
         import audible_deals.constants as constants_mod
         from audible_deals.constants import run_lock
 
@@ -6213,10 +6325,11 @@ class TestRunLock:
         with pytest.raises(ValueError):
             with run_lock():
                 raise ValueError("boom")
-        assert not lock_file.exists()
+        with run_lock():
+            pass
 
     def test_release_does_not_remove_foreign_pid_lock(self, tmp_path):
-        """Release must NOT unlink the lock when it contains a different PID."""
+        """Lock-file diagnostics do not change ownership of the OS lock."""
         import audible_deals.constants as constants_mod
         from audible_deals.constants import run_lock
 
@@ -6225,7 +6338,7 @@ class TestRunLock:
         with run_lock():
             # Simulate another process overwriting the lock with its own PID
             lock_file.write_text("99999")
-        # Our finally block should have seen PID mismatch and left the file alone
+        # The file is retained and its diagnostic PID is not ownership.
         assert lock_file.exists()
         assert lock_file.read_text() == "99999"
 
@@ -6235,12 +6348,11 @@ class TestNotifyLockCLI:
         self, tmp_config, mock_client, monkeypatch
     ):
         """When lock is held, notify exits 0 and prints the in-progress message."""
-        # Pre-create a fresh lock file so run_lock() sees contention
-        lock_file = tmp_config / ".deals.lock"
-        lock_file.write_text("99999")
-
         runner = CliRunner()
-        result = runner.invoke(cli, ["notify"])
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            result = runner.invoke(cli, ["notify"])
         assert result.exit_code == 0
         assert "in progress" in result.output
 
@@ -6248,11 +6360,11 @@ class TestNotifyLockCLI:
         self, tmp_config, mock_client
     ):
         """notify lock-held without --webhook emits empty JSON to stdout."""
-        lock_file = tmp_config / ".deals.lock"
-        lock_file.write_text("99999")
-
         runner = CliRunner()
-        result = runner.invoke(cli, ["notify"])
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            result = runner.invoke(cli, ["notify"])
         assert result.exit_code == 0
         # CliRunner mixes stderr into output; find the JSON portion
         json_start = result.output.index("{")
@@ -6263,30 +6375,30 @@ class TestNotifyLockCLI:
         self, tmp_config, mock_client, monkeypatch
     ):
         """When lock is held, recap exits 0 and prints the in-progress message."""
-        lock_file = tmp_config / ".deals.lock"
-        lock_file.write_text("99999")
-
         runner = CliRunner()
-        result = runner.invoke(cli, ["recap"])
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            result = runner.invoke(cli, ["recap"])
         assert result.exit_code == 0
         assert "in progress" in result.output
 
     def test_held_lock_with_exit_code_exits_one(self, tmp_config, mock_client):
         """notify --exit-code under a held lock must not signal 'deals found'."""
-        lock_file = tmp_config / ".deals.lock"
-        lock_file.write_text("99999")
-
         runner = CliRunner()
-        result = runner.invoke(cli, ["notify", "--exit-code"])
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            result = runner.invoke(cli, ["notify", "--exit-code"])
         assert result.exit_code == 1
 
     def test_held_lock_recap_json_emits_empty_json(self, tmp_config, mock_client):
         """recap --json lock-held emits empty JSON with the recap shape."""
-        lock_file = tmp_config / ".deals.lock"
-        lock_file.write_text("99999")
-
         runner = CliRunner()
-        result = runner.invoke(cli, ["recap", "--json"])
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            result = runner.invoke(cli, ["recap", "--json"])
         assert result.exit_code == 0
         # CliRunner mixes stderr into output; find the JSON portion
         json_start = result.output.index("{")
@@ -6425,7 +6537,9 @@ class TestRecapJson:
 
         hist_dir = constants_mod.HISTORY_DIR
         hist_dir.mkdir(parents=True, exist_ok=True)
-        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+        (hist_dir / f"{asin}.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
 
     def test_recap_json_emits_parseable_json(self, tmp_config):
         """recap --json emits valid JSON with required keys."""
@@ -6574,7 +6688,9 @@ class TestRecapWebhook:
 
         hist_dir = constants_mod.HISTORY_DIR
         hist_dir.mkdir(parents=True, exist_ok=True)
-        (hist_dir / f"{asin}.json").write_text(json.dumps(entries))
+        (hist_dir / f"{asin}.json").write_text(
+            json.dumps({"marketplaces": {"us": entries}})
+        )
 
     def test_recap_webhook_posts(self, tmp_config, monkeypatch):
         """recap --webhook POSTs to the webhook URL."""

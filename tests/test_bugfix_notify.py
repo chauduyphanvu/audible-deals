@@ -159,3 +159,7 @@ class TestExitCodeWithCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--exit-code"])
         assert result.exit_code == 1, result.output
+
+    def test_exit_1_when_wishlist_is_empty(self, mock_client, tmp_config):
+        result = CliRunner().invoke(cli, ["notify", "--exit-code"])
+        assert result.exit_code == 1, result.output

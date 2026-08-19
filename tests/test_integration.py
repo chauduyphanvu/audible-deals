@@ -626,13 +626,13 @@ class TestEdgeCases:
             }
             for i in range(365)
         ]
-        hist_file.write_text(json.dumps(old_entries))
+        hist_file.write_text(json.dumps({"marketplaces": {"us": old_entries}}))
 
         # Record a new price (today, which is different from all old dates)
         products = [make_product(asin="CAP1", price=1.99)]
         _record_prices(products)
 
-        entries = json.loads(hist_file.read_text())
+        entries = json.loads(hist_file.read_text())["marketplaces"]["us"]
         assert len(entries) == 365
         assert entries[-1]["price"] == 1.99  # newest entry
         assert entries[0] != old_entries[0]  # oldest was dropped
@@ -644,12 +644,14 @@ class TestEdgeCases:
         hist_file = hist_dir / "DAY1.json"
 
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        hist_file.write_text(json.dumps([{"date": yesterday, "price": 9.99}]))
+        hist_file.write_text(
+            json.dumps({"marketplaces": {"us": [{"date": yesterday, "price": 9.99}]}})
+        )
 
         products = [make_product(asin="DAY1", price=5.99)]
         _record_prices(products)
 
-        entries = json.loads(hist_file.read_text())
+        entries = json.loads(hist_file.read_text())["marketplaces"]["us"]
         assert len(entries) == 2
         assert entries[0]["date"] == yesterday
         assert entries[1]["date"] == datetime.date.today().isoformat()

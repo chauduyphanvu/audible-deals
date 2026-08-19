@@ -171,7 +171,7 @@ class TestFailurePathLocking:
         state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
         assert "boom" in state["run_history"][0]["error"]
 
-    def test_failure_state_write_falls_back_when_lock_held(
+    def test_failure_state_write_does_not_bypass_held_lock(
         self, mock_client, tmp_config, monkeypatch
     ):
         _seed_wishlist()
@@ -200,7 +200,5 @@ class TestFailurePathLocking:
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
-        # Even when the lock can't be re-acquired, the failure must still be
-        # recorded via the best-effort unlocked save.
-        state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
-        assert "boom" in state["run_history"][0]["error"]
+        # A held lock must never be bypassed by an unlocked state write.
+        assert not constants_mod.TRACK_STATE_FILE.exists()

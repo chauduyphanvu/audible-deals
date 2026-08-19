@@ -168,7 +168,13 @@ class TestTrackRun:
         constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         today = datetime.date.today().isoformat()
         (constants_mod.HISTORY_DIR / "B00EXTRA01.json").write_text(
-            json.dumps([{"date": today, "price": 9.99, "title": "Extra"}])
+            json.dumps(
+                {
+                    "marketplaces": {
+                        "us": [{"date": today, "price": 9.99, "title": "Extra"}]
+                    }
+                }
+            )
         )
         mock_client.get_products_batch.side_effect = [
             [make_product(asin="B00TRACK01", price=3.99)],
@@ -188,7 +194,13 @@ class TestTrackRun:
         constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
         old = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
         (constants_mod.HISTORY_DIR / "B00STALE01.json").write_text(
-            json.dumps([{"date": old, "price": 9.99, "title": "Stale"}])
+            json.dumps(
+                {
+                    "marketplaces": {
+                        "us": [{"date": old, "price": 9.99, "title": "Stale"}]
+                    }
+                }
+            )
         )
         mock_client.get_products_batch.return_value = [
             make_product(asin="B00TRACK01", price=3.99)
@@ -200,9 +212,11 @@ class TestTrackRun:
 
     def test_lock_held_skips_quietly(self, mock_client, tmp_config):
         self._seed_wishlist()
-        constants_mod.LOCK_FILE.write_text("99999")
         runner = CliRunner()
-        result = runner.invoke(cli, ["track", "run"])
+        from audible_deals.constants import run_lock
+
+        with run_lock():
+            result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code == 0, result.output
         assert not constants_mod.TRACK_STATE_FILE.exists()
 

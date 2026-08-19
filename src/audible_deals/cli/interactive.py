@@ -205,7 +205,7 @@ def _interactive_browse(
             console.print(f"[dim]Opening {p.url}[/dim]")
             click.launch(p.url)
         elif action == "history":
-            entries = load_price_history(p.asin)
+            entries = load_price_history(p.asin, p.locale)
             if not entries:
                 console.print(f"[dim]No price history for {p.asin}[/dim]")
             else:

@@ -13,7 +13,6 @@ from audible_deals.cli.helpers import (
 )
 from audible_deals.display import console, display_price_history
 from audible_deals.price_history import (
-    delete_price_histories,
     load_all_price_histories,
     load_price_history,
     purge_stale_history,
@@ -75,7 +74,8 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
             raise click.UsageError(
                 "--purge-older-than cannot be combined with --json, --all, ASIN, or --last."
             )
-        count, affected = purge_stale_history(purge_days, dry_run=True)
+        locale = ctx.obj["locale"]
+        count, affected = purge_stale_history(purge_days, dry_run=True, locale=locale)
         if count == 0:
             console.print(
                 f"[dim]No history files older than {purge_days} days found.[/dim]"
@@ -93,7 +93,7 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
                 f"Remove {count} history file(s) older than {purge_days} days?",
                 abort=True,
             )
-        actual_count = delete_price_histories(affected)
+        actual_count, _ = purge_stale_history(purge_days, locale=locale, asins=affected)
         console.print(
             f"[green]Removed {actual_count} stale history files (>{purge_days} days since last entry).[/green]"
         )
@@ -105,7 +105,11 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
         if asin or last_ref:
             raise click.UsageError("--all cannot be combined with an ASIN or --last.")
         click.echo(
-            json_mod.dumps(load_all_price_histories(), indent=2, ensure_ascii=False)
+            json_mod.dumps(
+                load_all_price_histories(ctx.obj["locale"]),
+                indent=2,
+                ensure_ascii=False,
+            )
         )
         return
 
@@ -116,7 +120,7 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
     if not asin:
         raise click.UsageError("Provide an ASIN or use --last N.")
     validate_asin(asin)
-    entries = load_price_history(asin)
+    entries = load_price_history(asin, ctx.obj["locale"])
     if json_flag:
         click.echo(json_mod.dumps(entries, indent=2, ensure_ascii=False))
         return

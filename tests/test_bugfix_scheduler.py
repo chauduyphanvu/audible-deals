@@ -4,8 +4,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 import audible_deals.scheduler as scheduler_mod
-from audible_deals.scheduler import generate_cron_line, uninstall
+from audible_deals.scheduler import SchedulerError, generate_cron_line, uninstall
 
 
 # ===================================================================
@@ -62,22 +64,65 @@ def _min_gap_minutes(minutes_list: list[int]) -> int:
 
 
 class TestCronLineHonorsInterval:
-    def test_non_divisor_does_not_undershoot_interval(self):
-        # 11 minutes -> */11 would fire ...:44,:55,:00 (a 5-minute boundary gap).
-        line = generate_cron_line(["/usr/bin/deals", "track", "run"], 660, Path("/l"))
-        step = int(line.split(" ", 1)[0].removeprefix("*/"))
-        assert _min_gap_minutes(_fire_minutes(step)) >= 11
+    def test_non_divisor_is_rejected(self):
+        with pytest.raises(SchedulerError, match="11-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 660, Path("/l"))
 
-    def test_twentyfive_minutes_does_not_undershoot(self):
-        line = generate_cron_line(["/usr/bin/deals", "track", "run"], 1500, Path("/l"))
-        step = int(line.split(" ", 1)[0].removeprefix("*/"))
-        assert _min_gap_minutes(_fire_minutes(step)) >= 25
+    def test_twentyfive_minutes_is_rejected(self):
+        with pytest.raises(SchedulerError, match="25-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 1500, Path("/l"))
 
     def test_divisor_of_60_unchanged(self):
         line = generate_cron_line(["/usr/bin/deals", "track", "run"], 1800, Path("/l"))
         assert line.startswith("*/30 * * * * ")
 
-    def test_large_non_divisor_falls_back_to_hourly(self):
-        # 50 minutes has no divisor of 60 between 50 and 59; round up to hourly.
-        line = generate_cron_line(["/usr/bin/deals", "track", "run"], 3000, Path("/l"))
-        assert line.startswith("0 * * * * ")
+    def test_large_non_divisor_is_rejected(self):
+        with pytest.raises(SchedulerError, match="50-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 3000, Path("/l"))
+
+    def test_61_minutes_is_rejected(self):
+        with pytest.raises(SchedulerError, match="61-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 61 * 60, Path("/l"))
+
+    def test_24_hours_is_daily(self):
+        line = generate_cron_line(
+            ["/usr/bin/deals", "track", "run"], 24 * 60 * 60, Path("/l")
+        )
+        assert line.startswith("0 0 * * * ")
+
+    def test_48_hours_and_seconds_are_rejected(self):
+        with pytest.raises(SchedulerError, match="48-hour"):
+            generate_cron_line(
+                ["/usr/bin/deals", "track", "run"], 48 * 60 * 60, Path("/l")
+            )
+        with pytest.raises(SchedulerError, match="seconds"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 630, Path("/l"))
+
+
+class TestWindowsScheduleHonorsInterval:
+    def test_uses_minutes_without_capping(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(
+            scheduler_mod, "track_command", lambda: ["deals", "track", "run"]
+        )
+        monkeypatch.setattr(scheduler_mod, "_run", lambda cmd: calls.append(cmd))
+        scheduler_mod._schtasks_install(61 * 60, tmp_path / "track.log")
+        assert ["/SC", "MINUTE", "/MO", "61"] == calls[0][-4:]
+
+    def test_daily_intervals_and_seconds(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(
+            scheduler_mod, "track_command", lambda: ["deals", "track", "run"]
+        )
+        monkeypatch.setattr(scheduler_mod, "_run", lambda cmd: calls.append(cmd))
+        scheduler_mod._schtasks_install(48 * 60 * 60, tmp_path / "track.log")
+        assert ["/SC", "DAILY", "/MO", "2"] == calls[0][-4:]
+        with pytest.raises(SchedulerError, match="seconds"):
+            scheduler_mod._schtasks_install(630, tmp_path / "track.log")
+
+    def test_rejects_daily_intervals_above_supported_bound(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            scheduler_mod, "track_command", lambda: ["deals", "track", "run"]
+        )
+        with pytest.raises(SchedulerError, match="365 days"):
+            scheduler_mod._schtasks_install(366 * 24 * 60 * 60, tmp_path / "track.log")
