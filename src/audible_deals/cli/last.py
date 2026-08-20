@@ -34,6 +34,7 @@ logger = logging.getLogger(__name__)
             "rating",
             "length",
             "date",
+            "title",
             "relevance",
         ]
     ),

@@ -23,6 +23,7 @@ from audible_deals.cli.options import (
     _complete_genre_names,
 )
 from audible_deals.cli.pipeline import (
+    _FetchProgressState,
     _apply_settings_filters,
     _build_scan_settings,
     _fetch_with_progress,
@@ -35,7 +36,7 @@ from audible_deals.constants import (
     SORT_OPTIONS,
 )
 from audible_deals.client import DealsClient
-from audible_deals.display import console
+from audible_deals.display import console, create_scan_progress
 from audible_deals.product import Product
 
 logger = logging.getLogger(__name__)
@@ -87,7 +88,38 @@ def _fetch_search_phrase(
     sort_orders: list[str],
     pages: int,
     description: str,
+    _progress=None,
+    _task=None,
+    _state: _FetchProgressState | None = None,
 ) -> list[Product]:
+    if _progress is None:
+        broad_calls = len(category_ids) * len(sort_orders) * pages
+        probe_calls = len(category_ids) if query else 0
+        state = _FetchProgressState(total=broad_calls + probe_calls)
+        with create_scan_progress() as progress:
+            task = progress.add_task(description, total=state.total, items=0)
+            products = _fetch_search_phrase(
+                dc,
+                query,
+                category_ids=category_ids,
+                sort_orders=sort_orders,
+                pages=pages,
+                description=description,
+                _progress=progress,
+                _task=task,
+                _state=state,
+            )
+            progress.update(
+                task,
+                total=state.completed,
+                completed=state.completed,
+                items=len(state.item_asins),
+            )
+            return products
+
+    if _task is None or _state is None:
+        raise ValueError("progress, task, and state must be provided together")
+
     broad = _fetch_with_progress(
         dc,
         keywords=query,
@@ -95,24 +127,47 @@ def _fetch_search_phrase(
         sort_orders=sort_orders,
         pages=pages,
         description=description,
+        progress=_progress,
+        task=_task,
+        state=_state,
     )
     if not query:
         return broad
 
     exact: list[Product] = []
-    try:
-        for category_id in category_ids:
-            for products, _, _ in dc.search_pages(
-                title=query,
-                category_id=category_id,
-                sort_by="Relevance",
-                max_pages=1,
-            ):
-                exact.extend(products)
-    except Exception as exc:
-        logger.info(
-            "Exact-title probe failed for %r; using broad results: %s", query, exc
-        )
+    for category_id in category_ids:
+        completed_before = _state.completed
+        try:
+            exact.extend(
+                _fetch_with_progress(
+                    dc,
+                    keywords="",
+                    title=query,
+                    category_ids=[category_id],
+                    sort_orders=["Relevance"],
+                    pages=1,
+                    description=description,
+                    progress=_progress,
+                    task=_task,
+                    state=_state,
+                )
+            )
+        except Exception as exc:
+            if _state.completed == completed_before:
+                _state.completed += 1
+                _progress.update(
+                    _task,
+                    total=_state.total,
+                    completed=_state.completed,
+                    items=len(_state.item_asins),
+                )
+            logger.info(
+                "Exact-title probe failed for %r in category %r; "
+                "using broad results: %s",
+                query,
+                category_id,
+                exc,
+            )
 
     merged: list[Product] = []
     seen_asins: set[str] = set()
@@ -134,19 +189,38 @@ def _fetch_multi_query(
     """Fetch each query separately, deduplicating by ASIN across queries."""
     all_products: list[Product] = []
     fetched_asins: set[str] = set()
-    for q in queries:
-        sub_products = _fetch_search_phrase(
-            dc,
-            category_ids=[category],
-            sort_orders=sort_orders,
-            pages=pages,
-            query=q,
-            description=f"Searching '{q}'",
+    broad_calls = len(queries) * len(sort_orders) * pages
+    probe_calls = sum(bool(query) for query in queries)
+    state = _FetchProgressState(total=broad_calls + probe_calls)
+    description = (
+        f"Searching '{queries[0]}'"
+        if len(queries) == 1
+        else f"Searching {len(queries)} queries"
+    )
+    with create_scan_progress() as progress:
+        task = progress.add_task(description, total=state.total, items=0)
+        for q in queries:
+            sub_products = _fetch_search_phrase(
+                dc,
+                category_ids=[category],
+                sort_orders=sort_orders,
+                pages=pages,
+                query=q,
+                description=f"Searching '{q}'",
+                _progress=progress,
+                _task=task,
+                _state=state,
+            )
+            for p in sub_products:
+                if p.asin not in fetched_asins:
+                    fetched_asins.add(p.asin)
+                    all_products.append(p)
+        progress.update(
+            task,
+            total=state.completed,
+            completed=state.completed,
+            items=len(fetched_asins),
         )
-        for p in sub_products:
-            if p.asin not in fetched_asins:
-                fetched_asins.add(p.asin)
-                all_products.append(p)
     return all_products
 
 
@@ -272,10 +346,13 @@ def _validate_history_filter_options(
                 f"{opt}: invalid date {value!r} (expected YYYY-MM-DD)"
             )
 
-    return (
-        _norm_date("--released-after", released_after),
-        _norm_date("--released-before", released_before),
-    )
+    normalized_after = _norm_date("--released-after", released_after)
+    normalized_before = _norm_date("--released-before", released_before)
+    if normalized_after and normalized_before and normalized_after > normalized_before:
+        raise click.UsageError(
+            "--released-after cannot be later than --released-before"
+        )
+    return normalized_after, normalized_before
 
 
 @click.command()

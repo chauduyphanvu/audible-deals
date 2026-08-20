@@ -27,6 +27,7 @@ from audible_deals.wishlist import (
     save_wishlist,
     warn_wishlist_issues,
     wishlist_entry,
+    wishlist_lock,
 )
 
 _VALID_SORT_KEYS = sorted(_SORT_KEYS.keys())
@@ -147,18 +148,30 @@ def _interactive_browse(
                             "[dim]Target must be a finite number greater than 0, no target set[/dim]"
                         )
 
-            for z in to_add:
-                p = products[z]
-                items.append(wishlist_entry(p, target_price))
-                target_note = (
-                    f" (target: {p.currency}{target_price:.2f})"
-                    if target_price is not None
-                    else ""
-                )
-                console.print(
-                    f"[green]+[/green] {p.title} added to wishlist{target_note}"
-                )
-            save_wishlist(items)
+            with wishlist_lock():
+                items = load_wishlist_for_mutation()
+                inspection = inspect_wishlist(items)
+                warn_wishlist_issues(inspection.issues)
+                existing_asins = {item["asin"] for item in inspection.asin_items}
+                added = 0
+                for z in to_add:
+                    p = products[z]
+                    if p.asin in existing_asins:
+                        console.print(f"[dim]{p.asin} already on wishlist[/dim]")
+                        continue
+                    items.append(wishlist_entry(p, target_price))
+                    existing_asins.add(p.asin)
+                    added += 1
+                    target_note = (
+                        f" (target: {p.currency}{target_price:.2f})"
+                        if target_price is not None
+                        else ""
+                    )
+                    console.print(
+                        f"[green]+[/green] {p.title} added to wishlist{target_note}"
+                    )
+                if added:
+                    save_wishlist(items)
             continue
 
         if action == "sort":

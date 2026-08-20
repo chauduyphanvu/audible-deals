@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import contextlib
 import difflib
+import hashlib
 import json
 import logging
 import math
@@ -30,6 +31,7 @@ from audible_deals.constants import (
     LOCALE_DOMAIN,
     MAX_PAGE_SIZE,
 )
+from audible_deals.locking import advisory_lock
 from audible_deals.storage import _atomic_write
 from audible_deals.product import (  # noqa: F401 — re-exported for back-compat
     Product,
@@ -160,6 +162,13 @@ class DealsClient:
         self.auth_file = auth_file
         self.locale = locale
         self._client: audible.Client | None = None
+        self._authenticator: audible.Authenticator | None = None
+        self._auth_snapshot: tuple[object, object, object] | None = None
+        self._auth_file_fingerprint: bytes | None = None
+        self._auth_save_pending = False
+        self._auth_save_warned = False
+        self._auth_persistence_disabled = False
+        self._auth_save_lock = threading.Lock()
         self._categories_cache: list[dict[str, str]] | None = None
         self._library_cache: set[str] | None = None
         self._abort_fetch = threading.Event()
@@ -208,6 +217,7 @@ class DealsClient:
                 if self._abort_fetch.wait(delay):
                     raise
                 continue
+            self._persist_refreshed_auth()
             if isinstance(resp, tuple):
                 resp = resp[0]
             if debug:
@@ -234,6 +244,14 @@ class DealsClient:
         self.auth_file.parent.mkdir(parents=True, exist_ok=True)
         os.chmod(self.auth_file.parent, 0o700)
 
+    def _auth_file_lock(self):
+        lock_file = self.auth_file.with_name(f".{self.auth_file.name}.lock")
+        return advisory_lock(lock_file, wait=True)
+
+    @staticmethod
+    def _auth_fingerprint(contents: bytes) -> bytes:
+        return hashlib.sha256(contents).digest()
+
     def login(self, username: str, password: str) -> None:
         """Interactive Audible login. Persists tokens to auth_file."""
         import audible
@@ -246,9 +264,10 @@ class DealsClient:
             locale=self.locale,
             with_username=True,
         )
-        with _restrictive_umask():
-            auth.to_file(self.auth_file)
-        os.chmod(self.auth_file, 0o600)
+        with self._auth_file_lock():
+            with _restrictive_umask():
+                auth.to_file(self.auth_file)
+            os.chmod(self.auth_file, 0o600)
         logger.info("login complete, auth written to %s", self.auth_file)
 
     def login_external(
@@ -308,9 +327,10 @@ class DealsClient:
                 locale=self.locale,
             )
 
-        with _restrictive_umask():
-            auth.to_file(self.auth_file)
-        os.chmod(self.auth_file, 0o600)
+        with self._auth_file_lock():
+            with _restrictive_umask():
+                auth.to_file(self.auth_file)
+            os.chmod(self.auth_file, 0o600)
         logger.info("login_external complete, auth written to %s", self.auth_file)
 
     def import_auth(self, source_path: Path) -> None:
@@ -335,8 +355,9 @@ class DealsClient:
             auth_data = _validate_audible_cli_auth(data)
             source_format = "audible-cli"
 
-        _atomic_write(self.auth_file, json.dumps(auth_data, indent=2))
-        os.chmod(self.auth_file, 0o600)
+        with self._auth_file_lock():
+            _atomic_write(self.auth_file, json.dumps(auth_data, indent=2))
+            os.chmod(self.auth_file, 0o600)
         logger.info(
             "import_auth (%s format) written to %s", source_format, self.auth_file
         )
@@ -352,14 +373,84 @@ class DealsClient:
         if self._client is None:
             if not self.auth_file.exists():
                 raise RuntimeError("Not authenticated. Run 'deals login' first.")
-            auth = audible.Authenticator.from_file(self.auth_file)
+            with self._auth_file_lock():
+                if not self.auth_file.exists():
+                    raise RuntimeError("Not authenticated. Run 'deals login' first.")
+                auth_contents = self.auth_file.read_bytes()
+                auth = audible.Authenticator.from_file(self.auth_file)
+            self._authenticator = auth
+            self._auth_snapshot = self._auth_refresh_state(auth)
+            self._auth_file_fingerprint = self._auth_fingerprint(auth_contents)
+            self._auth_save_pending = False
+            self._auth_save_warned = False
+            self._auth_persistence_disabled = False
             self._client = audible.Client(auth=auth)
         return self._client
 
+    @staticmethod
+    def _auth_refresh_state(
+        auth: audible.Authenticator,
+    ) -> tuple[object, object, object]:
+        return (auth.access_token, auth.refresh_token, auth.expires)
+
+    def _persist_refreshed_auth(self) -> None:
+        """Atomically persist token refreshes without failing successful requests."""
+        auth = self._authenticator
+        if auth is None:
+            return
+        with self._auth_save_lock:
+            if self._auth_persistence_disabled:
+                return
+            current = self._auth_refresh_state(auth)
+            if current == self._auth_snapshot:
+                self._auth_save_pending = False
+                return
+            try:
+                with self._auth_file_lock():
+                    disk_contents = self.auth_file.read_bytes()
+                    disk_fingerprint = self._auth_fingerprint(disk_contents)
+                    if disk_fingerprint != self._auth_file_fingerprint:
+                        if not self._auth_save_warned:
+                            logger.warning(
+                                "Not saving refreshed authentication because %s "
+                                "changed after this client loaded it",
+                                self.auth_file,
+                            )
+                            self._auth_save_warned = True
+                        self._auth_snapshot = current
+                        self._auth_save_pending = False
+                        self._auth_persistence_disabled = True
+                        return
+                    serialized = json.dumps(auth.to_dict(), indent=4)
+                    _atomic_write(self.auth_file, serialized)
+                    self._auth_file_fingerprint = self._auth_fingerprint(
+                        serialized.encode()
+                    )
+                    os.chmod(self.auth_file, 0o600)
+            except Exception as exc:
+                self._auth_save_pending = True
+                if not self._auth_save_warned:
+                    logger.warning(
+                        "Could not save refreshed authentication to %s: %s; "
+                        "will retry when the client closes",
+                        self.auth_file,
+                        exc,
+                    )
+                    self._auth_save_warned = True
+                return
+            self._auth_snapshot = current
+            self._auth_save_pending = False
+
     def close(self) -> None:
         if self._client is not None:
+            if self._auth_save_pending:
+                self._persist_refreshed_auth()
             self._client.close()
             self._client = None
+            self._authenticator = None
+            self._auth_snapshot = None
+            self._auth_file_fingerprint = None
+            self._auth_persistence_disabled = False
 
     def __enter__(self):
         return self
@@ -373,7 +464,7 @@ class DealsClient:
         keywords: str = "",
         title: str = "",
         category_id: str = "",
-        sort_by: str = "Price",
+        sort_by: str = "Relevance",
         num_results: int = MAX_PAGE_SIZE,
         page: int | None = None,
     ) -> tuple[list[Product], int]:
@@ -410,7 +501,7 @@ class DealsClient:
         keywords: str = "",
         title: str = "",
         category_id: str = "",
-        sort_by: str = "Price",
+        sort_by: str = "Relevance",
         max_pages: int = 10,
     ) -> Iterator[tuple[list[Product], int, int]]:
         """Yield (products, page_num, total) for each page of results.

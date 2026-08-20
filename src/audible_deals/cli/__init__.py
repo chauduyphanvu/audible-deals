@@ -9,7 +9,7 @@ Usage:
     deals detail ASIN              Show detailed product info
     deals open ASIN                Open Audible page in browser
     deals compare ASIN ASIN ...    Side-by-side comparison
-    deals wishlist add/remove/list/sync Manage your watchlist
+    deals wishlist add/remove/list/sync/repair Manage your watchlist
     deals watch                    Check wishlist for price drops
     deals notify [--webhook URL]   Send notifications for deals at target
     deals profile save/list/delete Manage saved search profiles

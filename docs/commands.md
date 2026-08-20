@@ -16,7 +16,7 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals open ASIN` | Open an audiobook on Audible |
 | `deals compare ASIN ASIN ...` | Compare audiobooks side by side |
 | `deals categories` | List genres; use `--parent ID` to drill down |
-| `deals wishlist` | Add, list, remove, or sync tracked books |
+| `deals wishlist` | Add, list, remove, sync, or repair tracked books |
 | `deals watch` | Check wishlist prices |
 | `deals history ASIN` | View local price history |
 | `deals notify` | Print or send alerts for wishlist deals |
@@ -164,6 +164,7 @@ Use `--max-series` to cap the number of series scanned and `--pages` to control 
 ```bash
 deals last
 deals last --sort discount
+deals last --sort title
 deals last --max-price 3 --min-rating 4.5
 deals last --narrator "R.C. Bray" --min-ratings 100
 deals last --language english

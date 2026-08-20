@@ -487,6 +487,7 @@ def _store_checks() -> list[_Row]:
                     remaining = len(inspection.issues) - 5
                     if remaining > 0:
                         shown += f"; +{remaining} more"
+                    shown += "; run 'deals wishlist repair --dry-run'"
                     rows.append(("Wishlist health", "WARN", shown))
                 else:
                     count = len(inspection.asin_items) + len(inspection.author_items)

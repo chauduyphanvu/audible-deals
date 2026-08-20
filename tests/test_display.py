@@ -280,6 +280,43 @@ class TestDisplayProductsShowUrl:
         out = _capture(display_products, products, show_url=False)
         assert "/pd/B001" not in out
 
+    def test_narrow_output_keeps_table_and_lists_each_full_url_once(self):
+        products = [
+            make_product(asin="B001", title="First URL Book", price=3.99),
+            make_product(asin="B002", title="Second URL Book", price=4.99),
+        ]
+
+        out = _capture(display_products, products, width=80, show_url=True)
+
+        assert "Title / Author" in out
+        assert "Price" in out
+        assert out.index("URLs") > out.index("Rating")
+        for product in products:
+            assert out.count(product.url) == 1
+        assert "1. https://" in out
+
+    def test_180_columns_preserves_full_url_with_optional_columns(self):
+        product = make_product(
+            asin="B00R6S1RCY1234",
+            title="A deliberately long boundary title " * 4,
+            price=3.0,
+            list_price=5.0,
+            locale="au",
+        )
+
+        out = _capture(
+            display_products,
+            [product],
+            width=180,
+            show_url=True,
+            credit_price=11.25,
+            hist_context={product.asin: -10},
+            match_context={product.asin: "exact title match"},
+        )
+
+        assert out.count(product.url) == 1
+        assert "URLs" not in out
+
 
 class TestDisplayProductsFullUrl:
     def test_show_url_shows_full_url(self):
@@ -364,6 +401,59 @@ class TestDisplayWatchTableZeroTarget:
         out = _capture(display_watch_table, [p], {"HUGE1": target})
 
         assert "$10000000" in out
+
+
+class TestDisplayWatchTableShowUrl:
+    def test_narrow_output_lists_urls_by_asin_after_normal_table(self):
+        products = [
+            make_product(asin="W1", title="First", price=2.0),
+            make_product(asin="W2", title="Second", price=3.0),
+        ]
+
+        out = _capture(
+            display_watch_table,
+            products,
+            {"W1": 5.0, "W2": 5.0},
+            width=80,
+            show_url=True,
+        )
+
+        assert "Title" in out
+        assert "Status" in out
+        assert out.index("URLs") > out.index("Status")
+        for product in products:
+            assert out.count(product.url) == 1
+            assert f"{product.asin}: https://" in out
+
+    def test_wide_output_retains_url_column_without_duplicate_list(self):
+        product = make_product(asin="WIDE1", title="Wide", price=2.0)
+
+        out = _capture(
+            display_watch_table,
+            [product],
+            {"WIDE1": 5.0},
+            width=200,
+            show_url=True,
+        )
+
+        assert "URL" in out
+        assert out.count(product.url) == 1
+        assert "URLs" not in out
+
+    def test_180_columns_preserves_full_url_with_buy_column(self):
+        product = make_product(asin="B00R6S1RCY", title="Boundary", price=2.0)
+
+        out = _capture(
+            display_watch_table,
+            [product],
+            {product.asin: 5.0},
+            width=180,
+            show_url=True,
+            credit_price=11.25,
+        )
+
+        assert out.count(product.url) == 1
+        assert "URLs" not in out
 
 
 class TestWishlistAndRecapTargets:

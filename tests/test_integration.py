@@ -53,6 +53,7 @@ class TestClientIntegration:
         products, total = dc.search_catalog(keywords="test")
         assert len(products) == 1
         assert products[0].asin == "A2"
+        assert api.get_mock.call_args.kwargs["products_sort_by"] == "Relevance"
 
     def test_search_catalog_and_pages_forward_title(self, api):
         api.get_mock.return_value = {"products": [], "total_results": 0}

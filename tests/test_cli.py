@@ -2287,6 +2287,23 @@ class TestFetchWithProgress:
 
 
 class TestExactTitleSearch:
+    class _ProgressRecorder:
+        def __init__(self):
+            self.updates = []
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def add_task(self, description, **kwargs):
+            self.updates.append(kwargs)
+            return 1
+
+        def update(self, task, **kwargs):
+            self.updates.append(kwargs)
+
     def test_broad_then_title_merge_dedup_and_relevance_tiers(
         self, mock_client, tmp_config
     ):
@@ -2386,6 +2403,94 @@ class TestExactTitleSearch:
             make_product(asin="C", title="Dune Returns"),
         ]
         assert [p.asin for p in _rank_relevance(products, " DUNE ")] == ["A", "B", "C"]
+
+    def test_progress_includes_broad_and_exact_calls_and_unique_items(
+        self, mock_client, tmp_config, monkeypatch
+    ):
+        recorder = self._ProgressRecorder()
+        monkeypatch.setattr(
+            "audible_deals.cli.catalog.create_scan_progress", lambda: recorder
+        )
+        broad = [make_product(asin="A", title="Query")]
+        exact = [
+            make_product(asin="A", title="Query"),
+            make_product(asin="B", title="Query Two"),
+        ]
+
+        def fake_search_pages(**kwargs):
+            products = exact if kwargs.get("title") else broad
+            yield products, 1, len(products)
+
+        mock_client.search_pages.side_effect = fake_search_pages
+
+        products = _fetch_search_phrase(
+            mock_client,
+            "Query",
+            category_ids=["cat"],
+            sort_orders=["Relevance"],
+            pages=2,
+            description="Searching",
+        )
+
+        assert {product.asin for product in products} == {"A", "B"}
+        assert recorder.updates[-1] == {"total": 2, "completed": 2, "items": 2}
+
+    def test_multi_query_progress_reports_global_deduplicated_count(
+        self, mock_client, tmp_config, monkeypatch
+    ):
+        recorder = self._ProgressRecorder()
+        monkeypatch.setattr(
+            "audible_deals.cli.catalog.create_scan_progress", lambda: recorder
+        )
+
+        def fake_search_pages(**kwargs):
+            query = kwargs.get("title") or kwargs.get("keywords")
+            asin = "SHARED" if not kwargs.get("title") else f"EXACT{query}"
+            yield [make_product(asin=asin, title=query)], 1, 1
+
+        mock_client.search_pages.side_effect = fake_search_pages
+
+        products = _fetch_multi_query(
+            mock_client,
+            ["one", "two"],
+            category="cat",
+            sort_orders=["Relevance"],
+            pages=1,
+        )
+
+        assert {product.asin for product in products} == {
+            "SHARED",
+            "EXACTone",
+            "EXACTtwo",
+        }
+        assert recorder.updates[-1] == {"total": 4, "completed": 4, "items": 3}
+
+    def test_failed_exact_probe_still_completes_progress_task(
+        self, mock_client, tmp_config, monkeypatch
+    ):
+        recorder = self._ProgressRecorder()
+        monkeypatch.setattr(
+            "audible_deals.cli.catalog.create_scan_progress", lambda: recorder
+        )
+
+        def fake_search_pages(**kwargs):
+            if kwargs.get("title"):
+                raise RuntimeError("probe failed")
+            yield [make_product(asin="BROAD")], 1, 1
+
+        mock_client.search_pages.side_effect = fake_search_pages
+
+        products = _fetch_search_phrase(
+            mock_client,
+            "query",
+            category_ids=["cat"],
+            sort_orders=["Relevance"],
+            pages=1,
+            description="Searching",
+        )
+
+        assert [product.asin for product in products] == ["BROAD"]
+        assert recorder.updates[-1] == {"total": 2, "completed": 2, "items": 1}
 
 
 class TestSearchDeepFlag:
@@ -2832,6 +2937,32 @@ class TestLastQueryContext:
         result = runner.invoke(cli, ["last"])
         assert result.exit_code == 0, result.output
         assert "Last results" in result.output
+
+    def test_title_sort_is_alphabetical_and_uses_only_cached_results(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.helpers as helpers_mod
+
+        products = [
+            make_product(asin="Z1", title="zebra", series_name="", series_position=""),
+            make_product(asin="A1", title="Alpha", series_name="", series_position=""),
+        ]
+        constants_mod.LAST_RESULTS_FILE.write_text(
+            json.dumps([_serialize_product(product) for product in products])
+        )
+        monkeypatch.setattr(
+            helpers_mod,
+            "_get_client",
+            lambda locale: pytest.fail("last constructed an API client"),
+        )
+
+        result = CliRunner().invoke(cli, ["last", "--sort", "title", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert [item["title"] for item in json.loads(result.output)] == [
+            "Alpha",
+            "zebra",
+        ]
 
     def test_corrupt_cache_raises(self, tmp_config):
         """deals last raises ClickException for a corrupt (non-list, non-dict) cache."""
@@ -8124,6 +8255,48 @@ class TestReleasedDateCLI:
         result = runner.invoke(cli, ["search", "test", "--released-after", "bad"])
         assert result.exit_code == 2
         assert "invalid date" in result.output
+
+    @pytest.mark.parametrize("command", [["find"], ["search", "test"]])
+    def test_inverted_release_window_is_rejected_before_client_creation(
+        self, command, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.catalog as catalog_mod
+
+        monkeypatch.setattr(
+            catalog_mod,
+            "_get_client",
+            lambda locale: pytest.fail("inverted dates constructed a client"),
+        )
+        result = CliRunner().invoke(
+            cli,
+            [
+                *command,
+                "--released-after",
+                "2025-01-02",
+                "--released-before",
+                "2025-01-01",
+                "--dry-run",
+            ],
+        )
+
+        assert result.exit_code == 2
+        assert "cannot be later" in result.output
+
+    @pytest.mark.parametrize("command", [["find"], ["search", "test"]])
+    def test_equal_release_bounds_are_valid(self, command, tmp_config):
+        result = CliRunner().invoke(
+            cli,
+            [
+                *command,
+                "--released-after",
+                "2025-01-01",
+                "--released-before",
+                "2025-01-01",
+                "--dry-run",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
 
 
 # ===================================================================

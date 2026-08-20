@@ -149,17 +149,42 @@ def display_products(
         return
 
     term_width = console.width or 80
-    title_max = max(30, min(term_width - 55, 80))
+    show_url_column = show_url and term_width >= 180
+    url_width = max(len(product.url) for product in products)
     # On narrow terminals a Match column would be collapsed away by Rich;
     # fold the reason into the title cell instead.
     match_column = match_context is not None and term_width >= 100
     match_inline = match_context is not None and not match_column
-    if match_column:
-        title_max = max(24, title_max - 18)
-
     show_hist = hist_context is not None and any(
         p.asin in hist_context for p in products
     )
+    match_width = 0
+    if match_column:
+        match_width = min(
+            28,
+            max(12, *(len(reason) for reason in match_context.values())),
+        )
+
+    title_max = max(30, min(term_width - 55, 80))
+    if show_url_column:
+        fixed_widths = [5, 12, 7, 9, 10, url_width]
+        column_count = 7
+        if credit_price is not None:
+            fixed_widths.append(7)
+            column_count += 1
+        if show_hist:
+            fixed_widths.append(8)
+            column_count += 1
+        if match_column:
+            fixed_widths.append(match_width)
+            column_count += 1
+        table_overhead = 3 * column_count + 1
+        title_max = max(
+            1,
+            min(title_max, term_width - sum(fixed_widths) - table_overhead),
+        )
+    elif match_column:
+        title_max = max(24, title_max - 18)
 
     table = Table(
         title=title,
@@ -179,9 +204,17 @@ def display_products(
     if show_hist:
         table.add_column("vs hist", justify="right", width=8)
     if match_column:
-        table.add_column("Match", min_width=12, max_width=28, style="cyan")
-    if show_url:
-        table.add_column("URL", no_wrap=True, style="dim cyan")
+        table.add_column("Match", width=match_width, style="cyan")
+    if show_url_column:
+        table.add_column(
+            "URL",
+            width=url_width,
+            min_width=url_width,
+            max_width=url_width,
+            no_wrap=True,
+            overflow="ignore",
+            style="dim cyan",
+        )
 
     for i, p in enumerate(products, 1):
         cur = p.currency
@@ -203,11 +236,15 @@ def display_products(
             row.append(_hist_cell(pct))
         if match_column:
             row.append(match_context.get(p.asin, ""))
-        if show_url:
+        if show_url_column:
             row.append(p.url)
         table.add_row(*row)
 
     console.print(table)
+    if show_url and not show_url_column:
+        console.print("\n[bold]URLs[/bold]")
+        for i, product in enumerate(products, 1):
+            console.print(f"  {i}. {product.url}", soft_wrap=True, overflow="ignore")
 
 
 def display_categories(
@@ -590,6 +627,8 @@ def display_watch_table(
     credit_price: float | None = None,
 ) -> int:
     """Display a wishlist price-check table. Returns the number of BUY hits."""
+    show_url_column = show_url and (console.width or 80) >= 180
+    url_width = max((len(product.url) for product in products), default=len("URL"))
     table = Table(
         title="Wishlist Price Check",
         show_lines=False,
@@ -602,10 +641,18 @@ def display_watch_table(
     table.add_column("Status", width=10)
     if credit_price is not None:
         table.add_column("Buy", width=7)
-    if show_url:
-        table.add_column("URL", max_width=50)
+    if show_url_column:
+        table.add_column(
+            "URL",
+            width=url_width,
+            min_width=url_width,
+            max_width=url_width,
+            no_wrap=True,
+            overflow="ignore",
+        )
 
     hits = 0
+    displayed_products: list[Product] = []
     for p in products:
         target = targets.get(p.asin)
         target_str = price_str(target, currency)
@@ -621,6 +668,7 @@ def display_watch_table(
             status = "[dim]waiting[/dim]"
         if buy_only and not is_buy:
             continue
+        displayed_products.append(p)
         row = [
             f"{p.title}\n[dim]{p.authors_str}  [cyan]{p.asin}[/cyan][/dim]",
             p_str,
@@ -629,11 +677,19 @@ def display_watch_table(
         ]
         if credit_price is not None:
             row.append(_buy_cell(p, credit_price))
-        if show_url:
+        if show_url_column:
             row.append(p.url)
         table.add_row(*row)
 
     console.print(table)
+    if show_url and not show_url_column and displayed_products:
+        console.print("\n[bold]URLs[/bold]")
+        for product in displayed_products:
+            console.print(
+                f"  {product.asin}: {product.url}",
+                soft_wrap=True,
+                overflow="ignore",
+            )
     if hits:
         console.print(
             f"\n  [bold green]{hits} item(s) at or below target price![/bold green]"

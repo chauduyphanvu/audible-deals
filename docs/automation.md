@@ -26,6 +26,10 @@ deals wishlist update B00R6S1RCY --clear-target
 # Preview removal of wishlist entries you already own
 deals wishlist purge --owned --dry-run
 
+# Inspect invalid local entries, then repair with confirmation
+deals wishlist repair --dry-run
+deals wishlist repair
+
 # Export for scripting or backup
 deals wishlist list --json | jq -r '.items[].asin'
 deals wishlist list -o wishlist.csv
@@ -34,6 +38,8 @@ deals wishlist list -o wishlist.csv
 `wishlist sync` skips existing local entries, so running it repeatedly is safe. Add `--update` with `--max-price` to change existing targets in bulk.
 
 ASIN commands also accept positions from the last result set through `--last`. Remove an author watch with `deals wishlist remove --author "NAME"`. To remove owned items after previewing them, rerun `deals wishlist purge --owned` and confirm the prompt.
+
+`wishlist repair` refuses malformed JSON and non-list files. When confirmed, it keeps valid entries in order and saves an owner-only backup beside `wishlist.json` before removing invalid entries. Use `--yes` to skip confirmation in trusted automation.
 
 Author watches are checked by `deals notify` and scheduled `deals track` runs. `deals watch` checks explicit ASIN entries only.
 

@@ -10,6 +10,7 @@ import math
 from pathlib import Path
 
 import click
+from rich.progress import Progress, TaskID
 
 from audible_deals.cli.helpers import _load_profile, _safe_record_prices
 from audible_deals.cli.interactive import _interactive_browse
@@ -40,6 +41,13 @@ from audible_deals.serialization import export_products, serialize_product
 from audible_deals.settings import Settings
 
 logger = logging.getLogger(__name__)
+
+
+@dataclasses.dataclass
+class _FetchProgressState:
+    total: int
+    completed: int = 0
+    item_asins: set[str] = dataclasses.field(default_factory=set)
 
 
 def _apply_filters(
@@ -441,48 +449,79 @@ def _fetch_with_progress(
     dc: DealsClient,
     *,
     keywords: str,
+    title: str = "",
     category_ids: list[str],
     sort_orders: list[str],
     pages: int,
     description: str,
+    progress: Progress | None = None,
+    task: TaskID | None = None,
+    state: _FetchProgressState | None = None,
 ) -> list[Product]:
     """Fetch products across one or more category ids and sort orders with a progress bar.
 
     Deduplicates by ASIN across all segments. Returns a flat list.
     """
+    total_segments = len(category_ids) * len(sort_orders)
+    if progress is None:
+        state = _FetchProgressState(total=pages * total_segments)
+        with create_scan_progress() as owned_progress:
+            owned_task = owned_progress.add_task(
+                description, total=state.total, items=0
+            )
+            products = _fetch_with_progress(
+                dc,
+                keywords=keywords,
+                title=title,
+                category_ids=category_ids,
+                sort_orders=sort_orders,
+                pages=pages,
+                description=description,
+                progress=owned_progress,
+                task=owned_task,
+                state=state,
+            )
+            owned_progress.update(
+                owned_task,
+                total=state.completed,
+                completed=state.completed,
+                items=len(state.item_asins),
+            )
+            return products
+
+    if task is None or state is None:
+        raise ValueError("progress, task, and state must be provided together")
+
     all_products: list[Product] = []
     seen_asins: set[str] = set()
-    total_segments = len(category_ids) * len(sort_orders)
-    total_pages = pages * total_segments
+    for category_id in category_ids:
+        for sort_order in sort_orders:
+            first_page_seen = False
+            query_args = {"title": title} if title else {"keywords": keywords}
+            for products, page_num, total in dc.search_pages(
+                **query_args,
+                category_id=category_id,
+                sort_by=sort_order,
+                max_pages=pages,
+            ):
+                new_products = [p for p in products if p.asin not in seen_asins]
+                seen_asins.update(p.asin for p in new_products)
+                all_products.extend(new_products)
+                state.item_asins.update(p.asin for p in products)
+                state.completed += 1
 
-    with create_scan_progress() as progress:
-        task = progress.add_task(description, total=total_pages, items=0)
-        pages_done = 0
-        segments_done = 0
+                if page_num == 1 and not first_page_seen:
+                    actual = (
+                        min(pages, math.ceil(total / MAX_PAGE_SIZE)) if total else 1
+                    )
+                    state.total -= pages - actual
+                    first_page_seen = True
 
-        for category_id in category_ids:
-            for sort_idx, sort_order in enumerate(sort_orders):
-                for products, page_num, total in dc.search_pages(
-                    keywords=keywords,
-                    category_id=category_id,
-                    sort_by=sort_order,
-                    max_pages=pages,
-                ):
-                    new_products = [p for p in products if p.asin not in seen_asins]
-                    seen_asins.update(p.asin for p in new_products)
-                    all_products.extend(new_products)
-                    pages_done += 1
-
-                    if page_num == 1:
-                        actual = min(pages, math.ceil(total / 50)) if total else 1
-                        segments_remaining = total_segments - segments_done - 1
-                        total_pages = (
-                            (pages_done - 1) + actual + segments_remaining * pages
-                        )
-                        progress.update(task, total=total_pages)
-
-                    progress.update(task, completed=pages_done, items=len(all_products))
-
-                segments_done += 1
+                progress.update(
+                    task,
+                    total=state.total,
+                    completed=state.completed,
+                    items=len(state.item_asins),
+                )
 
     return all_products

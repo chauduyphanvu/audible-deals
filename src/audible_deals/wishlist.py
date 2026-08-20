@@ -2,17 +2,21 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import math
+import os
 from dataclasses import dataclass
+from pathlib import Path
 
 import click
 
 from audible_deals import constants
 from audible_deals.constants import _ASIN_RE
+from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
-from audible_deals.storage import load_json_file, save_json_file
+from audible_deals.storage import _fsync_parent, load_json_file, save_json_file
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,17 @@ def _valid_target(value: object, *, optional: bool) -> bool:
     if isinstance(value, int):
         return value >= 0
     return isinstance(value, float) and math.isfinite(value) and value >= 0
+
+
+def _reject_json_constant(value: str):
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _parse_finite_float(value: str) -> float:
+    parsed = float(value)
+    if not math.isfinite(parsed):
+        raise ValueError(f"JSON number is not finite: {value}")
+    return parsed
 
 
 def inspect_wishlist(raw: object) -> WishlistInspection:
@@ -95,7 +110,8 @@ def warn_wishlist_issues(issues: list[WishlistIssue]) -> None:
         ctx.meta[warning_key] = True
     click.echo(
         f"Warning: skipped {len(issues)} invalid wishlist "
-        f"entr{'y' if len(issues) == 1 else 'ies'}.",
+        f"entr{'y' if len(issues) == 1 else 'ies'}. "
+        "Run 'deals wishlist repair --dry-run' to inspect them.",
         err=True,
     )
 
@@ -122,8 +138,65 @@ def load_wishlist_for_mutation() -> list[dict]:
     return data
 
 
-def save_wishlist(items: list[dict]) -> None:
-    save_json_file(constants.WISHLIST_FILE, items, "wishlist")
+def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
+    """Load the exact saved bytes and require a list-shaped JSON document."""
+    try:
+        contents = constants.WISHLIST_FILE.read_bytes()
+    except FileNotFoundError:
+        return [], None
+    except OSError as exc:
+        raise click.ClickException(f"Cannot repair wishlist: could not read it: {exc}")
+
+    try:
+        data = json.loads(
+            contents,
+            parse_constant=_reject_json_constant,
+            parse_float=_parse_finite_float,
+        )
+    except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
+        raise click.ClickException(f"Cannot repair wishlist: malformed JSON: {exc}")
+    if not isinstance(data, list):
+        raise click.ClickException("Cannot repair wishlist: expected a JSON list.")
+    return data, contents
+
+
+@contextlib.contextmanager
+def wishlist_lock():
+    """Serialize wishlist read-modify-write operations across processes."""
+    lock_file = constants.WISHLIST_FILE.with_name(
+        f".{constants.WISHLIST_FILE.name}.lock"
+    )
+    with advisory_lock(lock_file, wait=True):
+        yield
+
+
+def create_wishlist_backup(contents: bytes) -> Path:
+    """Create an owner-only, collision-safe backup beside the wishlist."""
+    source = constants.WISHLIST_FILE
+    suffix = 0
+    while True:
+        ending = ".bak" if suffix == 0 else f".bak.{suffix}"
+        candidate = source.with_name(source.name + ending)
+        try:
+            fd = os.open(candidate, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600)
+        except FileExistsError:
+            suffix += 1
+            continue
+        try:
+            with os.fdopen(fd, "wb") as backup:
+                backup.write(contents)
+                backup.flush()
+                os.fsync(backup.fileno())
+            os.chmod(candidate, 0o600)
+            _fsync_parent(candidate)
+        except BaseException:
+            candidate.unlink(missing_ok=True)
+            raise
+        return candidate
+
+
+def save_wishlist(items: list[dict], *, durable: bool = False) -> None:
+    save_json_file(constants.WISHLIST_FILE, items, "wishlist", durable=durable)
 
 
 def partition_wishlist(items: list[dict]) -> tuple[list[dict], list[dict]]:
