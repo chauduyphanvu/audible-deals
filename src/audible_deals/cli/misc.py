@@ -38,7 +38,7 @@ from audible_deals.display import (
 from audible_deals.results_cache import load_seen_asins
 from audible_deals.settings import _PROFILE_EXTRA_KEYS
 from audible_deals.validation import validate_asin
-from audible_deals.wishlist import load_wishlist
+from audible_deals.wishlist import inspect_wishlist
 
 
 @click.command()
@@ -326,7 +326,11 @@ def _auth_checks() -> tuple[list[_Row], bool]:
 
     if inspection.status == "expired":
         rows.append(
-            ("Auth token expiry", "FAIL", "Token has expired — run 'deals login'")
+            (
+                "Auth token expiry",
+                "WARN",
+                "Access token expired — automatic refresh will be attempted",
+            )
         )
     elif inspection.status == "expiring":
         rows.append(
@@ -457,8 +461,38 @@ def _store_checks() -> list[_Row]:
     except Exception as e:
         rows.append(("Notify-state health", "WARN", str(e)))
 
+    if not constants.WISHLIST_FILE.exists():
+        rows.append(("Wishlist health", "PASS", "No entries"))
+    else:
+        try:
+            raw_wishlist = json_mod.loads(constants.WISHLIST_FILE.read_text())
+        except Exception as e:
+            rows.append(("Wishlist health", "FAIL", str(e)))
+        else:
+            if not isinstance(raw_wishlist, list):
+                rows.append(
+                    (
+                        "Wishlist health",
+                        "FAIL",
+                        f"Expected a list, got {type(raw_wishlist).__name__}",
+                    )
+                )
+            else:
+                inspection = inspect_wishlist(raw_wishlist)
+                if inspection.issues:
+                    shown = "; ".join(
+                        f"[{issue.index}] {issue.reason}"
+                        for issue in inspection.issues[:5]
+                    )
+                    remaining = len(inspection.issues) - 5
+                    if remaining > 0:
+                        shown += f"; +{remaining} more"
+                    rows.append(("Wishlist health", "WARN", shown))
+                else:
+                    count = len(inspection.asin_items) + len(inspection.author_items)
+                    rows.append(("Wishlist health", "PASS", f"{count} entries"))
+
     for check, loader in (
-        ("Wishlist parseable", load_wishlist),
         ("Profiles parseable", load_profiles),
         ("Monitors parseable", load_monitors),
         ("Seen-ASINs parseable", load_seen_asins),

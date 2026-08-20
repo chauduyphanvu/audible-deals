@@ -3,13 +3,17 @@
 from __future__ import annotations
 
 import json
+import logging
+from pathlib import Path
 
 import click
 import pytest
+from click.testing import CliRunner
 
 import audible_deals.constants as constants_mod
 import audible_deals.price_history as price_history
 import audible_deals.wishlist as wishlist_mod
+from audible_deals.cli import cli
 from audible_deals.validation import validate_webhook_url
 from tests.conftest import make_product
 
@@ -91,6 +95,113 @@ class TestMarketplaceScopedHistory:
         )
 
         assert price_history.load_price_history(asin, "us") == []
+
+
+class TestLegacyHistoryMigration:
+    def test_bulk_load_archives_once_with_collision_and_preserves_bytes(
+        self, tmp_config, caplog
+    ):
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        first = constants_mod.HISTORY_DIR / "B00LEGACY1.json"
+        second = constants_mod.HISTORY_DIR / "B00LEGACY2.json"
+        current = constants_mod.HISTORY_DIR / "B00CURRENT1.json"
+        first_bytes = b'[ {"date": "2024-01-01", "price": 10.0} ]\n'
+        second_bytes = b'[{"date":"2024-02-02","price":7.5}]'
+        first.write_bytes(first_bytes)
+        second.write_bytes(second_bytes)
+        (constants_mod.HISTORY_DIR / "B00LEGACY1.json.legacy").write_bytes(b"older")
+        current.write_text(
+            json.dumps({"marketplaces": {"us": [{"date": "2026-01-01", "price": 3.0}]}})
+        )
+
+        with caplog.at_level(logging.WARNING):
+            loaded = price_history.load_all_price_histories("us")
+
+        assert loaded == {"B00CURRENT1": [{"date": "2026-01-01", "price": 3.0}]}
+        assert not first.exists()
+        assert not second.exists()
+        assert (
+            constants_mod.HISTORY_DIR / "B00LEGACY1.json.legacy.1"
+        ).read_bytes() == first_bytes
+        assert (
+            constants_mod.HISTORY_DIR / "B00LEGACY2.json.legacy"
+        ).read_bytes() == second_bytes
+        messages = [
+            r.message for r in caplog.records if "Legacy history migration" in r.message
+        ]
+        assert len(messages) == 1
+        assert "archived 2" in messages[0]
+        assert (constants_mod.HISTORY_DIR / ".legacy-migration.lock").exists()
+        assert (constants_mod.HISTORY_DIR / ".B00LEGACY1.json.lock").exists()
+
+        caplog.clear()
+        assert price_history.load_all_price_histories("us") == loaded
+        assert not [
+            r for r in caplog.records if "Legacy history migration" in r.message
+        ]
+
+    def test_failed_rename_is_untouched_and_retried(
+        self, tmp_config, monkeypatch, caplog
+    ):
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        legacy = constants_mod.HISTORY_DIR / "B00LEGACY3.json"
+        original_bytes = b'[{"date":"2024-01-01","price":4}]'
+        legacy.write_bytes(original_bytes)
+        original_link = price_history.os.link
+
+        def fail_legacy(source, target):
+            if Path(source) == legacy:
+                raise OSError("read-only filesystem")
+            return original_link(source, target)
+
+        monkeypatch.setattr(price_history.os, "link", fail_legacy)
+        with caplog.at_level(logging.WARNING):
+            assert price_history.load_all_price_histories() == {}
+        assert legacy.read_bytes() == original_bytes
+        assert "1 failed" in caplog.text
+
+        monkeypatch.setattr(price_history.os, "link", original_link)
+        caplog.clear()
+        assert price_history.load_all_price_histories() == {}
+        assert not legacy.exists()
+        assert legacy.with_name(f"{legacy.name}.legacy").read_bytes() == original_bytes
+        assert "archived 1" in caplog.text
+
+    def test_archive_retries_when_backup_appears_during_move(
+        self, tmp_config, monkeypatch
+    ):
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        legacy = constants_mod.HISTORY_DIR / "B00LEGACY5.json"
+        original_bytes = b'[{"date":"2024-01-01","price":4}]\n'
+        legacy.write_bytes(original_bytes)
+        first_archive = legacy.with_name(f"{legacy.name}.legacy")
+        original_link = price_history.os.link
+        collision_created = False
+
+        def link_with_collision(source, target):
+            nonlocal collision_created
+            if not collision_created and Path(target) == first_archive:
+                first_archive.write_bytes(b"created concurrently")
+                collision_created = True
+            return original_link(source, target)
+
+        monkeypatch.setattr(price_history.os, "link", link_with_collision)
+
+        assert price_history.load_all_price_histories() == {}
+        assert collision_created
+        assert not legacy.exists()
+        assert first_archive.read_bytes() == b"created concurrently"
+        assert (
+            legacy.with_name(f"{legacy.name}.legacy.1").read_bytes() == original_bytes
+        )
+
+    def test_history_all_keeps_json_stdout_clean(self, tmp_config):
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        (constants_mod.HISTORY_DIR / "B00LEGACY4.json").write_text("[]")
+        result = CliRunner().invoke(cli, ["history", "--all", "--json"])
+        assert result.exit_code == 0, result.output
+        assert json.loads(result.stdout) == {}
+        assert "Legacy history migration" in result.stderr
 
 
 # ---------------------------------------------------------------------------

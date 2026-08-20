@@ -357,11 +357,10 @@ def run_notify(
         validate_webhook_url(webhook)
 
     items = load_wishlist()
-    if not items:
+    asin_items, author_items = partition_wishlist(items)
+    if not asin_items and not author_items:
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]")
         return None
-
-    asin_items, author_items = partition_wishlist(items)
 
     dc = get_client(locale)
     hits, extras, hit_asins = collect_target_hits(

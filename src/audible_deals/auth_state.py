@@ -20,7 +20,7 @@ class AuthInspection:
 
     @property
     def is_usable(self) -> bool:
-        return self.status in {"valid", "expiring", "unknown_expiry"}
+        return self.status in {"valid", "expiring", "expired", "unknown_expiry"}
 
 
 def inspect_auth_file(

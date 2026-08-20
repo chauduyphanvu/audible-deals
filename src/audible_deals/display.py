@@ -26,18 +26,19 @@ from audible_deals.metrics import buy_verdict, price_per_hour
 console = Console()
 
 
-def price_str(price: float | None, currency: str = "$") -> str:
+def price_str(price: int | float | None, currency: str = "$") -> str:
     if price is None:
         return "-"
+    if isinstance(price, int) and not isinstance(price, bool):
+        return f"{currency}{price}.00"
     return f"{currency}{price:.2f}"
 
 
 def rating_str(rating: float, num_ratings: int = 0) -> str:
     if rating == 0:
         return "-"
-    stars = round(rating * 2) / 2
     suffix = f" ({num_ratings:,})" if num_ratings else ""
-    return f"{stars:.1f}{suffix}"
+    return f"{rating:.1f}{suffix}"
 
 
 def discount_str(pct: int | None) -> str:
@@ -531,7 +532,7 @@ def display_recap(
         if atl_hits:
             for item in atl_hits:
                 target_str = (
-                    f" (target {currency}{item['target']:.2f})"
+                    f" (target {price_str(item['target'], currency)})"
                     if item.get("target") is not None
                     else ""
                 )
@@ -582,7 +583,7 @@ def display_wishlist(
 
 def display_watch_table(
     products: list[Product],
-    targets: dict[str, float | None],
+    targets: dict[str, int | float | None],
     currency: str = "$",
     buy_only: bool = False,
     show_url: bool = False,
@@ -607,7 +608,7 @@ def display_watch_table(
     hits = 0
     for p in products:
         target = targets.get(p.asin)
-        target_str = f"{currency}{target:.2f}" if target is not None else "-"
+        target_str = price_str(target, currency)
         p_str = f"{currency}{p.price:.2f}" if p.price is not None else "-"
         is_buy = target is not None and p.price is not None and p.price <= target
         if is_buy:

@@ -37,7 +37,9 @@ def test_auth_inspection_states(tmp_path):
     assert "access_token" in inspection.error
 
     auth_file.write_text(json.dumps(_auth_data(99)))
-    assert inspect_auth_file(auth_file, now=100).status == "expired"
+    expired = inspect_auth_file(auth_file, now=100)
+    assert expired.status == "expired"
+    assert expired.is_usable is True
 
     auth_file.write_text(json.dumps(_auth_data(100 + 3600)))
     assert inspect_auth_file(auth_file, now=100).status == "expiring"
@@ -69,6 +71,26 @@ def test_doctor_reuses_auth_inspection_for_malformed_auth(tmp_config, monkeypatc
     assert result.exit_code == 1
     assert "access_token" in result.output
     assert "Skipped" in result.output
+
+
+def test_doctor_expired_auth_probes_and_reports_refresh_failure(
+    tmp_config, mock_client, monkeypatch
+):
+    import audible_deals.constants as constants
+
+    auth_file = tmp_config / "auth.json"
+    auth_file.write_text(json.dumps(_auth_data(time.time() - 1)))
+    monkeypatch.setattr(constants, "AUTH_FILE", auth_file)
+    mock_client._api_get.side_effect = RuntimeError("refresh rejected")
+
+    result = CliRunner().invoke(cli, ["doctor"])
+
+    assert result.exit_code == 1
+    assert "Auth token expiry" in result.output
+    assert "WARN" in result.output
+    assert "Marketplace reachable" in result.output
+    assert "refresh rejected" in result.output
+    mock_client._api_get.assert_called_once()
 
 
 def test_bare_dashboard_is_auth_aware_and_local(tmp_config, monkeypatch):
@@ -107,6 +129,12 @@ def test_bare_dashboard_is_auth_aware_and_local(tmp_config, monkeypatch):
     result = CliRunner().invoke(cli, ["--locale", "us"])
     assert result.exit_code == 0
     assert "marketplace: us" in result.output
+
+    auth_file.write_text(json.dumps(_auth_data(time.time() - 1)))
+    result = CliRunner().invoke(cli, [])
+    assert result.exit_code == 0
+    assert "will refresh automatically" in result.output
+    assert "Start with: deals login" not in result.output
 
 
 def test_top_level_help_uses_workflow_groups(tmp_config):

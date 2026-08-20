@@ -54,6 +54,39 @@ class TestClientIntegration:
         assert len(products) == 1
         assert products[0].asin == "A2"
 
+    def test_search_catalog_and_pages_forward_title(self, api):
+        api.get_mock.return_value = {"products": [], "total_results": 0}
+        dc = self._make_client(api)
+
+        dc.search_catalog(title="Project Hail Mary", category_id="fiction")
+        list(dc.search_pages(title="Project Hail Mary", max_pages=1))
+
+        first = api.get_mock.call_args_list[0].kwargs
+        second = api.get_mock.call_args_list[1].kwargs
+        assert first["title"] == "Project Hail Mary"
+        assert first["category_id"] == "fiction"
+        assert first["page"] == 0
+        assert second["title"] == "Project Hail Mary"
+        assert second["page"] == 0
+
+    def test_title_search_pages_maps_zero_indexed_api_pages(self, api):
+        api.get_mock.side_effect = [
+            {
+                "products": [make_raw(f"T{i}") for i in range(50)],
+                "total_results": 60,
+            },
+            {
+                "products": [make_raw(f"U{i}") for i in range(10)],
+                "total_results": 60,
+            },
+        ]
+        dc = self._make_client(api)
+
+        results = list(dc.search_pages(title="Dune", max_pages=3))
+
+        assert [page for _, page, _ in results] == [1, 2]
+        assert [call.kwargs["page"] for call in api.get_mock.call_args_list] == [0, 1]
+
     def test_search_pages_stops_at_total(self, api):
         """Pagination stops when page * 50 >= total."""
         page1 = [make_raw(f"P{i}") for i in range(50)]

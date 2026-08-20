@@ -16,8 +16,10 @@ from audible_deals.display import (
     display_library_stats,
     display_product_detail,
     display_products,
+    display_recap,
     display_summary,
     display_watch_table,
+    display_wishlist,
     price_str,
     rating_str,
 )
@@ -42,6 +44,10 @@ class TestPriceStr:
     def test_rounding(self):
         assert price_str(1.999) == "$2.00"
 
+    def test_large_integer_is_exact(self):
+        price = 10**400
+        assert price_str(price) == f"${price}.00"
+
 
 class TestRatingStr:
     def test_normal(self):
@@ -50,9 +56,9 @@ class TestRatingStr:
     def test_zero_rating(self):
         assert rating_str(0.0) == "-"
 
-    def test_rounds_to_half(self):
-        # 4.3 → rounds to 4.5 (nearest 0.5)
-        assert rating_str(4.3) == "4.5"
+    def test_preserves_tenths(self):
+        assert rating_str(4.3) == "4.3"
+        assert rating_str(4.7) == "4.7"
 
     def test_no_num_ratings(self):
         assert rating_str(4.0, 0) == "4.0"
@@ -350,6 +356,44 @@ class TestDisplayWatchTableZeroTarget:
         out = _capture(display_watch_table, [p], {"W1": None})
         assert "BUY" not in out
         assert "-" in out
+
+    def test_large_integer_target_renders_without_overflow(self):
+        target = 10**400
+        p = make_product(asin="HUGE1", title="Huge Target", price=5.0)
+
+        out = _capture(display_watch_table, [p], {"HUGE1": target})
+
+        assert "$10000000" in out
+
+
+class TestWishlistAndRecapTargets:
+    def test_large_integer_target_renders_in_wishlist_and_recap(self):
+        target = 10**400
+
+        wishlist = _capture(
+            display_wishlist,
+            [{"asin": "HUGE1", "title": "Huge Target", "max_price": target}],
+            [],
+        )
+        recap = _capture(
+            display_recap,
+            [],
+            [],
+            [],
+            7,
+            atl_hits=[
+                {
+                    "asin": "HUGE1",
+                    "title": "Huge Target",
+                    "price": 1.0,
+                    "target": target,
+                }
+            ],
+            width=1000,
+        )
+
+        assert "$10000000" in wishlist
+        assert f"target ${target}.00" in recap
 
 
 class TestDisplayLibraryStats:

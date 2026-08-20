@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import math
+
 import click
 
 from audible_deals.product import Product
@@ -19,7 +21,13 @@ from audible_deals.results_cache import (
     reorder_last_results,
     save_seen_asins,
 )
-from audible_deals.wishlist import load_wishlist, save_wishlist, wishlist_entry
+from audible_deals.wishlist import (
+    inspect_wishlist,
+    load_wishlist_for_mutation,
+    save_wishlist,
+    warn_wishlist_issues,
+    wishlist_entry,
+)
 
 _VALID_SORT_KEYS = sorted(_SORT_KEYS.keys())
 
@@ -102,8 +110,10 @@ def _interactive_browse(
                 console.print(f"[dim]Number must be 1-{len(products)}.[/dim]")
                 continue
 
-            items = load_wishlist()
-            existing_asins = {item.get("asin") for item in items}
+            items = load_wishlist_for_mutation()
+            inspection = inspect_wishlist(items)
+            warn_wishlist_issues(inspection.issues)
+            existing_asins = {item["asin"] for item in inspection.asin_items}
             to_add: list[int] = []
             for z in selected:
                 p = products[z]
@@ -130,11 +140,11 @@ def _interactive_browse(
                 except ValueError:
                     console.print("[dim]Invalid price, no target set[/dim]")
                 else:
-                    if parsed > 0:
+                    if math.isfinite(parsed) and parsed > 0:
                         target_price = parsed
                     else:
                         console.print(
-                            "[dim]Target must be greater than 0, no target set[/dim]"
+                            "[dim]Target must be a finite number greater than 0, no target set[/dim]"
                         )
 
             for z in to_add:

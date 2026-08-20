@@ -52,6 +52,7 @@ _LOG_PARAM_KEYS = (
     "num_results",
     "products_sort_by",
     "category_id",
+    "title",
     "asins",
     "sort_by",
 )
@@ -370,12 +371,17 @@ class DealsClient:
         self,
         *,
         keywords: str = "",
+        title: str = "",
         category_id: str = "",
         sort_by: str = "Price",
         num_results: int = MAX_PAGE_SIZE,
-        page: int = 1,
+        page: int | None = None,
     ) -> tuple[list[Product], int]:
         """Search the Audible catalog. Returns (products, total_results)."""
+        if page is None:
+            # Audible's title-only catalog filter is zero-indexed even though
+            # keyword and browse searches use one-indexed pages.
+            page = 0 if title else 1
         params: dict[str, Any] = {
             "num_results": min(num_results, MAX_PAGE_SIZE),
             "page": page,
@@ -384,6 +390,8 @@ class DealsClient:
         }
         if keywords:
             params["keywords"] = keywords
+        if title:
+            params["title"] = title
         if category_id:
             params["category_id"] = category_id
 
@@ -400,22 +408,26 @@ class DealsClient:
         self,
         *,
         keywords: str = "",
+        title: str = "",
         category_id: str = "",
         sort_by: str = "Price",
         max_pages: int = 10,
     ) -> Iterator[tuple[list[Product], int, int]]:
         """Yield (products, page_num, total) for each page of results.
 
-        Page 1 is fetched first to learn the total (and to warm any auth
-        token refresh on a single thread); the remaining pages are fetched
-        concurrently and yielded in page order. Stops yielding after an
-        empty page, though later pages may already be in flight.
+        Logical page 1 is fetched first to learn the total (and to warm any
+        auth token refresh on a single thread); title-only searches map it to
+        API page 0. Remaining pages are fetched concurrently and yielded in
+        logical page order. Stops after an empty page, though later pages may
+        already be in flight.
         """
+        first_api_page = 0 if title else 1
         products, total = self.search_catalog(
             keywords=keywords,
+            title=title,
             category_id=category_id,
             sort_by=sort_by,
-            page=1,
+            page=first_api_page,
         )
         yield products, 1, total
 
@@ -429,9 +441,10 @@ class DealsClient:
                 page: pool.submit(
                     self.search_catalog,
                     keywords=keywords,
+                    title=title,
                     category_id=category_id,
                     sort_by=sort_by,
-                    page=page,
+                    page=page - 1 if title else page,
                 )
                 for page in range(2, last_page + 1)
             }

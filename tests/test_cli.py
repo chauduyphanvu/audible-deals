@@ -13,6 +13,11 @@ import pytest
 from click.testing import CliRunner
 
 from audible_deals.cli import cli
+from audible_deals.cli.catalog import (
+    _fetch_multi_query,
+    _fetch_search_phrase,
+    _rank_relevance,
+)
 from audible_deals.cli.pipeline import _fetch_with_progress
 from audible_deals.filtering import (
     dedupe_editions as _dedupe_editions,
@@ -38,10 +43,7 @@ import audible_deals.config_store as config_store_mod
 import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
 from audible_deals.parsing import parse_interval as _parse_interval
-from audible_deals.validation import (
-    looks_like_person_name as _looks_like_person_name,
-    validate_webhook_url as _validate_webhook_url,
-)
+from audible_deals.validation import validate_webhook_url as _validate_webhook_url
 from tests.conftest import make_product
 
 
@@ -202,8 +204,8 @@ class TestCliRegressionFixes:
             cli, ["search", "one | two", "--pages", "2", "--deep", "--dry-run"]
         )
         assert result.exit_code == 0, result.output
-        assert "Max items: ~600" in result.output
-        assert "API calls: 12" in result.output
+        assert "Max items: ~700" in result.output
+        assert "API calls: 14" in result.output
 
     def test_config_max_price_per_hour_alias_round_trips(self, tmp_config):
         runner = CliRunner()
@@ -2284,6 +2286,108 @@ class TestFetchWithProgress:
         assert sorted(asins) == ["MD1", "MD2", "MD3"]
 
 
+class TestExactTitleSearch:
+    def test_broad_then_title_merge_dedup_and_relevance_tiers(
+        self, mock_client, tmp_config
+    ):
+        broad = [
+            make_product(asin="OTHER", title="Unrelated", authors=["Someone"]),
+            make_product(
+                asin="AUTHORPHRASE", title="Elsewhere", authors=["The Dune Writer"]
+            ),
+            make_product(asin="TITLEPHRASE", title="Dune Messiah"),
+            make_product(asin="EXACTAUTHOR", title="Biography", authors=["DUNE"]),
+        ]
+        exact = [
+            make_product(asin="EXACTTITLE", title="  dune "),
+            make_product(asin="TITLEPHRASE", title="Dune Messiah"),
+        ]
+        calls = []
+
+        def fake_search_pages(**kwargs):
+            calls.append(kwargs)
+            if kwargs.get("title"):
+                yield exact, 1, len(exact)
+            else:
+                yield broad, 1, len(broad)
+
+        mock_client.search_pages.side_effect = fake_search_pages
+        products = _fetch_search_phrase(
+            mock_client,
+            "Dune",
+            category_ids=["fiction"],
+            sort_orders=["Relevance"],
+            pages=2,
+            description="test",
+        )
+
+        assert [call.get("title") for call in calls] == [None, "Dune"]
+        assert calls[1]["category_id"] == "fiction"
+        assert calls[1]["sort_by"] == "Relevance"
+        assert calls[1]["max_pages"] == 1
+        assert [p.asin for p in products] == [
+            "EXACTTITLE",
+            "EXACTAUTHOR",
+            "TITLEPHRASE",
+            "AUTHORPHRASE",
+            "OTHER",
+        ]
+
+    def test_probe_failure_retains_broad_results(self, mock_client, tmp_config, caplog):
+        broad = [make_product(asin="BROAD", title="Broad")]
+
+        def fake_search_pages(**kwargs):
+            if kwargs.get("title"):
+                raise RuntimeError("title unavailable")
+            yield broad, 1, 1
+
+        mock_client.search_pages.side_effect = fake_search_pages
+        with caplog.at_level("INFO", logger="audible_deals"):
+            products = _fetch_search_phrase(
+                mock_client,
+                "query",
+                category_ids=[""],
+                sort_orders=["Relevance"],
+                pages=1,
+                description="test",
+            )
+        assert products == broad
+        assert "Exact-title probe failed" in caplog.text
+
+    def test_or_queries_each_receive_one_title_probe(self, mock_client, tmp_config):
+        calls = []
+
+        def fake_search_pages(**kwargs):
+            calls.append(kwargs)
+            query = kwargs.get("title") or kwargs.get("keywords")
+            prefix = "T" if kwargs.get("title") else "B"
+            yield [make_product(asin=f"{prefix}{query}", title=query)], 1, 1
+
+        mock_client.search_pages.side_effect = fake_search_pages
+        products = _fetch_multi_query(
+            mock_client,
+            ["one", "two"],
+            category="cat",
+            sort_orders=["Relevance"],
+            pages=1,
+        )
+        assert [call.get("title") for call in calls] == [None, "one", None, "two"]
+        assert {product.asin for product in products} == {
+            "Tone",
+            "Bone",
+            "Ttwo",
+            "Btwo",
+        }
+
+    def test_relevance_rank_is_stable_within_tiers(self):
+        products = [
+            make_product(asin="A", title="Dune", authors=["Other"]),
+            make_product(asin="B", title="Other", authors=["dune"]),
+            make_product(asin="C", title="Dune Returns"),
+        ]
+        assert [p.asin for p in _rank_relevance(products, " DUNE ")] == ["A", "B", "C"]
+
+
 class TestSearchDeepFlag:
     def test_search_deep_flag_exists(self):
         runner = CliRunner()
@@ -4047,38 +4151,21 @@ class TestFirstInSeriesStrict:
 
 
 # ===================================================================
-# Fix #6: search suggests --author for person name queries
+# Fix #6: search suggests --author only from fetched author evidence
 # ===================================================================
 
 
-class TestLooksLikePersonName:
-    def test_two_words_title_case(self):
-        assert _looks_like_person_name("Andy Weir") is True
-
-    def test_three_words_title_case(self):
-        assert _looks_like_person_name("Brandon Scott Sanderson") is True
-
-    def test_one_word_not_a_name(self):
-        assert _looks_like_person_name("Dune") is False
-
-    def test_four_words_not_a_name(self):
-        assert _looks_like_person_name("One Two Three Four") is False
-
-    def test_lowercase_not_a_name(self):
-        assert _looks_like_person_name("andy weir") is False
-
-    def test_mixed_case_not_all_upper(self):
-        assert _looks_like_person_name("Andy weir") is False
-
-    def test_empty_string(self):
-        assert _looks_like_person_name("") is False
-
-
 class TestSearchAuthorHint:
-    def test_hint_shown_for_person_name_query(self, mock_client, tmp_config):
-        """search shows --author tip when query looks like a person name."""
+    def test_hint_shown_for_exact_fetched_author(self, mock_client, tmp_config):
+        """search shows --author tip when fetched data confirms the author."""
         products = [
-            make_product(asin="AH1", price=5.0, series_name="", series_position="")
+            make_product(
+                asin="AH1",
+                price=5.0,
+                authors=["Andy Weir"],
+                series_name="",
+                series_position="",
+            )
         ]
         mock_client.search_pages.return_value = iter([(products, 1, 1)])
         runner = CliRunner()
@@ -4097,6 +4184,34 @@ class TestSearchAuthorHint:
         assert result.exit_code == 0, result.output
         assert "--author" in result.output
         assert "Andy Weir" in result.output
+
+    def test_hint_not_shown_without_author_evidence(self, mock_client, tmp_config):
+        products = [
+            make_product(
+                asin="AHNO1",
+                title="Andy Weir: A Biography",
+                authors=["Someone Else"],
+                series_name="",
+                series_position="",
+            )
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "search",
+                "Andy Weir",
+                "--pages",
+                "1",
+                "--all-languages",
+                "-n",
+                "0",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Tip:" not in result.output
 
     def test_hint_not_shown_when_author_already_set(self, mock_client, tmp_config):
         """search does NOT show tip when --author is already used."""
@@ -4919,6 +5034,54 @@ class TestDryRunFind:
         result = runner.invoke(cli, ["find", "--category", "cat1", "--dry-run"])
         assert result.exit_code == 0, result.output
         assert "resolved during scan" in result.output
+
+    def test_dry_run_shows_effective_settings_and_filters(self, tmp_config):
+        config_store_mod.save_config(
+            {"max_price": 9.0, "sort": "rating", "limit": 40, "skip_owned": True}
+        )
+        config_store_mod.save_profiles(
+            {
+                "strict": {
+                    "max_price": 7.0,
+                    "sort": "title",
+                    "limit": 10,
+                    "min_rating": 4.2,
+                    "exclude_authors": ["Blocked Author"],
+                }
+            }
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "find",
+                "--profile",
+                "strict",
+                "--max-price",
+                "5",
+                "--sort",
+                "discount",
+                "--limit",
+                "3",
+                "--on-sale",
+                "--released-after",
+                "2025-01-01",
+                "--dry-run",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert "Result sort: discount" in result.output
+        assert "Limit: 3" in result.output
+        assert "Profile: strict" in result.output
+        assert "max-price=5.0" in result.output
+        assert "min-rating=4.2" in result.output
+        assert "on-sale=yes" in result.output
+        assert "skip-owned=yes" in result.output
+        assert "exclude-authors=Blocked Author" in result.output
+        assert "released-after=2025-01-01" in result.output
+        filters = result.output.split("Filters: ", 1)[1].splitlines()[0]
+        assert "; " in filters
 
 
 class TestDryRunSearch:
@@ -5967,7 +6130,7 @@ class TestDoctorCommand:
         assert "FAIL" in result.output
         assert result.exit_code == 1
 
-    def test_auth_file_expired_fails(self, tmp_config, mock_client, monkeypatch):
+    def test_auth_file_expired_refreshes(self, tmp_config, mock_client, monkeypatch):
         import time
 
         self._patch_auth(monkeypatch, tmp_config)
@@ -5984,8 +6147,10 @@ class TestDoctorCommand:
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
-        assert "FAIL" in result.output
-        assert result.exit_code == 1
+        assert "WARN" in result.output
+        assert "automatic refresh" in result.output
+        assert result.exit_code == 0
+        mock_client._api_get.assert_called_once()
 
     def test_auth_file_expires_soon_warns(self, tmp_config, mock_client, monkeypatch):
         import time

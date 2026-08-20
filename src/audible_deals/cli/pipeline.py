@@ -400,6 +400,11 @@ def _print_dry_run_summary(
     subcategory_count: int | None = None,
     subcategories_unknown: bool = False,
     query_count: int = 1,
+    title_probe_count: int = 0,
+    result_sort: str,
+    limit: int | None,
+    profile_name: str | None,
+    active_filters: list[str],
 ) -> None:
     """Print a dry-run scan summary."""
     sort_label = ", ".join(sort_orders)
@@ -413,18 +418,23 @@ def _print_dry_run_summary(
         console.print("  Subcategories: unknown (resolved during scan)")
     if query:
         console.print(f"  Query: {query}")
+    console.print(f"  Result sort: {result_sort}")
+    console.print(f"  Limit: {limit if limit and limit > 0 else 'unlimited'}")
+    console.print(f"  Profile: {profile_name or 'none'}")
+    console.print(
+        f"  Filters: {'; '.join(active_filters) if active_filters else 'none'}"
+    )
     console.print(f"  Sort orders: {sort_label}")
     console.print(f"  Pages per sort: {pages}")
     if subcategories_unknown:
         console.print("  Max items: unknown (depends on subcategory count)")
         console.print("  API calls: unknown (depends on subcategory count)")
     else:
-        console.print(
-            f"  Max items: ~{pages * len(sort_orders) * MAX_PAGE_SIZE * multiplier * query_count}"
-        )
-        console.print(
-            f"  API calls: {pages * len(sort_orders) * multiplier * query_count}"
-        )
+        broad_calls = pages * len(sort_orders) * multiplier * query_count
+        title_calls = title_probe_count * multiplier
+        total_calls = broad_calls + title_calls
+        console.print(f"  Max items: ~{total_calls * MAX_PAGE_SIZE}")
+        console.print(f"  API calls: {total_calls}")
 
 
 def _fetch_with_progress(

@@ -304,6 +304,15 @@ def test_scan_plan_client_sort_and_multi_query():
     assert sorts == ["BestSellers"]
 
 
+def test_direct_query_monitor_budget_includes_title_probes():
+    definition = _definition("search", mode="search", pages=2)
+    definition["query"] = "one | two"
+    assert monitor_module.estimate_monitor_calls(definition) == 6
+
+    definition["settings"]["deep"] = True
+    assert monitor_module.estimate_monitor_calls(definition) == 14
+
+
 def test_monitor_budget_round_robin_is_bounded():
     monitors = {name: _definition(name, pages=30) for name in ("a", "b", "c")}
     state = {"monitor_cursor": 0}

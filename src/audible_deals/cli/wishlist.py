@@ -6,6 +6,7 @@ import csv
 import datetime
 import json as json_mod
 import logging
+import math
 import sys
 import time
 from pathlib import Path
@@ -29,13 +30,22 @@ from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
 from audible_deals.validation import validate_asin
 from audible_deals.wishlist import (
+    inspect_wishlist,
     load_wishlist,
+    load_wishlist_for_mutation,
     partition_wishlist,
     save_wishlist,
+    warn_wishlist_issues,
     wishlist_entry,
 )
 
 logger = logging.getLogger(__name__)
+
+
+def _finite_max_price(ctx, param, value):
+    if value is not None and not math.isfinite(value):
+        raise click.BadParameter("must be a finite number", param=param)
+    return value
 
 
 @click.group(invoke_without_command=True)
@@ -48,11 +58,13 @@ def wishlist(ctx):
 
 def _add_author_watch(ctx, author: str, max_price: float) -> None:
     """Add an author watch to the wishlist unless one already exists."""
-    items = load_wishlist()
+    items = load_wishlist_for_mutation()
+    inspection = inspect_wishlist(items)
+    warn_wishlist_issues(inspection.issues)
     author_lower = author.lower()
     if any(
         i.get("type") == "author" and i.get("author", "").lower() == author_lower
-        for i in items
+        for i in inspection.author_items
     ):
         console.print(f"[dim]Already watching author: {author}[/dim]")
         return
@@ -77,6 +89,7 @@ def _add_author_watch(ctx, author: str, max_price: float) -> None:
     "--max-price",
     type=click.FloatRange(min=0),
     default=None,
+    callback=_finite_max_price,
     help="Alert when price drops below this",
 )
 @click.option(
@@ -115,8 +128,10 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or --author or use --last N.")
 
-    items = load_wishlist()
-    existing = {item["asin"] for item in items if item.get("asin")}
+    items = load_wishlist_for_mutation()
+    inspection = inspect_wishlist(items)
+    warn_wishlist_issues(inspection.issues)
+    existing = {item["asin"] for item in inspection.asin_items}
 
     for asin in all_asins:
         validate_asin(asin)
@@ -139,7 +154,8 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
             console.print(f"[green]+[/green] {p.title} ({p.asin})")
 
     save_wishlist(items)
-    console.print(f"\n[bold]{added}[/bold] added, {len(items)} total on wishlist")
+    valid_total = len(inspection.asin_items) + len(inspection.author_items) + added
+    console.print(f"\n[bold]{added}[/bold] added, {valid_total} total on wishlist")
 
 
 @wishlist.command("remove")
@@ -163,24 +179,33 @@ def wishlist_remove(asins, last_refs, author):
         raise click.UsageError("Provide at least one ASIN, --author, or use --last N.")
     for asin in all_asins:
         validate_asin(asin)
-    items = load_wishlist()
-    before = len(items)
+    items = load_wishlist_for_mutation()
+    inspection = inspect_wishlist(items)
+    warn_wishlist_issues(inspection.issues)
+    valid_entries = inspection.asin_items + inspection.author_items
+    valid_ids = {id(item) for item in valid_entries}
+    before = len(valid_entries)
     if all_asins:
         remove_set = set(all_asins)
-        items = [i for i in items if i.get("asin") not in remove_set]
+        items = [
+            i for i in items if not (id(i) in valid_ids and i.get("asin") in remove_set)
+        ]
     if author:
         author_lower = author.lower()
         items = [
             i
             for i in items
             if not (
-                i.get("type") == "author"
+                id(i) in valid_ids
+                and i.get("type") == "author"
                 and i.get("author", "").lower() == author_lower
             )
         ]
     save_wishlist(items)
-    removed = before - len(items)
-    console.print(f"[bold]{removed}[/bold] removed, {len(items)} remaining")
+    remaining = inspect_wishlist(items)
+    remaining_count = len(remaining.asin_items) + len(remaining.author_items)
+    removed = before - remaining_count
+    console.print(f"[bold]{removed}[/bold] removed, {remaining_count} remaining")
 
 
 @wishlist.command("update")
@@ -196,6 +221,7 @@ def wishlist_remove(asins, last_refs, author):
     "--max-price",
     type=click.FloatRange(min=0),
     default=None,
+    callback=_finite_max_price,
     help="Set the target price for the matching wishlist entries",
 )
 @click.option(
@@ -227,8 +253,10 @@ def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
     for asin in all_asins:
         validate_asin(asin)
 
-    items = load_wishlist()
-    by_asin = {item["asin"]: item for item in items if item.get("asin")}
+    items = load_wishlist_for_mutation()
+    inspection = inspect_wishlist(items)
+    warn_wishlist_issues(inspection.issues)
+    by_asin = {item["asin"]: item for item in inspection.asin_items}
     cur = _currency(ctx)
 
     updated = 0
@@ -355,6 +383,7 @@ def wishlist_list(ctx, output, json_flag):
     "--max-price",
     type=click.FloatRange(min=0),
     default=None,
+    callback=_finite_max_price,
     help="Set target price for all synced items",
 )
 @click.option(
@@ -379,12 +408,15 @@ def wishlist_sync(ctx, max_price, update):
     if update and max_price is None:
         raise click.UsageError("--update requires --max-price to be set")
 
+    local_items = load_wishlist_for_mutation()
+    inspection = inspect_wishlist(local_items)
+    warn_wishlist_issues(inspection.issues)
+
     dc = _get_client(ctx.obj["locale"])
     with dc:
         audible_items = dc.get_wishlist()
 
-    local_items = load_wishlist()
-    local_by_asin = {item["asin"]: item for item in local_items if item.get("asin")}
+    local_by_asin = {item["asin"]: item for item in inspection.asin_items}
     cur = _currency(ctx)
 
     added = 0
@@ -412,7 +444,7 @@ def wishlist_sync(ctx, max_price, update):
         f"\n[bold]{added}[/bold] synced, "
         f"{updated} updated, "
         f"{skipped} already tracked, "
-        f"{len(local_items)} total on wishlist"
+        f"{len(inspection.asin_items) + len(inspection.author_items) + added} total on wishlist"
     )
 
 
@@ -449,8 +481,10 @@ def wishlist_purge(ctx, owned, dry_run, yes):
     if not owned:
         raise click.UsageError("Specify --owned to purge owned items")
 
-    items = load_wishlist()
-    if not any(i.get("asin") for i in items):
+    items = load_wishlist_for_mutation()
+    inspection = inspect_wishlist(items)
+    warn_wishlist_issues(inspection.issues)
+    if not inspection.asin_items:
         console.print("[dim]Nothing to purge.[/dim]")
         return
 
@@ -458,8 +492,9 @@ def wishlist_purge(ctx, owned, dry_run, yes):
     with dc:
         owned_asins = dc.get_library_asins()
 
-    to_remove = [i for i in items if i.get("asin") in owned_asins]
-    kept = [i for i in items if i.get("asin") not in owned_asins]
+    to_remove = [i for i in inspection.asin_items if i["asin"] in owned_asins]
+    remove_ids = {id(item) for item in to_remove}
+    kept = [i for i in items if id(i) not in remove_ids]
 
     if not to_remove:
         console.print("[dim]Nothing to purge.[/dim]")
@@ -479,8 +514,11 @@ def wishlist_purge(ctx, owned, dry_run, yes):
         )
 
     save_wishlist(kept)
+    remaining = (
+        len(inspection.asin_items) + len(inspection.author_items) - len(to_remove)
+    )
     console.print(
-        f"\n[bold]{len(to_remove)}[/bold] removed, {len(kept)} remaining on wishlist"
+        f"\n[bold]{len(to_remove)}[/bold] removed, {remaining} remaining on wishlist"
     )
 
 
@@ -521,7 +559,9 @@ def _watch_once(
     found_asins = {p.asin for p in products}
     for item in asin_items:
         if item["asin"] not in found_asins:
-            console.print(f"[red]Not found: {item['asin']} ({item['title']})[/red]")
+            console.print(
+                f"[red]Not found: {item['asin']} ({item.get('title', '')})[/red]"
+            )
 
     if not products:
         return 0

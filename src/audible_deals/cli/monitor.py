@@ -133,7 +133,9 @@ def estimate_monitor_calls(definition: dict) -> int:
     queries, sorts = monitor_scan_plan(
         settings, definition["mode"], definition.get("query", "")
     )
-    return len(queries) * len(sorts) * settings.pages
+    broad_calls = len(queries) * len(sorts) * settings.pages
+    title_probes = len(queries) if definition["mode"] == "search" else 0
+    return broad_calls + title_probes
 
 
 def _monitor_slot(state: dict, name: str) -> dict:
@@ -199,7 +201,7 @@ def scan_monitor(definition: dict) -> list[dict]:
             dc, settings.genre, "", settings.exclude_genre
         )
         skip_asins = _resolve_skip_asins(dc, settings.skip_owned, False)
-        if mode == "search" and len(queries) > 1:
+        if mode == "search":
             products = _fetch_multi_query(
                 dc,
                 queries,

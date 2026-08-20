@@ -9,7 +9,10 @@ from __future__ import annotations
 
 import json
 import logging
+from decimal import Decimal
 from typing import Callable
+
+from audible_deals.display import price_str
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +71,13 @@ def _webhook_item_prefix(hit: dict) -> str:
     return f"[{hit['event']}] " if hit.get("event") else ""
 
 
+def _template_number(value: object) -> float | Decimal:
+    try:
+        return float(value or 0.0)
+    except OverflowError:
+        return Decimal(value)
+
+
 def _render_webhook_template(
     hits: list[dict],
     template: str,
@@ -80,7 +90,7 @@ def _render_webhook_template(
         mapping = {
             "title": h.get("title", ""),
             "price": float(h.get("price") or 0.0),
-            "target": float(h.get("target") or 0.0),
+            "target": _template_number(h.get("target")),
             "url": h.get("url", ""),
             "currency": extra.get("currency", currency),
             "asin": h.get("asin", ""),
@@ -108,7 +118,7 @@ def _webhook_generic(hits: list[dict], currency: str) -> tuple[str, dict[str, st
 
 def _webhook_slack(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
     lines = "\n".join(
-        f"• {_webhook_item_prefix(h)}<{h['url']}|{h['title']}> — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+        f"• {_webhook_item_prefix(h)}<{h['url']}|{h['title']}> — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
         for h in hits
     )
     body = json.dumps({"text": f"*{_webhook_heading(hits)} ({len(hits)})*\n{lines}"})
@@ -117,7 +127,7 @@ def _webhook_slack(hits: list[dict], currency: str) -> tuple[str, dict[str, str]
 
 def _webhook_discord(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
     lines = "\n".join(
-        f"• {_webhook_item_prefix(h)}[{h['title']}](<{h['url']}>) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+        f"• {_webhook_item_prefix(h)}[{h['title']}](<{h['url']}>) — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
         for h in hits
     )
     body = json.dumps(
@@ -128,7 +138,7 @@ def _webhook_discord(hits: list[dict], currency: str) -> tuple[str, dict[str, st
 
 def _webhook_teams(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
     text = "  \n".join(
-        f"• {_webhook_item_prefix(h)}[{h['title']}]({h['url']}) — {currency}{h['price']:.2f} (target {currency}{h['target']:.2f})"
+        f"• {_webhook_item_prefix(h)}[{h['title']}]({h['url']}) — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
         for h in hits
     )
     body = json.dumps(

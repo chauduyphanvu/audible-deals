@@ -187,11 +187,9 @@ def _print_dashboard(locale: str) -> None:
     inspection = inspect_auth_file()
     click.echo(f"audible-deals · marketplace: {locale}")
 
-    if inspection.status in {"missing", "malformed", "expired"}:
+    if inspection.status in {"missing", "malformed"}:
         if inspection.status == "missing":
             click.echo("Authentication is not set up.")
-        elif inspection.status == "expired":
-            click.echo("Authentication has expired.")
         else:
             click.echo("Saved authentication cannot be read.")
         click.echo("Start with: deals login")
@@ -199,7 +197,9 @@ def _print_dashboard(locale: str) -> None:
         click.echo("Diagnose setup: deals doctor")
     else:
         click.echo("Authentication is available.")
-        if inspection.status == "expiring":
+        if inspection.status == "expired":
+            click.echo("The access token has expired and will refresh automatically.")
+        elif inspection.status == "expiring":
             click.echo(
                 "Warning: authentication expires within 24 hours; run deals login to refresh it."
             )

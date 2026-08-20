@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import os
 import statistics
 from pathlib import Path
 
@@ -27,12 +28,6 @@ def history_key(asin: str, locale: str) -> str:
 
 def _marketplace_entries(raw: object, asin: str, locale: str) -> list[dict]:
     if not isinstance(raw, dict):
-        if isinstance(raw, list):
-            logger.warning(
-                "Ignoring legacy unscoped price history for %s; it cannot be safely assigned to %s",
-                asin,
-                locale,
-            )
         return []
     markets = raw.get(_MARKETPLACES_KEY)
     if not isinstance(markets, dict):
@@ -52,6 +47,71 @@ def _history_update_lock(hist_file: Path):
     return advisory_lock(hist_file.with_name(f".{hist_file.name}.lock"), wait=True)
 
 
+def _legacy_archive_path(hist_file: Path, suffix: int) -> Path:
+    base = hist_file.with_name(f"{hist_file.name}.legacy")
+    return base if suffix == 0 else hist_file.with_name(f"{base.name}.{suffix}")
+
+
+def _archive_legacy_history(hist_file: Path) -> bool:
+    """Move a legacy history to a collision-free backup without clobbering one."""
+    suffix = 0
+    while True:
+        archive = _legacy_archive_path(hist_file, suffix)
+        try:
+            # link() exclusively creates the destination, unlike rename() which
+            # can replace a backup created after an existence check.
+            os.link(hist_file, archive)
+        except FileExistsError:
+            suffix += 1
+            continue
+
+        try:
+            hist_file.unlink()
+        except OSError:
+            try:
+                archive.unlink()
+            except OSError:
+                pass
+            raise
+        return True
+
+
+def _log_legacy_migration(archived: int, failed: int) -> None:
+    if archived or failed:
+        logger.warning(
+            "Legacy history migration: archived %d file(s), %d failed; "
+            "unscoped prices were not assigned to a marketplace",
+            archived,
+            failed,
+        )
+
+
+def migrate_legacy_histories() -> tuple[int, int]:
+    """Archive legacy top-level history lists without rewriting their bytes."""
+    if not constants.HISTORY_DIR.exists():
+        return 0, 0
+    archived = 0
+    failed = 0
+    migration_lock = constants.HISTORY_DIR / ".legacy-migration.lock"
+    with advisory_lock(migration_lock, wait=True):
+        for hist_file in sorted(constants.HISTORY_DIR.glob("*.json")):
+            with _history_update_lock(hist_file):
+                try:
+                    raw = json.loads(hist_file.read_bytes())
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                    continue
+                if not isinstance(raw, list):
+                    continue
+                try:
+                    _archive_legacy_history(hist_file)
+                except OSError:
+                    failed += 1
+                else:
+                    archived += 1
+    _log_legacy_migration(archived, failed)
+    return archived, failed
+
+
 def record_prices(products: list[Product]) -> None:
     """Append today's prices to per-ASIN history files.
 
@@ -69,6 +129,8 @@ def record_prices(products: list[Product]) -> None:
     skipped_today = 0
     bad_asin = 0
     corrupt = 0
+    legacy_archived = 0
+    legacy_failed = 0
 
     for p in priced:
         if not _ASIN_RE.fullmatch(p.asin):
@@ -100,21 +162,12 @@ def record_prices(products: list[Product]) -> None:
             if raw is None:
                 raw = {_MARKETPLACES_KEY: {}}
             if isinstance(raw, list):
-                legacy = hist_file.with_name(hist_file.name + ".legacy")
                 try:
-                    hist_file.replace(legacy)
+                    _archive_legacy_history(hist_file)
                 except OSError:
-                    logger.warning(
-                        "legacy unscoped history at %s could not be preserved; skipping %s",
-                        hist_file,
-                        p.asin,
-                    )
+                    legacy_failed += 1
                     continue
-                logger.warning(
-                    "moved legacy unscoped history at %s to %s; starting marketplace-specific history",
-                    hist_file,
-                    legacy,
-                )
+                legacy_archived += 1
                 raw = {_MARKETPLACES_KEY: {}}
             if not isinstance(raw, dict):
                 logger.warning(
@@ -135,6 +188,8 @@ def record_prices(products: list[Product]) -> None:
             markets[p.locale] = entries[-_MAX_HISTORY_ENTRIES:]
             _atomic_write(hist_file, json.dumps(raw))
             written.add(hist_file)
+
+    _log_legacy_migration(legacy_archived, legacy_failed)
 
     logger.debug(
         "record_prices: priced=%d wrote=%d skipped_today=%d bad_asin=%d corrupt=%d",
@@ -359,6 +414,7 @@ def load_all_price_histories(locale: str = "us") -> dict[str, list[dict]]:
     """
     if not constants.HISTORY_DIR.exists():
         return {}
+    migrate_legacy_histories()
     result: dict[str, list[dict]] = {}
     for hist_file in constants.HISTORY_DIR.glob("*.json"):
         entries = load_price_history(hist_file.stem, locale)
@@ -464,9 +520,9 @@ def purge_stale_history(
 
 def _wishlist_with_history(locale: str):
     """Yield (item, price history entries) for wishlist items with valid ASINs."""
-    for item in wishlist.load_wishlist():
-        if _ASIN_RE.fullmatch(item.get("asin", "")):
-            yield item, load_price_history(item["asin"], locale)
+    asin_items, _ = wishlist.partition_wishlist(wishlist.load_wishlist())
+    for item in asin_items:
+        yield item, load_price_history(item["asin"], locale)
 
 
 def find_wishlist_hits(locale: str = "us") -> list[dict]:
@@ -521,8 +577,8 @@ def find_all_atl_hits(
     *limit* dicts sorted by drop magnitude (how far below the previous minimum)
     descending.
     """
-    items = wishlist.load_wishlist()
-    wishlist_by_asin = {item["asin"]: item for item in items if "asin" in item}
+    items, _ = wishlist.partition_wishlist(wishlist.load_wishlist())
+    wishlist_by_asin = {item["asin"]: item for item in items}
     if histories is None:
         histories = load_all_price_histories(locale)
 

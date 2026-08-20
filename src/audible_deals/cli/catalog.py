@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import unicodedata
 
 import click
 
@@ -36,7 +37,6 @@ from audible_deals.constants import (
 from audible_deals.client import DealsClient
 from audible_deals.display import console
 from audible_deals.product import Product
-from audible_deals.validation import looks_like_person_name
 
 logger = logging.getLogger(__name__)
 
@@ -55,6 +55,74 @@ def _resolve_genre_category(ctx, genre: str, category: str) -> str:
     return ""
 
 
+def _normalized_search_text(value: str) -> str:
+    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
+
+
+def _rank_relevance(products: list[Product], query: str) -> list[Product]:
+    """Stably rank exact and phrase matches ahead of the marketplace order."""
+    normalized_query = _normalized_search_text(query)
+    if not normalized_query:
+        return products
+
+    def tier(product: Product) -> int:
+        title = _normalized_search_text(product.title)
+        authors = [_normalized_search_text(author) for author in product.authors]
+        if title == normalized_query or normalized_query in authors:
+            return 0
+        if normalized_query in title:
+            return 1
+        if any(normalized_query in author for author in authors):
+            return 2
+        return 3
+
+    return sorted(products, key=tier)
+
+
+def _fetch_search_phrase(
+    dc: DealsClient,
+    query: str,
+    *,
+    category_ids: list[str],
+    sort_orders: list[str],
+    pages: int,
+    description: str,
+) -> list[Product]:
+    broad = _fetch_with_progress(
+        dc,
+        keywords=query,
+        category_ids=category_ids,
+        sort_orders=sort_orders,
+        pages=pages,
+        description=description,
+    )
+    if not query:
+        return broad
+
+    exact: list[Product] = []
+    try:
+        for category_id in category_ids:
+            for products, _, _ in dc.search_pages(
+                title=query,
+                category_id=category_id,
+                sort_by="Relevance",
+                max_pages=1,
+            ):
+                exact.extend(products)
+    except Exception as exc:
+        logger.info(
+            "Exact-title probe failed for %r; using broad results: %s", query, exc
+        )
+
+    merged: list[Product] = []
+    seen_asins: set[str] = set()
+    for product in exact + broad:
+        if product.asin not in seen_asins:
+            seen_asins.add(product.asin)
+            merged.append(product)
+    return _rank_relevance(merged, query)
+
+
 def _fetch_multi_query(
     dc: DealsClient,
     queries: list[str],
@@ -67,12 +135,12 @@ def _fetch_multi_query(
     all_products: list[Product] = []
     fetched_asins: set[str] = set()
     for q in queries:
-        sub_products = _fetch_with_progress(
+        sub_products = _fetch_search_phrase(
             dc,
-            keywords=q,
             category_ids=[category],
             sort_orders=sort_orders,
             pages=pages,
+            query=q,
             description=f"Searching '{q}'",
         )
         for p in sub_products:
@@ -80,6 +148,23 @@ def _fetch_multi_query(
                 fetched_asins.add(p.asin)
                 all_products.append(p)
     return all_products
+
+
+def _matching_author_queries(queries: list[str], products: list[Product]) -> list[str]:
+    """Return queries evidenced by an exact normalized product author match."""
+    normalized_authors = {
+        _normalized_search_text(author)
+        for product in products
+        for author in product.authors
+    }
+    matches: list[str] = []
+    seen: set[str] = set()
+    for query in queries:
+        normalized = _normalized_search_text(query)
+        if normalized and normalized in normalized_authors and normalized not in seen:
+            matches.append(query)
+            seen.add(normalized)
+    return matches
 
 
 def monitor_scan_plan(s, mode: str, query: str) -> tuple[list[str], list[str]]:
@@ -106,6 +191,62 @@ def _search_title(queries: list[str], category_name: str) -> str:
     if category_name:
         title += f" in {category_name}"
     return title
+
+
+def _active_filter_labels(
+    s,
+    *,
+    max_effective_price: float | None,
+    exclude_seen: bool,
+    hist_below: int | None,
+    min_price_drop: float,
+    require_history: bool,
+    released_after: str,
+    released_before: str,
+) -> list[str]:
+    """Return active resolved filters in a stable, human-readable order."""
+    filters: list[str] = []
+
+    def add(name: str, value, active: bool = True) -> None:
+        if active:
+            filters.append(f"{name}={value}")
+
+    add("max-price", s.max_price, s.max_price is not None)
+    add("max-price-per-hour", s.max_pph, s.max_pph is not None)
+    add(
+        "max-effective-price",
+        max_effective_price,
+        max_effective_price is not None,
+    )
+    add("min-rating", s.min_rating, s.min_rating > 0)
+    add("min-ratings", s.min_ratings, s.min_ratings > 0)
+    add("min-hours", s.min_hours, s.min_hours > 0)
+    add("min-discount", s.min_discount, s.min_discount > 0)
+    add("language", s.language, bool(s.language))
+    add("author", s.author, bool(s.author))
+    add("narrator", s.narrator, bool(s.narrator))
+    add("series", s.series, bool(s.series))
+    add("publisher", s.publisher, bool(s.publisher))
+    add("on-sale", "yes", s.on_sale)
+    add("first-in-series", "yes", s.first_in_series)
+    add("skip-owned", "yes", s.skip_owned)
+    add("skip-plus", "yes", s.skip_plus)
+    add("only-plus", "yes", s.only_plus)
+    add("exclude-genres", ",".join(s.exclude_genre), bool(s.exclude_genre))
+    add("exclude-authors", ",".join(s.exclude_authors), bool(s.exclude_authors))
+    add(
+        "exclude-narrators",
+        ",".join(s.exclude_narrators),
+        bool(s.exclude_narrators),
+    )
+    add("exclude-keywords", ",".join(s.exclude_keywords), bool(s.exclude_keywords))
+    add("exclude-seen", "yes", exclude_seen)
+    add("hist-below", hist_below, hist_below is not None)
+    add("min-price-drop", min_price_drop, min_price_drop > 0)
+    add("require-history", "yes", require_history)
+    add("released-after", released_after, bool(released_after))
+    add("released-before", released_before, bool(released_before))
+    return filters
 
 
 def _validate_history_filter_options(
@@ -286,6 +427,20 @@ def search(
             sort_orders=sort_orders,
             pages=s.pages,
             query_count=len(queries),
+            title_probe_count=sum(bool(query) for query in queries),
+            result_sort=s.sort,
+            limit=s.limit,
+            profile_name=profile_name,
+            active_filters=_active_filter_labels(
+                s,
+                max_effective_price=max_effective_price,
+                exclude_seen=exclude_seen,
+                hist_below=hist_below,
+                min_price_drop=min_price_drop,
+                require_history=require_history,
+                released_after=released_after,
+                released_before=released_before,
+            ),
         )
         return
 
@@ -298,32 +453,13 @@ def search(
 
         skip_asins = _resolve_skip_asins(dc, s.skip_owned, exclude_seen)
 
-        if len(queries) > 1:
-            all_products = _fetch_multi_query(
-                dc,
-                queries,
-                category=category,
-                sort_orders=sort_orders,
-                pages=s.pages,
-            )
-        else:
-            if queries[0]:
-                scope = f"'{queries[0]}'"
-                if category_name:
-                    scope += f" in {category_name}"
-            elif category_name:
-                scope = category_name
-            else:
-                scope = "catalog"
-
-            all_products = _fetch_with_progress(
-                dc,
-                keywords=queries[0],
-                category_ids=[category],
-                sort_orders=sort_orders,
-                pages=s.pages,
-                description=f"Searching {scope}",
-            )
+        all_products = _fetch_multi_query(
+            dc,
+            queries,
+            category=category,
+            sort_orders=sort_orders,
+            pages=s.pages,
+        )
 
     cur = _currency(ctx)
     credit_price = _credit_price(ctx)
@@ -360,17 +496,11 @@ def search(
         histories=histories,
         credit_price=credit_price,
     )
-    display_query = queries[0] if len(queries) == 1 else None
-    if (
-        display_query
-        and not s.author
-        and not json_flag
-        and not quiet
-        and looks_like_person_name(display_query)
-    ):
-        console.print(
-            f"\n  [dim]Tip: Use --author '{display_query}' for exact author filtering.[/dim]"
-        )
+    if not s.author and not json_flag and not quiet:
+        for author_query in _matching_author_queries(queries, all_products):
+            console.print(
+                f"\n  [dim]Tip: Use --author '{author_query}' for exact author filtering.[/dim]"
+            )
 
 
 @click.command()
@@ -550,6 +680,20 @@ def find(
             sort_orders=sort_orders,
             pages=s.pages,
             subcategories_unknown=subcategories,
+            title_probe_count=1 if s.keywords else 0,
+            result_sort=s.sort,
+            limit=s.limit,
+            profile_name=profile_name,
+            active_filters=_active_filter_labels(
+                s,
+                max_effective_price=max_effective_price,
+                exclude_seen=exclude_seen,
+                hist_below=hist_below,
+                min_price_drop=min_price_drop,
+                require_history=require_history,
+                released_after=released_after,
+                released_before=released_before,
+            ),
         )
         return
 
@@ -587,9 +731,9 @@ def find(
             scan_category_ids = [category]
             description = f"Scanning {desc_str}"
 
-        all_products = _fetch_with_progress(
+        all_products = _fetch_search_phrase(
             dc,
-            keywords=s.keywords,
+            query=s.keywords,
             category_ids=scan_category_ids,
             sort_orders=sort_orders,
             pages=s.pages,
