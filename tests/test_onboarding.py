@@ -81,7 +81,7 @@ def test_doctor_expired_auth_probes_and_reports_refresh_failure(
     auth_file = tmp_config / "auth.json"
     auth_file.write_text(json.dumps(_auth_data(time.time() - 1)))
     monkeypatch.setattr(constants, "AUTH_FILE", auth_file)
-    mock_client._api_get.side_effect = RuntimeError("refresh rejected")
+    mock_client.check_connection.side_effect = RuntimeError("refresh rejected")
 
     result = CliRunner().invoke(cli, ["doctor"])
 
@@ -90,7 +90,7 @@ def test_doctor_expired_auth_probes_and_reports_refresh_failure(
     assert "WARN" in result.output
     assert "Marketplace reachable" in result.output
     assert "refresh rejected" in result.output
-    mock_client._api_get.assert_called_once()
+    mock_client.check_connection.assert_called_once_with()
 
 
 def test_bare_dashboard_is_auth_aware_and_local(tmp_config, monkeypatch):

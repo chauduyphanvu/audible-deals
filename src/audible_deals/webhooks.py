@@ -12,7 +12,7 @@ import logging
 from decimal import Decimal
 from typing import Callable
 
-from audible_deals.display import price_str
+from audible_deals.presentation.common import price_str
 
 logger = logging.getLogger(__name__)
 

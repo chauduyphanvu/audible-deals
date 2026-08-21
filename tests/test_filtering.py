@@ -5,13 +5,35 @@ from __future__ import annotations
 import pytest
 
 from audible_deals.filtering import (
-    dedupe_editions,
-    filter_products,
-    first_in_series,
+    dedupe_editions as _typed_dedupe_editions,
+)
+from audible_deals.filtering import (
+    filter_products as _typed_filter_products,
+)
+from audible_deals.filtering import (
+    first_in_series as _typed_first_in_series,
+)
+from audible_deals.filtering import (
     sort_local,
 )
 from audible_deals.metrics import buy_verdict, effective_price, price_per_hour
+from audible_deals.result_models import FilterContext, FilterOutcome
 from tests.conftest import make_product
+
+
+def filter_products(products, **values):
+    outcome = _typed_filter_products(products, FilterContext(**values))
+    return list(outcome.products), dict(outcome.breakdown)
+
+
+def dedupe_editions(products):
+    outcome = _typed_dedupe_editions(FilterOutcome(products))
+    return list(outcome.products), outcome.editions_removed
+
+
+def first_in_series(products):
+    outcome = _typed_first_in_series(FilterOutcome(products))
+    return list(outcome.products), outcome.series_collapsed
 
 
 # ===================================================================
@@ -20,6 +42,16 @@ from tests.conftest import make_product
 
 
 class TestFilterProducts:
+    def test_returns_typed_outcome(self, products_for_filtering):
+        outcome = _typed_filter_products(
+            products_for_filtering, FilterContext(max_price=5.0)
+        )
+        assert isinstance(outcome, FilterOutcome)
+        assert all(
+            product.price is not None and product.price <= 5.0
+            for product in outcome.products
+        )
+
     def test_max_price(self, products_for_filtering):
         filtered, breakdown = filter_products(products_for_filtering, max_price=5.0)
         assert all(p.price is not None and p.price <= 5.0 for p in filtered)

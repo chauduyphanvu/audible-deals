@@ -4,69 +4,49 @@ from __future__ import annotations
 
 import datetime
 import logging
-import time
 
 import click
 
 from audible_deals import constants, scheduler
+from audible_deals.automation_models import TrackRunRequest
 from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
-    _safe_record_prices,
 )
-from audible_deals.notification_workflow import (
-    apply_cooldown,
-    collect_target_hits,
-    parse_webhook_headers,
-    persist_notify_state,
-    post_webhook,
+from audible_deals.cli.helpers import _resolve_categories, _resolve_skip_asins
+from audible_deals.config_store import (
+    load_monitors,
+    load_notify_state,
+    load_track_state,
+    save_notify_state,
+    save_track_state,
 )
-from audible_deals.constants import LockHeldError, run_lock
-from audible_deals.display import console
+from audible_deals.locking import LockHeldError, run_lock
+from audible_deals.monitor_service import MonitorRuntime
+from audible_deals.notification_workflow import parse_webhook_headers
 from audible_deals.parsing import parse_interval
-from audible_deals.price_history import load_all_price_histories
-from audible_deals.storage import load_json_file, save_json_file
+from audible_deals.presentation.terminal import catalog_scan_progress, console
+from audible_deals.result_publication import record_prices_safely as _safe_record_prices
+from audible_deals.track_service import (
+    TrackRuntime,
+    run_history,
+    run_track,
+)
+from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
 from audible_deals.webhooks import (
-    format_webhook_message,
-    format_monitor_webhook_payload,
-    format_webhook_payload,
     parse_webhook_headers as _parse_wh_headers,
 )
-from audible_deals.wishlist import load_wishlist, partition_wishlist
-from audible_deals.cli.monitor import (
-    record_monitor_error,
-    run_monitor,
-    select_monitors_for_run,
-)
-from audible_deals.config_store import load_monitors
+from audible_deals.wishlist import warn_wishlist_issues
 
 logger = logging.getLogger(__name__)
 
 # Refresh history for ASINs seen within this window, beyond the wishlist
-_RECENT_HISTORY_DAYS = 30
-# Bound the per-run refresh so a large history dir can't blow up API usage
-_MAX_EXTRA_ASINS = 200
 _MIN_INTERVAL_SECONDS = 600
-_RUN_HISTORY_MAX = 10
-
-
-def _append_run(state: dict, entry: dict) -> None:
-    """Insert entry newest-first into state["run_history"], capped at _RUN_HISTORY_MAX."""
-    history = state.get("run_history", [])
-    history.insert(0, entry)
-    state["run_history"] = history[:_RUN_HISTORY_MAX]
-    state.pop("last_run", None)
 
 
 def _run_history(state: dict) -> list[dict]:
-    """Return run history entries, newest-first. Falls back to legacy last_run key."""
-    if "run_history" in state:
-        return state["run_history"]
-    last = state.get("last_run")
-    if last:
-        return [last]
-    return []
+    return run_history(state)
 
 
 def _parse_cfg_webhook_headers(raw_list: list) -> dict[str, str]:
@@ -78,125 +58,6 @@ def _parse_cfg_webhook_headers(raw_list: list) -> dict[str, str]:
             continue
         str_items.append(item)
     return _parse_wh_headers(str_items, strict=False)
-
-
-def _load_track_state() -> dict:
-    return load_json_file(constants.TRACK_STATE_FILE, dict, "track state")
-
-
-def _save_track_state(state: dict) -> None:
-    save_json_file(constants.TRACK_STATE_FILE, state, "track state")
-
-
-def _recent_history_asins(exclude: set[str], locale: str) -> list[str]:
-    """ASINs with a history entry in the last _RECENT_HISTORY_DAYS, oldest-checked first."""
-    cutoff = (
-        datetime.date.today() - datetime.timedelta(days=_RECENT_HISTORY_DAYS)
-    ).isoformat()
-    candidates: list[tuple[str, str]] = []
-    for asin, entries in load_all_price_histories(locale=locale).items():
-        if asin in exclude or not entries:
-            continue
-        last_date = entries[-1].get("date", "")
-        if last_date >= cutoff:
-            candidates.append((last_date, asin))
-    candidates.sort()  # stalest first, so they get refreshed before the cap hits
-    return [asin for _, asin in candidates[:_MAX_EXTRA_ASINS]]
-
-
-def _send_hits_webhook(
-    hits: list[dict],
-    extras: dict,
-    url: str,
-    fmt: str,
-    currency: str,
-    extra_headers: dict[str, str] | None = None,
-) -> None:
-    body, headers = format_webhook_payload(hits, fmt, currency=currency, extras=extras)
-    if extra_headers:
-        headers = {**headers, **extra_headers}
-    post_webhook(url, body, headers)
-
-
-def _send_monitor_events(
-    events: list[dict],
-    monitor: dict,
-    global_webhook: str | None,
-    global_format: str,
-    global_headers: dict[str, str] | None,
-) -> None:
-    """Deliver one monitor's events without leaking global headers to overrides."""
-    destination = monitor.get("webhook") or global_webhook
-    if not destination:
-        return
-    headers = global_headers if destination == global_webhook else None
-    currency = constants.LOCALE_CURRENCY.get(monitor["locale"], "$")
-    body, payload_headers = format_monitor_webhook_payload(
-        events,
-        monitor.get("webhook_format") or global_format,
-        locale=monitor["locale"],
-        currency=currency,
-    )
-    if headers:
-        payload_headers = {**payload_headers, **headers}
-    post_webhook(destination, body, payload_headers)
-
-
-def _is_auth_error(exc: Exception) -> bool:
-    """True when an exception signals the user must re-run 'deals login'."""
-    status = getattr(exc, "status_code", None) or getattr(
-        getattr(exc, "response", None), "status_code", None
-    )
-    if status in (401, 403):
-        return True
-    msg = str(exc).lower()
-    return "not authenticated" in msg or "deals login" in msg
-
-
-def _record_failure(
-    exc: Exception,
-    started: float,
-    webhook: str | None,
-    webhook_format: str,
-    webhook_headers: dict[str, str] | None,
-) -> None:
-    """Append a failed-run entry and ping only on genuine auth failures."""
-    state = _load_track_state()
-    _append_run(
-        state,
-        {
-            "at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "duration_s": round(time.monotonic() - started, 1),
-            "error": f"{type(exc).__name__}: {exc}",
-        },
-    )
-    if _is_auth_error(exc):
-        _notify_auth_error(state, str(exc), webhook, webhook_format, webhook_headers)
-    _save_track_state(state)
-
-
-def _notify_auth_error(
-    state: dict,
-    error: str,
-    url: str | None,
-    fmt: str,
-    extra_headers: dict[str, str] | None = None,
-) -> None:
-    """One-time webhook ping when a background run hits an auth failure."""
-    if not url or state.get("auth_error_notified"):
-        return
-    try:
-        body, headers = format_webhook_message(
-            f"Background tracking failed: {error}\nRun 'deals login' to re-authenticate.",
-            fmt,
-            title="audible-deals needs attention",
-        )
-        if extra_headers:
-            headers = {**headers, **extra_headers}
-        post_webhook(url, body, headers)
-        state["auth_error_notified"] = True
-    except Exception:
-        logger.exception("auth-error webhook ping failed")
 
 
 @click.group(invoke_without_command=True)
@@ -224,123 +85,48 @@ def track(ctx):
 @click.pass_context
 def track_run(ctx, cooldown):
     """Refresh tracked prices once (the command the scheduler runs)."""
-    started = time.monotonic()
     cfg = ctx.obj.get("config", {})
     webhook = cfg.get("webhook")
     webhook_format = cfg.get("webhook_format") or "generic"
     webhook_headers = _parse_cfg_webhook_headers(cfg.get("webhook_headers") or [])
-
+    webhook_client = WebhookClient()
+    request = TrackRunRequest(
+        locale=ctx.obj["locale"],
+        currency=_currency(ctx),
+        credit_price=_credit_price(ctx),
+        cooldown=cooldown,
+        webhook=webhook,
+        webhook_format=webhook_format,
+        webhook_headers=webhook_headers,
+    )
+    runtime = TrackRuntime(
+        get_client=_get_client,
+        record_products=_safe_record_prices,
+        webhook_client=webhook_client,
+        monitor_runtime=MonitorRuntime(
+            get_client=_get_client,
+            resolve_categories=_resolve_categories,
+            resolve_skip_asins=_resolve_skip_asins,
+            progress=catalog_scan_progress,
+        ),
+        load_track_state=load_track_state,
+        save_track_state=save_track_state,
+        load_monitors=load_monitors,
+        load_notify_state=load_notify_state,
+        save_notify_state=save_notify_state,
+        lock=run_lock,
+    )
     try:
-        with run_lock():
-            state = _load_track_state()
-            _track_run_locked(
-                ctx, state, cooldown, webhook, webhook_format, started, webhook_headers
-            )
+        result = run_track(request, runtime)
     except LockHeldError as e:
         console.print(f"[dim]Another run is in progress, skipping: {e}[/dim]")
-    except click.ClickException:
-        raise
+        return
+    except WebhookDeliveryError as exc:
+        raise click.ClickException(str(exc)) from exc
     except Exception as e:
-        logger.exception("track run failed")
-        try:
-            with run_lock():
-                _record_failure(e, started, webhook, webhook_format, webhook_headers)
-        except LockHeldError:
-            logger.warning(
-                "Could not record failed run because another run holds the lock"
-            )
         raise click.ClickException(f"track run failed: {e}")
-
-
-def _track_run_locked(
-    ctx, state, cooldown, webhook, webhook_format, started, webhook_headers=None
-):
-    items = load_wishlist()
-    asin_items, author_items = partition_wishlist(items)
-    wishlist_asins = {i["asin"] for i in asin_items}
-
-    dc = _get_client(ctx.obj["locale"])
-    hits, extras, hit_asins = collect_target_hits(
-        dc,
-        asin_items,
-        author_items,
-        _safe_record_prices,
-        credit_price=_credit_price(ctx),
-    )
-
-    extra_asins = _recent_history_asins(
-        exclude=wishlist_asins, locale=ctx.obj["locale"]
-    )
-    if extra_asins:
-        with dc:
-            extra_products = dc.get_products_batch(extra_asins)
-        _safe_record_prices(extra_products)
-
-    suppressed = 0
-    webhook_sent = False
-    today = datetime.date.today()
-    if webhook and hits:
-        kept, suppressed, notify_state = apply_cooldown(hits, cooldown, today)
-        if kept:
-            _send_hits_webhook(
-                kept, extras, webhook, webhook_format, _currency(ctx), webhook_headers
-            )
-            webhook_sent = True
-            persist_notify_state(notify_state, kept, asin_items, hit_asins, today)
-
-    monitor_checked = monitor_events = 0
-    monitor_failures: list[str] = []
-    scheduled_monitors = select_monitors_for_run(load_monitors(), state)
-    for name, definition in scheduled_monitors:
-        monitor_checked += 1
-        try:
-
-            def deliver(events, monitor):
-                _send_monitor_events(
-                    events, monitor, webhook, webhook_format, webhook_headers
-                )
-
-            events, _baseline = run_monitor(definition, deliver=deliver)
-            monitor_events += len(events)
-        except Exception as exc:
-            logger.exception("monitor %s failed", name)
-            monitor_failures.append(f"{name}: {type(exc).__name__}: {exc}")
-            record_monitor_error(name, exc)
-
-    _append_run(
-        state,
-        {
-            "at": datetime.datetime.now().isoformat(timespec="seconds"),
-            "duration_s": round(time.monotonic() - started, 1),
-            "wishlist_checked": len(asin_items),
-            "author_watches_checked": len(author_items),
-            "extra_tracked_checked": len(extra_asins),
-            "hits": len(hits),
-            "suppressed": suppressed,
-            "webhook_sent": webhook_sent,
-            "monitors_checked": monitor_checked,
-            "monitors_scheduled": len(scheduled_monitors),
-            "monitor_events": monitor_events,
-            "monitor_failures": monitor_failures,
-            "error": None,
-        },
-    )
-    state.pop("auth_error_notified", None)
-    _save_track_state(state)
-
-    summary = (
-        f"Refreshed {len(asin_items)} wishlist + {len(extra_asins)} tracked item(s); "
-        f"{len(hits)} at target"
-    )
-    if webhook_sent:
-        summary += " (webhook sent)"
-    elif suppressed:
-        summary += f" ({suppressed} suppressed by cooldown)"
-    if monitor_checked:
-        summary += f"; {monitor_checked} monitor(s), {monitor_events} event(s)"
-    if monitor_failures:
-        summary += f" ({len(monitor_failures)} monitor failure(s))"
-    console.print(f"[dim]{summary}[/dim]")
+    warn_wishlist_issues(result.wishlist_issues)
+    console.print(f"[dim]{result.summary()}[/dim]")
 
 
 @track.command("install")
@@ -405,14 +191,14 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
     except scheduler.SchedulerError as e:
         raise click.ClickException(str(e))
 
-    state = _load_track_state()
+    state = load_track_state()
     state["install"] = {
         "every": every,
         "interval_s": interval_s,
         "method": description,
         "installed_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
-    _save_track_state(state)
+    save_track_state(state)
 
     console.print(f"[green]Installed:[/green] {description}")
     console.print(f"  Runs 'deals track run' every {every}")
@@ -427,9 +213,9 @@ def track_uninstall():
         removed = scheduler.uninstall()
     except scheduler.SchedulerError as e:
         raise click.ClickException(str(e))
-    state = _load_track_state()
+    state = load_track_state()
     state.pop("install", None)
-    _save_track_state(state)
+    save_track_state(state)
     if removed:
         console.print("[green]Background tracking schedule removed.[/green]")
     else:
@@ -446,9 +232,9 @@ def track_uninstall():
 )
 def track_status(show_history):
     """Show schedule and last-run status for background tracking."""
-    from audible_deals.display import display_track_history
+    from audible_deals.presentation.reports import display_track_history
 
-    state = _load_track_state()
+    state = load_track_state()
     install_info = state.get("install")
     present, where = scheduler.installed()
 

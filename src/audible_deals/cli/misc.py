@@ -28,12 +28,12 @@ from audible_deals.config_store import (
     load_profiles,
 )
 from audible_deals.constants import _CONFIG_SCHEMA, product_url
-from audible_deals.display import (
-    console,
-    display_categories,
+from audible_deals.presentation.products import (
     display_comparison,
     display_product_detail,
 )
+from audible_deals.presentation.reports import display_categories
+from audible_deals.presentation.terminal import console
 from audible_deals.results_cache import load_seen_asins
 from audible_deals.settings import _PROFILE_EXTRA_KEYS
 from audible_deals.wishlist import inspect_wishlist
@@ -360,7 +360,7 @@ def _connectivity_check(ctx, auth_ok: bool) -> _Row:
     try:
         dc = _get_client(ctx.obj["locale"])
         with dc:
-            dc._api_get("1.0/catalog/products", num_results=1)
+            dc.check_connection()
         return ("Marketplace reachable", "PASS", "")
     except Exception as e:
         return ("Marketplace reachable", "FAIL", f"{type(e).__name__}: {e}")

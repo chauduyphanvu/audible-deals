@@ -139,9 +139,7 @@ def run_lock():
     crashes. The lock-file timestamp is deliberately not used: a legitimate
     catalog run may take longer than any fixed stale threshold.
     """
-    # Imported here to break the cycle with constants, which re-exports
-    # run_lock/LockHeldError for back-compat. LOCK_FILE is resolved at call
-    # time so test fixtures can patch it on the constants module.
+    # Resolve LOCK_FILE at call time so test fixtures can patch constants.
     from audible_deals import constants
 
     lock_file = constants.LOCK_FILE

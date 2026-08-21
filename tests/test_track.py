@@ -1,4 +1,4 @@
-"""Tests for the track command group and scheduler unit generation."""
+"""Tracking and scheduler behavior."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import datetime
 import json
 from pathlib import Path
 
+import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
@@ -15,19 +16,28 @@ import audible_deals.wishlist as wishlist_mod
 from audible_deals.cli import cli
 from audible_deals.scheduler import (
     CRON_MARKER,
+    SchedulerError,
     generate_cron_line,
     generate_launchd_plist,
     generate_systemd_service,
     generate_systemd_timer,
     track_command,
+    uninstall,
 )
 from audible_deals.webhooks import format_webhook_message
 from tests.conftest import make_product
 
 
-# ===================================================================
-# Scheduler unit generation (pure text — no OS calls)
-# ===================================================================
+def _bugfixscheduler_fire_minutes(step: int) -> list[int]:
+    return list(range(0, 60, step))
+
+
+def _bugfixscheduler_min_gap_minutes(minutes_list: list[int]) -> int:
+    """Smallest gap between consecutive fires, accounting for the hour wrap."""
+    gaps = [minutes_list[i + 1] - minutes_list[i] for i in range(len(minutes_list) - 1)]
+    # Wrap from the last fire of one hour to minute 0 of the next.
+    gaps.append((60 - minutes_list[-1]) + minutes_list[0])
+    return min(gaps)
 
 
 class TestTrackCommandResolution:
@@ -98,11 +108,6 @@ class TestCronLine:
         assert line.startswith("0 */6 * * * ")
 
 
-# ===================================================================
-# format_webhook_message
-# ===================================================================
-
-
 class TestFormatWebhookMessage:
     def test_slack(self):
         body, headers = format_webhook_message("hi", "slack", title="T")
@@ -133,11 +138,6 @@ class TestFormatWebhookMessage:
 
         with pytest.raises(ValueError):
             format_webhook_message("hi", "carrier-pigeon")
-
-
-# ===================================================================
-# track run
-# ===================================================================
 
 
 class TestTrackRun:
@@ -213,7 +213,7 @@ class TestTrackRun:
     def test_lock_held_skips_quietly(self, mock_client, tmp_config):
         self._seed_wishlist()
         runner = CliRunner()
-        from audible_deals.constants import run_lock
+        from audible_deals.locking import run_lock
 
         with run_lock():
             result = runner.invoke(cli, ["track", "run"])
@@ -228,11 +228,6 @@ class TestTrackRun:
         assert result.exit_code != 0
         state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
         assert "auth expired" in state["run_history"][0]["error"]
-
-
-# ===================================================================
-# track install / uninstall / status
-# ===================================================================
 
 
 class TestTrackInstall:
@@ -389,11 +384,6 @@ class TestTrackLog:
         assert "line96" not in result.output
 
 
-# ===================================================================
-# Config keys for webhook
-# ===================================================================
-
-
 class TestWebhookConfigKeys:
     def test_webhook_format_validated(self, tmp_config):
         runner = CliRunner()
@@ -408,35 +398,30 @@ class TestWebhookConfigKeys:
         assert config_store_mod.load_config()["webhook_format"] == "ntfy"
 
 
-# ===================================================================
-# Feature 1: run-history ring buffer
-# ===================================================================
-
-
 class TestRunHistoryHelpers:
     def test_append_inserts_newest_first(self):
-        from audible_deals.cli.track import _append_run
+        from audible_deals.track_service import append_run
 
         state: dict = {}
-        _append_run(state, {"at": "2026-01-01", "error": None})
-        _append_run(state, {"at": "2026-01-02", "error": None})
+        append_run(state, {"at": "2026-01-01", "error": None})
+        append_run(state, {"at": "2026-01-02", "error": None})
         assert state["run_history"][0]["at"] == "2026-01-02"
         assert state["run_history"][1]["at"] == "2026-01-01"
         assert "last_run" not in state
 
     def test_append_caps_at_max(self):
-        from audible_deals.cli.track import _RUN_HISTORY_MAX, _append_run
+        from audible_deals.track_service import RUN_HISTORY_MAX, append_run
 
         state: dict = {}
-        for i in range(_RUN_HISTORY_MAX + 3):
-            _append_run(state, {"at": f"2026-01-{i + 1:02d}", "error": None})
-        assert len(state["run_history"]) == _RUN_HISTORY_MAX
+        for i in range(RUN_HISTORY_MAX + 3):
+            append_run(state, {"at": f"2026-01-{i + 1:02d}", "error": None})
+        assert len(state["run_history"]) == RUN_HISTORY_MAX
 
     def test_append_removes_legacy_last_run(self):
-        from audible_deals.cli.track import _append_run
+        from audible_deals.track_service import append_run
 
         state: dict = {"last_run": {"at": "2025-12-31", "error": None}}
-        _append_run(state, {"at": "2026-01-01", "error": None})
+        append_run(state, {"at": "2026-01-01", "error": None})
         assert "last_run" not in state
         assert state["run_history"][0]["at"] == "2026-01-01"
 
@@ -523,11 +508,6 @@ class TestTrackStatusHistory:
         assert "boom" in result.output
 
 
-# ===================================================================
-# Feature 1: doctor consecutive-failure streak
-# ===================================================================
-
-
 class TestDoctorTrackStreak:
     def _write_state_with_runs(self, runs):
         constants_mod.TRACK_STATE_FILE.write_text(
@@ -592,74 +572,60 @@ class TestDoctorTrackStreak:
         assert "Failing for" not in last_row[2]
 
 
-# ===================================================================
-# Feature 2: webhook retry
-# ===================================================================
-
-
 class TestPostWebhookRetry:
-    def test_succeeds_on_second_attempt(self, monkeypatch):
-        import audible_deals.notification_workflow as notify_mod
+    def test_succeeds_on_second_attempt(self):
+        from audible_deals.webhook_client import WebhookClient
 
         calls = []
 
-        def _fake_urlopen(req, timeout=10):
-            calls.append(1)
-            if len(calls) < 2:
-                raise OSError("transient")
+        class Opener:
+            def open(self, request, timeout=10):
+                calls.append((request, timeout))
+                if len(calls) < 2:
+                    raise OSError("transient")
 
-        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
         sleep_calls = []
-        monkeypatch.setattr(
-            "audible_deals.notification_workflow.time.sleep",
-            lambda s: sleep_calls.append(s),
-        )
-
-        notify_mod.post_webhook(
-            "https://example.com/hook", b"body", {"Content-Type": "application/json"}
+        WebhookClient(
+            opener=Opener(), sleep=sleep_calls.append, jitter=lambda low, high: 0
+        ).post(
+            "https://example.com/hook",
+            b"body",
+            {"Content-Type": "application/json"},
         )
         assert len(calls) == 2
         assert len(sleep_calls) == 1
 
-    def test_exhausts_retries_and_raises(self, monkeypatch):
+    def test_exhausts_retries_and_raises(self):
         import pytest
-        import click
-        import audible_deals.notification_workflow as notify_mod
 
-        monkeypatch.setattr(
-            "urllib.request.urlopen",
-            lambda *a, **kw: (_ for _ in ()).throw(OSError("nope")),
-        )
-        monkeypatch.setattr(
-            "audible_deals.notification_workflow.time.sleep", lambda s: None
+        from audible_deals.webhook_client import (
+            WebhookClient,
+            WebhookDeliveryError,
         )
 
-        with pytest.raises(click.ClickException, match="Webhook failed"):
-            notify_mod.post_webhook(
+        class Opener:
+            def open(self, request, timeout=10):
+                raise OSError("nope")
+
+        with pytest.raises(WebhookDeliveryError, match="Webhook failed"):
+            WebhookClient(opener=Opener(), sleep=lambda seconds: None).post(
                 "https://example.com/hook",
                 b"body",
                 {"Content-Type": "application/json"},
             )
 
-    def test_succeeds_first_attempt_no_sleep(self, monkeypatch):
-        import audible_deals.notification_workflow as notify_mod
+    def test_succeeds_first_attempt_no_sleep(self):
+        from audible_deals.webhook_client import WebhookClient
 
-        monkeypatch.setattr("urllib.request.urlopen", lambda *a, **kw: None)
+        class Opener:
+            def open(self, request, timeout=10):
+                return None
+
         sleep_calls = []
-        monkeypatch.setattr(
-            "audible_deals.notification_workflow.time.sleep",
-            lambda s: sleep_calls.append(s),
-        )
-
-        notify_mod.post_webhook(
+        WebhookClient(opener=Opener(), sleep=sleep_calls.append).post(
             "https://example.com/hook", b"body", {"Content-Type": "application/json"}
         )
         assert sleep_calls == []
-
-
-# ===================================================================
-# Feature 2: header parsing
-# ===================================================================
 
 
 class TestParseWebhookHeaders:
@@ -677,40 +643,45 @@ class TestParseWebhookHeaders:
         assert result["X-Other"] == "def"
 
     def test_rejects_missing_colon(self):
-        import pytest
         import click
+        import pytest
+
         from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError, match="Name: Value"):
             parse_webhook_headers(("BadHeader",))
 
     def test_rejects_empty_name(self):
-        import pytest
         import click
+        import pytest
+
         from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError):
             parse_webhook_headers((": value",))
 
     def test_rejects_empty_value(self):
-        import pytest
         import click
+        import pytest
+
         from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError):
             parse_webhook_headers(("X-Key: ",))
 
     def test_rejects_content_type(self):
-        import pytest
         import click
+        import pytest
+
         from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError, match="Content-Type"):
             parse_webhook_headers(("content-type: application/xml",))
 
     def test_rejects_content_type_mixed_case(self):
-        import pytest
         import click
+        import pytest
+
         from audible_deals.notification_workflow import parse_webhook_headers
 
         with pytest.raises(click.UsageError, match="Content-Type"):
@@ -721,11 +692,6 @@ class TestParseWebhookHeaders:
 
         result = parse_webhook_headers(("Authorization: Bearer a:b:c",))
         assert result["Authorization"] == "Bearer a:b:c"
-
-
-# ===================================================================
-# Feature 2: --webhook-header wired into notify and recap commands
-# ===================================================================
 
 
 class TestWebhookHeaderOption:
@@ -758,12 +724,14 @@ class TestWebhookHeaderOption:
         ]
         captured = {}
 
-        def _fake_urlopen(req, timeout=10):
-            captured["headers"] = dict(req.headers)
+        def _fake_post(self, url, body, headers):
+            captured["headers"] = dict(headers)
 
-        monkeypatch.setattr("urllib.request.urlopen", _fake_urlopen)
         monkeypatch.setattr(
-            "audible_deals.notification_workflow.validate_webhook_url", lambda url: None
+            "audible_deals.webhook_client.WebhookClient.post", _fake_post
+        )
+        monkeypatch.setattr(
+            "audible_deals.cli.notify.validate_webhook_url", lambda url: None
         )
 
         runner = CliRunner()
@@ -778,8 +746,7 @@ class TestWebhookHeaderOption:
             ],
         )
         assert result.exit_code == 0, result.output
-        # urllib capitalizes header names
-        assert captured.get("headers", {}).get("X-api-key") == "secret"
+        assert captured.get("headers", {}).get("X-Api-Key") == "secret"
 
     def test_track_install_webhook_header_requires_webhook(self, tmp_config):
         runner = CliRunner()
@@ -815,3 +782,97 @@ class TestWebhookHeaderOption:
         assert result.exit_code == 0, result.output
         cfg = config_store_mod.load_config()
         assert cfg["webhook_headers"] == ["Authorization: Bearer tok"]
+
+
+class TestBugfixSchedulerUninstallSystemdWithoutUserBus:
+    def test_removes_unit_files_when_bus_unavailable(self, tmp_path, monkeypatch):
+        unit_dir = tmp_path / "systemd" / "user"
+        unit_dir.mkdir(parents=True)
+        service = unit_dir / f"{scheduler_mod.SYSTEMD_UNIT}.service"
+        timer = unit_dir / f"{scheduler_mod.SYSTEMD_UNIT}.timer"
+        service.write_text("[Service]\n")
+        timer.write_text("[Timer]\n")
+
+        monkeypatch.setattr(scheduler_mod.sys, "platform", "linux")
+        monkeypatch.setattr(scheduler_mod, "systemd_unit_dir", lambda: unit_dir)
+        # No active user bus: _systemd_available() would gate cleanup off.
+        monkeypatch.setattr(scheduler_mod, "_systemd_available", lambda: False)
+        # crontab path: nothing to remove.
+        monkeypatch.setattr(scheduler_mod, "_cron_uninstall", lambda: False)
+        # systemctl calls must not raise even with check=False; stub _run.
+        monkeypatch.setattr(
+            scheduler_mod,
+            "_run",
+            lambda cmd, **kw: __import__("subprocess").CompletedProcess(cmd, 0, "", ""),
+        )
+
+        result = uninstall()
+
+        assert result is True
+        assert not service.exists()
+        assert not timer.exists()
+
+
+class TestBugfixSchedulerCronLineHonorsInterval:
+    def test_non_divisor_is_rejected(self):
+        with pytest.raises(SchedulerError, match="11-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 660, Path("/l"))
+
+    def test_twentyfive_minutes_is_rejected(self):
+        with pytest.raises(SchedulerError, match="25-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 1500, Path("/l"))
+
+    def test_divisor_of_60_unchanged(self):
+        line = generate_cron_line(["/usr/bin/deals", "track", "run"], 1800, Path("/l"))
+        assert line.startswith("*/30 * * * * ")
+
+    def test_large_non_divisor_is_rejected(self):
+        with pytest.raises(SchedulerError, match="50-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 3000, Path("/l"))
+
+    def test_61_minutes_is_rejected(self):
+        with pytest.raises(SchedulerError, match="61-minute"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 61 * 60, Path("/l"))
+
+    def test_24_hours_is_daily(self):
+        line = generate_cron_line(
+            ["/usr/bin/deals", "track", "run"], 24 * 60 * 60, Path("/l")
+        )
+        assert line.startswith("0 0 * * * ")
+
+    def test_48_hours_and_seconds_are_rejected(self):
+        with pytest.raises(SchedulerError, match="48-hour"):
+            generate_cron_line(
+                ["/usr/bin/deals", "track", "run"], 48 * 60 * 60, Path("/l")
+            )
+        with pytest.raises(SchedulerError, match="seconds"):
+            generate_cron_line(["/usr/bin/deals", "track", "run"], 630, Path("/l"))
+
+
+class TestBugfixSchedulerWindowsScheduleHonorsInterval:
+    def test_uses_minutes_without_capping(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(
+            scheduler_mod, "track_command", lambda: ["deals", "track", "run"]
+        )
+        monkeypatch.setattr(scheduler_mod, "_run", lambda cmd: calls.append(cmd))
+        scheduler_mod._schtasks_install(61 * 60, tmp_path / "track.log")
+        assert ["/SC", "MINUTE", "/MO", "61"] == calls[0][-4:]
+
+    def test_daily_intervals_and_seconds(self, monkeypatch, tmp_path):
+        calls = []
+        monkeypatch.setattr(
+            scheduler_mod, "track_command", lambda: ["deals", "track", "run"]
+        )
+        monkeypatch.setattr(scheduler_mod, "_run", lambda cmd: calls.append(cmd))
+        scheduler_mod._schtasks_install(48 * 60 * 60, tmp_path / "track.log")
+        assert ["/SC", "DAILY", "/MO", "2"] == calls[0][-4:]
+        with pytest.raises(SchedulerError, match="seconds"):
+            scheduler_mod._schtasks_install(630, tmp_path / "track.log")
+
+    def test_rejects_daily_intervals_above_supported_bound(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(
+            scheduler_mod, "track_command", lambda: ["deals", "track", "run"]
+        )
+        with pytest.raises(SchedulerError, match="365 days"):
+            scheduler_mod._schtasks_install(366 * 24 * 60 * 60, tmp_path / "track.log")

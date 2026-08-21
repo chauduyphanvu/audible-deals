@@ -12,7 +12,8 @@ from audible_deals.cli.helpers import (
     _resolve_cli_selectors,
 )
 from audible_deals.constants import LOCALE_CURRENCY
-from audible_deals.display import console, display_price_history
+from audible_deals.presentation.reports import display_price_history
+from audible_deals.presentation.terminal import console
 from audible_deals.price_history import (
     load_all_price_histories,
     load_price_history,

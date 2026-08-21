@@ -87,6 +87,14 @@ def save_notify_state(state: dict) -> None:
     save_json_file(constants.NOTIFY_STATE_FILE, state, "notify state")
 
 
+def load_track_state() -> dict:
+    return load_json_file(constants.TRACK_STATE_FILE, dict, "track state")
+
+
+def save_track_state(state: dict) -> None:
+    save_json_file(constants.TRACK_STATE_FILE, state, "track state")
+
+
 def coerce_config_value(key: str, raw: str):
     """Coerce a raw string value to the type declared in _CONFIG_SCHEMA."""
     typ = _CONFIG_SCHEMA[key]

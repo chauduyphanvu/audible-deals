@@ -15,7 +15,7 @@ from audible_deals.config_store import (
     validate_config_key,
 )
 from audible_deals.constants import ALL_SORT_OPTIONS
-from audible_deals.display import console
+from audible_deals.presentation.terminal import console
 
 
 @click.group("config", invoke_without_command=True)

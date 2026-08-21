@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import logging
 import shlex
 import time
@@ -17,17 +18,26 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_output_quiet,
 )
-from audible_deals.cli.pipeline import _record_and_emit, result_recipe
 from audible_deals.client import DealsClient
 from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
-from audible_deals.display import console, create_scan_progress
-from audible_deals.filtering import dedupe_editions, filter_products, sort_local
 from audible_deals.price_history import (
     history_key,
     load_price_history,
     price_history_context,
 )
 from audible_deals.product import Product
+from audible_deals.presentation.terminal import console, create_scan_progress
+from audible_deals.result_models import FilterContext
+from audible_deals.result_processing import (
+    DiscoveryProcessingRequest,
+    process_discovery,
+    result_recipe,
+)
+from audible_deals.result_publication import (
+    ResultPublicationRequest,
+    ResultSessionSpec,
+    publish_discovery,
+)
 from audible_deals.serialization import validate_export_path
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
@@ -336,112 +346,122 @@ def for_me(
         product for product in candidates if product.asin not in allowed_asins
     )
 
-    filtered, filter_breakdown = filter_products(
-        ranked_candidates,
-        drop_zero_length=True,
-        max_price=max_price,
-        max_effective_price=max_effective_price,
-        credit_price=credit_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        on_sale=on_sale,
-        language=language,
-        narrator=narrator,
-        exclude_authors=exclude_authors,
-        exclude_narrators=exclude_narrators,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
+    result = process_discovery(
+        DiscoveryProcessingRequest(
+            products=tuple(ranked_candidates),
+            context=FilterContext(
+                drop_zero_length=True,
+                max_price=max_price,
+                max_effective_price=max_effective_price,
+                credit_price=credit_price,
+                min_rating=min_rating,
+                min_ratings=min_ratings,
+                min_hours=min_hours,
+                on_sale=on_sale,
+                language=language,
+                narrator=narrator,
+                exclude_authors=exclude_authors,
+                exclude_narrators=exclude_narrators,
+                skip_plus=skip_plus,
+                only_plus=only_plus,
+                sort=sort or "",
+            ),
+        ),
     )
-    filtered, editions_removed = dedupe_editions(filtered)
-    filtered = [product for product in filtered if product.asin in allowed_asins]
-    histories = candidate_histories
-    atl_asins, hist_context = price_history_context(filtered, histories=histories)
-    ranked = filtered
-    match_context = {
-        product.asin: all_match_context.get(product.asin, "") for product in ranked
-    }
-    if sort:
-        ranked = sort_local(ranked, sort)
+    result = dataclasses.replace(
+        result,
+        products=tuple(
+            product for product in result.products if product.asin in allowed_asins
+        ),
+    )
+    atl_asins, hist_context = price_history_context(
+        list(result.products), histories=candidate_histories
+    )
 
     wishlist_asins = {i["asin"] for i in partition_wishlist(load_wishlist())[0]}
     for asin in all_match_context:
         if asin in wishlist_asins:
             all_match_context[asin] += " · wishlisted"
     match_context = {
-        product.asin: all_match_context.get(product.asin, "") for product in ranked
+        product.asin: all_match_context.get(product.asin, "")
+        for product in result.products
     }
     fit_scores = {
         product.asin: taste.fit_score(product, profile, series_of)[0]
         for product in candidates
     }
 
-    _record_and_emit(
-        ranked,
-        filter_breakdown,
-        editions_removed,
-        0,
-        title="For you",
-        limit=limit,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
-        max_price=max_price,
-        currency=_currency(ctx),
-        interactive=interactive,
-        show_url=show_url,
-        credit_price=credit_price,
-        match_context=match_context,
-        histories=histories,
+    result = dataclasses.replace(
+        result,
+        histories=candidate_histories,
+        match_reasons=match_context,
         atl_asins=atl_asins,
         hist_context=hist_context,
-        candidates=ranked_candidates,
-        producer="for-me",
-        locale=ctx.obj["locale"],
-        recipe=result_recipe(
-            max_price=max_price,
-            max_effective_price=max_effective_price,
-            min_rating=min_rating,
-            min_ratings=min_ratings,
-            min_hours=min_hours,
-            language=language,
-            narrator=narrator,
-            exclude_authors=exclude_authors,
-            exclude_narrators=exclude_narrators,
-            on_sale=on_sale,
+    )
+    publish_discovery(
+        ResultPublicationRequest(
+            result=result,
+            title="For you",
             limit=limit,
-            sort=sort or "",
-            skip_plus=skip_plus,
-            only_plus=only_plus,
-        ),
-        source={
-            "command": shlex.join(
-                [
-                    "deals",
-                    "for-me",
-                    *(["--refresh"] if refresh else []),
-                ]
+            output=output,
+            json_flag=json_flag,
+            quiet=quiet,
+            max_price=max_price,
+            currency=_currency(ctx),
+            interactive=interactive,
+            show_url=show_url,
+            credit_price=credit_price,
+            candidates=tuple(ranked_candidates),
+            session_spec=ResultSessionSpec(
+                producer="for-me",
+                locale=ctx.obj["locale"],
+                recipe=result_recipe(
+                    max_price=max_price,
+                    max_effective_price=max_effective_price,
+                    min_rating=min_rating,
+                    min_ratings=min_ratings,
+                    min_hours=min_hours,
+                    language=language,
+                    narrator=narrator,
+                    exclude_authors=exclude_authors,
+                    exclude_narrators=exclude_narrators,
+                    on_sale=on_sale,
+                    limit=limit,
+                    sort=sort or "",
+                    skip_plus=skip_plus,
+                    only_plus=only_plus,
+                ),
+                source={
+                    "command": shlex.join(
+                        [
+                            "deals",
+                            "for-me",
+                            *(["--refresh"] if refresh else []),
+                        ]
+                    ),
+                    "refresh": refresh,
+                    "taste_sources": {
+                        "authors": authors,
+                        "genres": [genre.get("id", "") for genre in genres],
+                        "series": [item.get("series_asin", "") for item in series],
+                    },
+                },
+                constraints={"drop_zero_length": True},
+                ranking_context={
+                    "allowed_asins": [
+                        product.asin
+                        for product in ranked_candidates
+                        if product.asin in allowed_asins
+                    ],
+                    "fit_scores": fit_scores,
+                    "match_reasons": {
+                        product.asin: all_match_context.get(product.asin, "")
+                        for product in candidates
+                    },
+                },
             ),
-            "refresh": refresh,
-            "taste_sources": {
-                "authors": authors,
-                "genres": [genre.get("id", "") for genre in genres],
-                "series": [item.get("series_asin", "") for item in series],
-            },
-        },
-        constraints={"drop_zero_length": True},
-        ranking_context={
-            "allowed_asins": [
-                product.asin
-                for product in ranked_candidates
-                if product.asin in allowed_asins
-            ],
-            "fit_scores": fit_scores,
-            "match_reasons": {
-                product.asin: all_match_context.get(product.asin, "")
-                for product in candidates
-            },
-        },
+            json_writer=click.echo,
+        )
     )
 
 

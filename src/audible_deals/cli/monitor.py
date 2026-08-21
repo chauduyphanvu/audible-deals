@@ -10,7 +10,7 @@ from typing import Any
 import click
 
 from audible_deals import constants
-from audible_deals.cli.catalog import _fetch_multi_query, monitor_scan_plan
+from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli.helpers import (
     _CL,
     _get_client,
@@ -18,29 +18,37 @@ from audible_deals.cli.helpers import (
     _resolve_skip_asins,
 )
 from audible_deals.cli.options import _complete_profile_names
-from audible_deals.cli.pipeline import _apply_settings_filters, _fetch_with_progress
 from audible_deals.config_store import (
     load_monitor_state,
     load_monitors,
     load_profiles,
-    save_monitor_state,
-    save_monitors,
 )
 from audible_deals.constants import (
     ALL_SORT_OPTIONS,
     LOCALE_LANGUAGES,
     WEBHOOK_FORMATS,
-    LockHeldError,
-    run_lock,
 )
-from audible_deals.display import console
-from audible_deals.serialization import serialize_product
+from audible_deals.locking import LockHeldError
+from audible_deals.monitor_service import (
+    MAX_MONITOR_API_CALLS_PER_RUN,
+    MonitorExistsError,
+    MonitorNotFoundError,
+    MonitorRuntime,
+    MonitorServiceError,
+    add_monitor,
+    estimate_monitor_calls as _estimate_monitor_calls,
+    monitor_events,
+    monitor_snapshot,
+    remove_monitor,
+    scan_monitor as _scan_monitor,
+    set_monitor_enabled,
+    settings_to_dict,
+)
+from audible_deals.presentation.terminal import catalog_scan_progress, console
 from audible_deals.settings import Settings
 from audible_deals.validation import validate_webhook_url
 
 logger = logging.getLogger(__name__)
-
-MAX_MONITOR_API_CALLS_PER_RUN = 60
 
 _FIND_DEFAULTS = {
     "max_price": 5.0,
@@ -86,13 +94,13 @@ def _complete_monitor_names(ctx, param, incomplete):
     ]
 
 
-def _settings_dict(settings: Settings) -> dict[str, Any]:
-    return dataclasses.asdict(settings)
-
-
-def _settings_from_dict(data: dict) -> Settings:
-    fields = {f.name for f in dataclasses.fields(Settings)}
-    return Settings(**{key: value for key, value in data.items() if key in fields})
+def _runtime() -> MonitorRuntime:
+    return MonitorRuntime(
+        get_client=_get_client,
+        resolve_categories=_resolve_categories,
+        resolve_skip_asins=_resolve_skip_asins,
+        progress=catalog_scan_progress,
+    )
 
 
 def _monitor_settings(
@@ -129,207 +137,27 @@ def _monitor_settings(
 
 def estimate_monitor_calls(definition: dict) -> int:
     """Estimated catalog-page requests; category lookup is excluded from the budget."""
-    settings = _settings_from_dict(definition["settings"])
-    queries, sorts = monitor_scan_plan(
-        settings, definition["mode"], definition.get("query", "")
-    )
-    broad_calls = len(queries) * len(sorts) * settings.pages
-    title_probes = len(queries) if definition["mode"] == "search" else 0
-    return broad_calls + title_probes
+    try:
+        return _estimate_monitor_calls(MonitorDefinition.from_dict(definition))
+    except MonitorServiceError as exc:
+        raise click.UsageError(str(exc)) from None
 
 
 def _monitor_slot(state: dict, name: str) -> dict:
     """Return a validated state slot, repairing only this monitor when needed."""
-    monitors = state.setdefault("monitors", {})
-    raw = monitors.get(name)
-    if raw is None:
-        return {}
-    if not isinstance(raw, dict):
-        logger.warning(
-            "monitor state for %s is malformed; resetting its baseline", name
-        )
-        return {}
-    products = raw.get("products", {})
-    if not isinstance(products, dict):
-        logger.warning(
-            "monitor state products for %s is malformed; resetting its baseline", name
-        )
-        return {}
-    valid_products = {
-        asin: product
-        for asin, product in products.items()
-        if isinstance(asin, str) and isinstance(product, dict)
-    }
-    if len(valid_products) != len(products):
-        logger.warning("monitor state products for %s contains malformed entries", name)
-    return {
-        "initialized": bool(raw.get("initialized")),
-        "products": valid_products,
-        "last_success": raw.get("last_success")
-        if isinstance(raw.get("last_success"), str)
-        else None,
-        "last_error": raw.get("last_error")
-        if isinstance(raw.get("last_error"), str)
-        else None,
-    }
-
-
-def _save_slot(state: dict, name: str, slot: dict) -> None:
-    state.setdefault("monitors", {})[name] = slot
-
-
-def record_monitor_error(name: str, error: Exception) -> None:
-    """Persist a monitor failure while retaining the last known-good snapshot."""
-    state = load_monitor_state()
-    slot = _monitor_slot(state, name)
-    slot["last_error"] = f"{type(error).__name__}: {error}"
-    _save_slot(state, name, slot)
-    save_monitor_state(state)
+    return monitor_snapshot(state, name).to_dict()
 
 
 def scan_monitor(definition: dict) -> list[dict]:
     """Fetch a monitor without changing result caches, seen state, or history."""
-    locale = definition["locale"]
-    settings = _settings_from_dict(definition["settings"])
-    mode = definition["mode"]
-    queries, sort_orders = monitor_scan_plan(
-        settings, mode, definition.get("query", "")
-    )
-    dc = _get_client(locale)
-    with dc:
-        category, _category_name, excluded = _resolve_categories(
-            dc, settings.genre, "", settings.exclude_genre
-        )
-        skip_asins = _resolve_skip_asins(dc, settings.skip_owned, False)
-        if mode == "search":
-            products = _fetch_multi_query(
-                dc,
-                queries,
-                category=category,
-                sort_orders=sort_orders,
-                pages=settings.pages,
-            )
-        else:
-            products = _fetch_with_progress(
-                dc,
-                keywords=queries[0],
-                category_ids=[category],
-                sort_orders=sort_orders,
-                pages=settings.pages,
-                description=f"Checking monitor {definition['name']}",
-            )
-    filtered, _, _, _, _ = _apply_settings_filters(
-        products, settings, skip_asins=skip_asins, exclude_category_ids=excluded
-    )
-    # A price-less catalog entry cannot produce a usable deal alert and breaks
-    # the price formatters. It is intentionally outside monitor snapshots.
-    return [
-        serialize_product(product) for product in filtered if product.price is not None
-    ]
+    try:
+        return list(_scan_monitor(MonitorDefinition.from_dict(definition), _runtime()))
+    except MonitorServiceError as exc:
+        raise click.UsageError(str(exc)) from None
 
 
 def _events(previous: dict, current: list[dict], name: str) -> list[dict]:
-    events: list[dict] = []
-    for product in current:
-        old = previous.get(product["asin"])
-        price = product.get("price")
-        if price is None:
-            continue
-        if old is None:
-            kind = "new"
-        elif (
-            old.get("price") is not None and float(old["price"]) - float(price) >= 0.01
-        ):
-            kind = "price_drop"
-        else:
-            continue
-        events.append(
-            {
-                "event": kind,
-                "monitor": name,
-                "asin": product["asin"],
-                "title": product.get("full_title") or product.get("title", ""),
-                "price": price,
-                "target": price,
-                "url": product.get("url", ""),
-                "previous_price": old.get("price") if old else None,
-            }
-        )
-    return events
-
-
-def run_monitor(definition: dict, *, deliver=None) -> tuple[list[dict], bool]:
-    """Run one monitor. Delivery precedes persistence so failed posts retry."""
-    state = load_monitor_state()
-    slot = _monitor_slot(state, definition["name"])
-    current = [
-        product
-        for product in scan_monitor(definition)
-        if product.get("price") is not None
-    ]
-    initialized = bool(slot.get("initialized"))
-    events = (
-        _events(slot.get("products", {}), current, definition["name"])
-        if initialized
-        else []
-    )
-    if events and deliver:
-        deliver(events, definition)
-    _save_slot(
-        state,
-        definition["name"],
-        {
-            "initialized": True,
-            "products": {product["asin"]: product for product in current},
-            "last_success": datetime.datetime.now().isoformat(timespec="seconds"),
-            "last_error": None,
-        },
-    )
-    save_monitor_state(state)
-    return events, not initialized
-
-
-def select_monitors_for_run(
-    monitors: dict[str, dict], track_state: dict
-) -> list[tuple[str, dict]]:
-    """Round-robin enabled monitors under a deterministic catalog-call budget."""
-    enabled = [
-        (name, definition)
-        for name, definition in sorted(monitors.items())
-        if isinstance(definition, dict) and definition.get("enabled", True)
-    ]
-    if not enabled:
-        return []
-    start = int(track_state.get("monitor_cursor", 0)) % len(enabled)
-    ordered = enabled[start:] + enabled[:start]
-    selected: list[tuple[str, dict]] = []
-    used = 0
-    for name, definition in ordered:
-        try:
-            estimate = estimate_monitor_calls(definition)
-        except (KeyError, TypeError, click.ClickException) as exc:
-            logger.warning("Skipping malformed monitor %s: %s", name, exc)
-            continue
-        if estimate > MAX_MONITOR_API_CALLS_PER_RUN:
-            logger.warning(
-                "Skipping monitor %s: estimate %s exceeds per-run budget",
-                name,
-                estimate,
-            )
-            continue
-        if used + estimate > MAX_MONITOR_API_CALLS_PER_RUN:
-            if selected:
-                break
-            continue
-        selected.append((name, definition))
-        used += estimate
-    if selected:
-        next_name = selected[-1][0]
-        track_state["monitor_cursor"] = (
-            next(index for index, item in enumerate(enabled) if item[0] == next_name)
-            + 1
-        ) % len(enabled)
-    return selected
+    return [event.to_dict() for event in monitor_events(previous, tuple(current), name)]
 
 
 def _print_monitor(name: str, definition: dict, state: dict) -> None:
@@ -447,7 +275,7 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
         "mode": mode,
         "query": query or "",
         "profile": profile_name,
-        "settings": _settings_dict(settings),
+        "settings": settings_to_dict(settings),
         "webhook": webhook,
         "webhook_format": webhook_format,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
@@ -458,17 +286,11 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
             f"Monitor would use {estimate} catalog calls; limit is {MAX_MONITOR_API_CALLS_PER_RUN} per run."
         )
     try:
-        with run_lock():
-            monitors = load_monitors()
-            if name in monitors:
-                raise click.ClickException(f"Monitor '{name}' already exists.")
-            monitors[name] = definition
-            save_monitors(monitors)
-            state = load_monitor_state()
-            state["monitors"].pop(name, None)
-            save_monitor_state(state)
+        add_monitor(MonitorDefinition.from_dict(definition))
     except LockHeldError as exc:
         raise click.ClickException(f"Another run is in progress, try again: {exc}")
+    except MonitorExistsError as exc:
+        raise click.ClickException(str(exc)) from exc
     console.print(
         f"[green]Monitor '{name}' added[/green] ({mode}, locale {ctx.obj['locale']}, {estimate} catalog calls/run)"
     )
@@ -525,36 +347,26 @@ def remove(name, yes):
         console.print("[dim]Cancelled.[/dim]")
         return
     try:
-        with run_lock():
-            monitors = load_monitors()
-            if name not in monitors:
-                raise click.ClickException(f"Monitor '{name}' not found.")
-            del monitors[name]
-            save_monitors(monitors)
-            state = load_monitor_state()
-            state["monitors"].pop(name, None)
-            save_monitor_state(state)
+        remove_monitor(name)
     except LockHeldError as exc:
         raise click.ClickException(f"Another run is in progress, try again: {exc}")
+    except MonitorNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
     console.print(f"[green]Monitor '{name}' removed[/green]")
 
 
 def _set_enabled(name: str, enabled: bool) -> None:
     try:
-        with run_lock():
-            monitors = load_monitors()
-            definition = monitors.get(name)
-            if not isinstance(definition, dict):
-                raise click.ClickException(f"Monitor '{name}' not found.")
-            if definition.get("enabled", True) == enabled:
-                console.print(
-                    f"[dim]Monitor '{name}' is already {'enabled' if enabled else 'paused'}.[/dim]"
-                )
-                return
-            definition["enabled"] = enabled
-            save_monitors(monitors)
+        changed = set_monitor_enabled(name, enabled)
     except LockHeldError as exc:
         raise click.ClickException(f"Another run is in progress, try again: {exc}")
+    except MonitorNotFoundError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not changed:
+        console.print(
+            f"[dim]Monitor '{name}' is already {'enabled' if enabled else 'paused'}.[/dim]"
+        )
+        return
     console.print(
         f"[green]Monitor '{name}' {'resumed' if enabled else 'paused'}[/green]"
     )

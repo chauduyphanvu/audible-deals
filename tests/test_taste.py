@@ -252,7 +252,7 @@ def _seed_profile_cache():
 
 def _widen_console():
     """The Match column needs more than the 80-col test default to render."""
-    import audible_deals.display as display_mod
+    from audible_deals.presentation import terminal as display_mod
 
     display_mod.console.width = 150
 

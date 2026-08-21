@@ -12,6 +12,7 @@ from typing import Callable
 from audible_deals.product import Product
 from audible_deals.metrics import effective_price, price_per_hour, value_score
 from audible_deals.parsing import parse_series_position
+from audible_deals.result_models import FilterContext, FilterOutcome
 
 logger = logging.getLogger(__name__)
 
@@ -241,68 +242,51 @@ def _date_specs(released_after: str, released_before: str) -> list[_FilterSpec]:
 
 def filter_products(
     products: list[Product],
-    *,
-    max_price: float | None = None,
-    max_effective_price: float | None = None,
-    credit_price: float | None = None,
-    min_rating: float = 0.0,
-    min_ratings: int = 0,
-    min_hours: float = 0.0,
-    language: str = "",
-    narrator: str = "",
-    author: str = "",
-    exclude_authors: tuple[str, ...] = (),
-    exclude_narrators: tuple[str, ...] = (),
-    on_sale: bool = False,
-    skip_asins: set[str] | None = None,
-    exclude_category_ids: set[str] | None = None,
-    genre: str = "",
-    max_pph: float | None = None,
-    min_discount: int = 0,
-    series: str = "",
-    publisher: str = "",
-    skip_plus: bool = False,
-    only_plus: bool = False,
-    exclude_keywords: tuple[str, ...] = (),
-    drop_zero_length: bool = False,
-    max_hist_percentile: int | None = None,
-    hist_percentile: dict[str, int] | None = None,
-    min_price_drop: float = 0.0,
-    price_drops: dict[str, float] | None = None,
-    require_history: bool = False,
-    released_after: str = "",
-    released_before: str = "",
-) -> tuple[list[Product], dict[str, int]]:
-    """Apply client-side filters. Returns (filtered, breakdown_by_filter)."""
+    context: FilterContext,
+) -> FilterOutcome:
+    """Apply client-side filters in the established filter order."""
     filtered = products
     breakdown: dict[str, int] = {}
 
     specs = [
         *_availability_specs(
-            drop_zero_length, skip_asins, max_price, max_effective_price, credit_price
+            context.drop_zero_length,
+            context.skip_asins,
+            context.max_price,
+            context.max_effective_price,
+            context.credit_price,
         ),
-        *_quality_specs(min_rating, min_ratings, min_hours, max_pph),
+        *_quality_specs(
+            context.min_rating,
+            context.min_ratings,
+            context.min_hours,
+            context.max_pph,
+        ),
         *_text_match_specs(
-            language,
-            narrator,
-            author,
-            series,
-            publisher,
-            exclude_authors,
-            exclude_narrators,
+            context.language,
+            context.narrator,
+            context.author,
+            context.series,
+            context.publisher,
+            context.exclude_authors,
+            context.exclude_narrators,
         ),
-        *_deal_specs(on_sale, min_discount),
+        *_deal_specs(context.on_sale, context.min_discount),
         *_catalog_specs(
-            exclude_category_ids, genre, skip_plus, only_plus, exclude_keywords
+            context.exclude_category_ids,
+            context.genre,
+            context.skip_plus,
+            context.only_plus,
+            context.exclude_keywords,
         ),
         *_history_specs(
-            max_hist_percentile,
-            hist_percentile,
-            min_price_drop,
-            price_drops,
-            require_history,
+            context.max_hist_percentile,
+            context.hist_percentile,
+            context.min_price_drop,
+            context.price_drops,
+            context.require_history,
         ),
-        *_date_specs(released_after, released_before),
+        *_date_specs(context.released_after, context.released_before),
     ]
 
     for label, keep in specs:
@@ -317,7 +301,7 @@ def filter_products(
         len(filtered),
         breakdown,
     )
-    return filtered, breakdown
+    return FilterOutcome(filtered, breakdown)
 
 
 def _price_or(p: Product, missing: float) -> float:
@@ -350,13 +334,13 @@ def sort_local(products: list[Product], sort: str) -> list[Product]:
     return sorted(products, key=key, reverse=reverse)
 
 
-def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
+def dedupe_editions(outcome: FilterOutcome) -> FilterOutcome:
     """Remove duplicate editions of the same book (same series + position).
 
     Keeps the cheapest edition. Always-on — no flag needed.
     """
     best: dict[tuple[str, str], Product] = {}
-    for p in products:
+    for p in outcome.products:
         if not p.series_name or not p.series_position:
             continue
         key = (p.series_name.lower(), p.series_position.lower())
@@ -369,7 +353,7 @@ def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
     best_asins = {p.asin for p in best.values()}
     result = []
     removed = 0
-    for p in products:
+    for p in outcome.products:
         if not p.series_name or not p.series_position:
             result.append(p)
         elif p.asin in best_asins:
@@ -379,21 +363,26 @@ def dedupe_editions(products: list[Product]) -> tuple[list[Product], int]:
             removed += 1
     if removed:
         logger.debug("dedupe_editions removed=%d", removed)
-    return result, removed
+    return FilterOutcome(
+        result,
+        outcome.breakdown,
+        editions_removed=outcome.editions_removed + removed,
+        series_collapsed=outcome.series_collapsed,
+    )
 
 
 def _series_pos(p: Product) -> float:
     return parse_series_position(p.series_position)
 
 
-def first_in_series(products: list[Product]) -> tuple[list[Product], int]:
+def first_in_series(outcome: FilterOutcome) -> FilterOutcome:
     """Keep only the lowest-position item per series (must be <= 1.0).
 
     Non-series items pass through unchanged. Series whose lowest-available
     position is > 1.0 are excluded entirely (Book 1 wasn't in the result set).
     """
     best: dict[str, tuple[Product, float]] = {}  # key -> (product, position)
-    for p in products:
+    for p in outcome.products:
         if not p.series_name:
             continue
         key = p.series_name.lower()
@@ -405,7 +394,7 @@ def first_in_series(products: list[Product]) -> tuple[list[Product], int]:
     best_asins = {p.asin for p, pos in best.values() if pos <= 1.0}
     result = []
     collapsed = 0
-    for p in products:
+    for p in outcome.products:
         if not p.series_name:
             result.append(p)
         elif p.asin in best_asins:
@@ -415,4 +404,9 @@ def first_in_series(products: list[Product]) -> tuple[list[Product], int]:
             collapsed += 1
     if collapsed:
         logger.debug("first_in_series collapsed=%d", collapsed)
-    return result, collapsed
+    return FilterOutcome(
+        result,
+        outcome.breakdown,
+        editions_removed=outcome.editions_removed,
+        series_collapsed=outcome.series_collapsed + collapsed,
+    )

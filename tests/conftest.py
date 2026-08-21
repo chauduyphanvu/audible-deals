@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from audible_deals.client import Product
+from audible_deals.product import Product
 
 
 # ---------------------------------------------------------------------------
@@ -170,16 +170,14 @@ def raw_api_product_minimal():
 @pytest.fixture
 def tmp_config(tmp_path, monkeypatch):
     """Redirect all config paths to a temp directory and fix Rich console for Click."""
-    import audible_deals.client as client_mod
-    import audible_deals.display as display_mod
+    from audible_deals.presentation import terminal as display_mod
     from rich.console import Console
 
     import audible_deals.constants as constants_mod
 
-    monkeypatch.setattr(client_mod, "AUTH_FILE", tmp_path / "auth.json")
     monkeypatch.setattr(constants_mod, "AUTH_FILE", tmp_path / "auth.json")
     monkeypatch.setattr(
-        client_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json"
+        constants_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json"
     )
     # Store modules read path constants from audible_deals.constants at call
     # time, so patching the constants module once redirects every consumer.
@@ -207,8 +205,9 @@ def tmp_config(tmp_path, monkeypatch):
     # force_terminal=False avoids ANSI codes; force_interactive=False avoids
     # the "I/O operation on closed file" crash.
     test_console = Console(force_terminal=False, force_interactive=False)
+    console_modules = _cli_console_modules()
     monkeypatch.setattr(display_mod, "console", test_console)
-    for mod in _cli_console_modules():
+    for mod in console_modules:
         monkeypatch.setattr(mod, "console", test_console)
 
     return tmp_path
@@ -228,15 +227,19 @@ def _cli_console_modules():
     import audible_deals.cli.catalog as cli_catalog_mod
     import audible_deals.cli.last as cli_last_mod
     import audible_deals.cli.library as cli_library_mod
-    import audible_deals.cli.pipeline as cli_pipeline_mod
     import audible_deals.cli.series as cli_series_mod
     import audible_deals.cli.track as cli_track_mod
     import audible_deals.cli.wishlist as cli_wishlist_mod
     import audible_deals.notification_workflow as notification_workflow_mod
+    import audible_deals.presentation.dry_run as presentation_dry_run_mod
+    import audible_deals.presentation.result_output as result_output_mod
+    import audible_deals.result_publication as result_publication_mod
 
     return (
         cli_helpers_mod,
-        cli_pipeline_mod,
+        result_output_mod,
+        result_publication_mod,
+        presentation_dry_run_mod,
         cli_interactive_mod,
         cli_catalog_mod,
         cli_library_mod,
@@ -313,7 +316,7 @@ def api(tmp_config, monkeypatch):
     mock for audible.Client().get — set .return_value or .side_effect
     to program API responses.
     """
-    # Write a dummy auth file so DealsClient.client doesn't raise
+    # Write a dummy auth file so the transport's lazy client can load.
     auth_file = tmp_config / "auth.json"
     auth_file.write_text(json.dumps({"encryption": False, "locale_code": "us"}))
 

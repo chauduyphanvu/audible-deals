@@ -1,9 +1,8 @@
 """Shared constants for audible-deals.
 
 Consolidates file paths, locale maps, sort options, genre aliases, and the
-configuration schema used across the package. Apart from the back-compat
-re-export at the bottom, this module is a dependency-free leaf, so it can
-safely be imported by all other ``audible_deals`` modules.
+configuration schema used across the package. This module is a dependency-free
+leaf, so it can safely be imported by all other ``audible_deals`` modules.
 """
 
 from __future__ import annotations
@@ -214,8 +213,3 @@ _CONFIG_SCHEMA: dict[str, type] = {
 }
 
 WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "ntfy")
-
-
-# Re-exported for back-compat; the lock lives in locking.py and resolves
-# LOCK_FILE (defined above) at call time. Must stay at module bottom.
-from audible_deals.locking import LockHeldError, run_lock  # noqa: E402, F401

@@ -1,25 +1,64 @@
-"""Tests for audible_deals.client — Product model, parsing, price extraction."""
+"""Audible client and product parsing behavior."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
+import stat
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 
+import click
 import pytest
 
-from audible_deals.client import (
-    DealsClient,
+from audible_deals.audible_transport import AudibleTransport
+from audible_deals.auth_store import AuthStore
+from audible_deals.client import DealsClient, _validate_category_id
+from audible_deals.product import (
+    _base_price,
+    _extract_categories,
     _extract_prices,
-    _validate_category_id,
     parse_product,
 )
+from audible_deals.taste import build_profile
 from tests.conftest import make_product
 
 
-# ===================================================================
-# Product dataclass properties
-# ===================================================================
+def _make_429_exc(retry_after: str | None = None) -> Exception:
+    """Build an exception whose .response mimics a 429 HTTP response."""
+    resp = SimpleNamespace(
+        status_code=429,
+        headers={} if retry_after is None else {"Retry-After": retry_after},
+    )
+    exc = Exception("rate limited")
+    exc.status_code = 429
+    exc.response = resp
+    return exc
+
+
+def _capture_thread_error(errors, operation):
+    try:
+        operation()
+    except Exception as exc:
+        errors.append(exc)
+
+
+class _BugfixClientRefreshableAuth:
+    def __init__(self):
+        self.access_token = "old-access"
+        self.refresh_token = "old-refresh"
+        self.expires = 100
+
+    def to_dict(self):
+        return {
+            "access_token": self.access_token,
+            "refresh_token": self.refresh_token,
+            "expires": self.expires,
+            "locale_code": "us",
+        }
 
 
 class TestProductProperties:
@@ -72,11 +111,6 @@ class TestProductProperties:
         assert p.url == "https://www.audible.com/pd/B00FOOBAR"
 
 
-# ===================================================================
-# Price extraction
-# ===================================================================
-
-
 class TestPriceExtraction:
     def test_lowest_price(self):
         raw = {"price": {"lowest_price": {"base": 2.99}, "list_price": {"base": 15.0}}}
@@ -101,11 +135,6 @@ class TestPriceExtraction:
     def test_list_price_top_level(self):
         raw = {"list_price": 25.0}
         assert _extract_prices(raw) == (None, 25.0)
-
-
-# ===================================================================
-# parse_product
-# ===================================================================
 
 
 class TestParseProduct:
@@ -207,11 +236,6 @@ class TestParseProduct:
         assert p.rating == 0.0
 
 
-# ===================================================================
-# Category caching (disk)
-# ===================================================================
-
-
 class TestCategoryCache:
     def test_save_and_load(self, tmp_config):
         from audible_deals.client import DealsClient
@@ -226,7 +250,7 @@ class TestCategoryCache:
         assert loaded == cats
 
     def test_expired_cache(self, tmp_config, monkeypatch):
-        from audible_deals.client import DealsClient, CATEGORIES_CACHE_TTL
+        from audible_deals.constants import CATEGORIES_CACHE_TTL
 
         dc = DealsClient(locale="us")
 
@@ -248,7 +272,7 @@ class TestCategoryCache:
         assert dc._load_categories_cache() is None
 
     def test_corrupt_cache(self, tmp_config):
-        from audible_deals.client import DealsClient, CATEGORIES_CACHE_FILE
+        from audible_deals.constants import CATEGORIES_CACHE_FILE
 
         cache_file = CATEGORIES_CACHE_FILE.with_suffix(".us.json")
         cache_file.parent.mkdir(parents=True, exist_ok=True)
@@ -256,11 +280,6 @@ class TestCategoryCache:
 
         dc = DealsClient(locale="us")
         assert dc._load_categories_cache() is None
-
-
-# ===================================================================
-# Genre resolution
-# ===================================================================
 
 
 class TestResolveGenre:
@@ -324,11 +343,6 @@ class TestResolveGenre:
         assert cid == "4"
 
 
-# ===================================================================
-# Category ID validation
-# ===================================================================
-
-
 class TestCategoryIdValidation:
     def test_valid_numeric_id(self):
         _validate_category_id("18580606011")  # should not raise
@@ -358,11 +372,6 @@ class TestCategoryIdValidation:
     def test_rejects_query_injection(self):
         with pytest.raises(ValueError, match="Invalid category ID"):
             _validate_category_id("123?foo=bar")
-
-
-# ===================================================================
-# Import-auth validation
-# ===================================================================
 
 
 class TestImportAuthValidation:
@@ -446,33 +455,79 @@ class TestImportAuthValidation:
         with pytest.raises(ValueError, match="Libation auth missing"):
             dc.import_auth(src)
 
+    def test_import_sets_owner_only_directory_and_file_modes(self, tmp_path):
+        import stat
 
-# ===================================================================
-# _api_get — Retry-After-aware backoff for 429 responses
-# ===================================================================
+        source = tmp_path / "source.json"
+        source.write_text(json.dumps({"access_token": "at", "refresh_token": "rt"}))
+        auth_file = tmp_path / "private" / "auth.json"
 
+        AuthStore(auth_file, "us").import_auth(source)
 
-def _make_429_exc(retry_after: str | None = None) -> Exception:
-    """Build an exception whose .response mimics a 429 HTTP response."""
-    resp = SimpleNamespace(
-        status_code=429,
-        headers={} if retry_after is None else {"Retry-After": retry_after},
-    )
-    exc = Exception("rate limited")
-    exc.status_code = 429
-    exc.response = resp
-    return exc
+        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+
+    def test_external_login_uses_callback_without_network(self, tmp_path, monkeypatch):
+        import stat
+
+        callback_calls = []
+        auth_file = tmp_path / "private" / "auth.json"
+
+        class FakeAuth:
+            def to_file(self, path):
+                path.write_text("saved")
+
+        def fake_external(*, locale, login_url_callback):
+            callback_calls.append((locale, login_url_callback("oauth-url")))
+            return FakeAuth()
+
+        monkeypatch.setattr("audible.Authenticator.from_login_external", fake_external)
+        store = AuthStore(auth_file, "us")
+
+        store.login_external(login_url_callback=lambda url: f"callback:{url}")
+
+        assert callback_calls == [("us", "callback:oauth-url")]
+        assert auth_file.read_text() == "saved"
+        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+
+    def test_credential_login_sets_owner_only_modes(self, tmp_path, monkeypatch):
+        import stat
+
+        auth_file = tmp_path / "private" / "auth.json"
+
+        class FakeAuth:
+            def to_file(self, path):
+                path.write_text("saved")
+
+        monkeypatch.setattr(
+            "audible.Authenticator.from_login",
+            lambda username, password, *, locale, with_username: FakeAuth(),
+        )
+
+        AuthStore(auth_file, "us").login("user", "password")
+
+        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
+        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+
+    def test_external_login_rejects_both_callback_modes(self, tmp_path):
+        store = AuthStore(tmp_path / "auth.json", "us")
+
+        with pytest.raises(ValueError, match="Use either"):
+            store.login_external(
+                callback_url_file=tmp_path / "callback.txt",
+                login_url_callback=lambda url: url,
+            )
 
 
 class TestRetryAfterBackoff:
-    def _make_dc(self, api_fixture, side_effects):
-        """Set up a DealsClient whose .client.get raises then succeeds."""
-        api_fixture.get_mock.side_effect = side_effects
-        dc = DealsClient(auth_file=api_fixture.tmp_path / "auth.json", locale="us")
-        return dc
+    @staticmethod
+    def _make_transport(api_fixture):
+        store = AuthStore(api_fixture.tmp_path / "auth.json", "us")
+        return AudibleTransport(store)
 
     @staticmethod
-    def _capture_retry_waits(monkeypatch, dc):
+    def _capture_retry_waits(monkeypatch, transport):
         """Record retry delays without actually sleeping (never aborts)."""
         sleeps = []
 
@@ -480,44 +535,657 @@ class TestRetryAfterBackoff:
             sleeps.append(delay)
             return False
 
-        monkeypatch.setattr(dc._abort_fetch, "wait", fake_wait)
+        monkeypatch.setattr(transport._abort, "wait", fake_wait)
         return sleeps
 
     def test_429_with_retry_after_sleeps_at_least_header_value(self, api, monkeypatch):
         exc = _make_429_exc(retry_after="30")
         api.get_mock.side_effect = [exc, {"products": []}]
-        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
-        sleeps = self._capture_retry_waits(monkeypatch, dc)
-        with dc:
-            dc._api_get("library", num_results=1)
+        transport = self._make_transport(api)
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
+        try:
+            transport.request("library", num_results=1)
+        finally:
+            transport.close()
         assert sleeps, "expected at least one sleep"
         assert sleeps[0] >= 30
 
     def test_429_without_retry_after_uses_normal_delay(self, api, monkeypatch):
         exc = _make_429_exc(retry_after=None)
         api.get_mock.side_effect = [exc, {"products": []}]
-        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
-        sleeps = self._capture_retry_waits(monkeypatch, dc)
-        with dc:
-            dc._api_get("library", num_results=1)
+        transport = self._make_transport(api)
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
+        try:
+            transport.request("library", num_results=1)
+        finally:
+            transport.close()
         assert sleeps, "expected at least one sleep"
         assert sleeps[0] < 30
 
     def test_429_retry_after_capped_at_120(self, api, monkeypatch):
         exc = _make_429_exc(retry_after="9999")
         api.get_mock.side_effect = [exc, {"products": []}]
-        dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
-        sleeps = self._capture_retry_waits(monkeypatch, dc)
-        with dc:
-            dc._api_get("library", num_results=1)
+        transport = self._make_transport(api)
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
+        try:
+            transport.request("library", num_results=1)
+        finally:
+            transport.close()
         assert sleeps, "expected at least one sleep"
         assert sleeps[0] <= 120
 
     def test_missing_auth_is_not_retried(self, tmp_path, monkeypatch):
-        dc = DealsClient(auth_file=tmp_path / "missing.json", locale="us")
-        sleeps = self._capture_retry_waits(monkeypatch, dc)
+        transport = AudibleTransport(AuthStore(tmp_path / "missing.json", "us"))
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
 
         with pytest.raises(RuntimeError, match="Not authenticated"):
-            dc._api_get("library", num_results=1)
+            transport.request("library", num_results=1)
 
         assert sleeps == []
+
+    @pytest.mark.parametrize("status", [None, 500])
+    def test_statusless_and_5xx_failures_retry(self, api, monkeypatch, status):
+        exc = Exception("temporary")
+        if status is not None:
+            exc.status_code = status
+        api.get_mock.side_effect = [exc, exc, {"ok": True}]
+        transport = self._make_transport(api)
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
+
+        try:
+            assert transport.request("catalog") == {"ok": True}
+        finally:
+            transport.close()
+
+        assert api.get_mock.call_count == 3
+        assert len(sleeps) == 2
+
+    def test_retry_gives_up_after_exactly_three_attempts(self, api, monkeypatch):
+        api.get_mock.side_effect = Exception("still unavailable")
+        transport = self._make_transport(api)
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
+
+        with pytest.raises(Exception, match="still unavailable"):
+            transport.request("catalog")
+
+        assert api.get_mock.call_count == 3
+        assert len(sleeps) == 2
+
+    @pytest.mark.parametrize(
+        "exc",
+        [
+            SimpleNamespace(status_code=400),
+            click.ClickException("invalid request"),
+        ],
+    )
+    def test_nonretryable_failures_are_immediate(self, api, monkeypatch, exc):
+        if not isinstance(exc, Exception):
+            error = Exception("bad request")
+            error.status_code = exc.status_code
+            exc = error
+        api.get_mock.side_effect = exc
+        transport = self._make_transport(api)
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
+
+        with pytest.raises(type(exc)):
+            transport.request("catalog")
+
+        assert api.get_mock.call_count == 1
+        assert sleeps == []
+
+    def test_abort_during_backoff_then_reset_allows_reuse(self, api, monkeypatch):
+        api.get_mock.side_effect = [Exception("cancelled retry"), {"ok": True}]
+        transport = self._make_transport(api)
+        transport.cancel()
+
+        with pytest.raises(Exception, match="cancelled retry"):
+            transport.request("catalog")
+
+        transport.reset_abort()
+        assert transport.request("catalog") == {"ok": True}
+        transport.close()
+        assert api.get_mock.call_count == 2
+
+    def test_parallel_requests_create_one_lazy_client(self, api, monkeypatch):
+        created = []
+        start = threading.Barrier(17)
+        construction_started = threading.Event()
+        release_construction = threading.Event()
+        fake_client = SimpleNamespace(get=lambda *args, **kwargs: {"ok": True})
+
+        def make_client(*args, **kwargs):
+            created.append((args, kwargs))
+            construction_started.set()
+            assert release_construction.wait(1)
+            return fake_client
+
+        monkeypatch.setattr("audible.Client", make_client)
+        transport = self._make_transport(api)
+
+        def request():
+            start.wait()
+            return transport.request("catalog")
+
+        with ThreadPoolExecutor(max_workers=16) as pool:
+            futures = [pool.submit(request) for _ in range(16)]
+            start.wait()
+            assert construction_started.wait(1)
+            release_construction.set()
+            results = [future.result() for future in futures]
+
+        assert results == [{"ok": True}] * 16
+        assert len(created) == 1
+
+
+class TestTransportCloseLifecycle:
+    def test_close_drains_active_get_and_waiting_request_reuses_transport(
+        self, api, monkeypatch
+    ):
+        entered = threading.Event()
+        release = threading.Event()
+        order = []
+
+        class FirstClient:
+            def get(self, endpoint, **params):
+                order.append("first-get-start")
+                entered.set()
+                assert release.wait(1)
+                order.append("first-get-end")
+                return {"request": "first"}
+
+            def close(self):
+                order.append("first-close")
+
+        class SecondClient:
+            def get(self, endpoint, **params):
+                order.append("second-get")
+                return {"request": "second"}
+
+            def close(self):
+                order.append("second-close")
+
+        clients = iter([FirstClient(), SecondClient()])
+        monkeypatch.setattr("audible.Client", lambda **kwargs: next(clients))
+        transport = AudibleTransport(AuthStore(api.tmp_path / "auth.json", "us"))
+        results = []
+
+        first = threading.Thread(
+            target=lambda: results.append(transport.request("first"))
+        )
+        first.start()
+        assert entered.wait(1)
+
+        closer = threading.Thread(target=transport.close)
+        closer.start()
+        assert transport._abort.wait(1)
+        assert "first-close" not in order
+
+        second = threading.Thread(
+            target=lambda: results.append(transport.request("second"))
+        )
+        second.start()
+        release.set()
+        for thread in (first, closer, second):
+            thread.join(1)
+            assert not thread.is_alive()
+
+        assert order[:4] == [
+            "first-get-start",
+            "first-get-end",
+            "first-close",
+            "second-get",
+        ]
+        assert results == [{"request": "first"}, {"request": "second"}]
+        transport.close()
+
+    def test_close_aborts_retry_sleep_then_closes(self, api, monkeypatch):
+        get_called = threading.Event()
+        close_called = threading.Event()
+
+        class RetryingClient:
+            def get(self, endpoint, **params):
+                get_called.set()
+                raise Exception("temporary")
+
+            def close(self):
+                close_called.set()
+
+        fake_client = RetryingClient()
+        monkeypatch.setattr("audible.Client", lambda **kwargs: fake_client)
+        transport = AudibleTransport(AuthStore(api.tmp_path / "auth.json", "us"))
+        errors = []
+
+        request = threading.Thread(
+            target=lambda: _capture_thread_error(
+                errors, lambda: transport.request("catalog")
+            )
+        )
+        request.start()
+        assert get_called.wait(1)
+
+        closer = threading.Thread(target=transport.close)
+        closer.start()
+        for thread in (request, closer):
+            thread.join(1)
+            assert not thread.is_alive()
+
+        assert len(errors) == 1
+        assert str(errors[0]) == "temporary"
+        assert close_called.is_set()
+        assert transport._active_requests == 0
+
+    def test_close_failure_retains_client_and_auth_for_retry(self, api, monkeypatch):
+        class FlakyCloseClient:
+            def __init__(self):
+                self.close_calls = 0
+
+            def get(self, endpoint, **params):
+                return {"ok": True}
+
+            def close(self):
+                self.close_calls += 1
+                if self.close_calls == 1:
+                    raise OSError("close failed")
+
+        fake_client = FlakyCloseClient()
+        monkeypatch.setattr("audible.Client", lambda **kwargs: fake_client)
+        store = AuthStore(api.tmp_path / "auth.json", "us")
+        transport = AudibleTransport(store)
+        assert transport.request("catalog") == {"ok": True}
+        loaded_auth = store._authenticator
+
+        with pytest.raises(OSError, match="close failed"):
+            transport.close()
+
+        assert transport._client is fake_client
+        assert store._authenticator is loaded_auth
+        assert not transport._closing
+        assert not transport._abort.is_set()
+        assert transport.request("catalog") == {"ok": True}
+
+        transport.close()
+        assert fake_client.close_calls == 2
+        assert transport._client is None
+        assert store._authenticator is None
+
+
+def test_client_does_not_reexport_product_or_transport_internals():
+    import audible_deals.client as client_mod
+
+    for name in (
+        "Product",
+        "parse_product",
+        "_extract_prices",
+        "_log_request_params",
+        "_retryable_status",
+        "AuthStore",
+        "AudibleTransport",
+        "constants",
+        "product",
+    ):
+        assert not hasattr(client_mod, name)
+
+
+class TestBugfixClientNonDictCategoriesCache:
+    def _write_cache(self, content: str) -> None:
+        from audible_deals.constants import CATEGORIES_CACHE_FILE
+
+        cache_file = CATEGORIES_CACHE_FILE.with_suffix(".us.json")
+        cache_file.parent.mkdir(parents=True, exist_ok=True)
+        cache_file.write_text(content)
+
+    def test_list_content_is_cache_miss(self, tmp_config):
+        self._write_cache(json.dumps([1, 2, 3]))
+        dc = DealsClient(locale="us")
+        assert dc._load_categories_cache() is None
+
+    def test_string_content_is_cache_miss(self, tmp_config):
+        self._write_cache(json.dumps("just a string"))
+        dc = DealsClient(locale="us")
+        assert dc._load_categories_cache() is None
+
+    def test_number_content_is_cache_miss(self, tmp_config):
+        self._write_cache(json.dumps(42))
+        dc = DealsClient(locale="us")
+        assert dc._load_categories_cache() is None
+
+
+class TestBugfixClientWishlistFiltersIncompleteEntries:
+    def _make_dc(self, api):
+        return DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
+
+    def test_drops_entries_without_asin_or_title(self, api):
+        api.get_mock.return_value = {
+            "products": [
+                {"asin": "B001GOOD", "title": "Good Book"},
+                {"asin": "", "title": "No ASIN"},
+                {"asin": "B002NOTITLE", "title": ""},
+                {"title": "Missing ASIN key"},
+            ]
+        }
+        dc = self._make_dc(api)
+        with dc:
+            products = dc.get_wishlist()
+        assert [p.asin for p in products] == ["B001GOOD"]
+
+    def test_pagination_uses_raw_length_not_filtered(self, api):
+        from audible_deals.constants import MAX_PAGE_SIZE
+
+        # A full first page where every entry lacks an asin: filtered list is
+        # empty but pagination must continue because the raw page was full.
+        page0 = {"products": [{"asin": "", "title": "x"} for _ in range(MAX_PAGE_SIZE)]}
+        page1 = {"products": [{"asin": "B00REAL", "title": "Real Book"}]}
+        api.get_mock.side_effect = [page0, page1]
+        dc = self._make_dc(api)
+        with dc:
+            products = dc.get_wishlist()
+        assert api.get_mock.call_count == 2
+        assert [p.asin for p in products] == ["B00REAL"]
+
+
+class TestBugfixClientRefreshedAuthPersistence:
+    def _transport(self, api, monkeypatch, auth):
+        monkeypatch.setattr("audible.Authenticator.from_file", lambda *a, **kw: auth)
+        store = AuthStore(api.tmp_path / "auth.json", "us")
+        return store, AudibleTransport(store)
+
+    def test_refresh_is_atomically_saved_with_owner_only_mode(self, api, monkeypatch):
+        auth = _BugfixClientRefreshableAuth()
+
+        def refresh(*args, **kwargs):
+            auth.access_token = "new-access"
+            auth.refresh_token = "new-refresh"
+            auth.expires = 200
+            return {"products": []}
+
+        api.get_mock.side_effect = refresh
+        store, transport = self._transport(api, monkeypatch, auth)
+
+        try:
+            response = transport.request("catalog")
+        finally:
+            transport.close()
+
+        assert response == {"products": []}
+        saved = json.loads(store.auth_file.read_text())
+        assert saved["access_token"] == "new-access"
+        assert saved["refresh_token"] == "new-refresh"
+        assert saved["expires"] == 200
+        assert stat.S_IMODE(store.auth_file.stat().st_mode) == 0o600
+        assert list(store.auth_file.parent.glob(".tmp-*")) == []
+
+    def test_unchanged_auth_is_not_rewritten(self, api, monkeypatch):
+        import audible_deals.auth_store as auth_store_mod
+
+        auth = _BugfixClientRefreshableAuth()
+        original = b'{"keep": "exact bytes"}\n'
+        auth_file = api.tmp_path / "auth.json"
+        auth_file.write_bytes(original)
+        _, transport = self._transport(api, monkeypatch, auth)
+        monkeypatch.setattr(
+            auth_store_mod,
+            "_atomic_write_bytes",
+            lambda *args, **kwargs: (_ for _ in ()).throw(
+                AssertionError("unchanged auth was rewritten")
+            ),
+        )
+        api.get_mock.return_value = {"ok": True}
+
+        try:
+            assert transport.request("catalog") == {"ok": True}
+        finally:
+            transport.close()
+
+        assert auth_file.read_bytes() == original
+
+    def test_save_failure_warns_once_and_retries_on_close(
+        self, api, monkeypatch, caplog
+    ):
+        import audible_deals.auth_store as auth_store_mod
+
+        auth = _BugfixClientRefreshableAuth()
+        real_atomic_write = auth_store_mod._atomic_write_bytes
+        attempts = 0
+
+        def flaky_save(path, content):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("disk busy")
+            real_atomic_write(path, content)
+
+        def refresh(*args, **kwargs):
+            auth.access_token = "new-access"
+            auth.expires = 200
+            return {"ok": True}
+
+        monkeypatch.setattr(auth_store_mod, "_atomic_write_bytes", flaky_save)
+        api.get_mock.side_effect = refresh
+        store, transport = self._transport(api, monkeypatch, auth)
+
+        with caplog.at_level(logging.WARNING, logger="audible_deals.auth_store"):
+            try:
+                response = transport.request("catalog")
+            finally:
+                transport.close()
+
+        assert response == {"ok": True}
+        assert attempts == 2
+        assert caplog.text.count("Could not save refreshed authentication") == 1
+        assert json.loads(store.auth_file.read_text())["access_token"] == "new-access"
+
+    def test_concurrent_auth_replacement_is_not_overwritten(
+        self, api, monkeypatch, caplog
+    ):
+        auth = _BugfixClientRefreshableAuth()
+        replacement = {
+            "access_token": "login-access",
+            "refresh_token": "login-refresh",
+            "expires": 999,
+            "locale_code": "us",
+        }
+        calls = 0
+
+        def refresh(*args, **kwargs):
+            nonlocal calls
+            calls += 1
+            auth.access_token = f"refreshed-old-user-{calls}"
+            auth.expires = 100 + calls
+            if calls == 1:
+                (api.tmp_path / "auth.json").write_text(json.dumps(replacement))
+            return {"ok": True}
+
+        api.get_mock.side_effect = refresh
+        store, transport = self._transport(api, monkeypatch, auth)
+
+        with caplog.at_level(logging.WARNING, logger="audible_deals.auth_store"):
+            try:
+                first_response = transport.request("catalog")
+                second_response = transport.request("catalog")
+            finally:
+                transport.close()
+
+        assert first_response == {"ok": True}
+        assert second_response == {"ok": True}
+        assert json.loads(store.auth_file.read_text()) == replacement
+        assert caplog.text.count("changed after this client loaded it") == 1
+
+    def test_saved_fingerprint_uses_written_bytes_without_post_write_read(
+        self, api, monkeypatch
+    ):
+        import audible_deals.auth_store as auth_store_mod
+
+        auth = _BugfixClientRefreshableAuth()
+        store, _ = self._transport(api, monkeypatch, auth)
+        store.load_authenticator()
+        auth.access_token = "new-access"
+        real_read_bytes = type(store.auth_file).read_bytes
+        written = []
+        write_completed = False
+
+        def tracked_write(path, content):
+            nonlocal write_completed
+            written.append(content)
+            path.write_bytes(content)
+            write_completed = True
+
+        def fail_after_write(path):
+            if write_completed:
+                raise OSError("post-write reads forbidden")
+            return real_read_bytes(path)
+
+        monkeypatch.setattr(auth_store_mod, "_atomic_write_bytes", tracked_write)
+        monkeypatch.setattr(type(store.auth_file), "read_bytes", fail_after_write)
+        store.persist_refreshed_auth()
+
+        assert not store._auth_save_pending
+        assert not store._auth_persistence_disabled
+        assert store._auth_file_fingerprint == hashlib.sha256(written[0]).digest()
+
+        write_completed = False
+        auth.access_token = "newer-access"
+        store.persist_refreshed_auth()
+
+        assert len(written) == 2
+        assert not store._auth_save_pending
+        assert not store._auth_persistence_disabled
+        assert store._auth_file_fingerprint == hashlib.sha256(written[1]).digest()
+
+
+def test_bugfixclient_restrictive_umask_is_process_wide_and_restores_original(
+    monkeypatch,
+):
+    import audible_deals.auth_store as auth_store_mod
+
+    current_umask = 0o022
+    calls = []
+    first_entered = threading.Event()
+    second_attempted = threading.Event()
+    second_entered = threading.Event()
+    release_first = threading.Event()
+
+    def fake_umask(value):
+        nonlocal current_umask
+        previous = current_umask
+        current_umask = value
+        calls.append((value, previous))
+        return previous
+
+    monkeypatch.setattr(auth_store_mod.os, "umask", fake_umask)
+
+    def first():
+        with auth_store_mod._restrictive_umask():
+            first_entered.set()
+            assert release_first.wait(1)
+
+    def second():
+        assert first_entered.wait(1)
+        second_attempted.set()
+        with auth_store_mod._restrictive_umask():
+            second_entered.set()
+
+    first_thread = threading.Thread(target=first)
+    second_thread = threading.Thread(target=second)
+    first_thread.start()
+    second_thread.start()
+    assert first_entered.wait(1)
+    assert second_attempted.wait(1)
+    assert not second_entered.is_set()
+    release_first.set()
+    for thread in (first_thread, second_thread):
+        thread.join(1)
+        assert not thread.is_alive()
+
+    assert second_entered.is_set()
+    assert current_umask == 0o022
+    assert calls == [
+        (0o177, 0o022),
+        (0o022, 0o177),
+        (0o177, 0o022),
+        (0o022, 0o177),
+    ]
+
+
+class TestBugfixProductBasePriceNonNumeric:
+    @pytest.mark.parametrize("bad", ["", "N/A", {"nested": 1}, [1, 2]])
+    def test_base_price_returns_none_on_non_numeric(self, bad):
+        assert _base_price({"base": bad}) is None
+
+    def test_extract_prices_empty_string_base(self):
+        raw = {"price": {"lowest_price": {"base": ""}}}
+        assert _extract_prices(raw) == (None, None)
+
+    def test_extract_prices_na_base(self):
+        raw = {
+            "price": {"lowest_price": {"base": "N/A"}, "list_price": {"base": 14.99}}
+        }
+        # Falls back to list_price when the sale price is unparsable.
+        assert _extract_prices(raw) == (14.99, 14.99)
+
+    def test_extract_prices_string_numeric_still_parses(self):
+        raw = {"price": {"lowest_price": {"base": "12.99"}}}
+        assert _extract_prices(raw) == (12.99, None)
+
+    def test_parse_product_survives_bad_price(self):
+        raw = {"asin": "X", "title": "X", "price": {"lowest_price": {"base": ""}}}
+        p = parse_product(raw)
+        assert p.asin == "X"
+        assert p.price is None
+
+
+class TestBugfixProductCategoryAlignment:
+    def test_missing_name_does_not_misalign(self):
+        raw = {
+            "category_ladders": [
+                {
+                    "ladder": [
+                        {"name": "", "id": "ID_A"},
+                        {"name": "Mystery", "id": "ID_B"},
+                    ]
+                }
+            ]
+        }
+        categories, category_ids = _extract_categories(raw)
+        assert len(categories) == len(category_ids)
+        pairs = dict(zip(category_ids, categories))
+        # The unnamed entry is dropped (no blank genre leaks into display/stats),
+        # and the named entry keeps its correct id->name pairing.
+        assert "ID_A" not in pairs
+        assert pairs["ID_B"] == "Mystery"
+
+    def test_existing_dedup_behavior_preserved(self):
+        raw = {
+            "category_ladders": [
+                {"ladder": [{"id": "c1", "name": "Fiction"}]},
+                {
+                    "ladder": [
+                        {"id": "c1", "name": "Fiction"},
+                        {"id": "c3", "name": "Thriller"},
+                    ]
+                },
+            ]
+        }
+        categories, category_ids = _extract_categories(raw)
+        assert category_ids.count("c1") == 1
+        assert categories.count("Fiction") == 1
+
+    def test_build_profile_keeps_correct_genre_label(self):
+        raw = {
+            "asin": "B1",
+            "title": "Book",
+            "category_ladders": [
+                {
+                    "ladder": [
+                        {"name": "", "id": "ID_A"},
+                        {"name": "Mystery", "id": "ID_B"},
+                    ]
+                }
+            ],
+        }
+        p = parse_product(raw)
+        profile = build_profile([p])
+        genres = {g["id"]: g["name"] for g in profile["genres"]}
+        # The real Mystery genre (ID_B) must be present and correctly labelled,
+        # and the unnamed ID_A must not be mislabelled as Mystery.
+        assert genres.get("ID_B") == "Mystery"
+        assert genres.get("ID_A", "") != "Mystery"

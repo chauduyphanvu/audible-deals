@@ -55,6 +55,14 @@ class TestClientIntegration:
         assert products[0].asin == "A2"
         assert api.get_mock.call_args.kwargs["products_sort_by"] == "Relevance"
 
+    def test_check_connection_uses_raw_probe_and_ignores_payload(self, api):
+        api.get_mock.return_value = {"unexpected": object()}
+        dc = self._make_client(api)
+
+        assert dc.check_connection() is None
+
+        api.get_mock.assert_called_once_with("1.0/catalog/products", num_results=1)
+
     def test_search_catalog_and_pages_forward_title(self, api):
         api.get_mock.return_value = {"products": [], "total_results": 0}
         dc = self._make_client(api)
@@ -209,7 +217,7 @@ class TestClientIntegration:
         assert all(v == 1 for v in call_counts.values())
 
     def test_get_products_batch_concurrent_exception_propagates(self, api):
-        """An exception in one batch propagates and sets/clears the abort event."""
+        """A batch exception propagates and the transport remains reusable."""
 
         def mock_get(endpoint, **kwargs):
             batch_asins = kwargs.get("asins", "").split(",")
@@ -224,7 +232,9 @@ class TestClientIntegration:
         with pytest.raises(click.ClickException):
             dc.get_products_batch(asins)
 
-        assert not dc._abort_fetch.is_set()
+        api.get_mock.side_effect = None
+        api.get_mock.return_value = {"products": [make_raw("RECOVERED")]}
+        assert dc.get_products_batch(["RECOVERED"])[0].asin == "RECOVERED"
 
     def test_get_library_asins_multi_page(self, api):
         """Library pagination fetches multiple pages until <1000 items."""

@@ -11,15 +11,12 @@ import click
 
 from audible_deals.cli.helpers import _currency, _get_client, _resolve_output_quiet
 from audible_deals.client import DealsClient
-from audible_deals.display import (
-    console,
-    create_scan_progress,
-    display_library_stats,
-    display_products,
-    display_summary,
-)
 from audible_deals.filtering import filter_products, sort_local
+from audible_deals.presentation.products import display_products
+from audible_deals.presentation.reports import display_library_stats, display_summary
+from audible_deals.presentation.terminal import console, create_scan_progress
 from audible_deals.product import Product
+from audible_deals.result_models import FilterContext
 from audible_deals.serialization import (
     export_products,
     serialize_product,
@@ -208,23 +205,25 @@ def library(
     dc = _get_client(ctx.obj["locale"])
     with dc:
         all_products = fetch_library_with_progress(dc)
-    filtered, filter_breakdown = filter_products(
+    outcome = filter_products(
         all_products,
-        author=author,
-        narrator=narrator,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        genre=genre,
+        FilterContext(
+            author=author,
+            narrator=narrator,
+            min_rating=min_rating,
+            min_ratings=min_ratings,
+            min_hours=min_hours,
+            genre=genre,
+        ),
     )
-    filtered = sort_local(filtered, sort)
+    filtered = sort_local(list(outcome.products), sort)
     stats_products = filtered
     total_before_limit = len(filtered)
     if limit is not None and limit > 0:
         filtered = filtered[:limit]
     _emit_library_output(
         filtered,
-        filter_breakdown,
+        outcome.breakdown,
         stats=stats,
         stats_products=stats_products,
         total_before_limit=total_before_limit,

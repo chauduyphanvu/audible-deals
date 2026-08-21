@@ -1,34 +1,54 @@
-"""Tests for audible_deals.display — formatting helpers and table rendering."""
+"""Terminal presentation behavior."""
 
 from __future__ import annotations
 
 from io import StringIO
 
+import pytest
 from rich.console import Console
 
-from audible_deals.display import (
+from audible_deals.presentation.common import (
     _buy_cell,
     _discount_color,
     _pph_str,
     discount_str,
-    display_categories,
+    price_str,
+    rating_str,
+)
+from audible_deals.presentation.products import (
+    ProductDisplayOptions,
+    ProductLayout,
+    calculate_product_layout,
     display_comparison,
-    display_library_stats,
     display_product_detail,
     display_products,
+)
+from audible_deals.presentation.reports import (
+    display_categories,
+    display_library_stats,
+    display_price_history,
     display_recap,
     display_summary,
     display_watch_table,
     display_wishlist,
-    price_str,
-    rating_str,
 )
 from tests.conftest import make_product
 
 
-# ===================================================================
-# Formatting helpers
-# ===================================================================
+def _capture(func, *args, width: int = 120, **kwargs):
+    """Run a display function and capture its Rich output as plain text."""
+    buf = StringIO()
+    console = Console(file=buf, force_terminal=False, width=width)
+    # Temporarily replace the module console
+    from audible_deals.presentation import terminal as display_mod
+
+    original = display_mod.console
+    display_mod.console = console
+    try:
+        func(*args, **kwargs)
+    finally:
+        display_mod.console = original
+    return buf.getvalue()
 
 
 class TestPriceStr:
@@ -115,25 +135,96 @@ class TestPphStr:
         assert _pph_str(make_product(price=1.0, length_minutes=1200)) == "$0.05"
 
 
-# ===================================================================
-# Table rendering (smoke tests — verify no crash and output contains key data)
-# ===================================================================
+def test_product_display_models_are_frozen():
+    assert ProductDisplayOptions.__dataclass_params__.frozen
+    assert ProductLayout.__dataclass_params__.frozen
 
 
-def _capture(func, *args, width: int = 120, **kwargs):
-    """Run a display function and capture its Rich output as plain text."""
-    buf = StringIO()
-    console = Console(file=buf, force_terminal=False, width=width)
-    # Temporarily replace the module console
-    import audible_deals.display as display_mod
+def test_views_and_progress_share_terminal_console():
+    from audible_deals.presentation import products, reports, terminal
 
-    original = display_mod.console
-    display_mod.console = console
-    try:
-        func(*args, **kwargs)
-    finally:
-        display_mod.console = original
-    return buf.getvalue()
+    assert products.terminal is terminal
+    assert reports.terminal is terminal
+    assert terminal.create_scan_progress().console is terminal.console
+
+
+def test_product_layout_is_pure_and_preserves_width_boundaries():
+    product = make_product(
+        asin="B00BOUND01",
+        price=20.6,
+        list_price=103.0,
+        length_minutes=1_236,
+        num_ratings=18_432,
+    )
+    options = ProductDisplayOptions(
+        show_url=True,
+        credit_price=11.25,
+        hist_context={product.asin: -20},
+        match_context={product.asin: "favorite narrator and exact author"},
+    )
+
+    layouts = {
+        width: calculate_product_layout([product], options, width)
+        for width in (60, 79, 80, 100, 119, 120, 160)
+    }
+
+    assert [layouts[width].mode for width in (60, 79)] == ["cards", "cards"]
+    assert [layouts[width].mode for width in (80, 100, 119)] == [
+        "compact",
+        "compact",
+        "compact",
+    ]
+    assert [layouts[width].mode for width in (120, 160)] == ["wide", "wide"]
+    assert layouts[80].title_width == 32
+    assert layouts[100].title_width == 52
+    assert layouts[119].title_width == 71
+    assert layouts[120].show_buy_column
+    assert layouts[120].show_history_column
+    assert not layouts[120].show_match_column
+    assert layouts[160].show_match_column
+    assert not layouts[160].show_url_column
+    assert calculate_product_layout([product], options, 160) == layouts[160]
+
+
+def test_product_layout_accepts_empty_match_context_at_wide_width():
+    product = make_product()
+
+    layout = calculate_product_layout(
+        [product], ProductDisplayOptions(match_context={}), 120
+    )
+
+    assert layout.mode == "wide"
+    assert layout.show_match_column
+    assert layout.match_width == 12
+
+
+def test_product_display_options_detach_and_freeze_mutable_inputs():
+    product = make_product()
+    atl_asins = {product.asin}
+    hist_context = {product.asin: -20}
+    match_context = {product.asin: "favorite narrator"}
+    options = ProductDisplayOptions(
+        atl_asins=atl_asins,
+        hist_context=hist_context,
+        match_context=match_context,
+    )
+    original_layout = calculate_product_layout([product], options, 160)
+
+    atl_asins.add("B00OTHER")
+    hist_context[product.asin] = 123_456_789
+    match_context[product.asin] = "x" * 100
+
+    assert options.atl_asins == frozenset({product.asin})
+    assert options.hist_context == {product.asin: -20}
+    assert options.match_context == {product.asin: "favorite narrator"}
+    assert calculate_product_layout([product], options, 160) == original_layout
+
+    with pytest.raises(AttributeError):
+        options.atl_asins.add("B00BLOCKED")
+    with pytest.raises(TypeError):
+        options.hist_context[product.asin] = 0
+    with pytest.raises(TypeError):
+        options.match_context[product.asin] = "changed"
 
 
 class TestDisplayProducts:
@@ -571,3 +662,70 @@ class TestCreditAwareDisplay:
         out = _capture(display_watch_table, products, {"B006": 5.0}, credit_price=11.25)
         assert "Buy" in out
         assert "credit" in out
+
+
+class TestRecapEmptyAtlList:
+    def test_no_nothing_to_report_when_atl_section_rendered(self):
+        """An empty atl_hits list still renders the ATL section, so the
+        contradictory 'Nothing to report.' line must not appear."""
+        out = _capture(display_recap, [], [], [], 7, atl_hits=[], atl_all=False)
+        assert "Wishlist items at all-time low:" in out
+        assert "Nothing to report." not in out
+
+    def test_nothing_to_report_when_atl_none(self):
+        """With atl_hits=None the ATL section is skipped and the fallback shows."""
+        out = _capture(display_recap, [], [], [], 7, atl_hits=None)
+        assert "Nothing to report." in out
+
+
+class TestWishlistZeroTarget:
+    def test_zero_max_price_shows_target(self):
+        """A stored max_price of 0.0 is a valid 'only if free' target and must
+        render as $0.00, not '-'."""
+        out = _capture(
+            display_wishlist,
+            [{"asin": "B00R6S1RCY", "title": "Free Book", "max_price": 0.0}],
+            [],
+        )
+        assert "$0.00" in out
+
+    def test_missing_max_price_shows_dash(self):
+        out = _capture(
+            display_wishlist,
+            [{"asin": "B00R6S1RCY", "title": "No Target Book"}],
+            [],
+        )
+        assert "$" not in out
+
+    def test_author_zero_max_price_shows_target(self):
+        out = _capture(
+            display_wishlist,
+            [],
+            [{"author": "Some Author", "max_price": 0.0, "added": "2024-01-01"}],
+        )
+        assert "$0.00" in out
+
+
+class TestPriceHistoryNonNumeric:
+    def test_non_numeric_price_does_not_crash(self):
+        """A corrupt/hand-edited entry with a string price must be skipped, not
+        crash the CLI."""
+        entries = [
+            {"date": "2026-06-01", "price": "n/a", "title": "X"},
+            {"date": "2026-06-02", "price": 5.0, "title": "X"},
+        ]
+        out = _capture(display_price_history, entries, "B00ASIN")
+        assert "$5.00" in out
+
+    def test_missing_price_key_does_not_crash(self):
+        entries = [
+            {"date": "2026-06-01", "title": "X"},
+            {"date": "2026-06-02", "price": 3.5, "title": "X"},
+        ]
+        out = _capture(display_price_history, entries, "B00ASIN")
+        assert "$3.50" in out
+
+    def test_all_non_numeric_reports_no_prices(self):
+        entries = [{"date": "2026-06-01", "price": "n/a", "title": "X"}]
+        out = _capture(display_price_history, entries, "B00ASIN")
+        assert "No numeric prices" in out

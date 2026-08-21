@@ -9,6 +9,7 @@ import math
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Sequence
 
 import click
 
@@ -30,6 +31,10 @@ class WishlistInspection:
     asin_items: list[dict]
     author_items: list[dict]
     issues: list[WishlistIssue]
+
+
+class WishlistMutationError(ValueError):
+    """A saved wishlist cannot be safely changed."""
 
 
 def _valid_target(value: object, *, optional: bool) -> bool:
@@ -106,7 +111,7 @@ def inspect_wishlist(raw: object) -> WishlistInspection:
     return WishlistInspection(asin_items, author_items, issues)
 
 
-def warn_wishlist_issues(issues: list[WishlistIssue]) -> None:
+def warn_wishlist_issues(issues: Sequence[WishlistIssue]) -> None:
     """Warn once per Click command when invalid wishlist entries are skipped."""
     if not issues:
         return
@@ -135,14 +140,14 @@ def load_wishlist_for_mutation() -> list[dict]:
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError) as exc:
-        raise click.ClickException(f"Cannot modify wishlist: could not read it: {exc}")
+        raise WishlistMutationError(f"Cannot modify wishlist: could not read it: {exc}")
 
     try:
         data = json.loads(contents)
     except json.JSONDecodeError as exc:
-        raise click.ClickException(f"Cannot modify wishlist: malformed JSON: {exc}")
+        raise WishlistMutationError(f"Cannot modify wishlist: malformed JSON: {exc}")
     if not isinstance(data, list):
-        raise click.ClickException("Cannot modify wishlist: expected a JSON list.")
+        raise WishlistMutationError("Cannot modify wishlist: expected a JSON list.")
     return data
 
 
@@ -153,7 +158,7 @@ def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
     except FileNotFoundError:
         return [], None
     except OSError as exc:
-        raise click.ClickException(f"Cannot repair wishlist: could not read it: {exc}")
+        raise WishlistMutationError(f"Cannot repair wishlist: could not read it: {exc}")
 
     try:
         data = json.loads(
@@ -162,9 +167,9 @@ def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
             parse_float=_parse_finite_float,
         )
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-        raise click.ClickException(f"Cannot repair wishlist: malformed JSON: {exc}")
+        raise WishlistMutationError(f"Cannot repair wishlist: malformed JSON: {exc}")
     if not isinstance(data, list):
-        raise click.ClickException("Cannot repair wishlist: expected a JSON list.")
+        raise WishlistMutationError("Cannot repair wishlist: expected a JSON list.")
     return data, contents
 
 

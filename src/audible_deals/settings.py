@@ -6,17 +6,13 @@ Merges defaults <- config_file <- profile <- CLI flags in a single pass.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, field, fields
 from typing import Any
-
-import click
 
 from audible_deals.constants import _CONFIG_SCHEMA, DEFAULT_LIMIT, DEFAULT_SORT
 
 logger = logging.getLogger(__name__)
 
-
-_CL = click.core.ParameterSource.COMMANDLINE
 
 # Keys covered by config-file defaults. locale is resolved once in the CLI
 # group callback, not per-scan.
@@ -66,46 +62,46 @@ class Settings:
     only_plus: bool = False
     exclude_keywords: tuple[str, ...] = ()
 
-    @classmethod
-    def resolve(
-        cls,
-        ctx: click.Context,
-        *,
-        config: dict[str, Any],
-        profile: dict[str, Any] | None,
-        cli_flags: dict[str, Any],
-    ) -> "Settings":
-        """Return a Settings built from merged cli_flags <- config <- profile <- cli_flags.
 
-        Precedence (highest wins): CLI > profile > config > dataclass defaults.
-        Only overrides when the source is not COMMANDLINE.
-        """
-        merged: dict[str, Any] = dict(cli_flags)
-        debug = logger.isEnabledFor(logging.DEBUG)
-        source: dict[str, str] = {}
-        if debug:
-            for key in cli_flags:
-                if ctx.get_parameter_source(key) == _CL:
-                    source[key] = "cli"
+@dataclass(frozen=True)
+class SettingsResolutionRequest:
+    config: dict[str, Any]
+    profile: dict[str, Any] | None
+    cli_flags: dict[str, Any]
+    explicit_options: frozenset[str] = field(default_factory=frozenset)
 
-        for key in _CONFIG_KEYS:
-            if config.get(key) is not None and ctx.get_parameter_source(key) != _CL:
-                merged[key] = config[key]
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "explicit_options", frozenset(self.explicit_options))
+
+
+def resolve_settings(request: SettingsResolutionRequest) -> Settings:
+    """Resolve settings with CLI > profile > config > defaults precedence."""
+    merged: dict[str, Any] = dict(request.cli_flags)
+    debug = logger.isEnabledFor(logging.DEBUG)
+    source: dict[str, str] = {}
+    if debug:
+        for key in request.cli_flags:
+            if key in request.explicit_options:
+                source[key] = "cli"
+
+    for key in _CONFIG_KEYS:
+        if request.config.get(key) is not None and key not in request.explicit_options:
+            merged[key] = request.config[key]
+            if debug:
+                source[key] = "config"
+
+    if request.profile:
+        for key in _CONFIG_KEYS + _PROFILE_EXTRA_KEYS:
+            if (
+                request.profile.get(key) is not None
+                and key not in request.explicit_options
+            ):
+                merged[key] = request.profile[key]
                 if debug:
-                    source[key] = "config"
+                    source[key] = "profile"
 
-        if profile:
-            for key in _CONFIG_KEYS + _PROFILE_EXTRA_KEYS:
-                if (
-                    profile.get(key) is not None
-                    and ctx.get_parameter_source(key) != _CL
-                ):
-                    merged[key] = profile[key]
-                    if debug:
-                        source[key] = "profile"
-
-        known = {f.name for f in fields(cls)}
-        kwargs = {k: v for k, v in merged.items() if k in known}
-        if debug:
-            logger.debug("Settings sources: %s", source)
-        return cls(**kwargs)
+    known = {item.name for item in fields(Settings)}
+    kwargs = {key: value for key, value in merged.items() if key in known}
+    if debug:
+        logger.debug("Settings sources: %s", source)
+    return Settings(**kwargs)

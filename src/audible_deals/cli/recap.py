@@ -7,7 +7,7 @@ import json as json_mod
 import click
 
 from audible_deals.cli.helpers import _currency
-from audible_deals.constants import LockHeldError, run_lock
+from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.notification_workflow import (
     empty_recap_payload,
     parse_webhook_headers,

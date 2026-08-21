@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import datetime
+import dataclasses
 import logging
 import shlex
-import unicodedata
 
 import click
 
@@ -14,6 +14,7 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _load_profile,
     _resolve_categories,
     _resolve_output_quiet,
     _resolve_skip_snapshots,
@@ -23,25 +24,82 @@ from audible_deals.cli.options import (
     _common_filter_options,
     _complete_genre_names,
 )
-from audible_deals.cli.pipeline import (
-    _FetchProgressState,
-    _apply_settings_filters,
-    _build_scan_settings,
-    _fetch_with_progress,
-    _print_dry_run_summary,
-    _record_and_emit,
-    settings_result_recipe,
-)
 from audible_deals.constants import (
     CLIENT_SORT_OPTIONS,
-    DEEP_SORT_ORDERS,
+    LOCALE_LANGUAGES,
     SORT_OPTIONS,
 )
-from audible_deals.client import DealsClient
-from audible_deals.display import console, create_scan_progress
+from audible_deals.catalog_workflow import (
+    CatalogQueryError,
+    bind_catalog_categories,
+    build_find_scan_plan,
+    build_search_scan_plan,
+    execute_catalog_scan,
+    normalized_search_text,
+)
+from audible_deals.presentation.terminal import catalog_scan_progress, console
+from audible_deals.presentation.dry_run import (
+    CatalogDryRunSummary,
+    render_catalog_dry_run,
+)
 from audible_deals.product import Product
+from audible_deals.result_processing import (
+    SettingsFilterRequest,
+    process_settings_discovery,
+    recipe_from_settings,
+)
+from audible_deals.result_publication import (
+    ResultPublicationRequest,
+    ResultSessionSpec,
+    publish_discovery,
+)
+from audible_deals.settings import (
+    Settings,
+    SettingsResolutionRequest,
+    resolve_settings,
+)
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_scan_settings(ctx, profile_name: str | None, **kwargs) -> Settings:
+    explicit_options = {key for key in kwargs if ctx.get_parameter_source(key) == _CL}
+    settings = resolve_settings(
+        SettingsResolutionRequest(
+            config=ctx.obj.get("config", {}),
+            profile=_load_profile(profile_name),
+            cli_flags=dict(kwargs),
+            explicit_options=explicit_options,
+        )
+    )
+    if not settings.language and not settings.all_languages:
+        settings = dataclasses.replace(
+            settings, language=LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
+        )
+    if logger.isEnabledFor(logging.DEBUG):
+        debug_keys = (
+            "genre",
+            "keywords",
+            "max_price",
+            "max_pph",
+            "sort",
+            "pages",
+            "limit",
+            "min_rating",
+            "min_ratings",
+            "min_hours",
+            "min_discount",
+            "language",
+            "on_sale",
+            "deep",
+            "first_in_series",
+            "skip_owned",
+        )
+        logger.debug(
+            "resolved scan settings: %s",
+            {key: getattr(settings, key) for key in debug_keys},
+        )
+    return settings
 
 
 def _resolve_genre_category(ctx, genre: str, category: str) -> str:
@@ -58,202 +116,21 @@ def _resolve_genre_category(ctx, genre: str, category: str) -> str:
     return ""
 
 
-def _normalized_search_text(value: str) -> str:
-    return " ".join(unicodedata.normalize("NFKC", value).casefold().split())
-
-
-def _rank_relevance(products: list[Product], query: str) -> list[Product]:
-    """Stably rank exact and phrase matches ahead of the marketplace order."""
-    normalized_query = _normalized_search_text(query)
-    if not normalized_query:
-        return products
-
-    def tier(product: Product) -> int:
-        title = _normalized_search_text(product.title)
-        authors = [_normalized_search_text(author) for author in product.authors]
-        if title == normalized_query or normalized_query in authors:
-            return 0
-        if normalized_query in title:
-            return 1
-        if any(normalized_query in author for author in authors):
-            return 2
-        return 3
-
-    return sorted(products, key=tier)
-
-
-def _fetch_search_phrase(
-    dc: DealsClient,
-    query: str,
-    *,
-    category_ids: list[str],
-    sort_orders: list[str],
-    pages: int,
-    description: str,
-    _progress=None,
-    _task=None,
-    _state: _FetchProgressState | None = None,
-) -> list[Product]:
-    if _progress is None:
-        broad_calls = len(category_ids) * len(sort_orders) * pages
-        probe_calls = len(category_ids) if query else 0
-        state = _FetchProgressState(total=broad_calls + probe_calls)
-        with create_scan_progress() as progress:
-            task = progress.add_task(description, total=state.total, items=0)
-            products = _fetch_search_phrase(
-                dc,
-                query,
-                category_ids=category_ids,
-                sort_orders=sort_orders,
-                pages=pages,
-                description=description,
-                _progress=progress,
-                _task=task,
-                _state=state,
-            )
-            progress.update(
-                task,
-                total=state.completed,
-                completed=state.completed,
-                items=len(state.item_asins),
-            )
-            return products
-
-    if _task is None or _state is None:
-        raise ValueError("progress, task, and state must be provided together")
-
-    broad = _fetch_with_progress(
-        dc,
-        keywords=query,
-        category_ids=category_ids,
-        sort_orders=sort_orders,
-        pages=pages,
-        description=description,
-        progress=_progress,
-        task=_task,
-        state=_state,
-    )
-    if not query:
-        return broad
-
-    exact: list[Product] = []
-    for category_id in category_ids:
-        completed_before = _state.completed
-        try:
-            exact.extend(
-                _fetch_with_progress(
-                    dc,
-                    keywords="",
-                    title=query,
-                    category_ids=[category_id],
-                    sort_orders=["Relevance"],
-                    pages=1,
-                    description=description,
-                    progress=_progress,
-                    task=_task,
-                    state=_state,
-                )
-            )
-        except Exception as exc:
-            if _state.completed == completed_before:
-                _state.completed += 1
-                _progress.update(
-                    _task,
-                    total=_state.total,
-                    completed=_state.completed,
-                    items=len(_state.item_asins),
-                )
-            logger.info(
-                "Exact-title probe failed for %r in category %r; "
-                "using broad results: %s",
-                query,
-                category_id,
-                exc,
-            )
-
-    merged: list[Product] = []
-    seen_asins: set[str] = set()
-    for product in exact + broad:
-        if product.asin not in seen_asins:
-            seen_asins.add(product.asin)
-            merged.append(product)
-    return _rank_relevance(merged, query)
-
-
-def _fetch_multi_query(
-    dc: DealsClient,
-    queries: list[str],
-    *,
-    category: str,
-    sort_orders: list[str],
-    pages: int,
-) -> list[Product]:
-    """Fetch each query separately, deduplicating by ASIN across queries."""
-    all_products: list[Product] = []
-    fetched_asins: set[str] = set()
-    broad_calls = len(queries) * len(sort_orders) * pages
-    probe_calls = sum(bool(query) for query in queries)
-    state = _FetchProgressState(total=broad_calls + probe_calls)
-    description = (
-        f"Searching '{queries[0]}'"
-        if len(queries) == 1
-        else f"Searching {len(queries)} queries"
-    )
-    with create_scan_progress() as progress:
-        task = progress.add_task(description, total=state.total, items=0)
-        for q in queries:
-            sub_products = _fetch_search_phrase(
-                dc,
-                category_ids=[category],
-                sort_orders=sort_orders,
-                pages=pages,
-                query=q,
-                description=f"Searching '{q}'",
-                _progress=progress,
-                _task=task,
-                _state=state,
-            )
-            for p in sub_products:
-                if p.asin not in fetched_asins:
-                    fetched_asins.add(p.asin)
-                    all_products.append(p)
-        progress.update(
-            task,
-            total=state.completed,
-            completed=state.completed,
-            items=len(fetched_asins),
-        )
-    return all_products
-
-
 def _matching_author_queries(queries: list[str], products: list[Product]) -> list[str]:
     """Return queries evidenced by an exact normalized product author match."""
     normalized_authors = {
-        _normalized_search_text(author)
+        normalized_search_text(author)
         for product in products
         for author in product.authors
     }
     matches: list[str] = []
     seen: set[str] = set()
     for query in queries:
-        normalized = _normalized_search_text(query)
+        normalized = normalized_search_text(query)
         if normalized and normalized in normalized_authors and normalized not in seen:
             matches.append(query)
             seen.add(normalized)
     return matches
-
-
-def monitor_scan_plan(s, mode: str, query: str) -> tuple[list[str], list[str]]:
-    """Return catalog query/sort segments for a monitor without any side effects."""
-    if mode == "search":
-        queries = [part.strip() for part in query.split("|") if part.strip()]
-        if not queries:
-            raise click.UsageError("--query must contain at least one keyword.")
-        fallback = "Relevance"
-    else:
-        queries = [s.keywords]
-        fallback = "BestSellers"
-    return queries, DEEP_SORT_ORDERS if s.deep else [SORT_OPTIONS.get(s.sort, fallback)]
 
 
 def _search_title(queries: list[str], category_name: str) -> str:
@@ -449,7 +326,7 @@ def search(
     released_after, released_before = _validate_history_filter_options(
         require_history, hist_below, min_price_drop, released_after, released_before
     )
-    s = _build_scan_settings(
+    s = _resolve_scan_settings(
         ctx,
         profile_name,
         max_price=max_price,
@@ -486,40 +363,38 @@ def search(
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     effective_genre = _resolve_genre_category(ctx, s.genre, category)
-    server_sort = SORT_OPTIONS.get(s.sort, "Relevance")
-    sort_orders = DEEP_SORT_ORDERS if s.deep else [server_sort]
-
-    queries = (
-        [q.strip() for q in query.split("|") if q.strip()] if "|" in query else [query]
-    )
-    if "|" in query and not queries:
-        raise click.UsageError("No keywords found after splitting on '|'.")
+    try:
+        plan = build_search_scan_plan(query, sort=s.sort, deep=s.deep, pages=s.pages)
+    except CatalogQueryError as exc:
+        raise click.UsageError(str(exc)) from None
+    queries = list(plan.queries)
 
     if dry_run:
         requested_category = category or effective_genre
         category_label = (
             f"{requested_category} (resolved during scan)" if requested_category else ""
         )
-        _print_dry_run_summary(
-            category_name=category_label,
-            query=" | ".join(queries),
-            sort_orders=sort_orders,
-            pages=s.pages,
-            query_count=len(queries),
-            title_probe_count=sum(bool(query) for query in queries),
-            result_sort=s.sort,
-            limit=s.limit,
-            profile_name=profile_name,
-            active_filters=_active_filter_labels(
-                s,
-                max_effective_price=max_effective_price,
-                exclude_seen=exclude_seen,
-                hist_below=hist_below,
-                min_price_drop=min_price_drop,
-                require_history=require_history,
-                released_after=released_after,
-                released_before=released_before,
-            ),
+        render_catalog_dry_run(
+            CatalogDryRunSummary(
+                plan=plan,
+                category_name=category_label,
+                query=" | ".join(queries),
+                result_sort=s.sort,
+                limit=s.limit,
+                profile_name=profile_name,
+                active_filters=tuple(
+                    _active_filter_labels(
+                        s,
+                        max_effective_price=max_effective_price,
+                        exclude_seen=exclude_seen,
+                        hist_below=hist_below,
+                        min_price_drop=min_price_drop,
+                        require_history=require_history,
+                        released_after=released_after,
+                        released_before=released_before,
+                    )
+                ),
+            )
         )
         return
 
@@ -534,21 +409,22 @@ def search(
             dc, s.skip_owned, exclude_seen
         )
 
-        all_products = _fetch_multi_query(
-            dc,
-            queries,
-            category=category,
-            sort_orders=sort_orders,
-            pages=s.pages,
+        plan = bind_catalog_categories(plan, [category])
+        description = (
+            f"Searching '{queries[0]}'"
+            if len(queries) == 1
+            else f"Searching {len(queries)} queries"
         )
+        with catalog_scan_progress(plan, description) as progress:
+            all_products = execute_catalog_scan(dc, plan, progress)
 
     cur = _currency(ctx)
     credit_price = _credit_price(ctx)
     search_title = _search_title(queries, category_name)
-    filtered, filter_breakdown, editions_removed, series_collapsed, histories = (
-        _apply_settings_filters(
-            all_products,
-            s,
+    result = process_settings_discovery(
+        SettingsFilterRequest(
+            products=tuple(all_products),
+            settings=s,
             skip_asins=skip_asins,
             exclude_category_ids=exclude_category_ids,
             hist_below=hist_below,
@@ -560,63 +436,64 @@ def search(
             credit_price=credit_price,
         )
     )
-    _record_and_emit(
-        filtered,
-        filter_breakdown,
-        editions_removed,
-        series_collapsed,
-        title=search_title,
-        limit=s.limit,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
-        max_price=s.max_price,
-        currency=cur,
-        interactive=s.interactive,
-        show_url=show_url,
-        histories=histories,
-        credit_price=credit_price,
-        candidates=all_products,
-        producer="search",
-        locale=ctx.obj["locale"],
-        recipe=settings_result_recipe(
-            s,
-            max_effective_price=max_effective_price,
-            hist_below=hist_below,
-            min_price_drop=min_price_drop,
-            require_history=require_history,
-            released_after=released_after,
-            released_before=released_before,
-            exclude_seen=exclude_seen,
-            exclude_genres=s.exclude_genre,
-        ),
-        source={
-            "command": shlex.join(
-                [
-                    "deals",
-                    "search",
-                    query,
-                    *(["--category", category] if category else []),
-                    "--pages",
-                    str(s.pages),
-                    *(["--deep"] if s.deep else []),
-                ]
+    publish_discovery(
+        ResultPublicationRequest(
+            result=result,
+            title=search_title,
+            limit=s.limit,
+            output=output,
+            json_flag=json_flag,
+            quiet=quiet,
+            max_price=s.max_price,
+            currency=cur,
+            interactive=s.interactive,
+            show_url=show_url,
+            credit_price=credit_price,
+            candidates=tuple(all_products),
+            session_spec=ResultSessionSpec(
+                producer="search",
+                locale=ctx.obj["locale"],
+                recipe=recipe_from_settings(
+                    s,
+                    max_effective_price=max_effective_price,
+                    hist_below=hist_below,
+                    min_price_drop=min_price_drop,
+                    require_history=require_history,
+                    released_after=released_after,
+                    released_before=released_before,
+                    exclude_seen=exclude_seen,
+                    exclude_genres=s.exclude_genre,
+                ),
+                source={
+                    "command": shlex.join(
+                        [
+                            "deals",
+                            "search",
+                            query,
+                            *(["--category", category] if category else []),
+                            "--pages",
+                            str(s.pages),
+                            *(["--deep"] if s.deep else []),
+                        ]
+                    ),
+                    "query": query,
+                    "category": category,
+                    "genre": effective_genre,
+                    "pages": s.pages,
+                    "deep": s.deep,
+                },
+                constraints={
+                    "drop_zero_length": True,
+                    "owned_asins": sorted(owned_snapshot),
+                    "owned_snapshot_available": s.skip_owned,
+                    "seen_asins": sorted(seen_snapshot),
+                    "seen_snapshot_available": True,
+                    "excluded_category_ids": sorted(exclude_category_ids),
+                    "category_snapshot_available": bool(s.exclude_genre),
+                },
             ),
-            "query": query,
-            "category": category,
-            "genre": effective_genre,
-            "pages": s.pages,
-            "deep": s.deep,
-        },
-        constraints={
-            "drop_zero_length": True,
-            "owned_asins": sorted(owned_snapshot),
-            "owned_snapshot_available": s.skip_owned,
-            "seen_asins": sorted(seen_snapshot),
-            "seen_snapshot_available": True,
-            "excluded_category_ids": sorted(exclude_category_ids),
-            "category_snapshot_available": bool(s.exclude_genre),
-        },
+            json_writer=click.echo,
+        )
     )
     if not s.author and not json_flag and not quiet:
         for author_query in _matching_author_queries(queries, all_products):
@@ -752,7 +629,7 @@ def find(
     released_after, released_before = _validate_history_filter_options(
         require_history, hist_below, min_price_drop, released_after, released_before
     )
-    s = _build_scan_settings(
+    s = _resolve_scan_settings(
         ctx,
         profile_name,
         max_price=max_price,
@@ -787,35 +664,41 @@ def find(
     _check_plus_flags(s.skip_plus, s.only_plus)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     effective_genre = _resolve_genre_category(ctx, s.genre, category)
-    server_sort = SORT_OPTIONS.get(s.sort, "BestSellers")
-    sort_orders = DEEP_SORT_ORDERS if s.deep else [server_sort]
 
     if subcategories and not (category or effective_genre):
         raise click.UsageError("--subcategories requires --genre or --category")
+    plan = build_find_scan_plan(
+        s.keywords,
+        category_ids=None if subcategories else ("",),
+        sort=s.sort,
+        deep=s.deep,
+        pages=s.pages,
+    )
     if dry_run:
         requested_category = category or effective_genre
-        _print_dry_run_summary(
-            category_name=f"{requested_category} (resolved during scan)"
-            if requested_category
-            else "",
-            query=s.keywords,
-            sort_orders=sort_orders,
-            pages=s.pages,
-            subcategories_unknown=subcategories,
-            title_probe_count=1 if s.keywords else 0,
-            result_sort=s.sort,
-            limit=s.limit,
-            profile_name=profile_name,
-            active_filters=_active_filter_labels(
-                s,
-                max_effective_price=max_effective_price,
-                exclude_seen=exclude_seen,
-                hist_below=hist_below,
-                min_price_drop=min_price_drop,
-                require_history=require_history,
-                released_after=released_after,
-                released_before=released_before,
-            ),
+        render_catalog_dry_run(
+            CatalogDryRunSummary(
+                plan=plan,
+                category_name=f"{requested_category} (resolved during scan)"
+                if requested_category
+                else "",
+                query=s.keywords,
+                result_sort=s.sort,
+                limit=s.limit,
+                profile_name=profile_name,
+                active_filters=tuple(
+                    _active_filter_labels(
+                        s,
+                        max_effective_price=max_effective_price,
+                        exclude_seen=exclude_seen,
+                        hist_below=hist_below,
+                        min_price_drop=min_price_drop,
+                        require_history=require_history,
+                        released_after=released_after,
+                        released_before=released_before,
+                    )
+                ),
+            )
         )
         return
 
@@ -855,14 +738,9 @@ def find(
             scan_category_ids = [category]
             description = f"Scanning {desc_str}"
 
-        all_products = _fetch_search_phrase(
-            dc,
-            query=s.keywords,
-            category_ids=scan_category_ids,
-            sort_orders=sort_orders,
-            pages=s.pages,
-            description=description,
-        )
+        plan = bind_catalog_categories(plan, scan_category_ids)
+        with catalog_scan_progress(plan, description) as progress:
+            all_products = execute_catalog_scan(dc, plan, progress)
 
     cur = _currency(ctx)
     credit_price = _credit_price(ctx)
@@ -871,10 +749,10 @@ def find(
         find_title += f" in {category_name}"
     if s.keywords:
         find_title += f' matching "{s.keywords}"'
-    filtered, filter_breakdown, editions_removed, series_collapsed, histories = (
-        _apply_settings_filters(
-            all_products,
-            s,
+    result = process_settings_discovery(
+        SettingsFilterRequest(
+            products=tuple(all_products),
+            settings=s,
             skip_asins=skip_asins,
             exclude_category_ids=exclude_category_ids,
             hist_below=hist_below,
@@ -886,63 +764,64 @@ def find(
             credit_price=credit_price,
         )
     )
-    _record_and_emit(
-        filtered,
-        filter_breakdown,
-        editions_removed,
-        series_collapsed,
-        title=find_title,
-        limit=s.limit,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
-        max_price=s.max_price,
-        currency=cur,
-        interactive=s.interactive,
-        show_url=show_url,
-        histories=histories,
-        credit_price=credit_price,
-        candidates=all_products,
-        producer="find",
-        locale=ctx.obj["locale"],
-        recipe=settings_result_recipe(
-            s,
-            max_effective_price=max_effective_price,
-            hist_below=hist_below,
-            min_price_drop=min_price_drop,
-            require_history=require_history,
-            released_after=released_after,
-            released_before=released_before,
-            exclude_seen=exclude_seen,
-            exclude_genres=s.exclude_genre,
-        ),
-        source={
-            "command": shlex.join(
-                [
-                    "deals",
-                    "find",
-                    *(["--category", category] if category else []),
-                    *(["--keywords", s.keywords] if s.keywords else []),
-                    "--pages",
-                    str(s.pages),
-                    *(["--deep"] if s.deep else []),
-                    *(["--subcategories"] if subcategories else []),
-                ]
+    publish_discovery(
+        ResultPublicationRequest(
+            result=result,
+            title=find_title,
+            limit=s.limit,
+            output=output,
+            json_flag=json_flag,
+            quiet=quiet,
+            max_price=s.max_price,
+            currency=cur,
+            interactive=s.interactive,
+            show_url=show_url,
+            credit_price=credit_price,
+            candidates=tuple(all_products),
+            session_spec=ResultSessionSpec(
+                producer="find",
+                locale=ctx.obj["locale"],
+                recipe=recipe_from_settings(
+                    s,
+                    max_effective_price=max_effective_price,
+                    hist_below=hist_below,
+                    min_price_drop=min_price_drop,
+                    require_history=require_history,
+                    released_after=released_after,
+                    released_before=released_before,
+                    exclude_seen=exclude_seen,
+                    exclude_genres=s.exclude_genre,
+                ),
+                source={
+                    "command": shlex.join(
+                        [
+                            "deals",
+                            "find",
+                            *(["--category", category] if category else []),
+                            *(["--keywords", s.keywords] if s.keywords else []),
+                            "--pages",
+                            str(s.pages),
+                            *(["--deep"] if s.deep else []),
+                            *(["--subcategories"] if subcategories else []),
+                        ]
+                    ),
+                    "query": s.keywords,
+                    "category": category,
+                    "genre": effective_genre,
+                    "pages": s.pages,
+                    "deep": s.deep,
+                    "subcategories": subcategories,
+                },
+                constraints={
+                    "drop_zero_length": True,
+                    "owned_asins": sorted(owned_snapshot),
+                    "owned_snapshot_available": s.skip_owned,
+                    "seen_asins": sorted(seen_snapshot),
+                    "seen_snapshot_available": True,
+                    "excluded_category_ids": sorted(exclude_category_ids),
+                    "category_snapshot_available": bool(s.exclude_genre),
+                },
             ),
-            "query": s.keywords,
-            "category": category,
-            "genre": effective_genre,
-            "pages": s.pages,
-            "deep": s.deep,
-            "subcategories": subcategories,
-        },
-        constraints={
-            "drop_zero_length": True,
-            "owned_asins": sorted(owned_snapshot),
-            "owned_snapshot_available": s.skip_owned,
-            "seen_asins": sorted(seen_snapshot),
-            "seen_snapshot_available": True,
-            "excluded_category_ids": sorted(exclude_category_ids),
-            "category_snapshot_available": bool(s.exclude_genre),
-        },
+            json_writer=click.echo,
+        )
     )

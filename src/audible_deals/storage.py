@@ -44,6 +44,28 @@ def _atomic_write(path: Path, content: str, *, durable: bool = False) -> None:
         raise
 
 
+def _atomic_write_bytes(path: Path, content: bytes, *, durable: bool = False) -> None:
+    """Write bytes to path atomically via temp file + rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
+    replaced = False
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+            if durable:
+                f.flush()
+                os.fsync(f.fileno())
+        os.replace(tmp, path)
+        replaced = True
+        if durable:
+            _fsync_parent(path)
+    except BaseException:
+        if not replaced:
+            with suppress(FileNotFoundError):
+                os.unlink(tmp)
+        raise
+
+
 def load_json_file(path: Path, expected_type: type, desc: str):
     """Load a JSON file, returning an empty expected_type if missing, corrupt, or wrong shape."""
     if path.exists():

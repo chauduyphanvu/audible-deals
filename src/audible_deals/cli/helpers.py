@@ -2,24 +2,19 @@
 
 from __future__ import annotations
 
-import logging
 import sys
 
 import click
 
 from audible_deals.client import DealsClient
-from audible_deals.product import Product
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import LOCALE_CURRENCY
-from audible_deals.display import console
-from audible_deals.price_history import record_prices
+from audible_deals.presentation.terminal import console
 from audible_deals.results_cache import (
     load_seen_asins,
     merge_seen_asins,
-    resolve_selectors,
 )
-
-logger = logging.getLogger(__name__)
+from audible_deals.selectors import resolve_selectors
 
 _CL = click.core.ParameterSource.COMMANDLINE
 
@@ -77,15 +72,6 @@ def _resolve_cli_selectors(
         if announce and item.description:
             console.print(f"[dim]{item.description}[/dim]")
     return resolved, locale
-
-
-def _safe_record_prices(products: list[Product]) -> None:
-    """Record prices, warning on failure instead of crashing."""
-    try:
-        record_prices(products)
-    except Exception as e:
-        logger.exception("record_prices failed for %d products", len(products))
-        console.print(f"[dim]Warning: could not record price history: {e}[/dim]")
 
 
 def _load_profile(profile_name: str | None) -> dict | None:

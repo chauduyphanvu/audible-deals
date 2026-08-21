@@ -141,7 +141,7 @@ class TestApiDebugLogging:
         api.get_mock.return_value = {"products": [], "total_results": 0}
         dc = DealsClient(auth_file=api.tmp_path / "auth.json", locale="us")
 
-        with caplog.at_level(logging.DEBUG, logger="audible_deals.client"):
+        with caplog.at_level(logging.DEBUG, logger="audible_deals.audible_transport"):
             dc.search_catalog(keywords="dune", page=1)
 
         msgs = [r.message for r in caplog.records]

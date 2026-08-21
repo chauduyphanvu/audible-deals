@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import dataclasses
+import datetime
 import json
+import subprocess
+import sys
 from io import StringIO
 
 import click
@@ -11,14 +15,35 @@ from rich.console import Console
 from audible_deals import constants
 from audible_deals import wishlist as wishlist_store
 from audible_deals.cli import cli
-from audible_deals.cli.pipeline import result_recipe
-from audible_deals.display import display_products
+from audible_deals.result_processing import (
+    process_session_recipe as apply_result_recipe,
+    result_recipe,
+)
+from audible_deals.result_refinement import (
+    CachedRefinementRequest,
+    FetchBoundPatch,
+    FetchBoundRefinementError,
+    refine_cached_results,
+)
+from audible_deals.result_publication import (
+    ResultPublicationRequest,
+    ResultSessionSpec,
+    publish_discovery,
+)
+from audible_deals.presentation.products import display_products
 from audible_deals.results_cache import (
-    ResultSession,
     load_result_session,
-    resolve_selectors,
     save_result_session,
 )
+from audible_deals.result_models import (
+    DiscoveryResult,
+    FilterContext,
+    FilterOutcome,
+    RecipePatch,
+    ResultRecipe,
+    ResultSession,
+)
+from audible_deals.selectors import resolve_selectors
 from audible_deals.serialization import serialize_product
 from tests.conftest import make_product
 
@@ -31,11 +56,375 @@ def _session(products, *, visible, recipe=None, locale="us"):
         title="Cached deals",
         source={"command": "deals find --pages 1", "pages": 1},
         candidates=[serialize_product(product) for product in products],
-        baseline_recipe=recipe.copy(),
-        current_recipe=recipe.copy(),
+        baseline_recipe=recipe,
+        current_recipe=recipe,
         visible_asins=visible,
         constraints={"drop_zero_length": True},
     )
+
+
+def test_result_models_are_frozen_and_normalize_mutable_inputs():
+    model_types = (
+        ResultRecipe,
+        FilterContext,
+        FilterOutcome,
+        RecipePatch,
+        DiscoveryResult,
+    )
+    assert all(dataclasses.is_dataclass(model) for model in model_types)
+    assert all(model.__dataclass_params__.frozen for model in model_types)
+
+    authors = ["Author"]
+    recipe = ResultRecipe(exclude_authors=authors)
+    authors.append("Other")
+    assert recipe.exclude_authors == ("Author",)
+    assert recipe.to_dict()["exclude_authors"] == ["Author"]
+    assert ResultRecipe.from_mapping(recipe.to_dict()) == recipe
+    json.dumps(recipe.to_dict())
+
+
+def test_recipe_patch_distinguishes_omission_from_explicit_clear():
+    recipe = ResultRecipe(max_price=5, language="english")
+    omitted = RecipePatch(language="").merge(recipe)
+    cleared = RecipePatch(max_price=None).merge(recipe)
+    assert omitted.max_price == 5
+    assert omitted.language == ""
+    assert cleared.max_price is None
+    assert cleared.language == "english"
+
+
+def test_result_session_keeps_v2_recipe_wire_shape(tmp_config):
+    product = make_product(asin="WIRE0001", series_name="")
+    recipe = ResultRecipe(exclude_authors=("Author",), limit=None)
+    save_result_session(_session([product], visible=[product.asin], recipe=recipe))
+    cached = json.loads(constants.LAST_RESULTS_FILE.read_text())
+    assert cached["version"] == 2
+    assert cached["baseline_recipe"]["exclude_authors"] == ["Author"]
+    assert cached["baseline_recipe"]["limit"] is None
+    assert cached["results"][0]["asin"] == product.asin
+
+
+def test_session_v2_round_trip():
+    product = make_product(asin="ROUND0001", series_name="")
+    session = _session(
+        [product],
+        visible=[product.asin],
+        recipe=ResultRecipe(exclude_authors=("Author",), limit=None),
+        locale="uk",
+    )
+
+    wire = session.to_dict()
+    restored = ResultSession.from_dict(wire)
+
+    assert restored.to_dict() == wire
+    assert restored.version == 2
+    assert restored.baseline_recipe.exclude_authors == ("Author",)
+
+
+def test_session_v2_round_trip_preserves_unknown_recipe_keys():
+    product = make_product(asin="FUTURE001", series_name="")
+    wire = _session([product], visible=[product.asin]).to_dict()
+    wire["baseline_recipe"]["future_filter"] = {"values": ["one", "two"]}
+    wire["current_recipe"]["future_sort"] = "experimental"
+
+    restored = ResultSession.from_dict(wire)
+
+    assert restored.to_dict()["baseline_recipe"]["future_filter"] == {
+        "values": ["one", "two"]
+    }
+    assert restored.to_dict()["current_recipe"]["future_sort"] == "experimental"
+    with pytest.raises(ValueError, match="Unknown result recipe field: future_filter"):
+        result_recipe(future_filter=True)
+
+
+@pytest.mark.parametrize(
+    ("payload", "title"),
+    [
+        ([{"asin": "LEGACY001", "locale": "uk"}], "Last results"),
+        (
+            {
+                "title": "Legacy object",
+                "results": [{"asin": "LEGACY002", "locale": "de"}],
+            },
+            "Legacy object",
+        ),
+    ],
+)
+def test_legacy_cache_shapes(payload, title):
+    session = ResultSession.from_dict(payload)
+
+    assert session.title == title
+    assert session.locale in {"uk", "de"}
+    assert session.visible_asins == [session.candidates[0]["asin"]]
+    assert session.legacy is True
+    assert session.to_dict()["version"] == 2
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        (
+            "producer",
+            None,
+            "Last results cache is corrupt: producer must be str.",
+        ),
+        (
+            "locale",
+            "invalid",
+            "Last results cache is corrupt: invalid locale.",
+        ),
+        (
+            "visible_asins",
+            [1],
+            "Last results cache is corrupt: visible_asins must be strings.",
+        ),
+    ],
+)
+def test_corrupt_session_diagnostics_are_unchanged(tmp_config, field, value, message):
+    product = make_product(asin="CORRUPT001", series_name="")
+    payload = _session([product], visible=[product.asin]).to_dict()
+    payload[field] = value
+    constants.LAST_RESULTS_FILE.write_text(json.dumps(payload))
+
+    with pytest.raises(click.ClickException) as exc_info:
+        load_result_session()
+
+    assert str(exc_info.value) == message
+
+
+def test_result_cache_missing_and_malformed_diagnostics(tmp_config):
+    with pytest.raises(click.ClickException) as missing:
+        load_result_session()
+    assert str(missing.value) == (
+        "No cached results found. Run 'deals find', 'deals search', "
+        "'deals for-me', or 'deals series' first."
+    )
+
+    constants.LAST_RESULTS_FILE.write_text("{")
+    with pytest.raises(click.ClickException, match="Could not read last results cache"):
+        load_result_session()
+
+
+def test_result_cache_io_errors_stay_at_persistence_boundary(tmp_config, monkeypatch):
+    class BrokenCache:
+        def exists(self):
+            return True
+
+        def read_text(self, **kwargs):
+            raise OSError("permission denied")
+
+    monkeypatch.setattr(constants, "LAST_RESULTS_FILE", BrokenCache())
+
+    with pytest.raises(click.ClickException) as exc_info:
+        load_result_session()
+
+    assert str(exc_info.value) == "Could not read last results cache: permission denied"
+
+
+def test_apply_recipe_reuses_history_snapshot_and_preserves_ranking(monkeypatch):
+    products = [
+        make_product(asin="RANK0002", price=4, series_name=""),
+        make_product(asin="RANK0001", price=5, series_name=""),
+        make_product(asin="RANK0003", price=6, series_name=""),
+    ]
+    session = _session(
+        products,
+        visible=[product.asin for product in products],
+        recipe=result_recipe(hist_below=50, require_history=True),
+    )
+    session.constraints["history_percentiles"] = {
+        "RANK0002": 10,
+        "RANK0001": 20,
+        "RANK0003": 30,
+    }
+    session.ranking_context = {
+        "allowed_asins": ["RANK0002", "RANK0001"],
+        "fit_scores": {"RANK0002": 9, "RANK0001": 8},
+        "match_reasons": {"RANK0002": "best", "RANK0001": "next"},
+    }
+    monkeypatch.setattr(
+        "audible_deals.result_processing.load_price_history",
+        lambda *args: pytest.fail("loaded history instead of using snapshot"),
+    )
+
+    result = apply_result_recipe(session, session.current_recipe, credit_price=None)
+
+    assert [product.asin for product in result.products] == [
+        "RANK0002",
+        "RANK0001",
+    ]
+    assert dict(result.match_reasons or {}) == {
+        "RANK0002": "best",
+        "RANK0001": "next",
+    }
+    assert session.ranking_context["fit_scores"] == {
+        "RANK0002": 9,
+        "RANK0001": 8,
+    }
+
+
+def test_cached_refinement_service_is_api_free_and_does_not_mutate_session():
+    product = make_product(asin="PURE0001", price=4, series_name="")
+    session = _session(
+        [product],
+        visible=[product.asin],
+        recipe=result_recipe(max_price=5),
+    )
+    before = session.to_dict()
+
+    outcome = refine_cached_results(
+        session,
+        CachedRefinementRequest(recipe_patch=RecipePatch(max_price=4)),
+    )
+
+    assert outcome.total_count == 1
+    assert outcome.session is not session
+    assert outcome.session.current_recipe.max_price == 4
+    assert session.to_dict() == before
+
+
+def test_cached_refinement_reset_uses_baseline_before_override():
+    products = [
+        make_product(asin="RESET001", price=4, series_name=""),
+        make_product(asin="RESET002", price=8, series_name=""),
+    ]
+    session = _session(
+        products,
+        visible=["RESET001"],
+        recipe=result_recipe(max_price=10),
+    )
+    session.current_recipe = result_recipe(max_price=5)
+
+    outcome = refine_cached_results(
+        session,
+        CachedRefinementRequest(
+            reset=True,
+            recipe_patch=RecipePatch(max_price=9),
+        ),
+    )
+
+    assert outcome.total_count == 2
+    assert outcome.session.current_recipe.max_price == 9
+
+
+def test_cached_refinement_fetch_bound_reports_rerun_command():
+    session = _session(
+        [make_product(asin="BOUND001", series_name="")],
+        visible=["BOUND001"],
+    )
+
+    with pytest.raises(FetchBoundRefinementError) as exc_info:
+        refine_cached_results(
+            session,
+            CachedRefinementRequest(fetch_bound_patch=FetchBoundPatch(pages=2)),
+        )
+
+    assert str(exc_info.value) == (
+        "--pages changes what must be fetched and cannot refine cached results. "
+        "Rerun: deals find --pages 1"
+    )
+
+
+def test_last_series_is_local_filter_for_non_series_session(tmp_config):
+    products = [
+        make_product(asin="LOCALSER01", series_name="Alpha Series"),
+        make_product(asin="LOCALSER02", series_name="Beta Series"),
+    ]
+    save_result_session(
+        _session(products, visible=[product.asin for product in products])
+    )
+
+    result = CliRunner().invoke(cli, ["last", "--series", "Alpha", "--json"])
+
+    assert result.exit_code == 0, result.output
+    assert [item["asin"] for item in json.loads(result.output)] == ["LOCALSER01"]
+    assert load_result_session().current_recipe.series == "Alpha"
+
+
+def test_last_series_is_fetch_bound_for_series_session(tmp_config):
+    product = make_product(asin="FETCHSER01", series_name="Alpha Series")
+    session = _session([product], visible=[product.asin])
+    session.producer = "series"
+    session.source = {"command": "deals series --max-series 20"}
+    save_result_session(session)
+
+    result = CliRunner().invoke(cli, ["last", "--series", "Alpha", "--json"])
+
+    assert result.exit_code != 0
+    assert (
+        "--series selects which series must be fetched for this session. "
+        "Rerun: deals series --max-series 20"
+    ) in result.output
+
+
+def test_publication_snapshots_histories_before_recording_prices(tmp_config):
+    product = make_product(asin="SNAPSHOT01", price=10, series_name="")
+    history_file = constants.HISTORY_DIR / f"{product.asin}.json"
+    constants.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    history_file.write_text(
+        json.dumps(
+            {
+                "marketplaces": {
+                    "us": [
+                        {
+                            "date": (
+                                datetime.date.today() - datetime.timedelta(days=day)
+                            ).isoformat(),
+                            "price": 5.0,
+                            "title": product.title,
+                        }
+                        for day in range(5, 0, -1)
+                    ]
+                }
+            }
+        )
+    )
+
+    outcome = publish_discovery(
+        ResultPublicationRequest(
+            result=DiscoveryResult((product,)),
+            title="Snapshot",
+            limit=0,
+            output=None,
+            json_flag=False,
+            quiet=True,
+            max_price=None,
+            currency="$",
+            candidates=(product,),
+            session_spec=ResultSessionSpec(
+                producer="find",
+                locale="us",
+                recipe=result_recipe(limit=0),
+                source={"command": "deals find"},
+                constraints={"drop_zero_length": True},
+            ),
+        )
+    )
+
+    assert outcome.session is not None
+    assert outcome.session.constraints["history_percentiles"] == {product.asin: 100}
+    assert outcome.session.constraints["price_drop_pcts"] == {product.asin: -100.0}
+    persisted = load_result_session()
+    assert persisted.constraints["history_percentiles"] == {product.asin: 100}
+    assert persisted.constraints["price_drop_pcts"] == {product.asin: -100.0}
+
+
+@pytest.mark.parametrize(
+    "module",
+    (
+        "audible_deals.result_publication",
+        "audible_deals.presentation.result_output",
+    ),
+)
+def test_result_modules_import_in_clean_interpreter(module):
+    result = subprocess.run(
+        [sys.executable, "-c", f"import {module}"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+    assert result.returncode == 0, result.stderr
 
 
 def test_last_widens_cumulatively_and_reset_restores_baseline(tmp_config):
@@ -117,7 +506,7 @@ def test_reset_then_clear_then_override_and_repeatable_replacement(tmp_config):
         ],
     )
     assert changed.exit_code == 0, changed.output
-    assert load_result_session().current_recipe["exclude_keywords"] == ["old"]
+    assert load_result_session().current_recipe.exclude_keywords == ("old",)
 
     reset = runner.invoke(
         cli,
@@ -133,10 +522,10 @@ def test_reset_then_clear_then_override_and_repeatable_replacement(tmp_config):
     )
     assert reset.exit_code == 0, reset.output
     current = load_result_session().current_recipe
-    assert current["max_price"] == 10
-    assert current["language"] == ""
-    assert current["exclude_keywords"] == ["abridged"]
-    assert current["on_sale"] is True
+    assert current.max_price == 10
+    assert current.language == ""
+    assert current.exclude_keywords == ("abridged",)
+    assert current.on_sale is True
 
 
 def test_count_ignores_limit_and_does_not_change_last_displayed_order(tmp_config):
@@ -263,6 +652,9 @@ def test_legacy_refinement_persists_cumulatively(tmp_config):
     runner = CliRunner()
     narrowed = runner.invoke(cli, ["last", "--max-price", "5", "--json"])
     assert narrowed.exit_code == 0, narrowed.output
+    count = runner.invoke(cli, ["last", "--count"])
+    assert count.exit_code == 0, count.output
+    assert count.output.strip() == "1"
     inherited = runner.invoke(cli, ["last", "--json"])
     assert inherited.exit_code == 0, inherited.output
     assert [item["asin"] for item in json.loads(inherited.output)] == ["LEGACY001"]
@@ -396,7 +788,7 @@ def test_notify_fetches_wishlist_entries_from_their_saved_locales(
 
 
 def test_product_renderer_uses_cards_below_80_without_losing_values(monkeypatch):
-    import audible_deals.display as display
+    from audible_deals.presentation import terminal as display
 
     output = StringIO()
     monkeypatch.setattr(
@@ -428,7 +820,7 @@ def test_product_renderer_uses_cards_below_80_without_losing_values(monkeypatch)
 
 @pytest.mark.parametrize("width", [60, 79, 80, 100, 119, 120, 160])
 def test_product_renderer_preserves_signals_at_layout_boundaries(monkeypatch, width):
-    import audible_deals.display as display
+    from audible_deals.presentation import terminal as display
 
     output = StringIO()
     monkeypatch.setattr(

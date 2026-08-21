@@ -2,29 +2,36 @@
 
 from __future__ import annotations
 
-import copy
-import datetime
 from pathlib import Path
 
 import click
 
 from audible_deals.cli.helpers import _credit_price, _currency, _resolve_output_quiet
-from audible_deals.cli.options import _check_plus_flags
-from audible_deals.cli.pipeline import (
-    RECIPE_DEFAULTS,
-    _record_and_emit,
-    apply_result_recipe,
+from audible_deals.presentation.result_output import (
+    ResultPresentationRequest,
+    emit_results,
 )
-from audible_deals.display import console
 from audible_deals.constants import LOCALE_CURRENCY
+from audible_deals.presentation.terminal import console
 from audible_deals.results_cache import (
     clear_last_results,
     clear_seen_asins,
-    load_last_results,
     load_result_session,
     save_result_session,
 )
-from audible_deals.serialization import export_products, validate_export_path
+from audible_deals.result_models import RecipePatch, UNSET
+from audible_deals.result_processing import RECIPE_FIELDS
+from audible_deals.result_refinement import (
+    CachedRefinementError,
+    CachedRefinementRequest,
+    FetchBoundPatch,
+    refine_cached_results,
+)
+from audible_deals.serialization import (
+    export_products,
+    serialize_product,
+    validate_export_path,
+)
 
 _SORTS = [
     "price",
@@ -43,9 +50,7 @@ _SORTS = [
 ]
 
 _CLEARABLE = {
-    key.replace("_", "-"): key
-    for key in RECIPE_DEFAULTS
-    if key not in {"sort", "limit"}
+    key.replace("_", "-"): key for key in RECIPE_FIELDS if key not in {"sort", "limit"}
 }
 _CLEARABLE.update(
     {
@@ -61,40 +66,6 @@ _CLEARABLE.update(
 
 def _option_given(ctx: click.Context, name: str) -> bool:
     return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
-
-
-def _validate_immutable_options(ctx: click.Context, session, values: dict) -> None:
-    for option, source_key in (
-        ("query", "query"),
-        ("category", "category"),
-        ("genre", "genre"),
-        ("pages", "pages"),
-        ("deep", "deep"),
-        ("subcategories", "subcategories"),
-        ("refresh", "refresh"),
-        ("max_series", "max_series"),
-        ("min_books", "min_books"),
-    ):
-        if not _option_given(ctx, option):
-            continue
-        if values[option] == session.source.get(source_key):
-            continue
-        command = session.source.get("command", f"deals {session.producer}")
-        raise click.UsageError(
-            f"--{option.replace('_', '-')} changes what must be fetched and cannot "
-            f"refine cached results. Rerun: {command}"
-        )
-    if session.producer == "series" and _option_given(ctx, "series"):
-        command = session.source.get("command", "deals series")
-        raise click.UsageError(
-            "--series selects which series must be fetched for this session. "
-            f"Rerun: {command}"
-        )
-
-
-def _clear_recipe_value(key: str):
-    value = RECIPE_DEFAULTS[key]
-    return copy.deepcopy(value)
 
 
 @click.command("last")
@@ -250,76 +221,7 @@ def last_cmd(
         return
 
     session = load_result_session()
-    any_refinement = (
-        reset
-        or bool(clear_filters)
-        or any(
-            _option_given(ctx, name)
-            for name in (
-                "sort",
-                "max_price",
-                "max_pph",
-                "max_effective_price",
-                "min_rating",
-                "min_ratings",
-                "min_hours",
-                "narrator",
-                "author",
-                "series",
-                "publisher",
-                "exclude_authors",
-                "exclude_narrators",
-                "language",
-                "on_sale",
-                "min_discount",
-                "first_in_series",
-                "skip_plus",
-                "only_plus",
-                "skip_owned",
-                "exclude_seen",
-                "exclude_keywords",
-                "exclude_genres",
-                "hist_below",
-                "min_price_drop",
-                "require_history",
-                "released_after",
-                "released_before",
-                "limit",
-            )
-        )
-    )
-    if count_only and session.legacy and not any_refinement:
-        _, legacy_results = load_last_results()
-        click.echo(len(legacy_results))
-        return
-    _validate_immutable_options(
-        ctx,
-        session,
-        {
-            "query": query,
-            "category": category,
-            "genre": genre,
-            "pages": pages,
-            "deep": deep,
-            "subcategories": subcategories,
-            "refresh": refresh,
-            "max_series": max_series,
-            "min_books": min_books,
-        },
-    )
-    if session.legacy and not json_flag and not quiet and not count_only:
-        console.print(
-            "[yellow]Legacy limited cache: display, narrowing, and selectors work; "
-            "run one new discovery scan to enable true widening.[/yellow]"
-        )
-
-    recipe = copy.deepcopy(session.baseline_recipe if reset else session.current_recipe)
-    for key, default in RECIPE_DEFAULTS.items():
-        recipe.setdefault(key, copy.deepcopy(default))
-    for name in clear_filters:
-        recipe[_CLEARABLE[name]] = _clear_recipe_value(_CLEARABLE[name])
-
-    overrides = {
+    override_values = {
         "sort": sort,
         "max_price": max_price,
         "max_pph": max_pph,
@@ -346,9 +248,11 @@ def last_cmd(
         "released_before": released_before,
         "limit": limit,
     }
-    for key, value in overrides.items():
-        if _option_given(ctx, key):
-            recipe[key] = value
+    recipe_updates = {
+        key: value for key, value in override_values.items() if _option_given(ctx, key)
+    }
+    if session.producer == "series":
+        recipe_updates.pop("series", None)
     for key, value in (
         ("exclude_authors", exclude_authors),
         ("exclude_narrators", exclude_narrators),
@@ -356,120 +260,75 @@ def last_cmd(
         ("exclude_genres", exclude_genres),
     ):
         if _option_given(ctx, key):
-            recipe[key] = list(value)
-
-    if _option_given(ctx, "exclude_genres") and list(exclude_genres) != list(
-        session.baseline_recipe.get("exclude_genres", [])
-    ):
-        raise click.UsageError(
-            "Changing --exclude-genre requires category resolution. Rerun: "
-            + session.source.get("command", f"deals {session.producer}")
-        )
-
-    _check_plus_flags(bool(recipe["skip_plus"]), bool(recipe["only_plus"]))
-    if (
-        recipe.get("require_history")
-        and recipe.get("hist_below") is None
-        and not recipe.get("min_price_drop")
-    ):
-        raise click.UsageError(
-            "--require-history requires --hist-below or --min-price-drop"
-        )
-
-    def normalized_date(option: str) -> str:
-        value = str(recipe.get(option) or "")
-        if not value:
-            return value
-        try:
-            return datetime.date.fromisoformat(value).isoformat()
-        except ValueError:
-            raise click.UsageError(
-                f"--{option.replace('_', '-')}: invalid date {value!r} "
-                "(expected YYYY-MM-DD)"
-            )
-
-    after = normalized_date("released_after")
-    before = normalized_date("released_before")
-    recipe["released_after"] = after
-    recipe["released_before"] = before
-    if after and before and after > before:
-        raise click.UsageError(
-            "--released-after cannot be later than --released-before"
-        )
-    if recipe.get("skip_owned") and not session.constraints.get(
-        "owned_snapshot_available",
-        bool(session.constraints.get("owned_asins")),
-    ):
-        raise click.UsageError(
-            "This session has no cached ownership snapshot. Rerun: "
-            + session.source.get("command", f"deals {session.producer}")
-        )
-    if recipe.get("exclude_seen") and not session.constraints.get(
-        "seen_snapshot_available",
-        "seen_asins" in session.constraints,
-    ):
-        raise click.UsageError(
-            "This session has no cached seen-ASIN snapshot. Rerun: "
-            + session.source.get("command", f"deals {session.producer}")
-        )
-    if recipe.get("exclude_genres") and not session.constraints.get(
-        "category_snapshot_available",
-        bool(session.constraints.get("excluded_category_ids")),
-    ):
-        raise click.UsageError(
-            "This session has no cached category-exclusion snapshot. Rerun: "
-            + session.source.get("command", f"deals {session.producer}")
-        )
-
-    credit_price = (
-        session.constraints["credit_price"]
-        if "credit_price" in session.constraints
-        else _credit_price(ctx)
+            recipe_updates[key] = value
+    fetch_values = {
+        "query": query,
+        "category": category,
+        "genre": genre,
+        "pages": pages,
+        "deep": deep,
+        "subcategories": subcategories,
+        "refresh": refresh,
+        "max_series": max_series,
+        "min_books": min_books,
+        "series": series if session.producer == "series" else UNSET,
+    }
+    fetch_patch = FetchBoundPatch(
+        **{
+            key: value if value is not UNSET and _option_given(ctx, key) else UNSET
+            for key, value in fetch_values.items()
+        }
     )
-    (
-        filtered,
-        breakdown,
-        editions_removed,
-        series_collapsed,
-        histories,
-        match_context,
-    ) = apply_result_recipe(session, recipe, credit_price=credit_price)
-    current_count = len(filtered)
-    effective_limit = int(recipe.get("limit") or 0)
-    visible = filtered[:effective_limit] if effective_limit > 0 else filtered
+    request = CachedRefinementRequest(
+        recipe_patch=RecipePatch.from_mapping(recipe_updates),
+        fetch_bound_patch=fetch_patch,
+        clear_fields=tuple(_CLEARABLE[name] for name in clear_filters),
+        reset=reset,
+        count_only=count_only,
+        output_requested=output is not None,
+        credit_price=_credit_price(ctx),
+    )
+    try:
+        outcome = refine_cached_results(session, request)
+    except CachedRefinementError as exc:
+        raise click.UsageError(str(exc)) from None
+    if outcome.legacy_raw_count:
+        click.echo(outcome.total_count)
+        return
+    if session.legacy and not json_flag and not quiet and not count_only:
+        console.print(
+            "[yellow]Legacy limited cache: display, narrowing, and selectors work; "
+            "run one new discovery scan to enable true widening.[/yellow]"
+        )
+    assert outcome.visible_result is not None
+    visible = outcome.visible_result.products
 
     if output:
         export_products(visible, output)
         console.print(f"[green]Exported {len(visible)} items to {output}[/green]")
 
-    session.current_recipe = copy.deepcopy(recipe)
-    session.constraints.setdefault("credit_price", credit_price)
-    if not count_only or output:
-        session.visible_asins = [product.asin for product in visible]
-    save_result_session(session)
+    if outcome.persist:
+        save_result_session(outcome.session)
 
     if count_only:
-        click.echo(current_count)
+        click.echo(outcome.total_count)
         return
 
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    _record_and_emit(
-        filtered,
-        breakdown,
-        editions_removed,
-        series_collapsed,
-        title=session.title,
-        limit=effective_limit,
-        output=None,
-        json_flag=json_flag,
-        quiet=quiet,
-        max_price=recipe.get("max_price"),
-        currency=LOCALE_CURRENCY.get(session.locale, _currency(ctx)),
-        interactive=interactive,
-        show_url=show_url,
-        write_cache=False,
-        record_prices=False,
-        histories=histories,
-        credit_price=credit_price,
-        match_context=match_context,
+    serialized = tuple(serialize_product(product) for product in visible)
+    emit_results(
+        ResultPresentationRequest(
+            result=outcome.visible_result,
+            serialized=serialized,
+            title=session.title,
+            json_flag=json_flag,
+            quiet=quiet,
+            max_price=outcome.session.current_recipe.max_price,
+            total_before_limit=outcome.total_count,
+            currency=LOCALE_CURRENCY.get(session.locale, _currency(ctx)),
+            interactive=interactive,
+            show_url=show_url,
+            credit_price=outcome.credit_price,
+            json_writer=click.echo,
+        )
     )

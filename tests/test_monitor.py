@@ -8,9 +8,12 @@ import pytest
 from click.testing import CliRunner
 
 from audible_deals import constants
+from audible_deals.catalog_workflow import build_monitor_scan_plan
 from audible_deals.cli import cli
 from audible_deals.cli import monitor as monitor_module
-from audible_deals.cli import track as track_module
+import audible_deals.monitor_service as monitor_service
+from audible_deals.automation_models import MonitorDefinition, MonitorEvent
+from audible_deals.notification_service import deliver_monitor_events
 from audible_deals.config_store import (
     load_monitor_state,
     load_monitors,
@@ -18,8 +21,10 @@ from audible_deals.config_store import (
     save_monitors,
     save_profiles,
 )
-from audible_deals.display import console, display_track_history
+from audible_deals.presentation.reports import display_track_history
+from audible_deals.presentation.terminal import console
 from audible_deals.product import Product
+from audible_deals.result_models import DiscoveryResult
 from audible_deals.serialization import serialize_product
 from audible_deals.webhooks import (
     format_monitor_webhook_payload,
@@ -55,6 +60,22 @@ def _definition(name="cheap", *, locale="us", mode="find", **settings):
 def _product(asin="A1", price=4.0):
     return serialize_product(
         Product(asin=asin, title=asin, price=price, length_minutes=60)
+    )
+
+
+_SERVICE_RUNTIME = monitor_service.MonitorRuntime(
+    get_client=lambda locale: None,
+    resolve_categories=lambda *args: ("", "", set()),
+    resolve_skip_asins=lambda *args: set(),
+    progress=lambda *args: None,
+)
+
+
+def _run_monitor(definition, *, deliver=None):
+    return monitor_service.run_monitor(
+        MonitorDefinition.from_dict(definition),
+        _SERVICE_RUNTIME,
+        deliver=deliver,
     )
 
 
@@ -154,17 +175,17 @@ def test_baseline_events_disappear_reentry_and_monitor_isolation(
         [_product("A1", 3.98)],
         [_product("A1", 2.0)],
     ]
-    monkeypatch.setattr(monitor_module, "scan_monitor", lambda definition: scans.pop(0))
+    monkeypatch.setattr(
+        monitor_service, "scan_monitor", lambda definition, runtime: tuple(scans.pop(0))
+    )
     first = _definition("first")
     second = _definition("second")
-    assert monitor_module.run_monitor(first)[0] == []
-    assert [event["event"] for event in monitor_module.run_monitor(first)[0]] == ["new"]
-    assert [event["event"] for event in monitor_module.run_monitor(first)[0]] == [
-        "price_drop"
-    ]
-    assert monitor_module.run_monitor(first)[0] == []
-    assert [event["event"] for event in monitor_module.run_monitor(first)[0]] == ["new"]
-    assert monitor_module.run_monitor(second)[0] == []
+    assert _run_monitor(first).events == ()
+    assert [event.event for event in _run_monitor(first).events] == ["new"]
+    assert [event.event for event in _run_monitor(first).events] == ["price_drop"]
+    assert _run_monitor(first).events == ()
+    assert [event.event for event in _run_monitor(first).events] == ["new"]
+    assert _run_monitor(second).events == ()
     state = load_monitor_state()["monitors"]
     assert state["first"]["products"]["A1"]["price"] == 3.98
     assert state["second"]["products"]["A1"]["price"] == 2.0
@@ -172,8 +193,10 @@ def test_baseline_events_disappear_reentry_and_monitor_isolation(
 
 def test_unpriced_products_are_not_snapshotted_or_delivered(monkeypatch, monitor_files):
     product = _product(price=None)
-    monkeypatch.setattr(monitor_module, "scan_monitor", lambda definition: [product])
-    assert monitor_module.run_monitor(_definition())[0] == []
+    monkeypatch.setattr(
+        monitor_service, "scan_monitor", lambda definition, runtime: (product,)
+    )
+    assert _run_monitor(_definition()).events == ()
     assert load_monitor_state()["monitors"]["cheap"]["products"] == {}
     # Production scan filters unpriced records before they reach this low-level helper.
     assert monitor_module._events({}, [product], "cheap") == []
@@ -209,21 +232,33 @@ def test_monitor_webhooks_all_formats_and_header_routing(monkeypatch, monitor_fi
         "count": 1,
     }
     sent = []
-    monkeypatch.setattr(track_module, "post_webhook", lambda *args: sent.append(args))
+
+    class WebhookClient:
+        def post(self, *args):
+            sent.append(args)
+
     headers = {"Authorization": "secret"}
-    track_module._send_monitor_events(
-        [event],
-        {
-            "locale": "us",
-            "webhook": "https://override.test",
-            "webhook_format": "generic",
-        },
+    deliver_monitor_events(
+        (MonitorEvent.from_dict(event),),
+        MonitorDefinition.from_dict(
+            {
+                "locale": "us",
+                "webhook": "https://override.test",
+                "webhook_format": "generic",
+            }
+        ),
         "https://global.test",
         "slack",
         headers,
+        WebhookClient(),
     )
-    track_module._send_monitor_events(
-        [event], {"locale": "us"}, "https://global.test", "slack", headers
+    deliver_monitor_events(
+        (MonitorEvent.from_dict(event),),
+        MonitorDefinition.from_dict({"locale": "us"}),
+        "https://global.test",
+        "slack",
+        headers,
+        WebhookClient(),
     )
     assert json.loads(sent[0][1])["monitor"] == "cheap"
     assert sent[0][-1].get("Authorization") is None
@@ -238,22 +273,24 @@ def test_delivery_failure_keeps_snapshot_for_retry_and_persists_error(
         [_product("A1", 4.0), _product("A2", 3.0)],
         [_product("A1", 4.0), _product("A2", 3.0)],
     ]
-    monkeypatch.setattr(monitor_module, "scan_monitor", lambda definition: scans.pop(0))
+    monkeypatch.setattr(
+        monitor_service, "scan_monitor", lambda definition, runtime: tuple(scans.pop(0))
+    )
     definition = _definition()
-    monitor_module.run_monitor(definition)
+    _run_monitor(definition)
     with pytest.raises(RuntimeError):
-        monitor_module.run_monitor(
+        _run_monitor(
             definition,
             deliver=lambda events, definition: (_ for _ in ()).throw(
                 RuntimeError("down")
             ),
         )
-    monitor_module.record_monitor_error("cheap", RuntimeError("down"))
+    monitor_service.record_monitor_error("cheap", RuntimeError("down"))
     slot = load_monitor_state()["monitors"]["cheap"]
     assert set(slot["products"]) == {"A1"}
     assert "down" in slot["last_error"]
-    events, _ = monitor_module.run_monitor(definition)
-    assert [event["asin"] for event in events] == ["A2"]
+    result = _run_monitor(definition)
+    assert [event.asin for event in result.events] == ["A2"]
     assert load_monitor_state()["monitors"]["cheap"]["last_error"] is None
 
 
@@ -272,10 +309,12 @@ def test_malformed_state_self_heals_without_losing_valid_sibling(
         )
     )
     monkeypatch.setattr(
-        monitor_module, "scan_monitor", lambda definition: [_product("A2", 2.0)]
+        monitor_service,
+        "scan_monitor",
+        lambda definition, runtime: (_product("A2", 2.0),),
     )
-    events, baseline = monitor_module.run_monitor(_definition("bad"))
-    assert events == [] and baseline is True
+    result = _run_monitor(_definition("bad"))
+    assert result.events == () and result.baseline is True
     state = load_monitor_state()["monitors"]
     assert state["good"]["products"]["A1"]["price"] == 4.0
     assert state["bad"]["products"]["A2"]["price"] == 2.0
@@ -283,8 +322,8 @@ def test_malformed_state_self_heals_without_losing_valid_sibling(
 
 def test_missing_monitor_state_mapping_is_repaired(monkeypatch, monitor_files):
     constants.MONITOR_STATE_FILE.write_text(json.dumps({"version": 1}))
-    monkeypatch.setattr(monitor_module, "scan_monitor", lambda definition: [])
-    monitor_module.run_monitor(_definition())
+    monkeypatch.setattr(monitor_service, "scan_monitor", lambda definition, runtime: ())
+    _run_monitor(_definition())
     slot = load_monitor_state()["monitors"]["cheap"]
     assert slot["initialized"] is True
     assert slot["products"] == {}
@@ -293,15 +332,29 @@ def test_missing_monitor_state_mapping_is_repaired(monkeypatch, monitor_files):
 
 
 def test_scan_plan_client_sort_and_multi_query():
-    settings = monitor_module._settings_from_dict(
+    settings = monitor_service.settings_from_dict(
         {"pages": 2, "sort": "price", "deep": False}
     )
-    queries, sorts = monitor_module.monitor_scan_plan(settings, "search", "a | b")
-    assert queries == ["a", "b"]
-    assert sorts == ["Relevance"]
-    queries, sorts = monitor_module.monitor_scan_plan(settings, "find", "")
-    assert queries == [""]
-    assert sorts == ["BestSellers"]
+    plan = build_monitor_scan_plan(
+        mode="search",
+        query="a | b",
+        keywords=settings.keywords,
+        sort=settings.sort,
+        deep=settings.deep,
+        pages=settings.pages,
+    )
+    assert plan.queries == ("a", "b")
+    assert plan.sort_orders == ("Relevance",)
+    plan = build_monitor_scan_plan(
+        mode="find",
+        query="",
+        keywords=settings.keywords,
+        sort=settings.sort,
+        deep=settings.deep,
+        pages=settings.pages,
+    )
+    assert plan.queries == ("",)
+    assert plan.sort_orders == ("BestSellers",)
 
 
 def test_direct_query_monitor_budget_includes_title_probes():
@@ -315,11 +368,10 @@ def test_direct_query_monitor_budget_includes_title_probes():
 
 def test_monitor_budget_round_robin_is_bounded():
     monitors = {name: _definition(name, pages=30) for name in ("a", "b", "c")}
-    state = {"monitor_cursor": 0}
-    first = monitor_module.select_monitors_for_run(monitors, state)
-    second = monitor_module.select_monitors_for_run(monitors, state)
-    assert [name for name, _ in first] == ["a", "b"]
-    assert [name for name, _ in second] == ["c", "a"]
+    first = monitor_service.select_monitors_for_run(monitors, 0)
+    second = monitor_service.select_monitors_for_run(monitors, first.cursor)
+    assert [definition.name for definition in first.monitors] == ["a", "b"]
+    assert [definition.name for definition in second.monitors] == ["c", "a"]
 
 
 def test_monitor_budget_round_robin_does_not_starve_expensive_monitor():
@@ -328,11 +380,10 @@ def test_monitor_budget_round_robin_does_not_starve_expensive_monitor():
         "b": _definition("b", pages=40),
         "c": _definition("c", pages=20),
     }
-    state = {"monitor_cursor": 0}
-    first = monitor_module.select_monitors_for_run(monitors, state)
-    second = monitor_module.select_monitors_for_run(monitors, state)
-    assert [name for name, _ in first] == ["a"]
-    assert [name for name, _ in second] == ["b", "c"]
+    first = monitor_service.select_monitors_for_run(monitors, 0)
+    second = monitor_service.select_monitors_for_run(monitors, first.cursor)
+    assert [definition.name for definition in first.monitors] == ["a"]
+    assert [definition.name for definition in second.monitors] == ["b", "c"]
 
 
 def test_pause_resume_are_idempotent_and_test_does_not_persist(
@@ -398,12 +449,12 @@ def test_scan_monitor_ignores_legacy_limit(monkeypatch, monitor_files):
     )
     monkeypatch.setattr(monitor_module, "_resolve_skip_asins", lambda *args: set())
     monkeypatch.setattr(
-        monitor_module, "_fetch_with_progress", lambda *args, **kwargs: products
+        monitor_service, "execute_catalog_scan", lambda *args, **kwargs: products
     )
     monkeypatch.setattr(
-        monitor_module,
-        "_apply_settings_filters",
-        lambda *args, **kwargs: (products, {}, 0, 0, None),
+        monitor_service,
+        "process_settings_discovery",
+        lambda *args, **kwargs: DiscoveryResult(products),
     )
     assert len(monitor_module.scan_monitor(_definition(limit=1))) == 3
 

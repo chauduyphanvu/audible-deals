@@ -16,16 +16,30 @@ from audible_deals.cli.helpers import (
     _currency,
     _get_client,
     _resolve_output_quiet,
-    _safe_record_prices,
 )
-from audible_deals.cli.pipeline import _apply_filters, _record_and_emit, result_recipe
 from audible_deals.client import DealsClient
-from audible_deals.display import console, create_scan_progress, display_series_gaps
 from audible_deals.parsing import parse_series_position
 from audible_deals.price_history import price_history_context
+from audible_deals.presentation.reports import display_series_gaps
+from audible_deals.presentation.terminal import console, create_scan_progress
 from audible_deals.product import Product
+from audible_deals.result_models import FilterContext
+from audible_deals.result_processing import (
+    DiscoveryProcessingRequest,
+    process_discovery,
+    result_recipe,
+)
+from audible_deals.result_publication import (
+    ResultPublicationRequest,
+    ResultSessionSpec,
+    publish_discovery,
+    record_prices_safely,
+)
 from audible_deals.serialization import validate_export_path
-from audible_deals.settings import Settings
+from audible_deals.settings import (
+    SettingsResolutionRequest,
+    resolve_settings,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -325,20 +339,36 @@ def series(
     validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
-    s = Settings.resolve(
-        ctx,
-        config=ctx.obj.get("config", {}),
-        profile=None,
-        cli_flags=dict(
-            max_price=max_price,
-            min_rating=min_rating,
-            min_ratings=min_ratings,
-            min_hours=min_hours,
-            on_sale=on_sale,
-            limit=limit,
-            sort=sort,
-            pages=pages,
-        ),
+    explicit_options = {
+        name
+        for name in (
+            "max_price",
+            "min_rating",
+            "min_ratings",
+            "min_hours",
+            "on_sale",
+            "limit",
+            "sort",
+            "pages",
+        )
+        if ctx.get_parameter_source(name) == _CL
+    }
+    s = resolve_settings(
+        SettingsResolutionRequest(
+            config=ctx.obj.get("config", {}),
+            profile=None,
+            explicit_options=explicit_options,
+            cli_flags=dict(
+                max_price=max_price,
+                min_rating=min_rating,
+                min_ratings=min_ratings,
+                min_hours=min_hours,
+                on_sale=on_sale,
+                limit=limit,
+                sort=sort,
+                pages=pages,
+            ),
+        )
     )
     max_price, min_rating, min_ratings = s.max_price, s.min_rating, s.min_ratings
     min_hours, on_sale, limit = s.min_hours, s.on_sale, s.limit
@@ -391,32 +421,27 @@ def series(
             dc, invested_sorted, owned_asins, pages=pages
         )
 
-    # 4. Post-process using shared pipeline
     series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
-    filtered, filter_breakdown, editions_removed, series_collapsed, _ = _apply_filters(
-        all_candidates,
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        narrator="",
-        author="",
-        exclude_authors=(),
-        exclude_narrators=(),
-        language="",
-        on_sale=on_sale,
-        skip_asins=None,
-        exclude_category_ids=set(),
-        first_in_series_only=False,
-        sort=sort,
-        drop_zero_length=False,
+    result = process_discovery(
+        DiscoveryProcessingRequest(
+            products=tuple(all_candidates),
+            context=FilterContext(
+                max_price=max_price,
+                min_rating=min_rating,
+                min_ratings=min_ratings,
+                min_hours=min_hours,
+                on_sale=on_sale,
+                sort=sort,
+                drop_zero_length=False,
+            ),
+        ),
     )
 
     if gaps_mode:
-        # Record prices so history keeps accruing, but skip cache/limit/table pipeline.
-        _safe_record_prices(filtered)
+        # Keep history without caching or applying the flat-view limit.
+        record_prices_safely(list(result.products))
         _series_gaps_report(
-            filtered,
+            list(result.products),
             invested_sorted,
             candidate_series,
             json_flag=json_flag,
@@ -425,50 +450,52 @@ def series(
         )
         return
 
-    _record_and_emit(
-        filtered,
-        filter_breakdown,
-        editions_removed,
-        series_collapsed,
-        title=series_title,
-        limit=limit,
-        output=output,
-        json_flag=json_flag,
-        quiet=quiet,
-        max_price=max_price,
-        currency=cur,
-        interactive=interactive,
-        credit_price=_credit_price(ctx),
-        candidates=all_candidates,
-        producer="series",
-        locale=ctx.obj["locale"],
-        recipe=result_recipe(
-            max_price=max_price,
-            min_rating=min_rating,
-            min_ratings=min_ratings,
-            min_hours=min_hours,
-            on_sale=on_sale,
-            sort=sort,
+    publish_discovery(
+        ResultPublicationRequest(
+            result=result,
+            title=series_title,
             limit=limit,
-        ),
-        source={
-            "command": shlex.join(
-                [
-                    "deals",
-                    "series",
-                    "--min-books",
-                    str(min_books),
-                    "--max-series",
-                    str(max_series),
-                    "--pages",
-                    str(pages),
-                    *(["--series", series_filter] if series_filter else []),
-                ]
+            output=output,
+            json_flag=json_flag,
+            quiet=quiet,
+            max_price=max_price,
+            currency=cur,
+            interactive=interactive,
+            credit_price=_credit_price(ctx),
+            candidates=tuple(all_candidates),
+            session_spec=ResultSessionSpec(
+                producer="series",
+                locale=ctx.obj["locale"],
+                recipe=result_recipe(
+                    max_price=max_price,
+                    min_rating=min_rating,
+                    min_ratings=min_ratings,
+                    min_hours=min_hours,
+                    on_sale=on_sale,
+                    sort=sort,
+                    limit=limit,
+                ),
+                source={
+                    "command": shlex.join(
+                        [
+                            "deals",
+                            "series",
+                            "--min-books",
+                            str(min_books),
+                            "--max-series",
+                            str(max_series),
+                            "--pages",
+                            str(pages),
+                            *(["--series", series_filter] if series_filter else []),
+                        ]
+                    ),
+                    "series_filter": series_filter,
+                    "min_books": min_books,
+                    "max_series": max_series,
+                    "pages": pages,
+                },
+                constraints={"drop_zero_length": False},
             ),
-            "series_filter": series_filter,
-            "min_books": min_books,
-            "max_series": max_series,
-            "pages": pages,
-        },
-        constraints={"drop_zero_length": False},
+            json_writer=click.echo,
+        )
     )
