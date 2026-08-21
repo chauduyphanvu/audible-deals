@@ -99,6 +99,10 @@ The tool uses the [audible](https://github.com/mkb79/Audible) Python package to 
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
+## Support
+
+If audible-deals saves you time or money, consider [supporting its development on GitHub Sponsors](https://github.com/sponsors/chauduyphanvu).
+
 ## Acknowledgements
 
 - [audible](https://github.com/mkb79/Audible) by mkb79 provides access to the Audible API.
