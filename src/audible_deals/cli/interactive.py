@@ -18,8 +18,8 @@ from audible_deals.filtering import _SORT_KEYS, sort_local
 from audible_deals.price_history import load_price_history
 from audible_deals.results_cache import (
     _expand_ref_string,
-    reorder_last_results,
     save_seen_asins,
+    update_session_view,
 )
 from audible_deals.wishlist import (
     inspect_wishlist,
@@ -47,11 +47,18 @@ def _interactive_browse(
 ) -> None:
     """Interactive mode: let user pick items to view details, open, or wishlist."""
     _HINT = (
-        "\n  [dim]Enter a # for details, 'o #' open, 'w #[,#-#]' wishlist, "
-        "'c # #' compare, 'h #' history, 's <key>' sort, 'n #[,#-#]' not interested, "
+        "\n  [dim]Enter # or @# for details, 'o #/@#' open, 'w #/@#[,#-#]' wishlist, "
+        "'c @# @#' compare, 'h @#' history, 's <key>' sort, 'n @#[,@#-@#]' not interested, "
         "'?' help, 'q' quit.[/dim]"
     )
     console.print(_HINT)
+
+    def parse_position(value: str) -> int:
+        return int(value.removeprefix("@")) - 1
+
+    def parse_positions(value: str) -> list[int]:
+        return _expand_ref_string(value.replace("@", ""), label="selection")
+
     while True:
         try:
             choice = click.prompt("\n>", default="q", show_default=False).strip()
@@ -77,8 +84,8 @@ def _interactive_browse(
                 if len(parts) != 3:
                     raise ValueError
                 action = "compare"
-                idx = int(parts[1]) - 1
-                idx2 = int(parts[2]) - 1
+                idx = parse_position(parts[1])
+                idx2 = parse_position(parts[2])
             elif len(parts) == 2 and parts[0].lower() == "w":
                 action = "wishlist"
                 w_ref = parts[1]
@@ -90,9 +97,9 @@ def _interactive_browse(
                 s_key = parts[1].lower()
             elif len(parts) == 2 and parts[0].lower() in ("o", "h"):
                 action = {"o": "open", "h": "history"}[parts[0].lower()]
-                idx = int(parts[1]) - 1
+                idx = parse_position(parts[1])
             else:
-                idx = int(parts[0]) - 1
+                idx = parse_position(parts[0])
         except (ValueError, IndexError):
             console.print(
                 "[dim]Invalid input. Enter a number, 'o #', 'w #[,#-#]', 'c # #', "
@@ -102,7 +109,7 @@ def _interactive_browse(
 
         if action == "wishlist":
             try:
-                one_based = _expand_ref_string(w_ref, label="selection")
+                one_based = parse_positions(w_ref)
             except click.ClickException as exc:
                 console.print(f"[dim]{exc.format_message()}[/dim]")
                 continue
@@ -182,7 +189,10 @@ def _interactive_browse(
                 )
                 continue
             products[:] = sort_local(products, s_key)
-            reorder_last_results([p.asin for p in products])
+            try:
+                update_session_view([p.asin for p in products], sort=s_key)
+            except Exception:
+                pass
             console.print()
             display_products(
                 products,
@@ -199,7 +209,7 @@ def _interactive_browse(
 
         if action == "not-interested":
             try:
-                one_based = _expand_ref_string(n_ref, label="selection")
+                one_based = parse_positions(n_ref)
             except click.ClickException as exc:
                 console.print(f"[dim]{exc.format_message()}[/dim]")
                 continue

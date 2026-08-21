@@ -1657,21 +1657,23 @@ class TestLastCommand:
         assert result.exit_code == 0, result.output
         assert "Last results" not in result.output
 
-    def test_last_does_not_overwrite_cache(self, tmp_config):
-        """deals last should NOT shrink the cache when filtering."""
+    def test_last_preserves_legacy_candidate_pool(self, tmp_config):
+        """Cached narrowing keeps every legacy candidate available for widening."""
         products = [
             make_product(asin="NC1", price=2.0, series_name="", series_position=""),
             make_product(asin="NC2", price=8.0, series_name="", series_position=""),
         ]
         self._seed_cache(tmp_config, products)
 
-        original = constants_mod.LAST_RESULTS_FILE.read_text()
         runner = CliRunner()
-        # Filter to only NC1 — cache should still have both
         result = runner.invoke(cli, ["last", "--max-price", "5"])
         assert result.exit_code == 0, result.output
-        after = constants_mod.LAST_RESULTS_FILE.read_text()
-        assert original == after
+        from audible_deals.results_cache import load_result_session
+
+        session = load_result_session()
+        assert [item["asin"] for item in session.candidates] == ["NC1", "NC2"]
+        assert session.visible_asins == ["NC1"]
+        assert session.current_recipe["max_price"] == 5
 
 
 class TestDetailLastFlag:
@@ -8455,10 +8457,11 @@ class TestInteractiveBrowse:
         self._run([p1, p2], "s discount\nq\n", tmp_config)
         _, data = load_last_results()
         asins = [d["asin"] for d in data]
-        # After 's discount', p2 (90%) is first, p1 (50%) second; tail entry preserved at end
-        assert asins[0] == "CR2"
-        assert asins[1] == "CR1"
-        assert asins[2] == "CR3"
+        assert asins == ["CR2", "CR1"]
+        from audible_deals.results_cache import load_result_session
+
+        session = load_result_session()
+        assert [item["asin"] for item in session.candidates] == ["CR1", "CR2", "CR3"]
 
     def test_sort_bogus_key_prints_error_no_crash(self, tmp_config):
         """'s bogus' prints the valid-key error and continues without crashing."""

@@ -13,7 +13,7 @@ from pathlib import Path
 import click
 
 from audible_deals import constants
-from audible_deals.constants import _ASIN_RE
+from audible_deals.constants import LOCALE_DOMAIN, _ASIN_RE
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
 from audible_deals.storage import _fsync_parent, load_json_file, save_json_file
@@ -91,6 +91,14 @@ def inspect_wishlist(raw: object) -> WishlistInspection:
                 WishlistIssue(
                     index, "max_price must be null or a finite non-negative number"
                 )
+            )
+            continue
+        locale = entry.get("locale")
+        if locale is not None and (
+            not isinstance(locale, str) or locale not in LOCALE_DOMAIN
+        ):
+            issues.append(
+                WishlistIssue(index, "locale must be a supported marketplace")
             )
             continue
         asin_items.append(entry)
@@ -206,11 +214,14 @@ def partition_wishlist(items: list[dict]) -> tuple[list[dict], list[dict]]:
     return inspection.asin_items, inspection.author_items
 
 
-def wishlist_entry(product: Product, max_price: float | None) -> dict:
+def wishlist_entry(
+    product: Product, max_price: float | None, *, locale: str | None = None
+) -> dict:
     """Build a wishlist dict from a Product."""
     return {
         "asin": product.asin,
         "title": product.title,
         "max_price": max_price,
         "added": datetime.date.today().isoformat(),
+        "locale": locale or product.locale,
     }

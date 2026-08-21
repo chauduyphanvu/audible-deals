@@ -9,7 +9,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - Compare cash prices with the cost of an Audible credit.
 - Track wishlist prices and receive Slack, Discord, Teams, ntfy, or generic webhook alerts.
 - Monitor saved catalog searches for new matches and price drops on the same schedule.
-- Re-filter recent results locally and export them as JSON or CSV.
+- Widen, narrow, sort, and reset recent results locally without another API call.
 - Use the correct currency and Audible store across all nine supported marketplaces.
 
 ## Quick start
@@ -59,6 +59,11 @@ deals for-me --max-price 5 --on-sale
 ```
 
 Add `-i` to `find` or `search` to browse results interactively. Run `deals --help` or `deals COMMAND --help` for the complete CLI reference.
+
+Result rows use shell-safe references such as `@1`. They work anywhere an
+ASIN does, including `deals detail @1`, `deals compare @1 @3`, and
+`deals wishlist add @1-3,5`. Product URLs are accepted too. Result output
+automatically switches between wide tables, compact tables, and narrow cards.
 
 ## Common workflows
 

@@ -9,27 +9,27 @@ import click
 
 from audible_deals.cli.helpers import (
     _currency,
-    _resolve_single_last_ref,
+    _resolve_cli_selectors,
 )
+from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.display import console, display_price_history
 from audible_deals.price_history import (
     load_all_price_histories,
     load_price_history,
     purge_stale_history,
 )
-from audible_deals.validation import validate_asin
 
 logger = logging.getLogger(__name__)
 
 
 @click.command()
-@click.argument("asin", required=False, default=None)
+@click.argument("asin", required=False, default=None, metavar="SELECTOR")
 @click.option(
     "--last",
     "last_ref",
     type=str,
     default=None,
-    help="Use result #N from last search/find",
+    help="Use result #N from the last result session",
 )
 @click.option(
     "--json", "json_flag", is_flag=True, default=False, help="Emit raw entries as JSON"
@@ -59,10 +59,10 @@ logger = logging.getLogger(__name__)
 )
 @click.pass_context
 def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
-    """Show price history for an ASIN.
+    """Show price history for an ASIN, Audible URL, or @N selector.
 
     History is recorded automatically each time an ASIN appears in
-    search/find results. Use 'deals history ASIN' to view past prices.
+    search/find results. Use 'deals history SELECTOR' to view past prices.
     """
     if dry_run and purge_days is None:
         raise click.UsageError("--dry-run requires --purge-older-than")
@@ -72,7 +72,7 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
     if purge_days is not None:
         if json_flag or all_flag or asin or last_ref:
             raise click.UsageError(
-                "--purge-older-than cannot be combined with --json, --all, ASIN, or --last."
+                "--purge-older-than cannot be combined with --json, --all, SELECTOR, or --last."
             )
         locale = ctx.obj["locale"]
         count, affected = purge_stale_history(purge_days, dry_run=True, locale=locale)
@@ -113,14 +113,17 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
         )
         return
 
-    if last_ref is not None:
-        asin, desc = _resolve_single_last_ref(last_ref)
-        if not json_flag:
-            console.print(f"[dim]{desc}[/dim]")
-    if not asin:
-        raise click.UsageError("Provide an ASIN or use --last N.")
-    validate_asin(asin)
-    entries = load_price_history(asin, ctx.obj["locale"])
+    if not asin and last_ref is None:
+        raise click.UsageError("Provide an ASIN, Audible URL, @N, or use --last N.")
+    resolved, locale = _resolve_cli_selectors(
+        ctx,
+        (asin,) if asin else (),
+        (last_ref,) if last_ref is not None else (),
+        single=True,
+        announce=not json_flag,
+    )
+    asin = resolved[0].asin
+    entries = load_price_history(asin, locale)
     if json_flag:
         click.echo(json_mod.dumps(entries, indent=2, ensure_ascii=False))
         return
@@ -131,5 +134,5 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
         )
         return
 
-    cur = _currency(ctx)
+    cur = LOCALE_CURRENCY.get(locale, _currency(ctx))
     display_price_history(entries, asin, cur)

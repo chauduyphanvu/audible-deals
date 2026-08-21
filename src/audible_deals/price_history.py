@@ -522,7 +522,7 @@ def _wishlist_with_history(locale: str):
     """Yield (item, price history entries) for wishlist items with valid ASINs."""
     asin_items, _ = wishlist.partition_wishlist(wishlist.load_wishlist())
     for item in asin_items:
-        yield item, load_price_history(item["asin"], locale)
+        yield item, load_price_history(item["asin"], item.get("locale", locale))
 
 
 def find_wishlist_hits(locale: str = "us") -> list[dict]:

@@ -159,13 +159,15 @@ Use `--max-series` to cap the number of series scanned and `--pages` to control 
 
 ## Last results
 
-`deals last` reuses the most recent results produced by `find`, `search`, `for-me`, or the flat `series` view without making an API call.
+`deals last` reuses the complete candidate pool from the most recent `find`, `search`, `for-me`, or flat `series` view without making an API call. Refinements are cumulative: an explicit option replaces that part of the current recipe and is retained for the next invocation. Repeatable options replace their complete inherited list.
 
 ```bash
 deals last
 deals last --sort discount
-deals last --sort title
-deals last --max-price 3 --min-rating 4.5
+deals last --max-price 8
+deals last --clear-filter language
+deals last --reset
+deals last --reset --max-price 3 --min-rating 4.5
 deals last --narrator "R.C. Bray" --min-ratings 100
 deals last --language english
 deals last -o last.csv
@@ -173,17 +175,21 @@ deals last --count
 deals last --clear
 ```
 
-Reference those results by position in other commands:
+References only address rows in the current, limit-applied view. Use `@N`,
+`@N-M,...`, an ASIN, or a recognized Audible product URL:
 
 ```bash
-deals detail --last 1
-deals open --last 3
-deals compare --last 1-3
-deals wishlist add --last 1,3,5 --max-price 5
-deals compare B00EXAMPLE --last 2
+deals detail @1
+deals open https://www.audible.com/pd/example/B00EXAMPLE
+deals compare @1 @3
+deals wishlist add @1-3,5 --max-price 5
+deals compare B00EXAMPLE @2
 ```
 
-Single-item commands such as `detail`, `open`, and `history` accept one position. Selection ranges must contain fewer than 1,000 positions.
+`--last` remains supported as a compatibility spelling. Single-item commands such as `detail`, `open`, and `history` reject ranges. Bulk commands deduplicate selections in first-seen order. A URL or cached row supplies its marketplace unless global `--locale` was explicitly provided.
+Wishlist additions retain that marketplace for later `watch`, `notify`, and price-history checks.
+
+Product lists use a full table at 120 columns and wider, a compact table from 80–119 columns, and wrapped cards below 80 columns. Optional Buy, history, Match, identifiers, series details, and URLs fold into secondary lines instead of disappearing.
 
 The seen-results list used by `--exclude-seen` is separate from the last-results cache. Clear it with `deals last --clear-seen`.
 
@@ -193,11 +199,11 @@ Add `-i` to `find` or `search`, then enter an action:
 
 | Input | Action |
 |-------|--------|
-| `3` | View item 3 |
-| `o 3` | Open item 3 in a browser |
-| `w 1-3,5` | Add several items to the wishlist |
-| `c 1 3` | Compare two items |
-| `h 3` | Show price history |
+| `3` or `@3` | View item 3 |
+| `o @3` | Open item 3 in a browser |
+| `w @1-3,5` | Add several items to the wishlist |
+| `c @1 @3` | Compare two items |
+| `h @3` | Show price history |
 | `s discount` | Re-sort in place |
 | `n 1-3` | Mark items not interested |
 | `q` | Quit |
@@ -334,7 +340,7 @@ All application data is stored in `~/.config/audible-deals/`:
 | `config.json` | Global defaults |
 | `wishlist.json` | Local watchlist |
 | `profiles.json` | Saved profiles |
-| `last_results.json` | Most recent `find` or `search` results |
+| `last_results.json` | Versioned candidate session from the latest flat `find`, `search`, `for-me`, or `series` result view |
 | `history/` | Per-ASIN price history |
 | `categories_cache.*.json` | Per-locale category caches |
 | `track_state.json`, `track.log` | Background tracking state and log |

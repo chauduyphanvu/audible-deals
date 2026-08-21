@@ -17,10 +17,9 @@ from audible_deals import constants
 from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli.helpers import (
     _CL,
-    _collect_asins,
     _credit_price,
     _get_client,
-    _resolve_single_last_ref,
+    _resolve_cli_selectors,
 )
 from audible_deals.config_store import (
     load_monitor_state,
@@ -37,7 +36,6 @@ from audible_deals.display import (
 )
 from audible_deals.results_cache import load_seen_asins
 from audible_deals.settings import _PROFILE_EXTRA_KEYS
-from audible_deals.validation import validate_asin
 from audible_deals.wishlist import inspect_wishlist
 
 
@@ -198,24 +196,27 @@ def categories(ctx, parent):
 
 
 @click.command()
-@click.argument("asin", required=False, default=None)
+@click.argument("asin", required=False, default=None, metavar="SELECTOR")
 @click.option(
     "--last",
     "last_ref",
     type=str,
     default=None,
-    help="Use result #N from last search/find",
+    help="Use result #N from the last result session",
 )
 @click.pass_context
 def detail(ctx, asin, last_ref):
-    """Show detailed info for a product by ASIN."""
-    if last_ref is not None:
-        asin, desc = _resolve_single_last_ref(last_ref)
-        console.print(f"[dim]{desc}[/dim]")
-    if not asin:
-        raise click.UsageError("Provide an ASIN or use --last N.")
-    validate_asin(asin)
-    dc = _get_client(ctx.obj["locale"])
+    """Show product details using an ASIN, Audible URL, or @N selector."""
+    if not asin and last_ref is None:
+        raise click.UsageError("Provide an ASIN, Audible URL, @N, or use --last N.")
+    resolved, locale = _resolve_cli_selectors(
+        ctx,
+        (asin,) if asin else (),
+        (last_ref,) if last_ref is not None else (),
+        single=True,
+    )
+    asin = resolved[0].asin
+    dc = _get_client(locale)
     with dc:
         try:
             product = dc.get_product(asin)
@@ -226,36 +227,39 @@ def detail(ctx, asin, last_ref):
 
 
 @click.command("open")
-@click.argument("asin", required=False, default=None)
+@click.argument("asin", required=False, default=None, metavar="SELECTOR")
 @click.option(
     "--last",
     "last_ref",
     type=str,
     default=None,
-    help="Use result #N from last search/find",
+    help="Use result #N from the last result session",
 )
 @click.pass_context
 def open_cmd(ctx, asin, last_ref):
-    """Open an audiobook's Audible page in your browser."""
-    if last_ref is not None:
-        asin, desc = _resolve_single_last_ref(last_ref)
-        console.print(f"[dim]{desc}[/dim]")
-    if not asin:
-        raise click.UsageError("Provide an ASIN or use --last N.")
-    validate_asin(asin)
-    url = product_url(asin, ctx.obj["locale"])
+    """Open a product selected by ASIN, Audible URL, or @N."""
+    if not asin and last_ref is None:
+        raise click.UsageError("Provide an ASIN, Audible URL, @N, or use --last N.")
+    resolved, locale = _resolve_cli_selectors(
+        ctx,
+        (asin,) if asin else (),
+        (last_ref,) if last_ref is not None else (),
+        single=True,
+    )
+    asin = resolved[0].asin
+    url = product_url(asin, locale)
     console.print(f"[dim]Opening {url}[/dim]")
     click.launch(url)
 
 
 @click.command()
-@click.argument("asins", nargs=-1, required=False)
+@click.argument("asins", nargs=-1, required=False, metavar="SELECTOR...")
 @click.option(
     "--last",
     "last_refs",
     type=str,
     multiple=True,
-    help="Use result #N from last search/find (repeatable)",
+    help="Use result #N from the last result session (repeatable)",
 )
 @click.pass_context
 def compare(ctx, asins, last_refs):
@@ -264,17 +268,18 @@ def compare(ctx, asins, last_refs):
     \b
     Example:
         deals compare B00R6S1RCY B00I2VWW5U B019NMZ6FE
+        deals compare @1 @3
         deals compare --last 1 --last 3
     """
-    all_asins = _collect_asins(asins, last_refs)
+    if len(asins) == 1 and not last_refs and not asins[0].startswith("@"):
+        raise click.UsageError("Provide at least 2 ASINs to compare.")
+    resolved, locale = _resolve_cli_selectors(ctx, asins, last_refs)
+    all_asins = [item.asin for item in resolved]
 
     if len(all_asins) < 2:
         raise click.UsageError("Provide at least 2 ASINs to compare.")
 
-    for asin in all_asins:
-        validate_asin(asin)
-
-    dc = _get_client(ctx.obj["locale"])
+    dc = _get_client(locale)
     with dc:
         products = dc.get_products_batch(all_asins)
 

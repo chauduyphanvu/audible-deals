@@ -1,173 +1,171 @@
-"""Cached result command."""
+"""Cumulative, API-free cached result refinement."""
 
 from __future__ import annotations
 
-import logging
+import copy
+import datetime
 from pathlib import Path
 
 import click
 
 from audible_deals.cli.helpers import _credit_price, _currency, _resolve_output_quiet
 from audible_deals.cli.options import _check_plus_flags
-from audible_deals.cli.pipeline import _apply_filters, _record_and_emit
+from audible_deals.cli.pipeline import (
+    RECIPE_DEFAULTS,
+    _record_and_emit,
+    apply_result_recipe,
+)
 from audible_deals.display import console
+from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.results_cache import (
     clear_last_results,
     clear_seen_asins,
     load_last_results,
+    load_result_session,
+    save_result_session,
 )
-from audible_deals.serialization import deserialize_product, validate_export_path
+from audible_deals.serialization import export_products, validate_export_path
 
-logger = logging.getLogger(__name__)
+_SORTS = [
+    "price",
+    "-price",
+    "discount",
+    "price-per-hour",
+    "value",
+    "rating",
+    "length",
+    "date",
+    "title",
+    "author",
+    "asin",
+    "bestsellers",
+    "relevance",
+]
+
+_CLEARABLE = {
+    key.replace("_", "-"): key
+    for key in RECIPE_DEFAULTS
+    if key not in {"sort", "limit"}
+}
+_CLEARABLE.update(
+    {
+        "max-price-per-hour": "max_pph",
+        "first-in-series": "first_in_series",
+        "exclude-author": "exclude_authors",
+        "exclude-narrator": "exclude_narrators",
+        "exclude-keyword": "exclude_keywords",
+        "exclude-genre": "exclude_genres",
+    }
+)
+
+
+def _option_given(ctx: click.Context, name: str) -> bool:
+    return ctx.get_parameter_source(name) == click.core.ParameterSource.COMMANDLINE
+
+
+def _validate_immutable_options(ctx: click.Context, session, values: dict) -> None:
+    for option, source_key in (
+        ("query", "query"),
+        ("category", "category"),
+        ("genre", "genre"),
+        ("pages", "pages"),
+        ("deep", "deep"),
+        ("subcategories", "subcategories"),
+        ("refresh", "refresh"),
+        ("max_series", "max_series"),
+        ("min_books", "min_books"),
+    ):
+        if not _option_given(ctx, option):
+            continue
+        if values[option] == session.source.get(source_key):
+            continue
+        command = session.source.get("command", f"deals {session.producer}")
+        raise click.UsageError(
+            f"--{option.replace('_', '-')} changes what must be fetched and cannot "
+            f"refine cached results. Rerun: {command}"
+        )
+    if session.producer == "series" and _option_given(ctx, "series"):
+        command = session.source.get("command", "deals series")
+        raise click.UsageError(
+            "--series selects which series must be fetched for this session. "
+            f"Rerun: {command}"
+        )
+
+
+def _clear_recipe_value(key: str):
+    value = RECIPE_DEFAULTS[key]
+    return copy.deepcopy(value)
 
 
 @click.command("last")
+@click.option("--sort", type=click.Choice(_SORTS), default=None, help="Re-sort results")
+@click.option("--max-price", type=click.FloatRange(min=0), default=None)
 @click.option(
-    "--sort",
-    type=click.Choice(
-        [
-            "price",
-            "-price",
-            "discount",
-            "price-per-hour",
-            "value",
-            "rating",
-            "length",
-            "date",
-            "title",
-            "relevance",
-        ]
-    ),
-    default=None,
-    help="Re-sort results",
-)
-@click.option(
-    "--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter"
-)
-@click.option(
-    "--max-price-per-hour",
-    "max_pph",
-    type=click.FloatRange(min=0),
-    default=None,
-    help="Max price per hour (e.g. 0.50)",
+    "--max-price-per-hour", "max_pph", type=click.FloatRange(min=0), default=None
 )
 @click.option(
     "--max-effective-price",
     "max_effective_price",
     type=click.FloatRange(min=0),
     default=None,
-    help="Max effective price — the cheaper of cash price and one credit",
 )
-@click.option("--min-rating", type=float, default=0.0, help="Minimum rating")
-@click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
-@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
+@click.option("--min-rating", type=float, default=None)
+@click.option("--min-ratings", type=click.IntRange(min=0), default=None)
+@click.option("--min-hours", type=click.FloatRange(min=0), default=None)
+@click.option("--narrator", default=None, help="Filter by narrator name (client-side)")
+@click.option("--author", default=None)
+@click.option("--series", default=None)
+@click.option("--publisher", default=None)
+@click.option("--exclude-author", "exclude_authors", multiple=True)
+@click.option("--exclude-narrator", "exclude_narrators", multiple=True)
+@click.option("--language", default=None)
+@click.option("--on-sale/--no-on-sale", default=None)
+@click.option("--min-discount", type=click.IntRange(min=0, max=100), default=None)
+@click.option("--first-in-series/--no-first-in-series", default=None)
+@click.option("--skip-plus/--no-skip-plus", default=None)
+@click.option("--only-plus/--no-only-plus", default=None)
+@click.option("--skip-owned/--no-skip-owned", default=None)
+@click.option("--exclude-seen/--no-exclude-seen", default=None)
+@click.option("--exclude-keyword", "exclude_keywords", multiple=True)
+@click.option("--exclude-genre", "exclude_genres", multiple=True)
+@click.option("--hist-below", type=click.IntRange(min=0, max=100), default=None)
+@click.option("--min-price-drop", type=click.FloatRange(min=0), default=None)
+@click.option("--require-history/--no-require-history", default=None)
+@click.option("--released-after", default=None)
+@click.option("--released-before", default=None)
+@click.option("--limit", "-n", type=click.IntRange(min=0), default=None)
 @click.option(
-    "--narrator",
-    default="",
-    help="Filter by narrator name (substring match, client-side)",
-)
-@click.option("--author", default="", help="Filter by author name (substring match)")
-@click.option("--series", default="", help="Filter by series name (substring match)")
-@click.option(
-    "--publisher", default="", help="Filter by publisher name (substring match)"
-)
-@click.option(
-    "--exclude-author",
-    "exclude_authors",
+    "--clear-filter",
+    "clear_filters",
+    type=click.Choice(sorted(_CLEARABLE)),
     multiple=True,
-    help="Exclude author (substring match, repeatable)",
+    help="Clear one inherited filter (repeatable)",
 )
-@click.option(
-    "--exclude-narrator",
-    "exclude_narrators",
-    multiple=True,
-    help="Exclude narrator (substring match, repeatable)",
-)
-@click.option("--language", default="", help="Language filter")
-@click.option(
-    "--on-sale", is_flag=True, default=False, help="Only show discounted items"
-)
-@click.option(
-    "--min-discount",
-    type=click.IntRange(min=0, max=100),
-    default=0,
-    help="Minimum discount percentage (e.g. 70)",
-)
-@click.option(
-    "--first-in-series",
-    is_flag=True,
-    default=False,
-    help="Show only first book per series",
-)
-@click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(min=0),
-    default=None,
-    help="Show only the top N results",
-)
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Export results to file (.json or .csv)",
-)
-@click.option(
-    "--json",
-    "json_flag",
-    is_flag=True,
-    default=False,
-    help="Output results as JSON to stdout",
-)
-@click.option(
-    "--quiet", "-q", is_flag=True, default=False, help="Suppress table output"
-)
-@click.option(
-    "--show-url",
-    is_flag=True,
-    default=False,
-    help="Show Audible URL for each item in the table",
-)
-@click.option(
-    "--interactive",
-    "-i",
-    is_flag=True,
-    default=False,
-    help="Browse results interactively",
-)
-@click.option(
-    "--clear", is_flag=True, default=False, help="Delete the cached results and exit"
-)
-@click.option(
-    "--clear-seen",
-    is_flag=True,
-    default=False,
-    help="Clear the cumulative seen-ASINs list and exit",
-)
+@click.option("--reset", is_flag=True, help="Restore the producer's original recipe")
+@click.option("--output", "-o", type=click.Path(path_type=Path), default=None)
+@click.option("--json", "json_flag", is_flag=True, default=False)
+@click.option("--quiet", "-q", is_flag=True, default=False)
+@click.option("--show-url", is_flag=True, default=False)
+@click.option("--interactive", "-i", is_flag=True, default=False)
+@click.option("--clear", is_flag=True, default=False)
+@click.option("--clear-seen", is_flag=True, default=False)
 @click.option(
     "--count",
     "count_only",
     is_flag=True,
     default=False,
-    help="Show total cached result count (ignores filters)",
+    help="Show current matches before the display limit",
 )
-@click.option(
-    "--skip-plus/--no-skip-plus",
-    default=False,
-    help="Exclude Audible Plus catalog titles",
-)
-@click.option(
-    "--only-plus/--no-only-plus",
-    default=False,
-    help="Show only Audible Plus catalog titles",
-)
-@click.option(
-    "--exclude-keyword",
-    "exclude_keywords",
-    multiple=True,
-    help="Drop results with title/subtitle matching keyword (repeatable)",
-)
+# Fetch-bound options are accepted only to produce a useful rerun error.
+@click.option("--query", default=None, hidden=True)
+@click.option("--category", default=None, hidden=True)
+@click.option("--genre", default=None, hidden=True)
+@click.option("--pages", type=click.IntRange(min=1), default=None, hidden=True)
+@click.option("--deep/--no-deep", default=None, hidden=True)
+@click.option("--subcategories/--no-subcategories", default=None, hidden=True)
+@click.option("--refresh/--no-refresh", default=None, hidden=True)
+@click.option("--max-series", type=click.IntRange(min=1), default=None, hidden=True)
+@click.option("--min-books", type=click.IntRange(min=1), default=None, hidden=True)
 @click.pass_context
 def last_cmd(
     ctx,
@@ -188,7 +186,20 @@ def last_cmd(
     on_sale,
     min_discount,
     first_in_series,
+    skip_plus,
+    only_plus,
+    skip_owned,
+    exclude_seen,
+    exclude_keywords,
+    exclude_genres,
+    hist_below,
+    min_price_drop,
+    require_history,
+    released_after,
+    released_before,
     limit,
+    clear_filters,
+    reset,
     output,
     json_flag,
     quiet,
@@ -197,101 +208,268 @@ def last_cmd(
     clear,
     clear_seen,
     count_only,
-    skip_plus,
-    only_plus,
-    exclude_keywords,
+    query,
+    category,
+    genre,
+    pages,
+    deep,
+    subcategories,
+    refresh,
+    max_series,
+    min_books,
 ):
-    """Re-display results from the last search or find, with optional re-filtering.
+    """Re-display and cumulatively refine the last result session without API calls.
 
-    No API calls are made — results are read from the local cache.
+    Explicit flags replace the current value. Use --clear-filter NAME to remove
+    one inherited filter, or --reset to restore the original producer recipe.
 
     \b
     Examples:
         deals last
-        deals last --sort discount
-        deals last --max-price 3 --min-rating 4
-        deals last --narrator "R.C. Bray" --min-ratings 100
-        deals last --author "Andy Weir"
-        deals last --clear
-        deals last --clear-seen
+        deals last --max-price 8 --sort discount
+        deals last --clear-filter language
+        deals last --reset --max-price 10
     """
-    logger.info(
-        "last sort=%s max_price=%s clear=%s clear_seen=%s count=%s",
-        sort,
-        max_price,
-        clear,
-        clear_seen,
-        count_only,
-    )
     validate_export_path(output)
-    _check_plus_flags(skip_plus, only_plus)
     did_clear = False
     if clear_seen:
-        if clear_seen_asins():
-            console.print("[green]Seen ASINs list cleared.[/green]")
-        else:
-            console.print("[dim]No seen ASINs to clear.[/dim]")
+        console.print(
+            "[green]Seen ASINs list cleared.[/green]"
+            if clear_seen_asins()
+            else "[dim]No seen ASINs to clear.[/dim]"
+        )
         did_clear = True
     if clear:
-        if clear_last_results():
-            console.print("[green]Last results cache cleared.[/green]")
-        else:
-            console.print("[dim]No cached results to clear.[/dim]")
+        console.print(
+            "[green]Last results cache cleared.[/green]"
+            if clear_last_results()
+            else "[dim]No cached results to clear.[/dim]"
+        )
         did_clear = True
     if did_clear:
         return
-    if count_only:
-        cached_title, data = load_last_results()
-        click.echo(len(data))
-        return
-    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    cached_title, data = load_last_results()
-    products = [p for d in data if (p := deserialize_product(d)) is not None]
 
-    effective_sort = sort or ""  # preserve original cache order when no --sort given
-    cur = _currency(ctx)
-    credit_price = _credit_price(ctx)
-    filtered, filter_breakdown, editions_removed, series_collapsed, _ = _apply_filters(
-        products,
-        max_price=max_price,
-        max_effective_price=max_effective_price,
-        credit_price=credit_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        narrator=narrator,
-        author=author,
-        exclude_authors=exclude_authors,
-        exclude_narrators=exclude_narrators,
-        language=language,
-        on_sale=on_sale,
-        skip_asins=None,
-        exclude_category_ids=set(),
-        first_in_series_only=first_in_series,
-        sort=effective_sort,
-        max_pph=max_pph,
-        min_discount=min_discount,
-        series=series,
-        publisher=publisher,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        exclude_keywords=exclude_keywords,
+    session = load_result_session()
+    any_refinement = (
+        reset
+        or bool(clear_filters)
+        or any(
+            _option_given(ctx, name)
+            for name in (
+                "sort",
+                "max_price",
+                "max_pph",
+                "max_effective_price",
+                "min_rating",
+                "min_ratings",
+                "min_hours",
+                "narrator",
+                "author",
+                "series",
+                "publisher",
+                "exclude_authors",
+                "exclude_narrators",
+                "language",
+                "on_sale",
+                "min_discount",
+                "first_in_series",
+                "skip_plus",
+                "only_plus",
+                "skip_owned",
+                "exclude_seen",
+                "exclude_keywords",
+                "exclude_genres",
+                "hist_below",
+                "min_price_drop",
+                "require_history",
+                "released_after",
+                "released_before",
+                "limit",
+            )
+        )
     )
-    _record_and_emit(
+    if count_only and session.legacy and not any_refinement:
+        _, legacy_results = load_last_results()
+        click.echo(len(legacy_results))
+        return
+    _validate_immutable_options(
+        ctx,
+        session,
+        {
+            "query": query,
+            "category": category,
+            "genre": genre,
+            "pages": pages,
+            "deep": deep,
+            "subcategories": subcategories,
+            "refresh": refresh,
+            "max_series": max_series,
+            "min_books": min_books,
+        },
+    )
+    if session.legacy and not json_flag and not quiet and not count_only:
+        console.print(
+            "[yellow]Legacy limited cache: display, narrowing, and selectors work; "
+            "run one new discovery scan to enable true widening.[/yellow]"
+        )
+
+    recipe = copy.deepcopy(session.baseline_recipe if reset else session.current_recipe)
+    for key, default in RECIPE_DEFAULTS.items():
+        recipe.setdefault(key, copy.deepcopy(default))
+    for name in clear_filters:
+        recipe[_CLEARABLE[name]] = _clear_recipe_value(_CLEARABLE[name])
+
+    overrides = {
+        "sort": sort,
+        "max_price": max_price,
+        "max_pph": max_pph,
+        "max_effective_price": max_effective_price,
+        "min_rating": min_rating,
+        "min_ratings": min_ratings,
+        "min_hours": min_hours,
+        "narrator": narrator,
+        "author": author,
+        "series": series,
+        "publisher": publisher,
+        "language": language,
+        "on_sale": on_sale,
+        "min_discount": min_discount,
+        "first_in_series": first_in_series,
+        "skip_plus": skip_plus,
+        "only_plus": only_plus,
+        "skip_owned": skip_owned,
+        "exclude_seen": exclude_seen,
+        "hist_below": hist_below,
+        "min_price_drop": min_price_drop,
+        "require_history": require_history,
+        "released_after": released_after,
+        "released_before": released_before,
+        "limit": limit,
+    }
+    for key, value in overrides.items():
+        if _option_given(ctx, key):
+            recipe[key] = value
+    for key, value in (
+        ("exclude_authors", exclude_authors),
+        ("exclude_narrators", exclude_narrators),
+        ("exclude_keywords", exclude_keywords),
+        ("exclude_genres", exclude_genres),
+    ):
+        if _option_given(ctx, key):
+            recipe[key] = list(value)
+
+    if _option_given(ctx, "exclude_genres") and list(exclude_genres) != list(
+        session.baseline_recipe.get("exclude_genres", [])
+    ):
+        raise click.UsageError(
+            "Changing --exclude-genre requires category resolution. Rerun: "
+            + session.source.get("command", f"deals {session.producer}")
+        )
+
+    _check_plus_flags(bool(recipe["skip_plus"]), bool(recipe["only_plus"]))
+    if (
+        recipe.get("require_history")
+        and recipe.get("hist_below") is None
+        and not recipe.get("min_price_drop")
+    ):
+        raise click.UsageError(
+            "--require-history requires --hist-below or --min-price-drop"
+        )
+
+    def normalized_date(option: str) -> str:
+        value = str(recipe.get(option) or "")
+        if not value:
+            return value
+        try:
+            return datetime.date.fromisoformat(value).isoformat()
+        except ValueError:
+            raise click.UsageError(
+                f"--{option.replace('_', '-')}: invalid date {value!r} "
+                "(expected YYYY-MM-DD)"
+            )
+
+    after = normalized_date("released_after")
+    before = normalized_date("released_before")
+    recipe["released_after"] = after
+    recipe["released_before"] = before
+    if after and before and after > before:
+        raise click.UsageError(
+            "--released-after cannot be later than --released-before"
+        )
+    if recipe.get("skip_owned") and not session.constraints.get(
+        "owned_snapshot_available",
+        bool(session.constraints.get("owned_asins")),
+    ):
+        raise click.UsageError(
+            "This session has no cached ownership snapshot. Rerun: "
+            + session.source.get("command", f"deals {session.producer}")
+        )
+    if recipe.get("exclude_seen") and not session.constraints.get(
+        "seen_snapshot_available",
+        "seen_asins" in session.constraints,
+    ):
+        raise click.UsageError(
+            "This session has no cached seen-ASIN snapshot. Rerun: "
+            + session.source.get("command", f"deals {session.producer}")
+        )
+    if recipe.get("exclude_genres") and not session.constraints.get(
+        "category_snapshot_available",
+        bool(session.constraints.get("excluded_category_ids")),
+    ):
+        raise click.UsageError(
+            "This session has no cached category-exclusion snapshot. Rerun: "
+            + session.source.get("command", f"deals {session.producer}")
+        )
+
+    credit_price = (
+        session.constraints["credit_price"]
+        if "credit_price" in session.constraints
+        else _credit_price(ctx)
+    )
+    (
         filtered,
-        filter_breakdown,
+        breakdown,
         editions_removed,
         series_collapsed,
-        title=cached_title,
-        limit=limit,
-        output=output,
+        histories,
+        match_context,
+    ) = apply_result_recipe(session, recipe, credit_price=credit_price)
+    current_count = len(filtered)
+    effective_limit = int(recipe.get("limit") or 0)
+    visible = filtered[:effective_limit] if effective_limit > 0 else filtered
+
+    if output:
+        export_products(visible, output)
+        console.print(f"[green]Exported {len(visible)} items to {output}[/green]")
+
+    session.current_recipe = copy.deepcopy(recipe)
+    session.constraints.setdefault("credit_price", credit_price)
+    if not count_only or output:
+        session.visible_asins = [product.asin for product in visible]
+    save_result_session(session)
+
+    if count_only:
+        click.echo(current_count)
+        return
+
+    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
+    _record_and_emit(
+        filtered,
+        breakdown,
+        editions_removed,
+        series_collapsed,
+        title=session.title,
+        limit=effective_limit,
+        output=None,
         json_flag=json_flag,
         quiet=quiet,
-        max_price=max_price,
-        currency=cur,
+        max_price=recipe.get("max_price"),
+        currency=LOCALE_CURRENCY.get(session.locale, _currency(ctx)),
         interactive=interactive,
         show_url=show_url,
         write_cache=False,
         record_prices=False,
+        histories=histories,
         credit_price=credit_price,
+        match_context=match_context,
     )

@@ -362,14 +362,32 @@ def run_notify(
         console.print("[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]")
         return None
 
-    dc = get_client(locale)
-    hits, extras, hit_asins = collect_target_hits(
-        dc,
-        asin_items,
-        author_items,
-        record_products,
-        credit_price=credit_price,
-    )
+    hits: list[dict] = []
+    extras: dict[str, dict] = {}
+    hit_asins: set[str] = set()
+
+    def collect(items: list[dict], authors: list[dict], item_locale: str) -> None:
+        new_hits, new_extras, _ = collect_target_hits(
+            get_client(item_locale),
+            items,
+            authors,
+            record_products,
+            credit_price=credit_price,
+        )
+        for hit in new_hits:
+            if hit["asin"] not in hit_asins:
+                hits.append(hit)
+                hit_asins.add(hit["asin"])
+                if hit["asin"] in new_extras:
+                    extras[hit["asin"]] = new_extras[hit["asin"]]
+
+    by_locale: dict[str, list[dict]] = {}
+    for item in asin_items:
+        by_locale.setdefault(item.get("locale", locale), []).append(item)
+    for item_locale, locale_items in by_locale.items():
+        collect(locale_items, [], item_locale)
+    if author_items:
+        collect([], author_items, locale)
     had_hits = bool(hits)
 
     suppressed = 0

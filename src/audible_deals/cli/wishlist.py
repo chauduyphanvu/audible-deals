@@ -14,10 +14,10 @@ from pathlib import Path
 import click
 
 from audible_deals.cli.helpers import (
-    _collect_asins,
     _credit_price,
     _currency,
     _get_client,
+    _resolve_cli_selectors,
     _safe_record_prices,
 )
 from audible_deals.display import (
@@ -28,7 +28,6 @@ from audible_deals.display import (
 )
 from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
-from audible_deals.validation import validate_asin
 from audible_deals.wishlist import (
     create_wishlist_backup,
     inspect_wishlist,
@@ -88,7 +87,7 @@ def _add_author_watch(ctx, author: str, max_price: float) -> None:
 
 
 @wishlist.command("add")
-@click.argument("asins", nargs=-1, required=False)
+@click.argument("asins", nargs=-1, required=False, metavar="SELECTOR...")
 @click.option(
     "--max-price",
     type=click.FloatRange(min=0),
@@ -101,7 +100,7 @@ def _add_author_watch(ctx, author: str, max_price: float) -> None:
     "last_refs",
     type=str,
     multiple=True,
-    help="Use result #N from last search/find (repeatable)",
+    help="Use result #N from the last result session (repeatable)",
 )
 @click.option(
     "--author",
@@ -115,6 +114,7 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
     \b
     Example:
         deals wishlist add B00R6S1RCY B00I2VWW5U --max-price 5
+        deals wishlist add @1-3,5 --max-price 5
         deals wishlist add --last 1 --last 2 --max-price 5
         deals wishlist add --author "Brandon Sanderson" --max-price 5
     """
@@ -128,12 +128,10 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
         _add_author_watch(ctx, author, max_price)
         return
 
-    all_asins = _collect_asins(asins, last_refs)
+    resolved, locale = _resolve_cli_selectors(ctx, asins, last_refs)
+    all_asins = [item.asin for item in resolved]
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or --author or use --last N.")
-
-    for asin in all_asins:
-        validate_asin(asin)
 
     with wishlist_lock():
         items = load_wishlist_for_mutation()
@@ -152,7 +150,7 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
 
     fetched = []
     if pending_asins:
-        dc = _get_client(ctx.obj["locale"])
+        dc = _get_client(locale)
         with dc:
             for asin in pending_asins:
                 try:
@@ -170,7 +168,7 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
                 if p.asin in existing:
                     console.print(f"[dim]{p.asin} already on wishlist[/dim]")
                     continue
-                items.append(wishlist_entry(p, max_price))
+                items.append(wishlist_entry(p, max_price, locale=locale))
                 existing.add(p.asin)
                 added += 1
                 console.print(f"[green]+[/green] {p.title} ({p.asin})")
@@ -187,26 +185,26 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
 
 
 @wishlist.command("remove")
-@click.argument("asins", nargs=-1, required=False)
+@click.argument("asins", nargs=-1, required=False, metavar="SELECTOR...")
 @click.option(
     "--last",
     "last_refs",
     type=str,
     multiple=True,
-    help="Use result #N from last search/find (repeatable)",
+    help="Use result #N from the last result session (repeatable)",
 )
 @click.option(
     "--author",
     default=None,
     help="Remove an author watch by name (case-insensitive)",
 )
-def wishlist_remove(asins, last_refs, author):
+@click.pass_context
+def wishlist_remove(ctx, asins, last_refs, author):
     """Remove ASINs or an author watch from your wishlist."""
-    all_asins = _collect_asins(asins, last_refs)
+    resolved, _ = _resolve_cli_selectors(ctx, asins, last_refs)
+    all_asins = [item.asin for item in resolved]
     if not all_asins and not author:
         raise click.UsageError("Provide at least one ASIN, --author, or use --last N.")
-    for asin in all_asins:
-        validate_asin(asin)
     with wishlist_lock():
         items = load_wishlist_for_mutation()
         inspection = inspect_wishlist(items)
@@ -240,13 +238,13 @@ def wishlist_remove(asins, last_refs, author):
 
 
 @wishlist.command("update")
-@click.argument("asins", nargs=-1, required=False)
+@click.argument("asins", nargs=-1, required=False, metavar="SELECTOR...")
 @click.option(
     "--last",
     "last_refs",
     type=str,
     multiple=True,
-    help="Use result #N from last search/find (repeatable)",
+    help="Use result #N from the last result session (repeatable)",
 )
 @click.option(
     "--max-price",
@@ -272,7 +270,8 @@ def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
         deals wishlist update B00R6S1RCY --clear-target
         deals wishlist update --last 1 --max-price 5
     """
-    all_asins = _collect_asins(asins, last_refs)
+    resolved, _ = _resolve_cli_selectors(ctx, asins, last_refs)
+    all_asins = [item.asin for item in resolved]
     if not all_asins:
         raise click.UsageError("Provide at least one ASIN or use --last N.")
 
@@ -280,9 +279,6 @@ def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
         raise click.UsageError("Use either --max-price or --clear-target, not both.")
     if max_price is None and not clear_target:
         raise click.UsageError("Provide --max-price or --clear-target.")
-
-    for asin in all_asins:
-        validate_asin(asin)
 
     cur = _currency(ctx)
 
@@ -663,13 +659,21 @@ def _watch_once(
     if not asin_items:
         return 0
 
-    dc = _get_client(ctx.obj["locale"])
     targets: dict[str, float | None] = {
         item["asin"]: item.get("max_price") for item in asin_items
     }
+    by_locale: dict[str, list[dict]] = {}
+    for item in asin_items:
+        item_locale = item.get("locale", ctx.obj["locale"])
+        by_locale.setdefault(item_locale, []).append(item)
 
-    with dc:
-        products = dc.get_products_batch([item["asin"] for item in asin_items])
+    products = []
+    for item_locale, locale_items in by_locale.items():
+        dc = _get_client(item_locale)
+        with dc:
+            products.extend(
+                dc.get_products_batch([item["asin"] for item in locale_items])
+            )
 
     _safe_record_prices(products)
     found_asins = {p.asin for p in products}

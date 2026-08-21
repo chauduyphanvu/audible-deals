@@ -6,15 +6,15 @@ Usage:
     deals categories [--parent ID] List categories
     deals search QUERY [options]   Search catalog with filters
     deals find [options]           Browse & filter deals (main command)
-    deals detail ASIN              Show detailed product info
-    deals open ASIN                Open Audible page in browser
-    deals compare ASIN ASIN ...    Side-by-side comparison
+    deals detail SELECTOR          Show detailed product info
+    deals open SELECTOR            Open Audible page in browser
+    deals compare SELECTOR ...     Side-by-side comparison
     deals wishlist add/remove/list/sync/repair Manage your watchlist
     deals watch                    Check wishlist for price drops
     deals notify [--webhook URL]   Send notifications for deals at target
     deals profile save/list/delete Manage saved search profiles
     deals monitor add/list/show/remove Manage saved-search monitors
-    deals history ASIN             View price history with sparkline
+    deals history SELECTOR         View price history with sparkline
     deals recap [--days N]         Recap of recent price changes
     deals completions SHELL        Generate shell completions
 """
@@ -165,7 +165,8 @@ def cli(ctx, locale, verbose):
     ctx.ensure_object(dict)
     cfg = load_config()
     ctx.obj["config"] = cfg
-    if ctx.get_parameter_source("locale") != _CL:
+    locale_explicit = ctx.get_parameter_source("locale") == _CL
+    if not locale_explicit:
         cfg_locale = cfg.get("locale")
         if cfg_locale:
             locale = cfg_locale
@@ -175,6 +176,7 @@ def cli(ctx, locale, verbose):
             param_hint="--locale",
         )
     ctx.obj["locale"] = locale
+    ctx.obj["locale_explicit"] = locale_explicit
     if ctx.invoked_subcommand is None:
         _print_dashboard(locale)
         return

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json as json_mod
 import logging
+import shlex
 import time
 from pathlib import Path
 
@@ -17,7 +18,7 @@ from audible_deals.cli.helpers import (
     _resolve_output_quiet,
     _safe_record_prices,
 )
-from audible_deals.cli.pipeline import _apply_filters, _record_and_emit
+from audible_deals.cli.pipeline import _apply_filters, _record_and_emit, result_recipe
 from audible_deals.client import DealsClient
 from audible_deals.display import console, create_scan_progress, display_series_gaps
 from audible_deals.parsing import parse_series_position
@@ -438,4 +439,36 @@ def series(
         currency=cur,
         interactive=interactive,
         credit_price=_credit_price(ctx),
+        candidates=all_candidates,
+        producer="series",
+        locale=ctx.obj["locale"],
+        recipe=result_recipe(
+            max_price=max_price,
+            min_rating=min_rating,
+            min_ratings=min_ratings,
+            min_hours=min_hours,
+            on_sale=on_sale,
+            sort=sort,
+            limit=limit,
+        ),
+        source={
+            "command": shlex.join(
+                [
+                    "deals",
+                    "series",
+                    "--min-books",
+                    str(min_books),
+                    "--max-series",
+                    str(max_series),
+                    "--pages",
+                    str(pages),
+                    *(["--series", series_filter] if series_filter else []),
+                ]
+            ),
+            "series_filter": series_filter,
+            "min_books": min_books,
+            "max_series": max_series,
+            "pages": pages,
+        },
+        constraints={"drop_zero_length": False},
     )

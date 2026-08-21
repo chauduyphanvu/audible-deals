@@ -102,22 +102,86 @@ def _price_cell(
     return p_str
 
 
-def _title_cell(p: Product) -> str:
-    """Title cell: title + plus tag + series tag, with author/ASIN meta line."""
-    title_line = p.title
-    if p.in_plus_catalog:
-        title_line += " [magenta][+][/magenta]"
+def _product_identity(p: Product) -> str:
+    identity = p.asin
     if p.series_name:
-        series_tag = p.series_name
+        identity += f" · {p.series_name}"
         if p.series_position:
-            series_tag += f" #{p.series_position}"
-        title_line += f" [dim italic]({series_tag})[/dim italic]"
-    meta = p.authors_str
-    if meta:
-        meta += f"  [cyan]{p.asin}[/cyan]"
-    else:
-        meta = f"[cyan]{p.asin}[/cyan]"
-    return title_line + f"\n[dim]{meta}[/dim]"
+            identity += f" #{p.series_position}"
+    return identity
+
+
+def _inline_signals(
+    p: Product,
+    *,
+    currency: str,
+    credit_price: float | None,
+    hist_context: dict[str, int] | None,
+    match_context: dict[str, str] | None,
+    include_length: bool,
+    include_buy: bool,
+    include_history: bool,
+    include_match: bool,
+) -> list[str]:
+    lines: list[str] = []
+    if include_length:
+        lines.append(
+            f"[dim]Length[/dim] {p.hours if p.hours else '-'}h · "
+            f"[dim]Value[/dim] {_pph_str(p, currency)}/hr"
+        )
+    lines.append(f"[dim]ID[/dim] [cyan]{_product_identity(p)}[/cyan]")
+    signals: list[str] = []
+    if include_buy and credit_price is not None:
+        signals.append(f"[dim]Buy[/dim] {_buy_cell(p, credit_price)}")
+    if include_history and hist_context is not None:
+        signals.append(f"[dim]vs hist[/dim] {_hist_cell(hist_context.get(p.asin))}")
+    if include_match and match_context is not None and match_context.get(p.asin):
+        signals.append(f"[dim]Match[/dim] [cyan]{match_context[p.asin]}[/cyan]")
+    if signals:
+        lines.append(" · ".join(signals))
+    return lines
+
+
+def _display_product_cards(
+    products: list[Product],
+    *,
+    title: str,
+    max_price: float | None,
+    atl_asins: set[str] | None,
+    hist_context: dict[str, int] | None,
+    credit_price: float | None,
+    match_context: dict[str, str] | None,
+) -> None:
+    console.print(f"[bold]{title}[/bold]")
+    for index, product in enumerate(products, 1):
+        plus = " [magenta][+][/magenta]" if product.in_plus_catalog else ""
+        console.print(
+            f"\n[bold cyan]@{index}[/bold cyan]  [bold]{product.full_title}[/bold]{plus}"
+        )
+        if product.authors_str:
+            console.print(f"[dim]By[/dim] {product.authors_str}")
+        console.print(
+            f"[dim]Price[/dim] {_price_cell(product, product.currency, max_price, atl_asins)}"
+        )
+        console.print(
+            f"[dim]Length[/dim] {product.hours if product.hours else '-'}h · "
+            f"[dim]Value[/dim] {_pph_str(product, product.currency)}/hr"
+        )
+        console.print(
+            f"[dim]Rating[/dim] {rating_str(product.rating, product.num_ratings)}"
+        )
+        for line in _inline_signals(
+            product,
+            currency=product.currency,
+            credit_price=credit_price,
+            hist_context=hist_context,
+            match_context=match_context,
+            include_length=False,
+            include_buy=True,
+            include_history=True,
+            include_match=True,
+        ):
+            console.print(line)
 
 
 def _hist_cell(pct: int | None) -> str:
@@ -143,48 +207,101 @@ def display_products(
     credit_price: float | None = None,
     match_context: dict[str, str] | None = None,
 ) -> None:
-    """Display products in a compact rich table."""
+    """Display products as a wide table, compact table, or narrow cards."""
     if not products:
         console.print("[dim]No products found.[/dim]")
         return
 
     term_width = console.width or 80
-    show_url_column = show_url and term_width >= 180
+    if term_width < 80:
+        _display_product_cards(
+            products,
+            title=title,
+            max_price=max_price,
+            atl_asins=atl_asins,
+            hist_context=hist_context,
+            credit_price=credit_price,
+            match_context=match_context,
+        )
+        if show_url:
+            console.print("\n[bold]URLs[/bold]")
+            for index, product in enumerate(products, 1):
+                console.print(
+                    f"  @{index}. {product.url}", soft_wrap=True, overflow="fold"
+                )
+        return
+
     url_width = max(len(product.url) for product in products)
-    # On narrow terminals a Match column would be collapsed away by Rich;
-    # fold the reason into the title cell instead.
-    match_column = match_context is not None and term_width >= 100
-    match_inline = match_context is not None and not match_column
     show_hist = hist_context is not None and any(
         p.asin in hist_context for p in products
     )
+    price_width = max(
+        10,
+        max(
+            len(price_str(product.price, product.currency))
+            + (
+                len(price_str(product.list_price, product.currency)) + 6
+                if product.discount_pct and product.list_price
+                else 0
+            )
+            for product in products
+        ),
+    )
+    rating_width = max(
+        10,
+        max(
+            len(rating_str(product.rating, product.num_ratings)) for product in products
+        ),
+    )
+    ref_width = max(4, len(f"@{len(products)}"))
+    hours_width = max(
+        3, max(len(str(product.hours)) if product.hours else 1 for product in products)
+    )
+    pph_width = max(
+        7, max(len(_pph_str(product, product.currency)) for product in products)
+    )
+    hist_width = max(
+        7,
+        max(
+            (
+                len(f"{hist_context.get(product.asin):+d}%")
+                if hist_context and hist_context.get(product.asin) is not None
+                else 1
+            )
+            for product in products
+        ),
+    )
+    wide = term_width >= 120
+    show_buy_column = False
+    show_hist_column = False
+    show_match_column = False
+    show_url_column = False
     match_width = 0
-    if match_column:
-        match_width = min(
-            28,
-            max(12, *(len(reason) for reason in match_context.values())),
+    if wide:
+        base_width = (
+            ref_width + 24 + price_width + hours_width + pph_width + rating_width + 19
         )
-
-    title_max = max(30, min(term_width - 55, 80))
-    if show_url_column:
-        fixed_widths = [5, 12, 7, 9, 10, url_width]
-        column_count = 7
-        if credit_price is not None:
-            fixed_widths.append(7)
-            column_count += 1
-        if show_hist:
-            fixed_widths.append(8)
-            column_count += 1
-        if match_column:
-            fixed_widths.append(match_width)
-            column_count += 1
-        table_overhead = 3 * column_count + 1
-        title_max = max(
-            1,
-            min(title_max, term_width - sum(fixed_widths) - table_overhead),
-        )
-    elif match_column:
-        title_max = max(24, title_max - 18)
+        remaining = term_width - base_width
+        if credit_price is not None and remaining >= 10:
+            show_buy_column = True
+            remaining -= 10
+        if show_hist and remaining >= hist_width + 3:
+            show_hist_column = True
+            remaining -= hist_width + 3
+        if match_context is not None:
+            desired_match = min(
+                24, max(12, *(len(reason) for reason in match_context.values()))
+            )
+            if remaining >= desired_match + 3:
+                show_match_column = True
+                match_width = desired_match
+                remaining -= desired_match + 3
+        if show_url and remaining >= url_width + 3:
+            show_url_column = True
+            remaining -= url_width + 3
+        title_max = max(24, min(80, 24 + max(0, remaining)))
+    else:
+        title_max = max(24, term_width - price_width - rating_width - 17)
 
     table = Table(
         title=title,
@@ -193,17 +310,22 @@ def display_products(
         title_style="bold",
         expand=False,
     )
-    table.add_column("#", style="dim", width=5, justify="right")
-    table.add_column("Title / Author", no_wrap=True, max_width=title_max)
-    table.add_column("Price", justify="right", width=12)
-    table.add_column("Hrs", justify="right", width=7)
-    table.add_column(f"{currency}/hr", justify="right", width=9)
-    table.add_column("Rating", justify="right", width=10)
-    if credit_price is not None:
+    table.add_column(
+        "Ref", style="dim cyan", width=ref_width, justify="right", no_wrap=True
+    )
+    table.add_column("Title / Author", max_width=title_max, overflow="ellipsis")
+    table.add_column("Price", justify="right", width=price_width, no_wrap=True)
+    if wide:
+        table.add_column("Hrs", justify="right", width=hours_width, no_wrap=True)
+        table.add_column(
+            f"{currency}/hr", justify="right", width=pph_width, no_wrap=True
+        )
+    table.add_column("Rating", justify="right", width=rating_width, no_wrap=True)
+    if show_buy_column:
         table.add_column("Buy", width=7)
-    if show_hist:
-        table.add_column("vs hist", justify="right", width=8)
-    if match_column:
+    if show_hist_column:
+        table.add_column("vs hist", justify="right", width=hist_width, no_wrap=True)
+    if show_match_column:
         table.add_column("Match", width=match_width, style="cyan")
     if show_url_column:
         table.add_column(
@@ -218,23 +340,58 @@ def display_products(
 
     for i, p in enumerate(products, 1):
         cur = p.currency
-        title_cell = _title_cell(p)
-        if match_inline and (why := match_context.get(p.asin)):
-            title_cell += f"\n[cyan]{why}[/cyan]"
+        plus = " [magenta][+][/magenta]" if p.in_plus_catalog else ""
+        title_cell = f"{p.title}{plus}"
+        if p.authors_str:
+            title_cell += f"\n[dim]{p.authors_str}[/dim]"
+        if not wide:
+            title_cell += "\n" + "\n".join(
+                _inline_signals(
+                    p,
+                    currency=cur,
+                    credit_price=credit_price,
+                    hist_context=hist_context,
+                    match_context=match_context,
+                    include_length=True,
+                    include_buy=True,
+                    include_history=True,
+                    include_match=True,
+                )
+            )
+        else:
+            title_cell += f"\n[dim cyan]{_product_identity(p)}[/dim cyan]"
+            folded = _inline_signals(
+                p,
+                currency=cur,
+                credit_price=credit_price,
+                hist_context=hist_context,
+                match_context=match_context,
+                include_length=False,
+                include_buy=not show_buy_column,
+                include_history=not show_hist_column,
+                include_match=not show_match_column,
+            )[1:]
+            if folded:
+                title_cell += "\n" + "\n".join(folded)
         row = [
-            str(i),
+            f"@{i}",
             title_cell,
             _price_cell(p, cur, max_price, atl_asins),
-            str(p.hours) if p.hours else "-",
-            _pph_str(p, cur),
-            rating_str(p.rating, p.num_ratings),
         ]
-        if credit_price is not None:
+        if wide:
+            row.extend(
+                [
+                    str(p.hours) if p.hours else "-",
+                    _pph_str(p, cur),
+                ]
+            )
+        row.append(rating_str(p.rating, p.num_ratings))
+        if show_buy_column:
             row.append(_buy_cell(p, credit_price))
-        if show_hist:
+        if show_hist_column:
             pct = hist_context.get(p.asin) if hist_context else None
             row.append(_hist_cell(pct))
-        if match_column:
+        if show_match_column:
             row.append(match_context.get(p.asin, ""))
         if show_url_column:
             row.append(p.url)
@@ -244,7 +401,7 @@ def display_products(
     if show_url and not show_url_column:
         console.print("\n[bold]URLs[/bold]")
         for i, product in enumerate(products, 1):
-            console.print(f"  {i}. {product.url}", soft_wrap=True, overflow="ignore")
+            console.print(f"  @{i}. {product.url}", soft_wrap=True, overflow="fold")
 
 
 def display_categories(
@@ -655,8 +812,9 @@ def display_watch_table(
     displayed_products: list[Product] = []
     for p in products:
         target = targets.get(p.asin)
-        target_str = price_str(target, currency)
-        p_str = f"{currency}{p.price:.2f}" if p.price is not None else "-"
+        product_currency = p.currency or currency
+        target_str = price_str(target, product_currency)
+        p_str = f"{product_currency}{p.price:.2f}" if p.price is not None else "-"
         is_buy = target is not None and p.price is not None and p.price <= target
         if is_buy:
             status = "[bold green]BUY[/bold green]"

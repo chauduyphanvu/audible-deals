@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import logging
+import shlex
 import unicodedata
 
 import click
@@ -15,7 +16,7 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_categories,
     _resolve_output_quiet,
-    _resolve_skip_asins,
+    _resolve_skip_snapshots,
 )
 from audible_deals.cli.options import (
     _check_plus_flags,
@@ -29,6 +30,7 @@ from audible_deals.cli.pipeline import (
     _fetch_with_progress,
     _print_dry_run_summary,
     _record_and_emit,
+    settings_result_recipe,
 )
 from audible_deals.constants import (
     CLIENT_SORT_OPTIONS,
@@ -528,7 +530,9 @@ def search(
             dc, effective_genre, category, s.exclude_genre
         )
 
-        skip_asins = _resolve_skip_asins(dc, s.skip_owned, exclude_seen)
+        skip_asins, owned_snapshot, seen_snapshot = _resolve_skip_snapshots(
+            dc, s.skip_owned, exclude_seen
+        )
 
         all_products = _fetch_multi_query(
             dc,
@@ -572,6 +576,47 @@ def search(
         show_url=show_url,
         histories=histories,
         credit_price=credit_price,
+        candidates=all_products,
+        producer="search",
+        locale=ctx.obj["locale"],
+        recipe=settings_result_recipe(
+            s,
+            max_effective_price=max_effective_price,
+            hist_below=hist_below,
+            min_price_drop=min_price_drop,
+            require_history=require_history,
+            released_after=released_after,
+            released_before=released_before,
+            exclude_seen=exclude_seen,
+            exclude_genres=s.exclude_genre,
+        ),
+        source={
+            "command": shlex.join(
+                [
+                    "deals",
+                    "search",
+                    query,
+                    *(["--category", category] if category else []),
+                    "--pages",
+                    str(s.pages),
+                    *(["--deep"] if s.deep else []),
+                ]
+            ),
+            "query": query,
+            "category": category,
+            "genre": effective_genre,
+            "pages": s.pages,
+            "deep": s.deep,
+        },
+        constraints={
+            "drop_zero_length": True,
+            "owned_asins": sorted(owned_snapshot),
+            "owned_snapshot_available": s.skip_owned,
+            "seen_asins": sorted(seen_snapshot),
+            "seen_snapshot_available": True,
+            "excluded_category_ids": sorted(exclude_category_ids),
+            "category_snapshot_available": bool(s.exclude_genre),
+        },
     )
     if not s.author and not json_flag and not quiet:
         for author_query in _matching_author_queries(queries, all_products):
@@ -786,7 +831,9 @@ def find(
             children = dc.get_categories(root=category)
             child_ids = [c["id"] for c in children if c.get("id")]
 
-        skip_asins = _resolve_skip_asins(dc, s.skip_owned, exclude_seen)
+        skip_asins, owned_snapshot, seen_snapshot = _resolve_skip_snapshots(
+            dc, s.skip_owned, exclude_seen
+        )
 
         desc_parts = []
         if s.keywords:
@@ -855,4 +902,47 @@ def find(
         show_url=show_url,
         histories=histories,
         credit_price=credit_price,
+        candidates=all_products,
+        producer="find",
+        locale=ctx.obj["locale"],
+        recipe=settings_result_recipe(
+            s,
+            max_effective_price=max_effective_price,
+            hist_below=hist_below,
+            min_price_drop=min_price_drop,
+            require_history=require_history,
+            released_after=released_after,
+            released_before=released_before,
+            exclude_seen=exclude_seen,
+            exclude_genres=s.exclude_genre,
+        ),
+        source={
+            "command": shlex.join(
+                [
+                    "deals",
+                    "find",
+                    *(["--category", category] if category else []),
+                    *(["--keywords", s.keywords] if s.keywords else []),
+                    "--pages",
+                    str(s.pages),
+                    *(["--deep"] if s.deep else []),
+                    *(["--subcategories"] if subcategories else []),
+                ]
+            ),
+            "query": s.keywords,
+            "category": category,
+            "genre": effective_genre,
+            "pages": s.pages,
+            "deep": s.deep,
+            "subcategories": subcategories,
+        },
+        constraints={
+            "drop_zero_length": True,
+            "owned_asins": sorted(owned_snapshot),
+            "owned_snapshot_available": s.skip_owned,
+            "seen_asins": sorted(seen_snapshot),
+            "seen_snapshot_available": True,
+            "excluded_category_ids": sorted(exclude_category_ids),
+            "category_snapshot_available": bool(s.exclude_genre),
+        },
     )

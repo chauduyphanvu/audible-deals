@@ -37,7 +37,7 @@ deals wishlist list -o wishlist.csv
 
 `wishlist sync` skips existing local entries, so running it repeatedly is safe. Add `--update` with `--max-price` to change existing targets in bulk.
 
-ASIN commands also accept positions from the last result set through `--last`. Remove an author watch with `deals wishlist remove --author "NAME"`. To remove owned items after previewing them, rerun `deals wishlist purge --owned` and confirm the prompt.
+ASIN commands also accept `@N` positions, ranges such as `@1-3,5`, Audible product URLs, and the retained `--last` compatibility option. Remove an author watch with `deals wishlist remove --author "NAME"`. To remove owned items after previewing them, rerun `deals wishlist purge --owned` and confirm the prompt.
 
 `wishlist repair` refuses malformed JSON and non-list files. When confirmed, it keeps valid entries in order and saves an owner-only backup beside `wishlist.json` before removing invalid entries. Use `--yes` to skip confirmation in trusted automation.
 

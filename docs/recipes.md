@@ -103,11 +103,13 @@ deals last --clear-seen
 
 ```bash
 deals find --genre mystery --max-price 5
-deals last --sort discount
+deals last --max-price 8 --sort discount
 deals last --min-rating 4.5 -n 5
+deals last --clear-filter min-rating
+deals last --reset
 deals last -o mystery-deals.csv
-deals detail --last 1
-deals compare --last 1 --last 3
+deals detail @1
+deals compare @1 @3
 ```
 
 ## Hunt for historically low prices

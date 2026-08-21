@@ -13,30 +13,15 @@ from audible_deals.config_store import load_profiles
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.display import console
 from audible_deals.price_history import record_prices
-from audible_deals.results_cache import merge_seen_asins, resolve_last_references
+from audible_deals.results_cache import (
+    load_seen_asins,
+    merge_seen_asins,
+    resolve_selectors,
+)
 
 logger = logging.getLogger(__name__)
 
 _CL = click.core.ParameterSource.COMMANDLINE
-
-
-def _collect_asins(asins: tuple[str, ...], last_refs: tuple[str, ...]) -> list[str]:
-    """Combine positional ASINs with resolved --last references."""
-    all_asins = list(asins)
-    if last_refs:
-        for ref_asin, desc in resolve_last_references(last_refs):
-            console.print(f"[dim]{desc}[/dim]")
-            all_asins.append(ref_asin)
-    return all_asins
-
-
-def _resolve_single_last_ref(last_ref: str) -> tuple[str, str]:
-    resolved = resolve_last_references((last_ref,))
-    if len(resolved) != 1:
-        raise click.ClickException(
-            f"--last {last_ref!r} expanded to {len(resolved)} results; this command accepts a single position."
-        )
-    return resolved[0]
 
 
 def _get_client(locale: str) -> DealsClient:
@@ -59,6 +44,39 @@ def _resolve_skip_asins(
     """Build the set of ASINs to exclude from owned library and seen history."""
     skip_asins = dc.get_library_asins() if skip_owned else None
     return merge_seen_asins(skip_asins, exclude_seen)
+
+
+def _resolve_skip_snapshots(
+    dc: DealsClient, skip_owned: bool, exclude_seen: bool
+) -> tuple[set[str] | None, set[str], set[str]]:
+    """Resolve exclusions and retain the components needed for cached clearing."""
+    owned = dc.get_library_asins() if skip_owned else set()
+    seen = load_seen_asins()
+    combined = owned | (seen if exclude_seen else set())
+    return (combined or None), owned, seen
+
+
+def _resolve_cli_selectors(
+    ctx: click.Context,
+    selectors: tuple[str, ...],
+    last_refs: tuple[str | int, ...] = (),
+    *,
+    single: bool = False,
+    announce: bool = True,
+):
+    """Resolve CLI product selectors and apply marketplace inference."""
+    explicit = ctx.obj["locale"] if ctx.obj.get("locale_explicit") else None
+    resolved, inferred_locale = resolve_selectors(
+        selectors,
+        last_refs=last_refs,
+        single=single,
+        explicit_locale=explicit,
+    )
+    locale = inferred_locale or ctx.obj["locale"]
+    for item in resolved:
+        if announce and item.description:
+            console.print(f"[dim]{item.description}[/dim]")
+    return resolved, locale
 
 
 def _safe_record_prices(products: list[Product]) -> None:
