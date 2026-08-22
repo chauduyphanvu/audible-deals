@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 from pathlib import Path
+import datetime
+import math
 
 import click
 
@@ -13,9 +15,15 @@ from audible_deals.presentation.result_output import (
 )
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.presentation.terminal import console
+from audible_deals.result_publication import (
+    mark_refresh_eligible_safely,
+    record_prices_safely,
+)
 from audible_deals.results_cache import (
+    clear_dismissed_asins,
     clear_last_results,
     clear_seen_asins,
+    load_dismissed_asins,
     load_result_session,
     save_result_session,
 )
@@ -119,6 +127,7 @@ def _option_given(ctx: click.Context, name: str) -> bool:
 @click.option("--interactive", "-i", is_flag=True, default=False)
 @click.option("--clear", is_flag=True, default=False)
 @click.option("--clear-seen", is_flag=True, default=False)
+@click.option("--clear-dismissed", is_flag=True, default=False)
 @click.option(
     "--count",
     "count_only",
@@ -177,6 +186,7 @@ def last_cmd(
     interactive,
     clear,
     clear_seen,
+    clear_dismissed,
     count_only,
     query,
     category,
@@ -202,6 +212,13 @@ def last_cmd(
     """
     validate_export_path(output)
     did_clear = False
+    if clear_dismissed:
+        console.print(
+            "[green]Dismissed ASINs list cleared.[/green]"
+            if clear_dismissed_asins()
+            else "[dim]No dismissed ASINs to clear.[/dim]"
+        )
+        did_clear = True
     if clear_seen:
         console.print(
             "[green]Seen ASINs list cleared.[/green]"
@@ -220,6 +237,8 @@ def last_cmd(
         return
 
     session = load_result_session()
+    previously_visible = set(session.visible_asins)
+    session.constraints["always_skip_asins"] = sorted(load_dismissed_asins())
     override_values = {
         "sort": sort,
         "max_price": max_price,
@@ -306,12 +325,31 @@ def last_cmd(
         export_products(visible, output)
         console.print(f"[green]Exported {len(visible)} items to {output}[/green]")
 
-    if outcome.persist:
-        save_result_session(outcome.session)
-
     if count_only:
+        if outcome.persist:
+            save_result_session(outcome.session)
         click.echo(outcome.total_count)
         return
+
+    newly_visible = [
+        product
+        for product in visible
+        if product.asin not in previously_visible
+        and isinstance(product.price, (int, float))
+        and not isinstance(product.price, bool)
+        and math.isfinite(product.price)
+    ]
+
+    def commit_presentation() -> None:
+        if outcome.persist:
+            save_result_session(outcome.session)
+        if newly_visible:
+            if not session.legacy:
+                observation_date = datetime.datetime.fromisoformat(
+                    session.timestamp
+                ).date()
+                record_prices_safely(newly_visible, observation_date=observation_date)
+            mark_refresh_eligible_safely(newly_visible)
 
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     serialized = tuple(serialize_product(product) for product in visible)
@@ -329,5 +367,6 @@ def last_cmd(
             show_url=show_url,
             credit_price=outcome.credit_price,
             json_writer=click.echo,
+            on_presented=commit_presentation,
         )
     )

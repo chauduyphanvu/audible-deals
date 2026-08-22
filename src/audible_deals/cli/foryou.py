@@ -6,6 +6,7 @@ import dataclasses
 import json
 import logging
 import shlex
+from decimal import Decimal
 from inspect import cleandoc
 from pathlib import Path
 
@@ -30,6 +31,7 @@ from audible_deals.price_history import (
 from audible_deals.product import Product
 from audible_deals.presentation.terminal import console, create_scan_progress
 from audible_deals.result_models import FilterContext
+from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.result_processing import (
     DiscoveryProcessingRequest,
     process_discovery,
@@ -41,6 +43,13 @@ from audible_deals.result_publication import (
     publish_discovery,
 )
 from audible_deals.serialization import validate_export_path
+from audible_deals.series_identity import (
+    normalize_identity_text,
+    parse_numeric_series_position,
+    series_book_identity,
+    series_book_identity_from_parts,
+    series_identity,
+)
 from audible_deals.settings import SettingsResolutionRequest, resolve_settings
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
@@ -49,11 +58,16 @@ logger = logging.getLogger(__name__)
 _AUTHOR_SCANS = 3
 _GENRE_SCANS = 2
 _PAGES_PER_SCAN = 2
+_PLACEHOLDER_TITLE = "Series Advisor Placeholder"
 
 
 def _scan_plan(profile: dict) -> tuple[list[str], list[dict], list[dict]]:
     """Authors, genres, and series the scan will cover, from the profile."""
-    authors = [a["name"] for a in profile.get("authors", [])][:_AUTHOR_SCANS]
+    authors = [
+        author["name"]
+        for author in profile.get("authors", [])
+        if not taste.is_great_courses_author(author["name"])
+    ][:_AUTHOR_SCANS]
     genres = profile.get("genres", [])[:_GENRE_SCANS]
     series = [s for s in profile.get("series", []) if s.get("series_asin")]
     return authors, genres, series
@@ -126,20 +140,59 @@ def _fetch_candidates(
     owned: set[str],
     *,
     show_progress: bool = True,
-) -> tuple[list[Product], dict[str, str], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[
+    list[Product],
+    dict[str, taste.SeriesMatch],
+    tuple[str, ...],
+    tuple[str, ...],
+]:
     """Fetch series gaps, author works, and genre bestsellers, deduped vs owned."""
-    candidates: dict[str, Product] = {}
-    series_of: dict[str, str] = {}
+    profile_series: dict[str, dict] = {}
+    series_aliases: dict[str, str] = {}
+    owned_books: dict[str, set[str]] = {}
+    for item in series:
+        identity = normalize_identity_text(
+            item.get("series_asin", "")
+        ) or normalize_identity_text(item.get("name", ""))
+        profile_series[identity] = item
+        for alias in (item.get("series_asin", ""), item.get("name", "")):
+            normalized_alias = normalize_identity_text(alias)
+            if normalized_alias:
+                series_aliases[normalized_alias] = identity
+        owned_books[identity] = {
+            series_book_identity_from_parts(
+                book.get("title", ""), book.get("position", "")
+            )
+            for book in item.get("books", [])
+        }
+
+    candidates_by_edition: dict[tuple[str, str], Product] = {}
+    targets_by_edition: dict[tuple[str, str], list[str]] = {}
     failures: list[str] = []
     incomplete: list[str] = []
     segments = len(series) + len(authors) + len(genres)
 
-    def add(p: Product, series_name: str | None = None) -> None:
-        if p.asin in owned or p.asin in candidates:
+    def add(p: Product, target_identity: str | None = None) -> None:
+        if p.asin in owned or p.price is None or p.title == _PLACEHOLDER_TITLE:
             return
-        candidates[p.asin] = p
-        if series_name:
-            series_of[p.asin] = series_name
+        product_identity = series_identity(p)
+        inferred_target = series_aliases.get(product_identity or "")
+        target = target_identity or inferred_target
+        if target and series_book_identity(p) in owned_books.get(target, set()):
+            return
+        edition_scope = target or product_identity
+        edition_key = (
+            (edition_scope, series_book_identity(p)) if edition_scope else ("", p.asin)
+        )
+        existing = candidates_by_edition.get(edition_key)
+        if existing is None or (
+            p.price is not None and (existing.price is None or p.price < existing.price)
+        ):
+            candidates_by_edition[edition_key] = p
+        if target:
+            targets = targets_by_edition.setdefault(edition_key, [])
+            if target not in targets:
+                targets.append(target)
 
     with create_scan_progress(disable=not show_progress) as progress:
         task = progress.add_task("Scanning your taste", total=segments, items=0)
@@ -149,12 +202,15 @@ def _fetch_candidates(
             [item["series_asin"] for item in series]
         )
         for s in series:
+            target_identity = normalize_identity_text(
+                s.get("series_asin", "")
+            ) or normalize_identity_text(s.get("name", ""))
             try:
                 failure = series_batch.failures.get(s["series_asin"])
                 if failure is not None:
                     raise failure
                 for p in series_batch.products.get(s["series_asin"], ()):
-                    add(p, series_name=s["name"])
+                    add(p, target_identity=target_identity)
                 product_failures = series_batch.product_failures.get(
                     s["series_asin"], ()
                 )
@@ -176,7 +232,7 @@ def _fetch_candidates(
                 )
                 failures.append(f"{s['name']}: {type(exc).__name__}: {exc}")
             done += 1
-            progress.update(task, completed=done, items=len(candidates))
+            progress.update(task, completed=done, items=len(candidates_by_edition))
 
         catalog_requests = [
             CatalogSearchRequest(
@@ -202,16 +258,61 @@ def _fetch_candidates(
                     if any(author.lower() in a.lower() for a in p.authors):
                         add(p)
             done += 1
-            progress.update(task, completed=done, items=len(candidates))
+            progress.update(task, completed=done, items=len(candidates_by_edition))
 
         for segment in catalog_results[len(authors) :]:
             for page_products, _, _ in segment.pages:
                 for p in page_products:
                     add(p)
             done += 1
-            progress.update(task, completed=done, items=len(candidates))
+            progress.update(task, completed=done, items=len(candidates_by_edition))
 
-    return list(candidates.values()), series_of, tuple(failures), tuple(incomplete)
+    candidates: dict[str, Product] = {}
+    targets_by_asin: dict[str, list[str]] = {}
+    for edition_key, product in candidates_by_edition.items():
+        existing = candidates.get(product.asin)
+        if existing is None or (
+            product.price is not None
+            and (existing.price is None or product.price < existing.price)
+        ):
+            candidates[product.asin] = product
+        targets = targets_by_asin.setdefault(product.asin, [])
+        for target in targets_by_edition.get(edition_key, []):
+            if target not in targets:
+                targets.append(target)
+
+    lowest_positions: dict[str, Decimal] = {}
+    for asin, targets in targets_by_asin.items():
+        if not targets:
+            continue
+        position = parse_numeric_series_position(candidates[asin].series_position)
+        if position is None:
+            continue
+        for target in targets:
+            current = lowest_positions.get(target)
+            if current is None or position < current:
+                lowest_positions[target] = position
+
+    series_matches: dict[str, taste.SeriesMatch] = {}
+    for asin, targets in targets_by_asin.items():
+        if not targets:
+            continue
+        position = parse_numeric_series_position(candidates[asin].series_position)
+        next_target = next(
+            (
+                target
+                for target in targets
+                if position is not None and position == lowest_positions.get(target)
+            ),
+            None,
+        )
+        target = next_target or targets[0]
+        series_matches[asin] = (
+            profile_series[target]["name"],
+            next_target is not None,
+        )
+
+    return list(candidates.values()), series_matches, tuple(failures), tuple(incomplete)
 
 
 def _report_for_me_series_outcomes(
@@ -402,6 +503,22 @@ def for_me(
         raise click.UsageError("--dry-run cannot be combined with --output/-o")
     validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
+    settings = _resolve_for_me_settings(
+        ctx,
+        max_price=max_price,
+        min_rating=min_rating,
+        min_ratings=min_ratings,
+        min_hours=min_hours,
+        on_sale=on_sale,
+        limit=limit,
+        interactive=interactive,
+        sort=sort or "",
+        narrator=narrator,
+        skip_plus=skip_plus,
+        only_plus=only_plus,
+        language="",
+        all_languages=False,
+    )
     dc = _get_client(ctx.obj["locale"])
 
     profile = None if refresh else taste.load_cached_profile()
@@ -423,24 +540,6 @@ def for_me(
             _print_for_me_plan(plan)
         return
 
-    settings = _resolve_for_me_settings(
-        ctx,
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        on_sale=on_sale,
-        limit=limit,
-        interactive=interactive,
-        sort=sort or "",
-        narrator=narrator,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        language="",
-        all_languages=False,
-    )
-    if settings.skip_plus and settings.only_plus:
-        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
     max_price = settings.max_price
     min_rating = settings.min_rating
     min_ratings = settings.min_ratings
@@ -452,6 +551,7 @@ def for_me(
     narrator = settings.narrator
     skip_plus = settings.skip_plus
     only_plus = settings.only_plus
+    dismissed_asins = load_dismissed_asins()
 
     with dc:
         if profile is None:
@@ -480,7 +580,7 @@ def for_me(
             )
 
         owned = set(profile.get("owned_asins", []))
-        candidates, series_of, failures, incomplete = _fetch_candidates(
+        candidates, series_matches, failures, incomplete = _fetch_candidates(
             dc,
             authors,
             genres,
@@ -506,14 +606,15 @@ def for_me(
     candidate_atl, candidate_hist_context = price_history_context(
         candidates, histories=candidate_histories
     )
-    ranked_candidates, all_match_context = taste.rank_by_fit(
+    ranked_candidates, all_match_context, fit_scores = taste.rank_by_fit(
         candidates,
         profile,
-        series_of,
+        series_matches,
         atl_asins=candidate_atl,
         hist_context=candidate_hist_context,
     )
-    allowed_asins = {product.asin for product in ranked_candidates}
+    allowed_asin_order = [product.asin for product in ranked_candidates]
+    allowed_asins = set(allowed_asin_order)
     ranked_candidates.extend(
         product for product in candidates if product.asin not in allowed_asins
     )
@@ -534,6 +635,7 @@ def for_me(
                 narrator=narrator,
                 exclude_authors=exclude_authors,
                 exclude_narrators=exclude_narrators,
+                skip_asins=dismissed_asins,
                 skip_plus=skip_plus,
                 only_plus=only_plus,
                 sort=sort or "",
@@ -558,11 +660,6 @@ def for_me(
         product.asin: all_match_context.get(product.asin, "")
         for product in result.products
     }
-    fit_scores = {
-        product.asin: taste.fit_score(product, profile, series_of)[0]
-        for product in candidates
-    }
-
     result = dataclasses.replace(
         result,
         histories=candidate_histories,
@@ -618,13 +715,12 @@ def for_me(
                         "series": [item.get("series_asin", "") for item in series],
                     },
                 },
-                constraints={"drop_zero_length": True},
+                constraints={
+                    "drop_zero_length": True,
+                    "always_skip_asins": sorted(dismissed_asins),
+                },
                 ranking_context={
-                    "allowed_asins": [
-                        product.asin
-                        for product in ranked_candidates
-                        if product.asin in allowed_asins
-                    ],
+                    "allowed_asins": allowed_asin_order,
                     "fit_scores": fit_scores,
                     "match_reasons": {
                         product.asin: all_match_context.get(product.asin, "")

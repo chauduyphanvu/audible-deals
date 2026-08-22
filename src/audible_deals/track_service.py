@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import bisect
 import datetime
 import logging
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from audible_deals import constants
 from audible_deals.automation_models import TrackRunRequest, TrackRunResult
 from audible_deals.config_store import (
     load_monitors,
@@ -31,8 +33,9 @@ from audible_deals.notification_service import (
     deliver_hits,
     deliver_monitor_events,
 )
-from audible_deals.price_history import load_all_price_histories
 from audible_deals.product import Product
+from audible_deals.refresh_eligibility import load_refresh_eligibility
+from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
 from audible_deals.wishlist import inspect_wishlist, load_wishlist
 
@@ -50,7 +53,10 @@ class TrackRuntime:
     webhook_client: WebhookClient
     monitor_runtime: MonitorRuntime
     load_wishlist: Callable[[], list[dict]] = load_wishlist
-    load_histories: Callable[..., dict] = load_all_price_histories
+    load_refresh_eligibility: Callable[[], dict[str, dict[str, str]]] = (
+        load_refresh_eligibility
+    )
+    load_dismissed_asins: Callable[[], set[str]] = load_dismissed_asins
     load_track_state: Callable[[], dict] = load_track_state
     save_track_state: Callable[[dict], None] = save_track_state
     load_monitors: Callable[[], dict[str, dict]] = load_monitors
@@ -76,19 +82,50 @@ def run_history(state: dict) -> list[dict]:
     return [last] if last else []
 
 
-def recent_history_asins(
-    exclude: set[str], histories: dict, today: datetime.date
-) -> list[str]:
+def refresh_eligible_asins(
+    exclude: set[str],
+    eligibility: dict[str, dict[str, str]],
+    locale: str,
+    today: datetime.date,
+    cursor: object,
+) -> tuple[list[str], dict[str, str] | None]:
     cutoff = (today - datetime.timedelta(days=RECENT_HISTORY_DAYS)).isoformat()
     candidates: list[tuple[str, str]] = []
-    for asin, entries in histories.items():
-        if asin in exclude or not entries:
+    today_iso = today.isoformat()
+    for asin, surfaced_on in eligibility.get(locale, {}).items():
+        if asin in exclude or not isinstance(surfaced_on, str):
             continue
-        last_date = entries[-1].get("date", "")
-        if last_date >= cutoff:
-            candidates.append((last_date, asin))
+        if cutoff <= surfaced_on <= today_iso:
+            candidates.append((surfaced_on, asin))
     candidates.sort()
-    return [asin for _, asin in candidates[:MAX_EXTRA_ASINS]]
+    if not candidates:
+        return [], None
+    cursor_key = None
+    if isinstance(cursor, dict):
+        surfaced_on = cursor.get("surfaced_on")
+        asin = cursor.get("asin")
+        try:
+            if isinstance(surfaced_on, str):
+                datetime.date.fromisoformat(surfaced_on)
+            else:
+                raise ValueError
+        except ValueError:
+            pass
+        else:
+            if isinstance(asin, str) and constants._ASIN_RE.fullmatch(asin):
+                cursor_key = (surfaced_on, asin)
+    start = bisect.bisect_right(candidates, cursor_key) if cursor_key else 0
+    if start == len(candidates):
+        start = 0
+    count = min(MAX_EXTRA_ASINS, len(candidates))
+    selected_keys = [
+        candidates[(start + offset) % len(candidates)] for offset in range(count)
+    ]
+    continuation = selected_keys[-1]
+    return [asin for _, asin in selected_keys], {
+        "surfaced_on": continuation[0],
+        "asin": continuation[1],
+    }
 
 
 def is_auth_error(exc: Exception) -> bool:
@@ -163,9 +200,22 @@ def _run_locked(
         credit_price=request.credit_price,
     )
 
-    histories = runtime.load_histories(locale=request.locale)
-    extra_asins = recent_history_asins(wishlist_asins, histories, today)
+    excluded_asins = wishlist_asins | runtime.load_dismissed_asins()
+    eligibility = runtime.load_refresh_eligibility()
+    cursors = state.get("refresh_cursors")
+    if not isinstance(cursors, dict):
+        cursors = {}
+    cursor = cursors.get(request.locale)
+    extra_asins, next_cursor = refresh_eligible_asins(
+        excluded_asins,
+        eligibility,
+        request.locale,
+        today,
+        cursor,
+    )
     if extra_asins:
+        cursors[request.locale] = next_cursor
+        state["refresh_cursors"] = cursors
         with client:
             products = client.get_products_batch(extra_asins)
         runtime.record_products(products)

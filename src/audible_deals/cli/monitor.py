@@ -138,8 +138,6 @@ def _monitor_settings(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
-    if settings.skip_plus and settings.only_plus:
-        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
     if not settings.language and not settings.all_languages:
         settings = dataclasses.replace(
             settings, language=LOCALE_LANGUAGES[ctx.obj["locale"]]

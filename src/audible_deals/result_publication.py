@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import copy
 import dataclasses
+import datetime
 import logging
+import math
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -23,6 +25,7 @@ from audible_deals.price_history import (
     record_prices,
 )
 from audible_deals.product import Product
+from audible_deals.refresh_eligibility import mark_refresh_eligible
 from audible_deals.result_models import DiscoveryResult, ResultRecipe, ResultSession
 from audible_deals.results_cache import (
     save_last_results,
@@ -75,12 +78,25 @@ class ResultPublicationOutcome:
     session: ResultSession | None = None
 
 
-def record_prices_safely(products: list[Product]) -> None:
+def record_prices_safely(
+    products: list[Product], observation_date: datetime.date | str | None = None
+) -> None:
     try:
-        record_prices(products)
+        record_prices(products, observation_date=observation_date)
     except Exception as exc:
         logger.exception("record_prices failed for %d products", len(products))
         console.print(f"[dim]Warning: could not record price history: {exc}[/dim]")
+
+
+def mark_refresh_eligible_safely(products: list[Product]) -> None:
+    try:
+        mark_refresh_eligible(products)
+    except Exception:
+        logger.warning(
+            "Could not update refresh eligibility for %d products",
+            len(products),
+            exc_info=True,
+        )
 
 
 def _session_for_request(
@@ -144,20 +160,35 @@ def publish_discovery(
             if product.price is not None
         }
     session = _session_for_request(request, visible, histories)
-    if request.record_price_history:
-        record_prices_safely(all_products)
+    surfaced = [
+        product
+        for product in visible
+        if isinstance(product.price, (int, float))
+        and not isinstance(product.price, bool)
+        and math.isfinite(product.price)
+    ]
 
     serialized_all = [serialize_product(product) for product in all_products]
     serialized = serialized_all[: len(visible)]
-    if request.write_cache:
-        try:
-            if session is not None:
-                save_result_session(session)
-            else:
-                save_last_results(request.title, serialized_all)
-        except Exception:
-            logger.warning("Could not save last result session", exc_info=True)
-        save_seen_asins({product.asin for product in visible})
+
+    def commit_presentation() -> None:
+        if request.record_price_history:
+            observation_date = (
+                datetime.datetime.fromisoformat(session.timestamp).date()
+                if session is not None
+                else None
+            )
+            record_prices_safely(surfaced, observation_date=observation_date)
+        mark_refresh_eligible_safely(surfaced)
+        if request.write_cache:
+            try:
+                if session is not None:
+                    save_result_session(session)
+                else:
+                    save_last_results(request.title, serialized_all)
+            except Exception:
+                logger.warning("Could not save last result session", exc_info=True)
+            save_seen_asins({product.asin for product in visible})
 
     visible_result = dataclasses.replace(
         request.result,
@@ -179,6 +210,7 @@ def publish_discovery(
             credit_price=request.credit_price,
             suppress_action_footer=request.output is not None,
             json_writer=request.json_writer,
+            on_presented=commit_presentation,
         )
     )
     return ResultPublicationOutcome(

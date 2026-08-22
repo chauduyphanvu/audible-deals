@@ -23,6 +23,7 @@ from audible_deals.presentation.reports import display_series_gaps
 from audible_deals.presentation.terminal import console, create_scan_progress
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
+from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.result_processing import (
     DiscoveryProcessingRequest,
     process_discovery,
@@ -35,6 +36,11 @@ from audible_deals.result_publication import (
     record_prices_safely,
 )
 from audible_deals.serialization import validate_export_path
+from audible_deals.series_identity import (
+    group_series_books,
+    normalize_identity_text,
+    series_book_identity,
+)
 from audible_deals.settings import (
     SettingsResolutionRequest,
     resolve_settings,
@@ -43,27 +49,36 @@ from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_
 
 logger = logging.getLogger(__name__)
 
+_PLACEHOLDER_TITLE = "Series Advisor Placeholder"
+
+
+def _representative_series_name(books: list[Product]) -> str:
+    return next((book.series_name for book in books if book.series_name), "") or next(
+        (book.series_asin for book in books if book.series_asin), ""
+    )
+
+
+def _representative_series_asin(books: list[Product]) -> str:
+    return next((book.series_asin for book in books if book.series_asin), "")
+
 
 def _invested_series(
     lib_products: list[Product], *, min_books: int, series_filter: str
 ) -> dict[str, list[Product]]:
     """Group library books by series, keeping those with min_books+ owned."""
-    series_map: dict[str, list[Product]] = {}  # series_name -> [products]
-    for p in lib_products:
-        if not p.series_name:
-            continue
-        series_map.setdefault(p.series_name, []).append(p)
-
     invested = {
-        name: books for name, books in series_map.items() if len(books) >= min_books
+        identity: books
+        for identity, books in group_series_books(lib_products).items()
+        if len(books) >= min_books
     }
 
     if series_filter:
-        filter_lower = series_filter.lower()
+        normalized_filter = normalize_identity_text(series_filter)
         invested = {
-            name: books
-            for name, books in invested.items()
-            if filter_lower in name.lower()
+            identity: books
+            for identity, books in invested.items()
+            if normalized_filter
+            in normalize_identity_text(_representative_series_name(books))
         }
     return invested
 
@@ -75,26 +90,24 @@ def _fetch_series_candidates(
     *,
     pages: int,
     show_progress: bool = True,
-) -> tuple[list[Product], dict[str, str], tuple[str, ...], tuple[str, ...]]:
+) -> tuple[list[Product], dict[str, tuple[str, ...]], tuple[str, ...], tuple[str, ...]]:
     """Fetch catalog entries for each invested series, skipping owned books.
 
     Returns candidates, their series mapping, failed series, and incomplete series.
     """
-    all_candidates: list[Product] = []
-    candidate_series: dict[str, str] = {}  # asin -> series_name
-    seen_asins: set[str] = set(owned_asins)
+    best_candidates: dict[tuple[str, str], Product] = {}
     failures: list[str] = []
     incomplete: list[str] = []
     series_asins = [
-        next((book.series_asin for book in owned_books if book.series_asin), "")
-        for _, owned_books in invested_sorted
+        _representative_series_asin(owned_books) for _, owned_books in invested_sorted
     ]
     fallback_indices = [
         index for index, series_asin in enumerate(series_asins) if not series_asin
     ]
     fallback_requests = []
     for index in fallback_indices:
-        series_name, owned_books = invested_sorted[index]
+        _, owned_books = invested_sorted[index]
+        series_name = _representative_series_name(owned_books)
         author_hint = next(
             (book.authors[0] for book in owned_books if book.authors), ""
         )
@@ -118,9 +131,10 @@ def _fetch_series_candidates(
         fallback_results = dc.search_segments(fallback_requests)
         fallback_by_index = dict(zip(fallback_indices, fallback_results))
 
-        for series_idx, ((sname, owned_books), series_asin) in enumerate(
+        for series_idx, ((target_identity, owned_books), series_asin) in enumerate(
             zip(invested_sorted, series_asins)
         ):
+            sname = _representative_series_name(owned_books)
             try:
                 if series_asin:
                     failure = direct_batch.failures.get(series_asin)
@@ -147,28 +161,50 @@ def _fetch_series_candidates(
                     segment = fallback_by_index[series_idx]
                     if segment.error is not None:
                         raise segment.error
-                    sname_lower = sname.lower()
+                    normalized_name = normalize_identity_text(sname)
                     for page_products, _, _ in segment.pages:
                         for p in page_products:
-                            if p.series_name and p.series_name.lower() == sname_lower:
+                            if (
+                                p.series_name
+                                and normalize_identity_text(p.series_name)
+                                == normalized_name
+                            ):
                                 series_products.append(p)
             except Exception as exc:
                 logger.warning("series scan failed for %s", sname, exc_info=True)
                 failures.append(f"{sname}: {type(exc).__name__}: {exc}")
                 progress.update(
-                    task, completed=series_idx + 1, items=len(all_candidates)
+                    task, completed=series_idx + 1, items=len(best_candidates)
                 )
                 continue
 
+            owned_book_identities = {series_book_identity(book) for book in owned_books}
             for p in series_products:
-                if p.asin in seen_asins:
+                book_identity = series_book_identity(p)
+                if p.asin in owned_asins or book_identity in owned_book_identities:
                     continue
-                seen_asins.add(p.asin)
-                all_candidates.append(p)
-                candidate_series[p.asin] = sname
+                key = (target_identity, book_identity)
+                existing = best_candidates.get(key)
+                if existing is None or (
+                    p.price is not None
+                    and (existing.price is None or p.price < existing.price)
+                ):
+                    best_candidates[key] = p
 
-            progress.update(task, completed=series_idx + 1, items=len(all_candidates))
+            progress.update(task, completed=series_idx + 1, items=len(best_candidates))
 
+    all_candidates: list[Product] = []
+    candidate_series_lists: dict[str, list[str]] = {}
+    for (target_identity, _), product in best_candidates.items():
+        targets = candidate_series_lists.setdefault(product.asin, [])
+        first_occurrence = not targets
+        if target_identity not in targets:
+            targets.append(target_identity)
+        if first_occurrence:
+            all_candidates.append(product)
+    candidate_series = {
+        asin: tuple(targets) for asin, targets in candidate_series_lists.items()
+    }
     return all_candidates, candidate_series, tuple(failures), tuple(incomplete)
 
 
@@ -204,24 +240,29 @@ def _report_series_failures(
 def _series_gaps_report(
     filtered: list[Product],
     invested_sorted: list[tuple[str, list[Product]]],
-    candidate_series: dict[str, str],
+    candidate_series: dict[str, tuple[str, ...]],
     *,
     json_flag: bool,
     quiet: bool,
     currency: str,
 ) -> None:
     """Emit the per-series gap report (JSON or table) from filtered candidates."""
-    by_series: dict[str, list[Product]] = {}
+    by_series: dict[str, dict[str, Product]] = {}
     for p in filtered:
-        sname = candidate_series.get(p.asin, "")
-        if sname:
-            by_series.setdefault(sname, []).append(p)
+        for target_identity in candidate_series.get(p.asin, ()):
+            by_series.setdefault(target_identity, {}).setdefault(
+                series_book_identity(p), p
+            )
 
     atl_asins, _ = price_history_context(filtered)
 
     gaps: list[dict] = []
-    for sname, books in sorted(invested_sorted, key=lambda x: x[0]):
-        missing_products = by_series.get(sname, [])
+    for target_identity, books in sorted(
+        invested_sorted, key=lambda x: _representative_series_name(x[1])
+    ):
+        sname = _representative_series_name(books)
+        missing_by_identity = by_series.get(target_identity, {})
+        missing_products = list(missing_by_identity.values())
         if not missing_products:
             continue
         missing_products.sort(key=lambda p: parse_series_position(p.series_position))
@@ -235,11 +276,12 @@ def _series_gaps_report(
             }
             for p in missing_products
         ]
+        owned_identities = {series_book_identity(book) for book in books}
         gaps.append(
             {
                 "series": sname,
-                "owned": len(books),
-                "total_known": len(books) + len(missing_entries),
+                "owned": len(owned_identities),
+                "total_known": len(owned_identities | set(missing_by_identity)),
                 "missing": missing_entries,
             }
         )
@@ -455,6 +497,7 @@ def series(
 
     dc = _get_client(ctx.obj["locale"])
     cur = _currency(ctx)
+    dismissed_asins = load_dismissed_asins()
 
     with dc:
         # 1. Fetch library
@@ -514,18 +557,32 @@ def series(
     )
 
     series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
+    eligible_candidates = [
+        product
+        for product in all_candidates
+        if product.title != _PLACEHOLDER_TITLE
+        and (gaps_mode or product.price is not None)
+        and (
+            not gaps_mode
+            or max_price is None
+            or product.price is None
+            or product.price <= max_price
+        )
+    ]
     result = process_discovery(
         DiscoveryProcessingRequest(
-            products=tuple(all_candidates),
+            products=tuple(eligible_candidates),
             context=FilterContext(
-                max_price=max_price,
+                max_price=None if gaps_mode else max_price,
                 min_rating=min_rating,
                 min_ratings=min_ratings,
                 min_hours=min_hours,
                 on_sale=on_sale,
+                skip_asins=dismissed_asins,
                 sort=sort,
                 drop_zero_length=False,
             ),
+            dedupe_series_editions=False,
         ),
     )
 
@@ -554,7 +611,7 @@ def series(
             currency=cur,
             interactive=interactive,
             credit_price=_credit_price(ctx),
-            candidates=tuple(all_candidates),
+            candidates=tuple(eligible_candidates),
             session_spec=ResultSessionSpec(
                 producer="series",
                 locale=ctx.obj["locale"],
@@ -586,7 +643,10 @@ def series(
                     "max_series": max_series,
                     "pages": pages,
                 },
-                constraints={"drop_zero_length": False},
+                constraints={
+                    "drop_zero_length": False,
+                    "always_skip_asins": sorted(dismissed_asins),
+                },
             ),
             json_writer=click.echo,
         )

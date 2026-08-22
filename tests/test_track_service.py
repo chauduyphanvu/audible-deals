@@ -19,7 +19,11 @@ from audible_deals.cli import cli
 from audible_deals.config_store import load_track_state
 from audible_deals.locking import run_lock
 from audible_deals.monitor_service import MonitorRuntime
-from audible_deals.track_service import TrackRuntime, recent_history_asins, run_track
+from audible_deals.track_service import (
+    TrackRuntime,
+    refresh_eligible_asins,
+    run_track,
+)
 from audible_deals.webhook_client import WebhookDeliveryError
 from tests.conftest import make_product
 
@@ -73,7 +77,8 @@ def runtime(client, webhook, *, wishlist, monitors=lambda: {}):
         webhook_client=webhook,
         monitor_runtime=monitor_runtime(),
         load_wishlist=lambda: wishlist,
-        load_histories=lambda **kwargs: {},
+        load_refresh_eligibility=lambda: {},
+        load_dismissed_asins=lambda: set(),
         load_monitors=monitors,
         load_notify_state=lambda: {},
         save_notify_state=lambda state: None,
@@ -81,22 +86,132 @@ def runtime(client, webhook, *, wishlist, monitors=lambda: {}):
     )
 
 
-def test_recent_history_is_stalest_first_capped_and_excludes_wishlist():
+def test_refresh_eligibility_is_stalest_first_capped_and_excludes_wishlist():
     today = datetime.date(2026, 8, 21)
-    histories = {
-        f"A{index:03d}": [
-            {
-                "date": (today - datetime.timedelta(days=index % 30)).isoformat(),
-            }
-        ]
-        for index in range(250)
+    eligibility = {
+        "us": {
+            f"A{index:03d}": (today - datetime.timedelta(days=index % 30)).isoformat()
+            for index in range(250)
+        }
     }
 
-    selected = recent_history_asins({"A029"}, histories, today)
+    selected, cursor = refresh_eligible_asins({"A029"}, eligibility, "us", today, 0)
 
     assert len(selected) == 200
     assert "A029" not in selected
     assert selected[0] == "A059"
+    assert cursor == {
+        "surfaced_on": eligibility["us"][selected[-1]],
+        "asin": selected[-1],
+    }
+
+
+def test_refresh_eligibility_uses_current_locale_exact_window_and_exclusions():
+    today = datetime.date(2026, 8, 21)
+    eligibility = {
+        "us": {
+            "DAY30": (today - datetime.timedelta(days=30)).isoformat(),
+            "DAY31": (today - datetime.timedelta(days=31)).isoformat(),
+            "WISHLIST": today.isoformat(),
+            "DISMISSED": today.isoformat(),
+        },
+        "uk": {"UKONLY": today.isoformat()},
+    }
+
+    selected, cursor = refresh_eligible_asins(
+        {"WISHLIST", "DISMISSED"}, eligibility, "us", today, 0
+    )
+
+    assert selected == ["DAY30"]
+    assert cursor == {
+        "surfaced_on": eligibility["us"]["DAY30"],
+        "asin": "DAY30",
+    }
+
+
+def test_refresh_cursor_is_stable_across_membership_churn():
+    today = datetime.date(2026, 8, 21)
+    old_date = (today - datetime.timedelta(days=10)).isoformat()
+    target = "A199Z"
+    eligibility = {
+        "us": {
+            **{f"A{index:03d}": old_date for index in range(201)},
+            target: old_date,
+        }
+    }
+
+    first, cursor = refresh_eligible_asins(set(), eligibility, "us", today, None)
+    assert len(first) == 200
+    assert target not in first
+
+    del eligibility["us"]["A000"]
+    eligibility["us"]["NEWER"] = today.isoformat()
+    second, _cursor = refresh_eligible_asins(set(), eligibility, "us", today, cursor)
+
+    assert second[0] == target
+
+
+@pytest.mark.parametrize(
+    "cursor",
+    [None, 200, {}, {"surfaced_on": "bad", "asin": "A001"}],
+)
+def test_missing_or_invalid_refresh_cursor_restarts_oldest(cursor):
+    today = datetime.date(2026, 8, 21)
+    eligibility = {
+        "us": {
+            "OLDER": (today - datetime.timedelta(days=2)).isoformat(),
+            "NEWER": today.isoformat(),
+        }
+    }
+
+    selected, _cursor = refresh_eligible_asins(set(), eligibility, "us", today, cursor)
+
+    assert selected[0] == "OLDER"
+
+
+def test_removed_cursor_member_resumes_by_stable_sort_key():
+    today = datetime.date(2026, 8, 21)
+    date = today.isoformat()
+    eligibility = {"us": {"A001": date, "A003": date}}
+    cursor = {"surfaced_on": date, "asin": "A002"}
+
+    selected, _cursor = refresh_eligible_asins(set(), eligibility, "us", today, cursor)
+
+    assert selected == ["A003", "A001"]
+
+
+def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
+    today = datetime.date(2026, 8, 21)
+    eligibility = {"us": {f"A{index:03d}": today.isoformat() for index in range(250)}}
+    calls = []
+
+    class RecordingClient(Client):
+        def get_products_batch(self, asins):
+            calls.append(list(asins))
+            return []
+
+    state = {}
+
+    track_runtime = replace(
+        runtime(RecordingClient(), Webhook(), wishlist=[]),
+        load_refresh_eligibility=lambda: eligibility,
+        load_track_state=lambda: state,
+        save_track_state=lambda updated: None,
+        today=lambda: today,
+    )
+
+    run_track(request(), track_runtime)
+    first = calls[1]
+    run_track(request(), track_runtime)
+    second = calls[3]
+
+    assert first == [f"A{index:03d}" for index in range(200)]
+    assert second[:50] == [f"A{index:03d}" for index in range(200, 250)]
+    assert second[50:] == [f"A{index:03d}" for index in range(150)]
+    assert state["refresh_cursors"]["us"] == {
+        "surfaced_on": today.isoformat(),
+        "asin": "A149",
+    }
 
 
 def test_partial_monitor_failure_isolated_and_success_saved(tmp_config, monkeypatch):

@@ -38,7 +38,7 @@ from audible_deals.presentation.products import (
 from audible_deals.presentation.reports import display_categories
 from audible_deals.presentation.terminal import console
 from audible_deals.results_cache import load_seen_asins
-from audible_deals.settings import _PROFILE_EXTRA_KEYS, Settings
+from audible_deals.settings import _PROFILE_EXTRA_KEYS, Settings, resolve_plus_flags
 from audible_deals.wishlist import inspect_wishlist
 
 
@@ -393,6 +393,17 @@ def _config_checks() -> list[_Row]:
                     if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
                 ]
                 errors.extend(config_numeric_errors(cfg))
+                if all(
+                    key not in cfg or type(cfg[key]) is bool
+                    for key in ("skip_plus", "only_plus")
+                ):
+                    try:
+                        resolve_plus_flags(
+                            cfg.get("skip_plus", False),
+                            cfg.get("only_plus", False),
+                        )
+                    except ValueError as exc:
+                        errors.append(str(exc))
                 if errors:
                     rows.append(("Config file valid", "FAIL", "; ".join(errors)))
                 else:
@@ -524,6 +535,39 @@ def _store_checks() -> list[_Row]:
                 else:
                     count = len(inspection.asin_items) + len(inspection.author_items)
                     rows.append(("Wishlist health", "PASS", f"{count} entries"))
+
+    if not constants.DISMISSED_ASINS_FILE.exists():
+        rows.append(("Dismissed-ASINs state", "PASS", "No entries"))
+    else:
+        try:
+            dismissed = json_mod.loads(constants.DISMISSED_ASINS_FILE.read_text())
+        except Exception as exc:
+            rows.append(("Dismissed-ASINs state", "FAIL", str(exc)))
+        else:
+            if not isinstance(dismissed, list):
+                rows.append(
+                    (
+                        "Dismissed-ASINs state",
+                        "FAIL",
+                        f"Expected a list, got {type(dismissed).__name__}",
+                    )
+                )
+            elif not all(isinstance(asin, str) for asin in dismissed):
+                rows.append(
+                    (
+                        "Dismissed-ASINs state",
+                        "FAIL",
+                        "Expected every entry to be a string",
+                    )
+                )
+            else:
+                rows.append(
+                    (
+                        "Dismissed-ASINs state",
+                        "PASS",
+                        f"{len(set(dismissed))} ASIN(s) dismissed",
+                    )
+                )
 
     for check, loader in (
         ("Profiles parseable", load_profiles),

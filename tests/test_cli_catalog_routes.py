@@ -523,6 +523,7 @@ class TestRoutesZeroLengthFiltering:
             asin="SO1",
             series_name="Epic Arc",
             series_asin="SARC1",
+            series_position="1",
             length_minutes=600,
             price=0.0,
         )
@@ -530,6 +531,7 @@ class TestRoutesZeroLengthFiltering:
             asin="SO2",
             series_name="Epic Arc",
             series_asin="SARC1",
+            series_position="2",
             length_minutes=600,
             price=0.0,
         )
@@ -538,6 +540,7 @@ class TestRoutesZeroLengthFiltering:
             asin="SPRE1",
             series_name="Epic Arc",
             series_asin="SARC1",
+            series_position="3",
             length_minutes=0,
             price=14.99,
         )

@@ -19,7 +19,12 @@ from audible_deals.config_store import coerce_config_value
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from audible_deals.settings import SettingsResolutionRequest, resolve_settings
+from audible_deals.settings import (
+    Settings,
+    SettingsResolutionRequest,
+    resolve_plus_flags,
+    resolve_settings,
+)
 from audible_deals.validation import validate_webhook_url
 from audible_deals.validation import validate_webhook_url as _validate_webhook_url
 from tests.conftest import make_product
@@ -125,6 +130,129 @@ class TestSupportRegressions:
         assert config_store_mod.load_config()["max_pph"] == 0.5
         help_result = runner.invoke(cli, ["config", "set", "--help"])
         assert "max-price-per-hour" in help_result.output
+
+
+class TestPlusFlagResolution:
+    @pytest.mark.parametrize(
+        ("config", "profile", "cli_flags", "explicit", "expected"),
+        [
+            (
+                {"only_plus": True},
+                {"only_plus": True},
+                {"skip_plus": True, "only_plus": False},
+                {"skip_plus"},
+                (True, False),
+            ),
+            (
+                {"skip_plus": True},
+                {"skip_plus": True},
+                {"skip_plus": False, "only_plus": True},
+                {"only_plus"},
+                (False, True),
+            ),
+            (
+                {"only_plus": True},
+                {"skip_plus": True},
+                {"skip_plus": False, "only_plus": False},
+                set(),
+                (True, False),
+            ),
+            (
+                {"skip_plus": True},
+                {"only_plus": True},
+                {"skip_plus": False, "only_plus": False},
+                set(),
+                (False, True),
+            ),
+            (
+                {"skip_plus": True},
+                None,
+                {"skip_plus": False, "only_plus": False},
+                {"only_plus"},
+                (True, False),
+            ),
+        ],
+    )
+    def test_higher_precedence_plus_flag_wins(
+        self, config, profile, cli_flags, explicit, expected
+    ):
+        settings = resolve_settings(
+            SettingsResolutionRequest(
+                config=config,
+                profile=profile,
+                cli_flags=cli_flags,
+                explicit_options=explicit,
+            )
+        )
+
+        assert (settings.skip_plus, settings.only_plus) == expected
+
+    @pytest.mark.parametrize(
+        ("config", "profile", "cli_flags", "explicit"),
+        [
+            (
+                {"skip_plus": True, "only_plus": True},
+                None,
+                {"skip_plus": False, "only_plus": False},
+                set(),
+            ),
+            (
+                {},
+                {"skip_plus": True, "only_plus": True},
+                {"skip_plus": False, "only_plus": False},
+                set(),
+            ),
+            (
+                {},
+                None,
+                {"skip_plus": True, "only_plus": True},
+                {"skip_plus", "only_plus"},
+            ),
+        ],
+    )
+    def test_same_layer_plus_conflict_is_rejected(
+        self, config, profile, cli_flags, explicit
+    ):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            resolve_settings(
+                SettingsResolutionRequest(
+                    config=config,
+                    profile=profile,
+                    cli_flags=cli_flags,
+                    explicit_options=explicit,
+                )
+            )
+
+    def test_direct_settings_reject_plus_conflict(self):
+        with pytest.raises(ValueError, match="mutually exclusive"):
+            Settings(skip_plus=True, only_plus=True)
+
+    @pytest.mark.parametrize("field", ["skip_plus", "only_plus"])
+    def test_direct_settings_rejects_non_boolean_plus_value(self, field):
+        with pytest.raises(ValueError, match=rf"{field} must be boolean"):
+            Settings(**{field: 1})
+
+    @pytest.mark.parametrize("layer", ["config", "profile"])
+    def test_persisted_layer_rejects_non_boolean_plus_value(self, layer):
+        values = {"skip_plus": "true"}
+        request = SettingsResolutionRequest(
+            config=values if layer == "config" else {},
+            profile=values if layer == "profile" else None,
+            cli_flags={"skip_plus": False, "only_plus": False},
+        )
+
+        with pytest.raises(ValueError, match="skip_plus must be boolean"):
+            resolve_settings(request)
+
+    def test_source_rank_clears_only_lower_precedence_true(self):
+        assert resolve_plus_flags(True, True, skip_rank=2, only_rank=1) == (
+            True,
+            False,
+        )
+        assert resolve_plus_flags(True, True, skip_rank=1, only_rank=2) == (
+            False,
+            True,
+        )
 
 
 class TestCLIHelp:
@@ -429,6 +557,19 @@ class TestProfileSaveMissingFlags:
         assert profiles["combo"]["skip_plus"] is True
         assert "abridged" in profiles["combo"]["exclude_keywords"]
 
+    def test_conflicting_plus_flags_preserve_existing_profile(self, tmp_config):
+        existing = {"same": {"max_price": 4.0}}
+        config_store_mod.save_profiles(existing)
+
+        result = CliRunner().invoke(
+            cli,
+            ["profile", "save", "same", "--skip-plus", "--only-plus"],
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+        assert config_store_mod.load_profiles() == existing
+
     def test_find_profile_applies_skip_plus(self, mock_client, tmp_config):
         """find --profile applies skip_plus, excluding plus-catalog items."""
 
@@ -582,6 +723,54 @@ class TestConfigCommands:
 
         cfg = config_store_mod.load_config()
         assert cfg["min_rating"] == 4.5
+
+    @pytest.mark.parametrize(
+        ("key", "opposite"),
+        [("skip-plus", "only_plus"), ("only-plus", "skip_plus")],
+    )
+    def test_setting_true_removes_and_reports_opposite_plus_key(
+        self, tmp_config, key, opposite
+    ):
+        config_store_mod.save_config({opposite: True, "max_price": 5.0})
+
+        result = CliRunner().invoke(cli, ["config", "set", key, "true"])
+
+        assert result.exit_code == 0, result.output
+        assert opposite not in config_store_mod.load_config()
+        assert opposite in result.output
+        assert "Removed" in result.output
+
+    def test_setting_false_preserves_opposite_plus_key(self, tmp_config):
+        config_store_mod.save_config({"only_plus": True})
+
+        result = CliRunner().invoke(cli, ["config", "set", "skip-plus", "false"])
+
+        assert result.exit_code == 0, result.output
+        assert config_store_mod.load_config() == {
+            "only_plus": True,
+            "skip_plus": False,
+        }
+
+    def test_unrelated_set_rejects_existing_plus_conflict_without_write(
+        self, tmp_config
+    ):
+        existing = {"skip_plus": True, "only_plus": True}
+        config_store_mod.save_config(existing)
+        before = constants_mod.CONFIG_FILE.read_text()
+
+        result = CliRunner().invoke(cli, ["config", "set", "max-price", "5"])
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+        assert constants_mod.CONFIG_FILE.read_text() == before
+
+    def test_setting_true_repairs_existing_plus_conflict(self, tmp_config):
+        config_store_mod.save_config({"skip_plus": True, "only_plus": True})
+
+        result = CliRunner().invoke(cli, ["config", "set", "skip-plus", "true"])
+
+        assert result.exit_code == 0, result.output
+        assert config_store_mod.load_config() == {"skip_plus": True}
 
 
 class TestConfigAppliedToFind:
@@ -1395,6 +1584,49 @@ class TestDoctorUnknownKeys:
         assert "Config file valid" in result.output
         assert "FAIL" in result.output
 
+    def test_plus_conflict_fails_config_check_without_repair(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        self._patch_auth(monkeypatch, tmp_config)
+        conflicting = {"skip_plus": True, "only_plus": True}
+        constants_mod.CONFIG_FILE.write_text(json.dumps(conflicting))
+
+        result = CliRunner().invoke(cli, ["doctor"])
+
+        assert result.exit_code == 1
+        assert "Config file valid" in result.output
+        assert "FAIL" in result.output
+        assert json.loads(constants_mod.CONFIG_FILE.read_text()) == conflicting
+
+    def test_plus_conflict_fails_profile_check_without_repair(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        self._patch_auth(monkeypatch, tmp_config)
+        conflicting = {"bad": {"skip_plus": True, "only_plus": True}}
+        constants_mod.PROFILES_FILE.write_text(json.dumps(conflicting))
+
+        result = CliRunner().invoke(cli, ["doctor"])
+
+        assert result.exit_code == 1
+        assert "Profile settings valid" in result.output
+        assert "mutually exclusive" in result.output
+        assert json.loads(constants_mod.PROFILES_FILE.read_text()) == conflicting
+
+    def test_non_boolean_plus_config_reports_type_without_false_conflict(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        self._patch_auth(monkeypatch, tmp_config)
+        invalid = {"skip_plus": "true", "only_plus": True}
+        constants_mod.CONFIG_FILE.write_text(json.dumps(invalid))
+
+        result = CliRunner().invoke(cli, ["doctor"])
+
+        assert result.exit_code == 1
+        assert "skip_plus" in result.output
+        assert "expected bool" in result.output
+        assert "mutually exclusive" not in result.output
+        assert json.loads(constants_mod.CONFIG_FILE.read_text()) == invalid
+
 
 class TestCreditPriceConfig:
     def test_set_and_get(self, tmp_config):
@@ -1427,6 +1659,15 @@ def test_corrupt_numeric_config_allows_doctor_and_recovery(tmp_config, mock_clie
     reset = runner.invoke(cli, ["config", "reset", "max-price"])
     assert reset.exit_code == 0, reset.output
     assert config_store_mod.load_config() == {}
+
+
+def test_config_set_does_not_validate_unrelated_malformed_numeric(tmp_config):
+    constants_mod.CONFIG_FILE.write_text('{"max_price": NaN}')
+
+    result = CliRunner().invoke(cli, ["config", "set", "skip-owned", "true"])
+
+    assert result.exit_code == 0, result.output
+    assert config_store_mod.load_config()["skip_owned"] is True
 
 
 def test_corrupt_numeric_config_blocks_discovery_before_client(tmp_config, monkeypatch):

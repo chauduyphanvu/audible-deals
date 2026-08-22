@@ -37,6 +37,7 @@ RECIPE_FIELDS = tuple(field.name for field in dataclasses.fields(ResultRecipe))
 class DiscoveryProcessingRequest:
     products: tuple[Product, ...]
     context: FilterContext
+    dedupe_series_editions: bool = True
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "products", tuple(self.products))
@@ -102,7 +103,9 @@ def process_discovery(request: DiscoveryProcessingRequest) -> DiscoveryResult:
         hist_percentile=hist_percentile,
         price_drops=price_drops,
     )
-    outcome = dedupe_editions(filter_products(list(request.products), resolved_context))
+    outcome = filter_products(list(request.products), resolved_context)
+    if request.dedupe_series_editions:
+        outcome = dedupe_editions(outcome)
     if context.first_in_series_only:
         outcome = first_in_series(outcome)
     outcome = dataclasses.replace(
@@ -220,11 +223,17 @@ def process_session_recipe(
     allowed = session.ranking_context.get("allowed_asins")
     if isinstance(allowed, list):
         allowed_set = set(allowed)
+        filtered_products = tuple(
+            product for product in result.products if product.asin in allowed_set
+        )
+        if not recipe.sort:
+            by_asin = {product.asin: product for product in filtered_products}
+            filtered_products = tuple(
+                by_asin[asin] for asin in allowed if asin in by_asin
+            )
         result = dataclasses.replace(
             result,
-            products=tuple(
-                product for product in result.products if product.asin in allowed_set
-            ),
+            products=filtered_products,
         )
     match_reasons = session.ranking_context.get("match_reasons")
     match_context = (

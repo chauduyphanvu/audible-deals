@@ -17,6 +17,7 @@ from audible_deals.result_processing import (
     RECIPE_DEFAULTS,
     process_session_recipe,
 )
+from audible_deals.settings import resolve_plus_flags
 
 
 class CachedRefinementError(ValueError):
@@ -143,7 +144,12 @@ def refine_cached_results(
         or bool(request.clear_fields)
         or not _is_patch_empty(request.recipe_patch)
     )
-    if request.count_only and session.legacy and not any_refinement:
+    if (
+        request.count_only
+        and session.legacy
+        and not any_refinement
+        and not session.constraints.get("always_skip_asins")
+    ):
         return CachedRefinementOutcome(
             result=None,
             visible_result=None,
@@ -162,6 +168,17 @@ def refine_cached_results(
         clear_values[name] = getattr(RECIPE_DEFAULTS, name)
     recipe = RecipePatch.from_mapping(clear_values).merge(recipe)
     recipe = request.recipe_patch.merge(recipe)
+    try:
+        skip_plus, only_plus = resolve_plus_flags(
+            recipe.skip_plus,
+            recipe.only_plus,
+            skip_rank=int(request.recipe_patch.skip_plus is True),
+            only_rank=int(request.recipe_patch.only_plus is True),
+        )
+    except ValueError as exc:
+        raise CachedRefinementValidationError(str(exc)) from None
+    if (skip_plus, only_plus) != (recipe.skip_plus, recipe.only_plus):
+        recipe = RecipePatch(skip_plus=skip_plus, only_plus=only_plus).merge(recipe)
 
     if (
         request.recipe_patch.exclude_genres is not UNSET
@@ -171,10 +188,6 @@ def refine_cached_results(
         raise CachedRefinementValidationError(
             "Changing --exclude-genre requires category resolution. Rerun: "
             + _rerun_command(session)
-        )
-    if recipe.skip_plus and recipe.only_plus:
-        raise CachedRefinementValidationError(
-            "--skip-plus and --only-plus are mutually exclusive"
         )
     if (
         recipe.require_history

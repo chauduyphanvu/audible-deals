@@ -64,6 +64,43 @@ def clear_seen_asins() -> bool:
         return False
 
 
+def load_dismissed_asins() -> set[str]:
+    """Load globally dismissed ASINs for exclusion."""
+    return {
+        asin
+        for asin in load_json_file(
+            constants.DISMISSED_ASINS_FILE, list, "dismissed ASINs"
+        )
+        if isinstance(asin, str)
+    }
+
+
+def save_dismissed_asins(new_asins: set[str]) -> None:
+    """Append ASINs to the cumulative dismissed-ASINs file."""
+    if not new_asins:
+        return
+    existing = load_dismissed_asins()
+    if new_asins <= existing:
+        return
+    merged = sorted(existing | new_asins)
+    _atomic_write(constants.DISMISSED_ASINS_FILE, json.dumps(merged))
+    logger.debug(
+        "saved dismissed ASINs (%d total, +%d new)",
+        len(merged),
+        len(merged) - len(existing),
+    )
+
+
+def clear_dismissed_asins() -> bool:
+    """Delete the cumulative dismissed-ASINs file. Returns True if deleted."""
+    try:
+        constants.DISMISSED_ASINS_FILE.unlink()
+        logger.debug("cleared dismissed ASINs: %s", constants.DISMISSED_ASINS_FILE)
+        return True
+    except FileNotFoundError:
+        return False
+
+
 def _read_cache_data() -> Any:
     if not constants.LAST_RESULTS_FILE.exists():
         raise click.ClickException(

@@ -15,7 +15,9 @@ from audible_deals.result_models import (
     DiscoveryResult,
 )
 from audible_deals.results_cache import (
-    load_seen_asins as _load_seen_asins,
+    load_dismissed_asins,
+    load_result_session,
+    save_last_results,
 )
 from tests.conftest import make_product
 
@@ -186,25 +188,23 @@ class TestInteractiveBrowse:
         assert "bogus" in result.output
         assert "discount" in result.output  # valid keys listed
 
-    def test_not_interested_single_writes_to_seen(self, tmp_config):
-        """'n 1' appends that ASIN to the seen-ASINs store."""
+    def test_not_interested_single_writes_to_dismissed_and_removes_row(
+        self, tmp_config
+    ):
         products = [make_product(asin="NI1", title="Skip Me")]
         result = _run_browse(products, "n 1\nq\n", tmp_config)
         assert result.exit_code == 0, result.output
-        assert "NI1" in _load_seen_asins()
-        assert "exclude-seen" in result.output or "Won't show" in result.output
+        assert load_dismissed_asins() == {"NI1"}
+        assert "Globally dismissed" in result.output
 
-    def test_not_interested_range_writes_both(self, tmp_config):
-        """'n 1-2' marks both ASINs in the seen store."""
+    def test_not_interested_range_writes_both_dismissed_asins(self, tmp_config):
         products = [
             make_product(asin="NR1", title="Skip One"),
             make_product(asin="NR2", title="Skip Two"),
         ]
         result = _run_browse(products, "n 1-2\nq\n", tmp_config)
         assert result.exit_code == 0, result.output
-        seen = _load_seen_asins()
-        assert "NR1" in seen
-        assert "NR2" in seen
+        assert load_dismissed_asins() == {"NR1", "NR2"}
 
 
 class TestInteractiveCommandParser:
@@ -318,7 +318,9 @@ class TestInteractiveBrowserDispatcher:
         output = []
         histories = []
         hidden = []
-        monkeypatch.setattr(interactive_mod.console, "print", output.append)
+        monkeypatch.setattr(
+            interactive_mod.console, "print", lambda value="": output.append(value)
+        )
         monkeypatch.setattr(
             interactive_mod,
             "load_price_history",
@@ -329,7 +331,11 @@ class TestInteractiveBrowserDispatcher:
             "display_price_history",
             lambda entries, asin, currency: histories.append((entries, asin, currency)),
         )
-        monkeypatch.setattr(interactive_mod, "save_seen_asins", hidden.append)
+        monkeypatch.setattr(interactive_mod, "save_dismissed_asins", hidden.append)
+        monkeypatch.setattr(interactive_mod, "update_session_view", lambda *args: None)
+        monkeypatch.setattr(
+            interactive_mod, "display_products", lambda *args, **kwargs: None
+        )
 
         assert browser.dispatch(interactive_mod.InteractiveCommand("help"))
         assert browser.dispatch(interactive_mod.InteractiveCommand("history", (0,)))
@@ -337,8 +343,9 @@ class TestInteractiveBrowserDispatcher:
         assert browser.dispatch(interactive_mod.InteractiveCommand("detail", (2,)))
         assert histories == [([{"price": 1}], "IB1", "£")]
         assert hidden == [{"IB1", "IB2"}]
+        assert browser.products == []
         assert any("Results: 1-2" in line for line in output)
-        assert any("Number must be 1-2" in line for line in output)
+        assert any("Number must be 1-0" in line for line in output)
 
     def test_empty_positions_use_bounds_diagnostic(self, monkeypatch):
         import audible_deals.cli.interactive as interactive_mod
@@ -378,6 +385,138 @@ class TestInteractiveBrowserDispatcher:
         )
         assert [product.asin for product in browser.products] == ["IB2", "IB1"]
         assert rendered[0][0] == ["IB2", "IB1"]
+
+    def test_failed_dismissed_write_leaves_rows_and_cached_view_unchanged(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.interactive as interactive_mod
+
+        browser = self._browser()
+        save_last_results(
+            "test",
+            [
+                {"asin": "IB1", "title": "First"},
+                {"asin": "IB2", "title": "Second"},
+            ],
+        )
+        before = constants_mod.LAST_RESULTS_FILE.read_text()
+        rendered = []
+        monkeypatch.setattr(
+            interactive_mod,
+            "save_dismissed_asins",
+            lambda *args: (_ for _ in ()).throw(OSError("read only")),
+        )
+        monkeypatch.setattr(
+            interactive_mod,
+            "display_products",
+            lambda *args, **kwargs: rendered.append(args),
+        )
+
+        assert browser.dispatch(interactive_mod.InteractiveCommand("hide", (0,)))
+
+        assert [product.asin for product in browser.products] == ["IB1", "IB2"]
+        assert constants_mod.LAST_RESULTS_FILE.read_text() == before
+        assert rendered == []
+        assert load_dismissed_asins() == set()
+
+    def test_dismissed_removes_duplicate_rows_and_updates_visible_order(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.interactive as interactive_mod
+
+        products = [
+            make_product(asin="DUP1", title="First edition"),
+            make_product(asin="KEEP", title="Keep"),
+            make_product(asin="DUP1", title="Second edition"),
+        ]
+        save_last_results(
+            "test",
+            [
+                {"asin": "DUP1", "title": "First edition"},
+                {"asin": "KEEP", "title": "Keep"},
+            ],
+        )
+        rendered = []
+        monkeypatch.setattr(
+            interactive_mod,
+            "display_products",
+            lambda rows, **kwargs: rendered.append([row.asin for row in rows]),
+        )
+        browser = interactive_mod.InteractiveBrowser(products)
+
+        assert browser.dispatch(interactive_mod.InteractiveCommand("hide", (0,)))
+
+        assert [product.asin for product in browser.products] == ["KEEP"]
+        assert load_dismissed_asins() == {"DUP1"}
+        assert load_result_session().visible_asins == ["KEEP"]
+        assert rendered == [["KEEP"]]
+
+    def test_dismissed_first_row_rerenders_remaining_as_one_with_context(
+        self, tmp_config, monkeypatch
+    ):
+        from io import StringIO
+
+        from rich.console import Console
+
+        import audible_deals.cli.interactive as interactive_mod
+        from audible_deals.presentation import terminal
+
+        dismissed = make_product(asin="FIRST", title="Dismiss first", price=2.0)
+        remaining = make_product(asin="SECOND", title="Now first", price=4.0)
+        save_last_results(
+            "Context results",
+            [
+                {"asin": dismissed.asin, "title": dismissed.title},
+                {"asin": remaining.asin, "title": remaining.title},
+            ],
+        )
+        browser = interactive_mod.InteractiveBrowser(
+            [dismissed, remaining],
+            currency="£",
+            credit_price=8.5,
+            title="Context results",
+            max_price=6.0,
+            show_url=True,
+            atl_asins={remaining.asin},
+            hist_context={remaining.asin: -25},
+            match_context={remaining.asin: "revised match"},
+        )
+        rendered = []
+        real_display_products = interactive_mod.display_products
+        output = StringIO()
+        monkeypatch.setattr(
+            terminal,
+            "console",
+            Console(file=output, force_terminal=False, width=160),
+        )
+
+        def spy_display_products(products, **kwargs):
+            rendered.append(([product.asin for product in products], kwargs))
+            real_display_products(products, **kwargs)
+
+        monkeypatch.setattr(interactive_mod, "display_products", spy_display_products)
+
+        assert browser.dispatch(interactive_mod.InteractiveCommand("hide", (0,)))
+
+        text = output.getvalue()
+        assert "@1" in text
+        assert remaining.title in text
+        assert dismissed.title not in text
+        assert rendered == [
+            (
+                [remaining.asin],
+                {
+                    "max_price": 6.0,
+                    "title": "Context results",
+                    "currency": "£",
+                    "show_url": True,
+                    "atl_asins": {remaining.asin},
+                    "hist_context": {remaining.asin: -25},
+                    "credit_price": 8.5,
+                    "match_context": {remaining.asin: "revised match"},
+                },
+            )
+        ]
 
 
 class TestInteractiveBrowseWishlist:

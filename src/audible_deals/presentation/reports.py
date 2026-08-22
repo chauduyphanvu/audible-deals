@@ -273,6 +273,7 @@ def display_watch_table(
         )
 
     hits = 0
+    unavailable = 0
     displayed_products: list[Product] = []
     for product in products:
         target = targets.get(product.asin)
@@ -286,7 +287,10 @@ def display_watch_table(
         is_buy = (
             target is not None and product.price is not None and product.price <= target
         )
-        if is_buy:
+        if product.price is None:
+            status = "[dim]unavailable[/dim]"
+            unavailable += 1
+        elif is_buy:
             status = "[bold green]BUY[/bold green]"
             product_price = f"[bold green]{product_price}[/bold green]"
             hits += 1
@@ -327,6 +331,8 @@ def display_watch_table(
         terminal.console.print(
             f"\n  [dim]No items at target price yet. {len(products)} watched.[/dim]"
         )
+    if unavailable:
+        terminal.console.print(f"  [dim]{unavailable} unavailable.[/dim]")
     return hits
 
 
@@ -346,7 +352,9 @@ def display_series_gaps(gaps: list[dict], currency: str = "$") -> None:
             position = book["position"]
             position_str = f"#{position}" if position else "  "
             price = book["price"]
-            rendered_price = price_str(price, currency) if price is not None else "-"
+            rendered_price = (
+                price_str(price, currency) if price is not None else "unavailable"
+            )
             atl = "[bold gold1] ★[/bold gold1]" if book.get("atl") else ""
             terminal.console.print(
                 f"  [dim]missing[/dim]  {position_str:<6} "

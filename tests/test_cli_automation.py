@@ -130,6 +130,36 @@ class TestWatchCommand:
         assert "Cheap Book" in result.output
         assert "Expensive Book" not in result.output
 
+    def test_watch_unavailable_precedes_discount_and_is_summarized_with_buy_only(
+        self, mock_client, tmp_config
+    ):
+        wishlist_mod.save_wishlist(
+            [
+                {"asin": "W1", "title": "Unavailable", "max_price": 10.0},
+                {"asin": "W2", "title": "Cheap", "max_price": 10.0},
+            ]
+        )
+        mock_client.get_products_batch.return_value = [
+            make_product(
+                asin="W1",
+                title="Unavailable",
+                price=None,
+                list_price=20.0,
+            ),
+            make_product(asin="W2", title="Cheap", price=5.0),
+        ]
+        runner = CliRunner()
+
+        shown = runner.invoke(cli, ["watch"])
+        buy_only = runner.invoke(cli, ["watch", "--buy-only"])
+
+        assert shown.exit_code == 0, shown.output
+        assert "unavailable" in shown.output
+        assert "waiting" not in shown.output
+        assert buy_only.exit_code == 0, buy_only.output
+        assert "Unavailable" not in buy_only.output
+        assert "1 unavailable" in buy_only.output
+
     def test_watch_sort_by_title(self, mock_client, tmp_config):
         """--sort title orders output alphabetically."""
 
@@ -565,6 +595,43 @@ class TestWatchRecordsPrices:
         history = _load_price_history("WR1")
         assert len(history) == 1
         assert history[0]["price"] == 7.99
+
+
+class TestPriceHistoryObservationDate:
+    def test_backfill_is_chronological_idempotent_and_capped(self, tmp_config):
+        from audible_deals.price_history import load_price_history, record_prices
+
+        product = make_product(asin="B00BACK001", price=4.0, title="Backfill")
+        record_prices([product], datetime.date(2026, 1, 3))
+        record_prices([product], datetime.date(2026, 1, 1))
+        product.price = 9.0
+        record_prices([product], datetime.date(2026, 1, 1))
+
+        entries = load_price_history(product.asin)
+        assert [entry["date"] for entry in entries] == [
+            "2026-01-01",
+            "2026-01-03",
+        ]
+        assert entries[0]["price"] == 4.0
+
+        seeded = [
+            {
+                "date": (
+                    datetime.date(2025, 1, 1) + datetime.timedelta(days=day)
+                ).isoformat(),
+                "price": 4.0,
+                "title": product.title,
+            }
+            for day in range(365)
+        ]
+        history_file = constants_mod.HISTORY_DIR / f"{product.asin}.json"
+        history_file.write_text(json.dumps({"marketplaces": {"us": seeded}}))
+        record_prices([product], datetime.date(2026, 1, 1))
+
+        capped = load_price_history(product.asin)
+        assert len(capped) == 365
+        assert capped[0]["date"] == "2025-01-02"
+        assert capped[-1]["date"] == "2026-01-01"
 
 
 class TestNotifyRecordsPrices:

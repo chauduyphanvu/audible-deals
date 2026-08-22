@@ -7,6 +7,7 @@ import time
 from unittest.mock import MagicMock
 
 import click
+import pytest
 from click.testing import CliRunner
 
 from audible_deals.auth_state import inspect_auth_file
@@ -115,6 +116,41 @@ def test_doctor_reports_invalid_profile_and_monitor_settings(tmp_config, monkeyp
     assert "Saved-search monitors" in output
     assert "bad-monitor" in output
     assert "must be finite" in output
+
+
+@pytest.mark.parametrize(
+    ("payload", "detail"),
+    [
+        ("not json", "Expecting value"),
+        (json.dumps({"asin": "A1"}), "Expected a list"),
+        (json.dumps(["A1", 2]), "Expected every entry to be a string"),
+    ],
+)
+def test_doctor_strictly_fails_invalid_dismissed_state(tmp_config, payload, detail):
+    import audible_deals.constants as constants
+
+    constants.DISMISSED_ASINS_FILE.write_text(payload)
+
+    result = CliRunner().invoke(cli, ["doctor"])
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 1
+    assert "Dismissed-ASINs state" in output
+    assert "FAIL" in output
+    assert detail in output
+
+
+def test_doctor_passes_missing_and_valid_dismissed_state(tmp_config):
+    import audible_deals.constants as constants
+
+    missing = CliRunner().invoke(cli, ["doctor"])
+    constants.DISMISSED_ASINS_FILE.write_text(json.dumps(["A1", "A2", "A1"]))
+    valid = CliRunner().invoke(cli, ["doctor"])
+
+    assert "Dismissed-ASINs state" in missing.output
+    assert "No entries" in missing.output
+    assert "Dismissed-ASINs state" in valid.output
+    assert "2 ASIN(s) dismissed" in valid.output
 
 
 def test_bare_dashboard_is_auth_aware_and_local(tmp_config, monkeypatch):

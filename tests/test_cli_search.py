@@ -8,10 +8,46 @@ import pytest
 from click.testing import CliRunner
 
 from audible_deals.cli import cli
+from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from tests.conftest import make_product
 
 
 class TestSearchCommand:
+    def test_search_excludes_dismissed_but_caches_raw_candidate(
+        self, mock_client, tmp_config
+    ):
+        dismissed = make_product(
+            asin="SRCHDIS1", price=3.0, series_name="", series_position=""
+        )
+        visible = make_product(
+            asin="SRCHKEEP", price=4.0, series_name="", series_position=""
+        )
+        save_dismissed_asins({dismissed.asin})
+        mock_client.search_pages.return_value = iter([([dismissed, visible], 1, 2)])
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "search",
+                "test",
+                "--pages",
+                "1",
+                "--all-languages",
+                "--json",
+                "-n",
+                "0",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert [item["asin"] for item in json.loads(result.stdout)] == [visible.asin]
+        session = load_result_session()
+        assert {item["asin"] for item in session.candidates} == {
+            dismissed.asin,
+            visible.asin,
+        }
+        assert session.constraints["always_skip_asins"] == [dismissed.asin]
+
     def test_search_basic(self, mock_client, tmp_config):
         products = [make_product(asin="S1", price=5.0)]
         mock_client.search_pages.return_value = iter([(products, 1, 1)])
@@ -405,6 +441,25 @@ class TestSearchAuthorHint:
 
 
 class TestDryRunSearch:
+    def test_explicit_plus_conflict_fails_before_client_creation(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.catalog as catalog_mod
+
+        monkeypatch.setattr(
+            catalog_mod,
+            "_get_client",
+            lambda locale: pytest.fail("invalid settings constructed a client"),
+        )
+
+        result = CliRunner().invoke(
+            cli,
+            ["search", "test", "--skip-plus", "--only-plus", "--dry-run"],
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
     def test_search_dry_run_shows_summary(self, mock_client, tmp_config):
         """search --dry-run prints scan summary and does not call search_pages."""
         runner = CliRunner()

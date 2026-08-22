@@ -18,7 +18,7 @@ from audible_deals.presentation.reports import display_price_history
 from audible_deals.presentation.terminal import console
 from audible_deals.price_history import load_price_history
 from audible_deals.product import Product
-from audible_deals.results_cache import save_seen_asins, update_session_view
+from audible_deals.results_cache import save_dismissed_asins, update_session_view
 from audible_deals.selectors import _expand_ref_string
 from audible_deals.wishlist import (
     WishlistMutationError,
@@ -293,9 +293,30 @@ class InteractiveBrowser:
         if not self._positions_in_bounds(command.positions):
             return True
         asins = {self.products[position].asin for position in command.positions}
-        save_seen_asins(asins)
-        console.print(
-            f"[dim]Won't show again in scans with --exclude-seen ({len(asins)} marked)[/dim]"
+        try:
+            save_dismissed_asins(asins)
+        except Exception as exc:
+            console.print(f"[red]Could not dismiss selection: {exc}[/red]")
+            return True
+        self.products[:] = [
+            product for product in self.products if product.asin not in asins
+        ]
+        try:
+            update_session_view([product.asin for product in self.products])
+        except Exception:
+            pass
+        console.print(f"[dim]Globally dismissed {len(asins)} title(s).[/dim]")
+        console.print()
+        display_products(
+            self.products,
+            max_price=self.max_price,
+            title=self.title,
+            currency=self.currency,
+            show_url=self.show_url,
+            atl_asins=self.atl_asins,
+            hist_context=self.hist_context,
+            credit_price=self.credit_price,
+            match_context=self.match_context,
         )
         return True
 

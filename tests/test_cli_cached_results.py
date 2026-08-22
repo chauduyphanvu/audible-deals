@@ -11,7 +11,10 @@ from click.testing import CliRunner
 import audible_deals.constants as constants_mod
 from audible_deals.cli import cli
 from audible_deals.results_cache import (
+    load_dismissed_asins,
+    load_result_session,
     load_seen_asins as _load_seen_asins,
+    save_dismissed_asins,
 )
 from audible_deals.results_cache import (
     save_seen_asins as _save_seen_asins,
@@ -73,6 +76,31 @@ class TestCachedResultRegressions:
         result = CliRunner().invoke(cli, ["last", "--output", "bad.txt"])
         assert result.exit_code != 0
         assert "Unsupported extension" in result.output
+
+    def test_last_plus_patch_overrides_inherited_opposite_and_rejects_both(
+        self, tmp_config, mock_client
+    ):
+        product = make_product(
+            asin="LASTPLUS", price=3.0, in_plus_catalog=True, series_name=""
+        )
+        mock_client.search_pages.return_value = iter([([product], 1, 1)])
+        runner = CliRunner()
+        seeded = runner.invoke(
+            cli,
+            ["find", "--pages", "1", "--all-languages", "--only-plus", "-q"],
+        )
+        assert seeded.exit_code == 0, seeded.output
+
+        refined = runner.invoke(cli, ["last", "--skip-plus", "--count"])
+        assert refined.exit_code == 0, refined.output
+        recipe = load_result_session().current_recipe
+        assert (recipe.skip_plus, recipe.only_plus) == (True, False)
+        before = constants_mod.LAST_RESULTS_FILE.read_text()
+
+        conflicting = runner.invoke(cli, ["last", "--skip-plus", "--only-plus"])
+        assert conflicting.exit_code != 0
+        assert "mutually exclusive" in conflicting.output
+        assert constants_mod.LAST_RESULTS_FILE.read_text() == before
 
 
 class TestHistoryCommand:
@@ -702,6 +730,32 @@ class TestCumulativeSeenAsins:
 
     def test_empty_when_no_file(self, tmp_config):
         assert _load_seen_asins() == set()
+
+    def test_clear_dismissed_does_not_change_seen(self, tmp_config, mock_client):
+        _save_seen_asins({"SEEN1"})
+        save_dismissed_asins({"DISMISSED1"})
+
+        result = CliRunner().invoke(cli, ["last", "--clear-dismissed"])
+
+        assert result.exit_code == 0, result.output
+        assert load_dismissed_asins() == set()
+        assert _load_seen_asins() == {"SEEN1"}
+
+    def test_clear_dismissed_composes_with_seen_and_cache(
+        self, tmp_config, mock_client
+    ):
+        _save_seen_asins({"SEEN1"})
+        save_dismissed_asins({"DISMISSED1"})
+        _routes_seed_last_results(tmp_config, [make_product(asin="CACHE1")])
+
+        result = CliRunner().invoke(
+            cli, ["last", "--clear-dismissed", "--clear-seen", "--clear"]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert load_dismissed_asins() == set()
+        assert _load_seen_asins() == set()
+        assert not constants_mod.LAST_RESULTS_FILE.exists()
 
     def test_clear_seen_command(self, tmp_config, mock_client):
         _save_seen_asins({"A1", "A2"})

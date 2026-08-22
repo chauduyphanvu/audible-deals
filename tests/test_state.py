@@ -29,7 +29,10 @@ from audible_deals.price_history import (
     scan_price_changes,
 )
 from audible_deals.results_cache import (
+    clear_dismissed_asins,
+    load_dismissed_asins,
     load_seen_asins,
+    save_dismissed_asins,
     save_seen_asins,
 )
 from audible_deals.selectors import _expand_ref_string, resolve_last_references
@@ -118,6 +121,60 @@ class TestCumulativeSeenAsins:
 
     def test_empty_when_no_file(self, tmp_config):
         assert load_seen_asins() == set()
+
+
+class TestDismissedAsins:
+    def test_dismissed_load_is_tolerant(self, tmp_config):
+        constants_mod.DISMISSED_ASINS_FILE.write_text("not json")
+        assert load_dismissed_asins() == set()
+        constants_mod.DISMISSED_ASINS_FILE.write_text(json.dumps({"asin": "A1"}))
+        assert load_dismissed_asins() == set()
+        constants_mod.DISMISSED_ASINS_FILE.write_text(json.dumps(["A1", 2, {}]))
+        assert load_dismissed_asins() == {"A1"}
+
+    def test_dismissed_save_is_cumulative_sorted_and_atomic(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.results_cache as results_cache_mod
+
+        writes = []
+        real_atomic_write = results_cache_mod._atomic_write
+
+        def capture(path, content):
+            writes.append((path, content))
+            real_atomic_write(path, content)
+
+        monkeypatch.setattr(results_cache_mod, "_atomic_write", capture)
+        save_dismissed_asins({"B2", "A1"})
+        save_dismissed_asins({"C3", "B2"})
+
+        assert load_dismissed_asins() == {"A1", "B2", "C3"}
+        assert json.loads(constants_mod.DISMISSED_ASINS_FILE.read_text()) == [
+            "A1",
+            "B2",
+            "C3",
+        ]
+        assert len(writes) == 2
+
+    def test_dismissed_write_failure_propagates(self, tmp_config, monkeypatch):
+        import audible_deals.results_cache as results_cache_mod
+
+        monkeypatch.setattr(
+            results_cache_mod,
+            "_atomic_write",
+            lambda *args: (_ for _ in ()).throw(OSError("read only")),
+        )
+        with pytest.raises(OSError, match="read only"):
+            save_dismissed_asins({"A1"})
+
+    def test_clear_dismissed_removes_only_dismissed_file(self, tmp_config):
+        save_dismissed_asins({"A1"})
+        save_seen_asins({"S1"})
+
+        assert clear_dismissed_asins()
+        assert not clear_dismissed_asins()
+        assert load_dismissed_asins() == set()
+        assert load_seen_asins() == {"S1"}
 
     def test_clear_seen_command(self, tmp_config, mock_client):
         save_seen_asins({"A1", "A2"})

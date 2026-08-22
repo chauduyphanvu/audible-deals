@@ -34,6 +34,7 @@ class ResultPresentationRequest:
     credit_price: float | None = None
     suppress_action_footer: bool = False
     json_writer: Callable[[str], object] = print
+    on_presented: Callable[[], object] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "serialized", tuple(self.serialized))
@@ -102,6 +103,8 @@ def emit_results(request: ResultPresentationRequest) -> None:
             if len(filtered) >= 2:
                 actions.insert(1, "deals compare @1 @2")
             console.print("  [dim]Next: " + " · ".join(actions) + "[/dim]")
+    if request.on_presented is not None:
+        request.on_presented()
     if request.interactive and filtered and not request.json_flag:
         from audible_deals.cli.interactive import _interactive_browse
 

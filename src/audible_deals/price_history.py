@@ -112,19 +112,30 @@ def migrate_legacy_histories() -> tuple[int, int]:
     return archived, failed
 
 
-def record_prices(products: list[Product]) -> None:
-    """Append today's prices to per-ASIN history files.
+def record_prices(
+    products: list[Product], observation_date: datetime.date | str | None = None
+) -> None:
+    """Append observed prices to per-ASIN history files.
 
     Batches writes: reads all existing files, updates in-memory,
     then writes only changed files.
     """
+    if observation_date is None:
+        observed_on = datetime.date.today().isoformat()
+    elif isinstance(observation_date, datetime.datetime):
+        observed_on = observation_date.date().isoformat()
+    elif isinstance(observation_date, datetime.date):
+        observed_on = observation_date.isoformat()
+    elif isinstance(observation_date, str):
+        observed_on = datetime.date.fromisoformat(observation_date).isoformat()
+    else:
+        raise TypeError("observation_date must be a date or ISO date string")
     priced = [p for p in products if p.price is not None]
     if not priced:
         logger.debug("record_prices: no priced products (input=%d)", len(products))
         return
     constants.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
 
-    today = datetime.date.today().isoformat()
     written: set[Path] = set()
     skipped_today = 0
     bad_asin = 0
@@ -179,11 +190,20 @@ def record_prices(products: list[Product]) -> None:
                 markets = {}
                 raw = {_MARKETPLACES_KEY: markets}
             entries = _marketplace_entries(raw, p.asin, p.locale)
-            if entries and entries[-1].get("date") == today:
+            if any(entry.get("date") == observed_on for entry in entries):
                 skipped_today += 1
                 continue
             entries.append(
-                {"date": today, "price": round(p.price, 2), "title": p.title}
+                {
+                    "date": observed_on,
+                    "price": round(p.price, 2),
+                    "title": p.title,
+                }
+            )
+            entries.sort(
+                key=lambda entry: (
+                    entry.get("date") if isinstance(entry.get("date"), str) else ""
+                )
             )
             markets[p.locale] = entries[-_MAX_HISTORY_ENTRIES:]
             _atomic_write(hist_file, json.dumps(raw))

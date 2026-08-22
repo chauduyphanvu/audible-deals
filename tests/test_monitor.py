@@ -454,6 +454,50 @@ def test_add_clears_orphaned_state(monitor_files):
     assert "cheap" not in load_monitor_state()["monitors"]
 
 
+def test_add_rejects_explicit_plus_conflict_without_writing(monitor_files):
+    result = CliRunner().invoke(
+        cli,
+        [
+            "monitor",
+            "add",
+            "bad-plus",
+            "--query",
+            "books",
+            "--skip-plus",
+            "--only-plus",
+        ],
+    )
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert load_monitors() == {}
+
+
+def test_persisted_plus_conflict_is_diagnosed_without_repair(
+    monkeypatch, monitor_files
+):
+    conflicting = _definition(skip_plus=True, only_plus=True)
+    save_monitors({"bad-plus": conflicting})
+    before = constants.MONITORS_FILE.read_text()
+    calls = []
+    monkeypatch.setattr(
+        monitor_module, "_get_client", lambda locale: calls.append(locale)
+    )
+
+    result = CliRunner().invoke(cli, ["monitor", "test", "bad-plus"])
+
+    assert result.exit_code != 0
+    assert "mutually exclusive" in result.output
+    assert calls == []
+    assert constants.MONITORS_FILE.read_text() == before
+
+    doctor = CliRunner().invoke(cli, ["doctor"])
+    assert doctor.exit_code == 1
+    assert "Saved-search monitors" in doctor.output
+    assert "FAIL" in doctor.output
+    assert constants.MONITORS_FILE.read_text() == before
+
+
 def test_scan_monitor_ignores_legacy_limit(monkeypatch, monitor_files):
     class Client:
         def __enter__(self):

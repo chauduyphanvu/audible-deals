@@ -11,6 +11,7 @@ from click.testing import CliRunner
 import audible_deals.config_store as config_store_mod
 import audible_deals.constants as constants_mod
 from audible_deals.cli import cli
+from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from tests.conftest import make_product
 
 
@@ -43,6 +44,32 @@ def _capture_history_context(monkeypatch):
 
 
 class TestFindCommand:
+    def test_find_excludes_dismissed_but_caches_raw_candidate(
+        self, mock_client, tmp_config
+    ):
+        dismissed = make_product(
+            asin="FINDDIS1", price=3.0, series_name="", series_position=""
+        )
+        visible = make_product(
+            asin="FINDKEEP", price=4.0, series_name="", series_position=""
+        )
+        save_dismissed_asins({dismissed.asin})
+        mock_client.search_pages.return_value = iter([([dismissed, visible], 1, 2)])
+
+        result = CliRunner().invoke(
+            cli,
+            ["find", "--pages", "1", "--all-languages", "--json", "-n", "0"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert [item["asin"] for item in json.loads(result.stdout)] == [visible.asin]
+        session = load_result_session()
+        assert {item["asin"] for item in session.candidates} == {
+            dismissed.asin,
+            visible.asin,
+        }
+        assert session.constraints["always_skip_asins"] == [dismissed.asin]
+
     def test_find_basic(self, mock_client, tmp_config):
         products = [
             make_product(asin=f"F{i}", price=float(i), list_price=20.0)
@@ -449,6 +476,24 @@ class TestFindDefaults:
 
 
 class TestDryRunFind:
+    def test_explicit_plus_conflict_fails_before_client_creation(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.catalog as catalog_mod
+
+        monkeypatch.setattr(
+            catalog_mod,
+            "_get_client",
+            lambda locale: pytest.fail("invalid settings constructed a client"),
+        )
+
+        result = CliRunner().invoke(
+            cli, ["find", "--skip-plus", "--only-plus", "--dry-run"]
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output
+
     def test_find_dry_run_shows_summary(self, mock_client, tmp_config):
         """find --dry-run prints scan summary and does not call search_pages."""
         runner = CliRunner()

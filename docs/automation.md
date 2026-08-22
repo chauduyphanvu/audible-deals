@@ -47,7 +47,7 @@ The watchlist is stored in `~/.config/audible-deals/wishlist.json`.
 
 ## Check prices
 
-`watch` labels each item `BUY` when it reaches its target, shows a discount when it is on sale but above target, and otherwise shows `waiting`.
+`watch` labels an item without a numeric price `unavailable`. Otherwise it shows `BUY` at the target price, a discount when the item is on sale above its target, or `waiting`.
 
 ```bash
 # Check once
@@ -66,17 +66,17 @@ deals watch --buy-only --sort price --show-url
 deals watch --exit-code
 ```
 
-`--every` accepts hours, minutes, seconds, or combinations and continues until you press Ctrl+C.
+`--every` accepts hours, minutes, seconds, or combinations and continues until you press Ctrl+C. `--buy-only` hides unavailable rows, but the summary still reports their count. Only `BUY` rows contribute to the hit count and `--exit-code` result.
 
 ## Price history
 
-Every ASIN returned by `find`, `search`, `for-me`, or `series` records at most one price per day, retained for up to 365 days.
+Flat discovery with `find`, `search`, `for-me`, or `series` caches its complete candidate pool for `last`, but records only finite-price rows surfaced after applying the result limit. `series --gaps` has no flat-view limit and records every finite-price gap that survives its filters. Terminal, `--quiet`, `--json`, and successful export output all count as surfaced, including quiet gaps; `--count` and `--dry-run` record neither history nor refresh eligibility. Each ASIN records at most one price per observation date; dated backfills remain chronological, idempotent, and capped at 365 entries.
 
 ```bash
 deals history B00R6S1RCY
 ```
 
-The history view includes relative dates and a sparkline. Result tables include a `vs hist` column after an ASIN has at least three price points, and mark an all-time low with a star.
+The history view includes relative dates and a sparkline. Result tables include a `vs hist` column after an ASIN has at least three price points, and mark an all-time low with a star. When `last` first surfaces a cached finite-price product, it backfills history at the original session date and marks refresh eligibility on the date shown. Unavailable products create neither record.
 
 ## Background tracking
 
@@ -109,11 +109,15 @@ The installer uses launchd on macOS, a systemd user timer or cron on Linux, and 
 
 Each run:
 
-- refreshes wishlist items and author watches;
-- refreshes recently tracked ASINs, capped at 200 per run;
+- refreshes every wishlist item and author watch regardless of recent-result eligibility;
+- refreshes up to 200 eligible recent-result ASINs for the current marketplace;
 - records history and sends target-price alerts;
 - applies a one-day alert cooldown unless the price falls further; and
 - stores the last 10 run summaries in `track_state.json`.
+
+Finite-price products become refresh-eligible only when presented. Eligibility is marketplace-specific and lasts through 30 days after presentation. On first use, the store migrates only ASINs in both the legacy seen list and valid numeric history, using each marketplace's latest history date.
+
+Extra refreshes exclude wishlist and globally dismissed ASINs. Candidates are ordered by oldest presentation date and ASIN, then selected with a stable, wrapping cursor so changes cannot starve later entries. Wishlist entries remain active even when dismissed or older than 30 days. Background refreshes record history without extending eligibility.
 
 Saved-search monitors run in the same scheduled command. Create either a frozen profile-backed browse monitor or a direct search monitor:
 

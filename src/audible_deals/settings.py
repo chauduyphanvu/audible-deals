@@ -15,6 +15,27 @@ from audible_deals.validation import validate_finite_number
 logger = logging.getLogger(__name__)
 
 
+def resolve_plus_flags(
+    skip_plus: bool,
+    only_plus: bool,
+    *,
+    skip_rank: int = 0,
+    only_rank: int = 0,
+) -> tuple[bool, bool]:
+    if type(skip_plus) is not bool:
+        raise ValueError("skip_plus must be boolean")
+    if type(only_plus) is not bool:
+        raise ValueError("only_plus must be boolean")
+    if skip_plus and only_plus:
+        if skip_rank > only_rank:
+            only_plus = False
+        elif only_rank > skip_rank:
+            skip_plus = False
+        else:
+            raise ValueError("--skip-plus and --only-plus are mutually exclusive")
+    return skip_plus, only_plus
+
+
 # Keys covered by config-file defaults. locale is resolved once in the CLI
 # group callback, not per-scan.
 _CONFIG_KEYS: tuple[str, ...] = tuple(k for k in _CONFIG_SCHEMA if k != "locale")
@@ -64,6 +85,7 @@ class Settings:
     exclude_keywords: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
+        resolve_plus_flags(self.skip_plus, self.only_plus)
         for name, minimum, maximum, integer in (
             ("max_price", 0, None, False),
             ("min_rating", 0, 5, False),
@@ -92,6 +114,23 @@ class SettingsResolutionRequest:
 
 def resolve_settings(request: SettingsResolutionRequest) -> Settings:
     """Resolve settings with CLI > profile > config > defaults precedence."""
+    resolve_plus_flags(
+        request.config.get("skip_plus", False),
+        request.config.get("only_plus", False),
+    )
+    if request.profile:
+        resolve_plus_flags(
+            request.profile.get("skip_plus", False),
+            request.profile.get("only_plus", False),
+        )
+    resolve_plus_flags(
+        request.cli_flags.get("skip_plus", False)
+        if "skip_plus" in request.explicit_options
+        else False,
+        request.cli_flags.get("only_plus", False)
+        if "only_plus" in request.explicit_options
+        else False,
+    )
     merged: dict[str, Any] = dict(request.cli_flags)
     debug = logger.isEnabledFor(logging.DEBUG)
     source: dict[str, str] = {}
@@ -127,6 +166,12 @@ def resolve_settings(request: SettingsResolutionRequest) -> Settings:
             kwargs["language"] = ""
         else:
             raise ValueError("language and all_languages cannot both be enabled")
+    kwargs["skip_plus"], kwargs["only_plus"] = resolve_plus_flags(
+        kwargs.get("skip_plus", False),
+        kwargs.get("only_plus", False),
+        skip_rank=_setting_source_rank(request, "skip_plus"),
+        only_rank=_setting_source_rank(request, "only_plus"),
+    )
     if debug:
         logger.debug("Settings sources: %s", source)
     return Settings(**kwargs)

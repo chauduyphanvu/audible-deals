@@ -2,17 +2,26 @@
 
 import datetime
 import json
+from contextlib import contextmanager
+
+import pytest
 
 from audible_deals import constants
 from audible_deals.automation_models import MonitorDefinition
+from audible_deals.cli.helpers import _resolve_skip_asins
 from audible_deals.config_store import load_monitor_state, save_monitor_state
 from audible_deals.monitor_service import (
     MonitorRuntime,
+    MonitorServiceError,
     monitor_events,
     record_monitor_error,
     run_monitor,
+    scan_monitor,
     select_monitors_for_run,
+    settings_from_dict,
 )
+from audible_deals.product import Product
+from audible_deals.results_cache import save_dismissed_asins
 
 
 def definition(name, pages):
@@ -35,6 +44,51 @@ def product(asin, price):
         "price": price,
         "url": f"https://example.test/{asin}",
     }
+
+
+def test_settings_from_dict_rejects_plus_conflict():
+    with pytest.raises(MonitorServiceError, match="mutually exclusive"):
+        settings_from_dict({"skip_plus": True, "only_plus": True})
+
+
+def test_settings_from_dict_rejects_non_boolean_plus_value():
+    with pytest.raises(MonitorServiceError, match="only_plus must be boolean"):
+        settings_from_dict({"only_plus": 1})
+
+
+def test_monitor_excludes_dismissed_when_exclude_seen_is_false(tmp_config, monkeypatch):
+    class Client:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+    @contextmanager
+    def progress(*args, **kwargs):
+        yield None
+
+    dismissed = Product(
+        asin="MONDISMISS", title="Dismissed", price=2, length_minutes=60
+    )
+    visible = Product(asin="MONKEEP", title="Visible", price=3, length_minutes=60)
+    save_dismissed_asins({dismissed.asin})
+    monkeypatch.setattr(
+        "audible_deals.monitor_service.execute_catalog_scan",
+        lambda *args: [dismissed, visible],
+    )
+    runtime = MonitorRuntime(
+        get_client=lambda locale: Client(),
+        resolve_categories=lambda *args: ("", "", set()),
+        resolve_skip_asins=_resolve_skip_asins,
+        progress=progress,
+    )
+
+    results = scan_monitor(
+        MonitorDefinition.from_dict(definition("dismissed", 1)), runtime
+    )
+
+    assert [item["asin"] for item in results] == [visible.asin]
 
 
 def test_diff_preserves_new_drop_threshold_disappear_and_reentry_rules():

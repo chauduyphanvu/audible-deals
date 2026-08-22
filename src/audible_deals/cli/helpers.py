@@ -12,6 +12,7 @@ from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.validation import validate_finite_number
 from audible_deals.presentation.terminal import console
 from audible_deals.results_cache import (
+    load_dismissed_asins,
     load_seen_asins,
     merge_seen_asins,
 )
@@ -43,19 +44,24 @@ def _credit_price(ctx: click.Context) -> float | None:
 def _resolve_skip_asins(
     dc: DealsClient, skip_owned: bool, exclude_seen: bool
 ) -> set[str] | None:
-    """Build the set of ASINs to exclude from owned library and seen history."""
+    """Build the set of ASINs to exclude from discovery."""
     skip_asins = dc.get_library_asins() if skip_owned else None
-    return merge_seen_asins(skip_asins, exclude_seen)
+    skip_asins = merge_seen_asins(skip_asins, exclude_seen)
+    dismissed = load_dismissed_asins()
+    if skip_asins is None:
+        return dismissed or None
+    return skip_asins | dismissed
 
 
 def _resolve_skip_snapshots(
     dc: DealsClient, skip_owned: bool, exclude_seen: bool
-) -> tuple[set[str] | None, set[str], set[str]]:
+) -> tuple[set[str] | None, set[str], set[str], set[str]]:
     """Resolve exclusions and retain the components needed for cached clearing."""
     owned = dc.get_library_asins() if skip_owned else set()
     seen = load_seen_asins()
-    combined = owned | (seen if exclude_seen else set())
-    return (combined or None), owned, seen
+    dismissed = load_dismissed_asins()
+    combined = owned | (seen if exclude_seen else set()) | dismissed
+    return (combined or None), owned, seen, dismissed
 
 
 def _resolve_cli_selectors(

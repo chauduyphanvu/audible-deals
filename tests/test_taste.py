@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json
 
@@ -11,6 +12,11 @@ import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
 from audible_deals.client import SeriesProductsBatch
 from audible_deals.cli import cli
+from audible_deals.results_cache import (
+    clear_dismissed_asins,
+    load_result_session,
+    save_dismissed_asins,
+)
 from audible_deals.taste import (
     build_profile,
     fit_score,
@@ -65,6 +71,42 @@ class TestBuildProfile:
         assert profile["series"][0]["owned"] == 2
         assert profile["series"][0]["series_asin"] == "SERIESA01"
 
+    def test_series_payload_deduplicates_owned_editions(self):
+        first = _lib_book(
+            "FIRST", "A", series="Bobiverse", pos="Book 1", title="Book One"
+        )
+        alternate = _lib_book(
+            "ALTERNATE", "A", series="Bobiverse", pos="1.0", title="Book One"
+        )
+        second = _lib_book("SECOND", "A", series="Bobiverse", pos="2", title="Book Two")
+
+        profile = build_profile([first, alternate, second])
+
+        assert profile["version"] == 2
+        assert profile["series"] == [
+            {
+                "name": "Bobiverse",
+                "owned": 2,
+                "series_asin": "SERIESA01",
+                "books": [
+                    {"asin": "FIRST", "title": "Book One", "position": "Book 1"},
+                    {"asin": "SECOND", "title": "Book Two", "position": "2"},
+                ],
+            }
+        ]
+
+    def test_great_courses_is_excluded_from_favorite_authors_only(self):
+        profile = build_profile(
+            [
+                _lib_book("G1", "The Great Courses"),
+                _lib_book("G2", "tHe GrEaT cOuRsEs"),
+                _lib_book("N1", "Great Courses Daily"),
+                _lib_book("N2", "Great Courses Daily"),
+            ]
+        )
+
+        assert profile["authors"] == [{"name": "Great Courses Daily", "count": 2}]
+
     def test_genres_and_owned_asins(self):
         lib = [_lib_book("L1", "A"), _lib_book("L2", "B")]
         profile = build_profile(lib)
@@ -102,6 +144,16 @@ class TestProfileCache:
         constants_mod.TASTE_CACHE_FILE.write_text(json.dumps({"built_at": "soon"}))
         assert load_cached_profile() is None
 
+    def test_missing_and_older_versions_return_none(self, tmp_config):
+        profile = build_profile([_lib_book("L1", "A")])
+        profile.pop("version")
+        save_profile(profile)
+        assert load_cached_profile() is None
+
+        profile["version"] = 1
+        save_profile(profile)
+        assert load_cached_profile() is None
+
 
 # ===================================================================
 # Fit scoring
@@ -120,7 +172,7 @@ def _profile():
 class TestFitScore:
     def test_series_next_dominates(self):
         p = make_product(asin="C1", authors=["X"], narrators=["Y"], category_ids=[])
-        points, reasons = fit_score(p, _profile(), {"C1": "Bobiverse"})
+        points, reasons = fit_score(p, _profile(), {"C1": ("Bobiverse", True)})
         assert points == 5.0
         assert reasons == ["next in Bobiverse"]
 
@@ -148,6 +200,29 @@ class TestFitScore:
         assert points == 0.0
         assert reasons == []
 
+    def test_great_courses_is_excluded_from_author_boost_only(self):
+        profile = {
+            "authors": [
+                {"name": "THE GREAT COURSES", "count": 20},
+                {"name": "The Great Courses Daily", "count": 2},
+            ]
+        }
+        excluded = make_product(
+            asin="GC1", authors=["the great courses"], narrators=[], category_ids=[]
+        )
+        retained = make_product(
+            asin="GC2",
+            authors=["The Great Courses Daily"],
+            narrators=[],
+            category_ids=[],
+        )
+
+        assert fit_score(excluded, profile, {}) == (0.0, [])
+        assert fit_score(retained, profile, {}) == (
+            3.0,
+            ["author: The Great Courses Daily"],
+        )
+
 
 class TestRankByFit:
     def test_orders_by_fit_then_value_and_drops_zero(self):
@@ -166,10 +241,10 @@ class TestRankByFit:
         no_match = make_product(
             asin="R5", authors=["X"], narrators=["Y"], category_ids=[]
         )
-        ranked, match = rank_by_fit(
+        ranked, match, _ = rank_by_fit(
             [genre_pricey, no_match, genre_cheap, author_book, series_book],
             _profile(),
-            {"R1": "Bobiverse"},
+            {"R1": ("Bobiverse", True)},
         )
         assert [p.asin for p in ranked] == ["R1", "R2", "R3", "R4"]
         assert match["R1"] == "next in Bobiverse"
@@ -179,7 +254,7 @@ class TestRankByFit:
         p = make_product(
             asin="A1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
         )
-        ranked, match = rank_by_fit([p], _profile(), {}, atl_asins={"A1"})
+        ranked, match, _ = rank_by_fit([p], _profile(), {}, atl_asins={"A1"})
         assert ranked == [p]
         assert "all-time low" in match["A1"]
 
@@ -187,7 +262,7 @@ class TestRankByFit:
         p = make_product(
             asin="B1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
         )
-        ranked, match = rank_by_fit([p], _profile(), {}, hist_context={"B1": -15})
+        ranked, match, _ = rank_by_fit([p], _profile(), {}, hist_context={"B1": -15})
         assert ranked == [p]
         assert "below median" in match["B1"]
 
@@ -196,7 +271,7 @@ class TestRankByFit:
         p = make_product(
             asin="C1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
         )
-        ranked, match = rank_by_fit(
+        ranked, match, _ = rank_by_fit(
             [p], _profile(), {}, atl_asins={"C1"}, hist_context={"C1": -20}
         )
         assert "all-time low" in match["C1"]
@@ -206,7 +281,7 @@ class TestRankByFit:
         p = make_product(
             asin="Z1", authors=["Unknown"], narrators=["Y"], category_ids=[]
         )
-        ranked, match = rank_by_fit(
+        ranked, match, _ = rank_by_fit(
             [p], _profile(), {}, atl_asins={"Z1"}, hist_context={"Z1": -50}
         )
         assert ranked == []
@@ -222,10 +297,10 @@ class TestRankByFit:
         author_book = make_product(
             asin="A1", authors=["Fav Author"], narrators=["Y"], category_ids=[]
         )
-        ranked, match = rank_by_fit(
+        ranked, match, _ = rank_by_fit(
             [author_book, series_atl],
             _profile(),
-            {"S1": "Bobiverse"},
+            {"S1": ("Bobiverse", True)},
             atl_asins={"S1"},
         )
         assert ranked[0].asin == "S1"
@@ -239,13 +314,25 @@ class TestRankByFit:
 
 def _seed_profile_cache():
     profile = {
+        "version": 2,
         "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "library_size": 10,
         "owned_asins": ["B00OWNED01"],
         "authors": [{"name": "Fav Author", "count": 4}],
         "narrators": [{"name": "Fav Narrator", "count": 3}],
         "genres": [{"id": "G1", "name": "Science Fiction", "count": 8}],
-        "series": [{"name": "Bobiverse", "owned": 3, "series_asin": "SERIESA01"}],
+        "series": [
+            {
+                "name": "Bobiverse",
+                "owned": 3,
+                "series_asin": "SERIESA01",
+                "books": [
+                    {"asin": "B00OWNED01", "title": "Bobiverse 1", "position": "1"},
+                    {"asin": "B00OWNED02", "title": "Bobiverse 2", "position": "2"},
+                    {"asin": "B00OWNED03", "title": "Bobiverse 3", "position": "3"},
+                ],
+            }
+        ],
     }
     constants_mod.TASTE_CACHE_FILE.write_text(json.dumps(profile))
     return profile
@@ -303,6 +390,37 @@ def _wire_scans(mock_client):
 
 
 class TestForMeCommand:
+    def test_for_me_excludes_dismissed_and_keeps_raw_ranked_candidate(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        save_dismissed_asins({"B00GAP0004"})
+
+        result = CliRunner().invoke(cli, ["for-me", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert "B00GAP0004" not in {
+            item["asin"] for item in _json_payload(result.output)
+        }
+        session = load_result_session()
+        assert "B00GAP0004" in {item["asin"] for item in session.candidates}
+        assert session.constraints["always_skip_asins"] == ["B00GAP0004"]
+
+        allowed_asins = session.ranking_context["allowed_asins"]
+        revised_reason = session.ranking_context["match_reasons"]["B00GAP0004"]
+        assert clear_dismissed_asins()
+        restored = CliRunner().invoke(cli, ["last", "--reset", "--json"])
+
+        assert restored.exit_code == 0, restored.output
+        assert [item["asin"] for item in json.loads(restored.stdout)] == allowed_asins
+        persisted = load_result_session()
+        assert persisted.ranking_context["allowed_asins"] == allowed_asins
+        assert persisted.ranking_context["match_reasons"]["B00GAP0004"] == (
+            revised_reason
+        )
+        assert revised_reason == "next in Bobiverse"
+
     def test_ranked_results_with_match_column(self, mock_client, tmp_config):
         _seed_profile_cache()
         _wire_scans(mock_client)
@@ -323,6 +441,218 @@ class TestForMeCommand:
         assert result.exit_code == 0, result.output
         asins = [d["asin"] for d in _json_payload(result.output)]
         assert asins == ["B00GAP0004", "B00AUTH001", "B00GENRE01"]
+
+    def test_alternate_asin_owned_editions_are_excluded(self, mock_client, tmp_config):
+        _seed_profile_cache()
+        alternate = make_product(
+            asin="B00ALT0002",
+            title="Bobiverse 2 Alternate",
+            authors=["Fav Author"],
+            narrators=["Other"],
+            category_ids=["G1"],
+            series_name="Bobiverse",
+            series_asin="SERIESA01",
+            series_position="Book 2",
+        )
+        gap = make_product(
+            asin="B00GAP0004",
+            title="Bobiverse 4",
+            authors=["Other"],
+            narrators=["Other"],
+            category_ids=[],
+            series_name="Bobiverse",
+            series_asin="SERIESA01",
+            series_position="4",
+        )
+        mock_client.get_series_products.return_value = [alternate, gap]
+        mock_client.search_pages.side_effect = [
+            iter([([alternate], 1, 1)]),
+            iter([([alternate], 1, 1)]),
+        ]
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["for-me", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert [item["asin"] for item in _json_payload(result.output)] == [gap.asin]
+
+    def test_series_editions_prefer_purchasable_then_cheapest(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+        unavailable = make_product(
+            asin="UNAVAILABLE",
+            title="Bobiverse Four",
+            authors=["Other"],
+            narrators=["Other"],
+            category_ids=[],
+            series_name="Bobiverse",
+            series_position="4",
+            price=None,
+        )
+        expensive = dataclasses.replace(unavailable, asin="EXPENSIVE", price=8.0)
+        cheapest = dataclasses.replace(unavailable, asin="CHEAPEST", price=3.0)
+        mock_client.get_series_products.return_value = [
+            unavailable,
+            expensive,
+            cheapest,
+        ]
+        mock_client.search_pages.return_value = iter([])
+
+        result = CliRunner().invoke(cli, ["for-me", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert [item["asin"] for item in _json_payload(result.output)] == ["CHEAPEST"]
+
+    def test_actual_next_and_other_gaps_have_distinct_scores_and_wording(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+        later = make_product(
+            asin="LATER",
+            title="Later Gap",
+            authors=["Other"],
+            narrators=["Other"],
+            category_ids=[],
+            series_name="Bobiverse",
+            series_position="5",
+        )
+        ambiguous = dataclasses.replace(
+            later,
+            asin="AMBIGUOUS",
+            title="Bobiverse Omnibus",
+            series_position="Books 4 & 5",
+        )
+        next_book = dataclasses.replace(
+            later, asin="NEXT", title="Actual Next", series_position="4"
+        )
+        mock_client.get_series_products.return_value = [later, ambiguous, next_book]
+        mock_client.search_pages.return_value = iter([])
+
+        result = CliRunner().invoke(cli, ["for-me", "--json"])
+
+        assert result.exit_code == 0, result.output
+        session = load_result_session()
+        assert session.ranking_context["fit_scores"] == {
+            "LATER": 2.0,
+            "AMBIGUOUS": 2.0,
+            "NEXT": 5.0,
+        }
+        assert session.ranking_context["match_reasons"] == {
+            "LATER": "in Bobiverse",
+            "AMBIGUOUS": "in Bobiverse",
+            "NEXT": "next in Bobiverse",
+        }
+
+    def test_unavailable_and_placeholder_are_excluded_without_changing_zero_runtime_filter(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+        unavailable = make_product(
+            asin="UNAVAILABLE",
+            title="Unavailable",
+            series_name="Bobiverse",
+            series_position="4",
+            price=None,
+        )
+        placeholder = dataclasses.replace(
+            unavailable,
+            asin="PLACEHOLDER",
+            title="Series Advisor Placeholder",
+            price=1.0,
+        )
+        zero_runtime = dataclasses.replace(
+            unavailable,
+            asin="ZERO",
+            title="Zero Runtime",
+            series_position="5",
+            price=2.0,
+            length_minutes=0,
+        )
+        mock_client.get_series_products.return_value = [
+            unavailable,
+            placeholder,
+            zero_runtime,
+        ]
+        mock_client.search_pages.return_value = iter([])
+
+        result = CliRunner().invoke(cli, ["for-me", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert _json_payload(result.output) == []
+        session = load_result_session()
+        assert [item["asin"] for item in session.candidates] == ["ZERO"]
+        assert session.constraints["drop_zero_length"] is True
+
+    def test_great_courses_is_omitted_from_scans(self, mock_client, tmp_config):
+        profile = _seed_profile_cache()
+        profile["authors"] = [
+            {"name": "THE GREAT COURSES", "count": 50},
+            {"name": "Great Courses Daily", "count": 4},
+        ]
+        constants_mod.TASTE_CACHE_FILE.write_text(json.dumps(profile))
+
+        result = CliRunner().invoke(cli, ["for-me", "--dry-run", "--json"])
+
+        assert result.exit_code == 0, result.output
+        plan = json.loads(result.stdout)
+        assert plan["authors"] == ["Great Courses Daily"]
+
+    def test_session_persists_total_fit_ranking_and_last_reasons(
+        self, mock_client, tmp_config, monkeypatch
+    ):
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        monkeypatch.setattr(
+            "audible_deals.cli.foryou.price_history_context",
+            lambda products, **kwargs: (
+                {"B00AUTH001"} & {product.asin for product in products},
+                {},
+            ),
+        )
+
+        runner = CliRunner()
+        result = runner.invoke(cli, ["for-me", "--json"])
+
+        assert result.exit_code == 0, result.output
+        session = load_result_session()
+        assert session.ranking_context["allowed_asins"] == [
+            "B00GAP0004",
+            "B00AUTH001",
+            "B00GENRE01",
+        ]
+        assert session.ranking_context["fit_scores"] == {
+            "B00GAP0004": 6.0,
+            "B00AUTH001": 4.5,
+            "B00GENRE01": 1.0,
+        }
+        assert "all-time low" in session.ranking_context["match_reasons"]["B00AUTH001"]
+
+        last = runner.invoke(cli, ["last", "--json"])
+        assert last.exit_code == 0, last.output
+        assert [item["asin"] for item in _json_payload(last.output)] == [
+            "B00GAP0004",
+            "B00AUTH001",
+            "B00GENRE01",
+        ]
+        cached = load_result_session()
+        assert cached.ranking_context["match_reasons"] == {
+            "B00GAP0004": "next in Bobiverse",
+            "B00AUTH001": "author: Fav Author, all-time low",
+            "B00GENRE01": "favorite genre",
+        }
+
+        sorted_last = runner.invoke(cli, ["last", "--sort", "title", "--json"])
+        assert sorted_last.exit_code == 0, sorted_last.output
+        assert [item["asin"] for item in _json_payload(sorted_last.output)] == [
+            "B00GENRE01",
+            "B00GAP0004",
+            "B00AUTH001",
+        ]
+        assert (
+            load_result_session().ranking_context["match_reasons"]
+            == (cached.ranking_context["match_reasons"])
+        )
 
     def test_dry_run_makes_no_api_calls(self, mock_client, tmp_config):
         _seed_profile_cache()
@@ -456,6 +786,24 @@ class TestForMeCommand:
         result = runner.invoke(cli, ["for-me", "--skip-plus", "--only-plus"])
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output.lower()
+
+    def test_dry_run_plus_conflict_fails_without_constructing_client(
+        self, tmp_config, monkeypatch
+    ):
+        import audible_deals.cli.foryou as foryou_mod
+
+        calls = []
+        monkeypatch.setattr(
+            foryou_mod, "_get_client", lambda locale: calls.append(locale)
+        )
+
+        result = CliRunner().invoke(
+            cli, ["for-me", "--dry-run", "--skip-plus", "--only-plus"]
+        )
+
+        assert result.exit_code != 0
+        assert "mutually exclusive" in result.output.lower()
+        assert calls == []
 
     def test_sort_reorders_results(self, mock_client, tmp_config):
         _seed_profile_cache()

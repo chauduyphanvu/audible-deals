@@ -97,7 +97,7 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 | `-i, --interactive` | Browse the results interactively |
 | `--profile NAME` | Load a saved profile on `find` or `search` |
 
-`--skip-plus` and `--only-plus` are mutually exclusive. Use `deals categories` to look up category IDs.
+`--skip-plus` and `--only-plus` cannot both be true in one source layer; cross-layer rules are described under [Global defaults](#global-defaults). Use `deals categories` to look up category IDs.
 
 `--hist-below` requires at least five history entries for percentile comparison. By default, history filters let items without enough data pass through; add `--require-history` when those items should be excluded. Release dates use `YYYY-MM-DD`.
 
@@ -133,7 +133,7 @@ deals for-me --refresh
 deals for-me --dry-run
 ```
 
-The next unowned book in a series you started scores highest, followed by favorite authors, narrators, and genres. Price-history signals boost books at an all-time low or below their historical median. The `Match` column explains each result.
+The recommendation score adds 5 points for the `next in SERIES` continuation and 2 for another `in SERIES` match. Favorite authors, narrators, genres, and favorable price history add further boosts. The `Match` column explains each result.
 
 Owned books are always excluded. Results feed `deals last` and the price-history tracker. The profile is cached in `taste_cache.json` for 24 hours and never leaves your machine.
 
@@ -155,7 +155,9 @@ deals series --gaps
 deals series --series "Expeditionary Force" --on-sale
 ```
 
-Use `--max-series` to cap the number of series scanned and `--pages` to control catalog pages per series. The flat result view supports price, rating, length, sale, sort, limit, interactive, and export options. `--gaps` applies price and rating filters to the missing books.
+Use `--max-series` to cap the number of series scanned and `--pages` to control catalog pages per series. Series identity uses the series ASIN when available, otherwise a Unicode-normalized, case-folded, whitespace-collapsed name. Within a series, book identity uses the position when it contains exactly one number, otherwise the normalized title. These identities remove owned books and duplicate editions; a priced edition beats an unavailable one, then the cheaper price wins. An ASIN associated with multiple series appears once in the flat view while retaining every match.
+
+The flat result view supports price, rating, length, sale, sort, limit, interactive, and export options, but omits unpriced books. `--gaps` retains and labels them unavailable; `--max-price` filters priced gaps without removing unavailable ones.
 
 ## Last results
 
@@ -172,6 +174,8 @@ deals last --narrator "R.C. Bray" --min-ratings 100
 deals last --language english
 deals last -o last.csv
 deals last --count
+deals last --clear-seen
+deals last --clear-dismissed
 deals last --clear
 ```
 
@@ -191,11 +195,11 @@ Wishlist additions retain that marketplace for later `watch`, `notify`, and pric
 
 Product lists use a full table at 120 columns and wider, a compact table from 80–119 columns, and wrapped cards below 80 columns. Optional Buy, history, Match, identifiers, series details, and URLs fold into secondary lines instead of disappearing.
 
-The seen-results list used by `--exclude-seen` is separate from the last-results cache. Clear it with `deals last --clear-seen`.
+Seen results used by `--exclude-seen`, dismissed results, and the last-results cache are independent. Clear them with `deals last --clear-seen`, `deals last --clear-dismissed`, and `deals last --clear`, respectively.
 
 ## Interactive mode
 
-Add `-i` to `find` or `search`, then enter an action:
+Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last`, then enter an action:
 
 | Input | Action |
 |-------|--------|
@@ -205,8 +209,10 @@ Add `-i` to `find` or `search`, then enter an action:
 | `c @1 @3` | Compare two items |
 | `h @3` | Show price history |
 | `s discount` | Re-sort in place |
-| `n 1-3` | Mark items not interested |
+| `n 1-3` | Dismiss items globally and remove them from the current view immediately |
 | `q` | Quit |
+
+Dismissed ASINs are excluded from future `find`, `search`, `for-me`, `series`, monitor, and `last` results.
 
 ## Saved profiles
 
@@ -221,7 +227,7 @@ deals profile show my-scifi
 deals profile delete my-scifi
 ```
 
-Most filter and sort flags can be saved. An explicit CLI option overrides the profile value.
+Most filter and sort flags can be saved. An explicit CLI option overrides the profile value. A profile cannot save both `--skip-plus` and `--only-plus` as true.
 
 ## Saved-search monitors
 
@@ -255,7 +261,7 @@ deals config reset max-price
 deals config reset
 ```
 
-Precedence is `CLI option > profile > global config`. Set a default marketplace with `deals config set locale uk`.
+Precedence is `explicit CLI > profile > global config > built-in default`. For `skip-plus` and `only-plus`, a higher layer's true value disables the lower opposite; false values follow normal precedence without conflicting. Both true in one layer is invalid. Setting either to `true` with `deals config set` removes and reports the opposite persisted key; setting it to `false` leaves the opposite key unchanged. Existing same-layer conflicts are diagnosed rather than silently rewritten. Set a default marketplace with `deals config set locale uk`.
 
 ### Credit-aware recommendations
 
@@ -341,6 +347,9 @@ All application data is stored in `~/.config/audible-deals/`:
 | `wishlist.json` | Local watchlist |
 | `profiles.json` | Saved profiles |
 | `last_results.json` | Versioned candidate session from the latest flat `find`, `search`, `for-me`, or `series` result view |
+| `seen_asins.json` | ASINs returned by earlier result views for `--exclude-seen` |
+| `dismissed_asins.json` | ASINs dismissed globally with interactive `n` |
+| `refresh_eligibility.json` | Versioned per-marketplace dates for recently surfaced products eligible for background refresh |
 | `history/` | Per-ASIN price history |
 | `categories_cache.*.json` | Per-locale category caches |
 | `track_state.json`, `track.log` | Background tracking state and log |

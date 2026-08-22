@@ -192,6 +192,14 @@ def tmp_config(tmp_path, monkeypatch):
         constants_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json"
     )
     monkeypatch.setattr(constants_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
+    monkeypatch.setattr(
+        constants_mod,
+        "REFRESH_ELIGIBILITY_FILE",
+        tmp_path / "refresh_eligibility.json",
+    )
+    monkeypatch.setattr(
+        constants_mod, "DISMISSED_ASINS_FILE", tmp_path / "dismissed_asins.json"
+    )
     monkeypatch.setattr(constants_mod, "HISTORY_DIR", tmp_path / "history")
     # Redirect the run lock so tests never collide with real lock files
     monkeypatch.setattr(constants_mod, "LOCK_FILE", tmp_path / ".deals.lock")

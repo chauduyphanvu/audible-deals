@@ -21,6 +21,7 @@ from audible_deals.result_processing import (
 )
 from audible_deals.result_refinement import (
     CachedRefinementRequest,
+    CachedRefinementValidationError,
     FetchBoundPatch,
     FetchBoundRefinementError,
     refine_cached_results,
@@ -29,10 +30,16 @@ from audible_deals.result_publication import (
     ResultPublicationRequest,
     ResultSessionSpec,
     publish_discovery,
+    record_prices_safely,
 )
+from audible_deals.refresh_eligibility import load_refresh_eligibility
 from audible_deals.presentation.products import display_products
+from audible_deals.price_history import load_price_history
 from audible_deals.results_cache import (
+    clear_dismissed_asins,
+    load_dismissed_asins,
     load_result_session,
+    save_dismissed_asins,
     save_result_session,
 )
 from audible_deals.result_models import (
@@ -151,6 +158,17 @@ def test_session_rejects_invalid_persisted_recipe_numbers(field, value):
         ResultSession.from_dict(wire)
 
 
+@pytest.mark.parametrize("field", ["baseline_recipe", "current_recipe"])
+def test_session_rejects_persisted_plus_conflict(field):
+    product = make_product(asin="PLUSCONFLICT", series_name="")
+    wire = _session([product], visible=[product.asin]).to_dict()
+    wire[field]["skip_plus"] = True
+    wire[field]["only_plus"] = True
+
+    with pytest.raises(ResultSessionValidationError, match="cache is corrupt"):
+        ResultSession.from_dict(wire)
+
+
 @pytest.mark.parametrize(
     ("container", "field", "value"),
     [
@@ -257,8 +275,8 @@ def test_result_cache_io_errors_stay_at_persistence_boundary(tmp_config, monkeyp
 
 def test_apply_recipe_reuses_history_snapshot_and_preserves_ranking(monkeypatch):
     products = [
-        make_product(asin="RANK0002", price=4, series_name=""),
         make_product(asin="RANK0001", price=5, series_name=""),
+        make_product(asin="RANK0002", price=4, series_name=""),
         make_product(asin="RANK0003", price=6, series_name=""),
     ]
     session = _session(
@@ -296,6 +314,26 @@ def test_apply_recipe_reuses_history_snapshot_and_preserves_ranking(monkeypatch)
         "RANK0001": 8,
     }
 
+    sorted_result = apply_result_recipe(
+        session,
+        dataclasses.replace(session.current_recipe, sort="-price"),
+        credit_price=None,
+    )
+    assert [product.asin for product in sorted_result.products] == [
+        "RANK0001",
+        "RANK0002",
+    ]
+
+
+@pytest.mark.parametrize("value", [{"A1": float("nan")}, {"A1": True}, {1: 2.0}])
+def test_session_rejects_invalid_fit_scores(value):
+    product = make_product(asin="INVALID03", series_name="")
+    wire = _session([product], visible=[product.asin]).to_dict()
+    wire["ranking_context"]["fit_scores"] = value
+
+    with pytest.raises(ResultSessionValidationError, match="cache is corrupt"):
+        ResultSession.from_dict(wire)
+
 
 def test_cached_refinement_service_is_api_free_and_does_not_mutate_session():
     product = make_product(asin="PURE0001", price=4, series_name="")
@@ -314,6 +352,59 @@ def test_cached_refinement_service_is_api_free_and_does_not_mutate_session():
     assert outcome.total_count == 1
     assert outcome.session is not session
     assert outcome.session.current_recipe.max_price == 4
+    assert session.to_dict() == before
+
+
+@pytest.mark.parametrize(
+    ("recipe", "patch", "expected"),
+    [
+        (
+            ResultRecipe(only_plus=True),
+            RecipePatch(skip_plus=True),
+            (True, False),
+        ),
+        (
+            ResultRecipe(skip_plus=True),
+            RecipePatch(only_plus=True),
+            (False, True),
+        ),
+        (
+            ResultRecipe(only_plus=True),
+            RecipePatch(skip_plus=False),
+            (False, True),
+        ),
+        (
+            ResultRecipe(skip_plus=True),
+            RecipePatch(only_plus=False),
+            (True, False),
+        ),
+    ],
+)
+def test_cached_plus_patch_precedence(recipe, patch, expected):
+    product = make_product(asin="PLUSPATCH", series_name="", in_plus_catalog=True)
+    session = _session([product], visible=[product.asin], recipe=recipe)
+
+    outcome = refine_cached_results(
+        session, CachedRefinementRequest(recipe_patch=patch)
+    )
+
+    current = outcome.session.current_recipe
+    assert (current.skip_plus, current.only_plus) == expected
+
+
+def test_cached_plus_patch_rejects_both_explicit_true_without_mutation():
+    product = make_product(asin="PLUSPATCHERR", series_name="")
+    session = _session([product], visible=[product.asin])
+    before = session.to_dict()
+
+    with pytest.raises(CachedRefinementValidationError, match="mutually exclusive"):
+        refine_cached_results(
+            session,
+            CachedRefinementRequest(
+                recipe_patch=RecipePatch(skip_plus=True, only_plus=True)
+            ),
+        )
+
     assert session.to_dict() == before
 
 
@@ -449,6 +540,107 @@ def test_publication_snapshots_histories_before_recording_prices(
     assert persisted.constraints["price_drop_pcts"] == {product.asin: -100.0}
 
 
+def test_safe_history_wrapper_forwards_observation_date(monkeypatch):
+    product = make_product(asin="B00SAFE001", series_name="")
+    captured = {}
+
+    def fake_record(products, observation_date=None):
+        captured["products"] = products
+        captured["observation_date"] = observation_date
+
+    monkeypatch.setattr("audible_deals.result_publication.record_prices", fake_record)
+    observed_on = datetime.date(2026, 1, 2)
+
+    record_prices_safely([product], observation_date=observed_on)
+
+    assert captured == {
+        "products": [product],
+        "observation_date": observed_on,
+    }
+
+
+def test_publication_records_and_marks_only_visible_numeric_products(tmp_config):
+    visible = make_product(asin="B00VISIBLE", price=4, series_name="")
+    hidden = make_product(asin="B00HIDDEN1", price=5, series_name="")
+    unavailable = make_product(asin="B00UNAVAIL", price=None, series_name="")
+
+    outcome = publish_discovery(
+        ResultPublicationRequest(
+            result=DiscoveryResult((visible, hidden, unavailable)),
+            title="Surface",
+            limit=1,
+            output=None,
+            json_flag=False,
+            quiet=True,
+            max_price=None,
+            currency="$",
+            candidates=(visible, hidden, unavailable),
+            session_spec=ResultSessionSpec(
+                producer="find",
+                locale="us",
+                recipe=result_recipe(limit=1),
+                source={"command": "deals find"},
+                constraints={"drop_zero_length": True},
+            ),
+        )
+    )
+
+    assert outcome.session is not None
+    assert {item["asin"] for item in outcome.session.candidates} == {
+        visible.asin,
+        hidden.asin,
+        unavailable.asin,
+    }
+    assert load_price_history(visible.asin) != []
+    assert load_price_history(hidden.asin) == []
+    assert load_price_history(unavailable.asin) == []
+    assert load_refresh_eligibility() == {
+        "us": {visible.asin: datetime.date.today().isoformat()}
+    }
+
+
+@pytest.mark.parametrize("failure", ["json", "export"])
+def test_failed_discovery_presentation_commits_no_surface_effects(tmp_config, failure):
+    product = make_product(asin="B00PUBFAIL", price=4, series_name="")
+    output = None
+
+    def fail_writer(payload):
+        raise RuntimeError("presentation failed")
+
+    writer = fail_writer
+    if failure == "export":
+        output = tmp_config / "blocked.json"
+        output.mkdir()
+        writer = print
+    request = ResultPublicationRequest(
+        result=DiscoveryResult((product,)),
+        title="Failure",
+        limit=0,
+        output=output,
+        json_flag=True,
+        quiet=False,
+        max_price=None,
+        currency="$",
+        candidates=(product,),
+        session_spec=ResultSessionSpec(
+            producer="find",
+            locale="us",
+            recipe=result_recipe(limit=0),
+            source={"command": "deals find"},
+            constraints={"drop_zero_length": True},
+        ),
+        json_writer=writer,
+    )
+
+    with pytest.raises((IsADirectoryError, RuntimeError)):
+        publish_discovery(request)
+
+    assert not constants.LAST_RESULTS_FILE.exists()
+    assert not constants.SEEN_ASINS_FILE.exists()
+    assert load_price_history(product.asin) == []
+    assert not constants.REFRESH_ELIGIBILITY_FILE.exists()
+
+
 @pytest.mark.parametrize(
     "module",
     (
@@ -490,6 +682,78 @@ def test_last_widens_cumulatively_and_reset_restores_baseline(tmp_config):
     reset = runner.invoke(cli, ["last", "--reset", "--json"])
     assert reset.exit_code == 0, reset.output
     assert [item["asin"] for item in json.loads(reset.output)] == ["CACHE1"]
+
+
+def test_last_uses_current_dismissal_for_widen_reset_and_clear_restoration(tmp_config):
+    products = [
+        make_product(asin="DISCHEAP", price=3, series_name=""),
+        make_product(asin="DISEXPENSIVE", price=8, series_name=""),
+    ]
+    recipe = result_recipe(max_price=5, limit=0, sort="price")
+    save_result_session(_session(products, visible=["DISCHEAP"], recipe=recipe))
+    save_dismissed_asins({"DISCHEAP"})
+    runner = CliRunner()
+
+    widened = runner.invoke(cli, ["last", "--max-price", "10", "--json"])
+    reset = runner.invoke(cli, ["last", "--reset", "--json"])
+
+    assert widened.exit_code == 0, widened.output
+    assert [item["asin"] for item in json.loads(widened.output)] == ["DISEXPENSIVE"]
+    assert reset.exit_code == 0, reset.output
+    assert json.loads(reset.output) == []
+    assert {item["asin"] for item in load_result_session().candidates} == {
+        "DISCHEAP",
+        "DISEXPENSIVE",
+    }
+
+    assert clear_dismissed_asins()
+    restored = CliRunner().invoke(cli, ["last", "--reset", "--json"])
+
+    assert load_dismissed_asins() == set()
+    assert restored.exit_code == 0, restored.output
+    assert [item["asin"] for item in json.loads(restored.output)] == ["DISCHEAP"]
+
+
+def test_last_count_and_export_apply_current_dismissal(tmp_config):
+    products = [
+        make_product(asin="DISCOUNT1", series_name=""),
+        make_product(asin="DISCOUNT2", series_name=""),
+    ]
+    save_result_session(
+        _session(products, visible=[product.asin for product in products])
+    )
+    save_dismissed_asins({"DISCOUNT1"})
+    output = tmp_config / "dismissed-export.json"
+    runner = CliRunner()
+
+    count = runner.invoke(cli, ["last", "--count"])
+    exported = runner.invoke(cli, ["last", "--output", str(output)])
+
+    assert count.exit_code == 0, count.output
+    assert count.output.strip() == "1"
+    assert exported.exit_code == 0, exported.output
+    assert [item["asin"] for item in json.loads(output.read_text())] == ["DISCOUNT2"]
+
+
+def test_legacy_last_count_applies_current_dismissal(tmp_config):
+    products = [
+        make_product(asin="LEGDISMISS", series_name=""),
+        make_product(asin="LEGKEEP", series_name=""),
+    ]
+    constants.LAST_RESULTS_FILE.write_text(
+        json.dumps(
+            {
+                "title": "Legacy",
+                "results": [serialize_product(product) for product in products],
+            }
+        )
+    )
+    save_dismissed_asins({"LEGDISMISS"})
+
+    result = CliRunner().invoke(cli, ["last", "--count"])
+
+    assert result.exit_code == 0, result.output
+    assert result.output.strip() == "1"
 
 
 def test_find_caches_pre_filter_candidates_for_api_free_widening(
@@ -582,17 +846,117 @@ def test_count_ignores_limit_and_does_not_change_last_displayed_order(tmp_config
     assert load_result_session().visible_asins == ["COUNT001"]
 
 
+def test_last_newly_visible_backfills_original_date_and_marks_today(tmp_config):
+    first = make_product(asin="B00LAST001", price=3, series_name="")
+    hidden = make_product(asin="B00LAST002", price=8, series_name="")
+    unavailable = make_product(asin="B00LAST003", price=None, series_name="")
+    session = _session(
+        [first, hidden, unavailable],
+        visible=[first.asin],
+        recipe=result_recipe(limit=1),
+    )
+    session.timestamp = "2026-01-02T12:00:00+00:00"
+    save_result_session(session)
+
+    result = CliRunner().invoke(cli, ["last", "-n", "0", "--quiet"])
+
+    assert result.exit_code == 0, result.output
+    assert [entry["date"] for entry in load_price_history(hidden.asin)] == [
+        "2026-01-02"
+    ]
+    assert load_price_history(first.asin) == []
+    assert load_price_history(unavailable.asin) == []
+    assert load_refresh_eligibility() == {
+        "us": {hidden.asin: datetime.date.today().isoformat()}
+    }
+
+
+def test_last_count_and_unavailable_do_not_record_surface_state(tmp_config):
+    first = make_product(asin="B00COUNT01", price=3, series_name="")
+    hidden = make_product(asin="B00COUNT02", price=8, series_name="")
+    unavailable = make_product(asin="B00COUNT03", price=None, series_name="")
+    save_result_session(
+        _session(
+            [first, hidden, unavailable],
+            visible=[first.asin],
+            recipe=result_recipe(limit=1),
+        )
+    )
+
+    count = CliRunner().invoke(cli, ["last", "-n", "0", "--count"])
+
+    assert count.exit_code == 0, count.output
+    persisted = load_result_session()
+    assert persisted.current_recipe.limit == 0
+    assert persisted.visible_asins == [first.asin]
+    assert load_price_history(hidden.asin) == []
+    assert load_price_history(unavailable.asin) == []
+    assert not constants.REFRESH_ELIGIBILITY_FILE.exists()
+    assert not constants.SEEN_ASINS_FILE.exists()
+
+
+def test_legacy_last_does_not_backfill_history(tmp_config):
+    first = make_product(asin="B00LEGACY1", price=3, series_name="")
+    hidden = make_product(asin="B00LEGACY2", price=8, series_name="")
+    session = _session(
+        [first, hidden],
+        visible=[first.asin],
+        recipe=result_recipe(limit=1),
+    )
+    session.legacy = True
+    save_result_session(session)
+
+    result = CliRunner().invoke(cli, ["last", "-n", "0", "--quiet"])
+
+    assert result.exit_code == 0, result.output
+    assert load_price_history(hidden.asin) == []
+    assert load_refresh_eligibility()["us"][hidden.asin] == (
+        datetime.date.today().isoformat()
+    )
+
+
 def test_failed_last_export_leaves_session_unchanged(tmp_config):
     product = make_product(asin="ROLLBACK1", series_name="")
-    save_result_session(_session([product], visible=[product.asin]))
+    hidden = make_product(asin="ROLLBACK2", series_name="")
+    save_result_session(
+        _session(
+            [product, hidden],
+            visible=[product.asin],
+            recipe=result_recipe(limit=1),
+        )
+    )
     before = constants.LAST_RESULTS_FILE.read_text()
     output = tmp_config / "blocked.json"
     output.mkdir()
-    result = CliRunner().invoke(
-        cli, ["last", "--max-price", "1", "--output", str(output)]
-    )
+    result = CliRunner().invoke(cli, ["last", "-n", "0", "--output", str(output)])
     assert result.exit_code != 0
     assert constants.LAST_RESULTS_FILE.read_text() == before
+    assert load_price_history(hidden.asin) == []
+    assert not constants.REFRESH_ELIGIBILITY_FILE.exists()
+
+
+def test_failed_last_json_presentation_commits_no_effects(tmp_config, monkeypatch):
+    product = make_product(asin="B00LASTF01", price=3, series_name="")
+    hidden = make_product(asin="B00LASTF02", price=8, series_name="")
+    save_result_session(
+        _session(
+            [product, hidden],
+            visible=[product.asin],
+            recipe=result_recipe(limit=1),
+        )
+    )
+    before = constants.LAST_RESULTS_FILE.read_bytes()
+    monkeypatch.setattr(
+        "audible_deals.cli.last.click.echo",
+        lambda payload: (_ for _ in ()).throw(RuntimeError("json failed")),
+    )
+
+    result = CliRunner().invoke(cli, ["last", "-n", "0", "--json"])
+
+    assert result.exit_code != 0
+    assert constants.LAST_RESULTS_FILE.read_bytes() == before
+    assert load_price_history(hidden.asin) == []
+    assert not constants.REFRESH_ELIGIBILITY_FILE.exists()
 
 
 def test_conflicting_inferred_locales_error_but_explicit_locale_wins(tmp_config):

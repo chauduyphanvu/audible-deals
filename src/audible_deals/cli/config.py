@@ -16,6 +16,7 @@ from audible_deals.config_store import (
 )
 from audible_deals.constants import ALL_SORT_OPTIONS
 from audible_deals.presentation.terminal import console
+from audible_deals.settings import resolve_plus_flags
 from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 
@@ -47,6 +48,17 @@ def config_set(key, value):
     norm_key = validate_config_key(key)
     coerced = coerce_config_value(norm_key, value)
     cfg = load_config()
+    removed_key = None
+    if norm_key in {"skip_plus", "only_plus"} and coerced:
+        opposite = "only_plus" if norm_key == "skip_plus" else "skip_plus"
+        if opposite in cfg:
+            removed_key = opposite
+            del cfg[opposite]
+    else:
+        try:
+            resolve_plus_flags(cfg.get("skip_plus", False), cfg.get("only_plus", False))
+        except ValueError as exc:
+            raise click.ClickException(str(exc)) from None
     cfg[norm_key] = coerced
     if norm_key == "language" and coerced:
         cfg["all_languages"] = False
@@ -54,6 +66,8 @@ def config_set(key, value):
         cfg.pop("language", None)
     save_config(cfg)
     console.print(f"[green]Config set:[/green] {norm_key} = {coerced!r}")
+    if removed_key:
+        console.print(f"[yellow]Removed conflicting config key:[/yellow] {removed_key}")
 
 
 @config_cmd.command("get")
@@ -151,9 +165,12 @@ def profile_save(ctx, name, **kwargs):
         deals find --profile my-scifi
         deals search "Brandon Sanderson" --profile my-scifi
     """
-    profiles = load_profiles()
     # Only save values explicitly passed on the command line
     saved = {k: v for k, v in kwargs.items() if ctx.get_parameter_source(k) == _CL}
+    try:
+        resolve_plus_flags(saved.get("skip_plus", False), saved.get("only_plus", False))
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from None
     if saved.get("language") and saved.get("all_languages"):
         raise click.UsageError("Use --language or --all-languages, not both.")
     if "sort" in saved and saved["sort"] not in ALL_SORT_OPTIONS:
@@ -161,6 +178,7 @@ def profile_save(ctx, name, **kwargs):
             f"Invalid sort {saved['sort']!r}. Choose from: "
             f"{', '.join(sorted(ALL_SORT_OPTIONS))}."
         )
+    profiles = load_profiles()
     profiles[name] = saved
     save_profiles(profiles)
     console.print(f"[green]Profile '{name}' saved[/green] ({len(saved)} options)")

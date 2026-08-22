@@ -10,6 +10,7 @@ from typing import Any, Mapping, Sequence
 
 from audible_deals import constants
 from audible_deals.product import Product
+from audible_deals.settings import resolve_plus_flags
 
 
 SESSION_VERSION = 2
@@ -178,6 +179,14 @@ def _validate_recipe(recipe: dict[str, Any], field: str) -> None:
             raise ResultSessionValidationError(
                 f"Last results cache is corrupt: {field}.{key} must be boolean."
             )
+    try:
+        resolve_plus_flags(
+            recipe.get("skip_plus", False), recipe.get("only_plus", False)
+        )
+    except ValueError as exc:
+        raise ResultSessionValidationError(
+            f"Last results cache is corrupt: {field}: {exc}."
+        ) from None
     for key in _RECIPE_TEXT_FIELDS:
         if key in recipe and not isinstance(recipe[key], str):
             raise ResultSessionValidationError(
@@ -494,6 +503,20 @@ class ResultSession:
         ):
             raise ResultSessionValidationError(
                 "Last results cache is corrupt: ranking_context.match_reasons must map strings to strings."
+            )
+        fit_scores = ranking.get("fit_scores")
+        if fit_scores is not None and (
+            not isinstance(fit_scores, dict)
+            or any(
+                not isinstance(key, str)
+                or not isinstance(value, (int, float))
+                or isinstance(value, bool)
+                or not math.isfinite(value)
+                for key, value in fit_scores.items()
+            )
+        ):
+            raise ResultSessionValidationError(
+                "Last results cache is corrupt: ranking_context.fit_scores must map strings to finite numbers."
             )
         try:
             baseline_recipe = ResultRecipe.from_persisted_mapping(baseline)

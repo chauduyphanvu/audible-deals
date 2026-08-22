@@ -165,13 +165,20 @@ class TestTrackRun:
 
     def test_refreshes_recent_history_asins(self, mock_client, tmp_config):
         self._seed_wishlist()
+        constants_mod.SEEN_ASINS_FILE.write_text(json.dumps(["B00EXTRA01"]))
         constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        today = datetime.date.today().isoformat()
+        surfaced_on = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
         (constants_mod.HISTORY_DIR / "B00EXTRA01.json").write_text(
             json.dumps(
                 {
                     "marketplaces": {
-                        "us": [{"date": today, "price": 9.99, "title": "Extra"}]
+                        "us": [
+                            {
+                                "date": surfaced_on,
+                                "price": 9.99,
+                                "title": "Extra",
+                            }
+                        ]
                     }
                 }
             )
@@ -188,6 +195,8 @@ class TestTrackRun:
         assert second_call_asins == ["B00EXTRA01"]
         state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
         assert state["run_history"][0]["extra_tracked_checked"] == 1
+        eligibility = json.loads(constants_mod.REFRESH_ELIGIBILITY_FILE.read_text())
+        assert eligibility["marketplaces"]["us"]["B00EXTRA01"] == surfaced_on
 
     def test_skips_stale_history_asins(self, mock_client, tmp_config):
         self._seed_wishlist()

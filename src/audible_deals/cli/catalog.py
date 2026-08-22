@@ -20,7 +20,6 @@ from audible_deals.cli.helpers import (
     _resolve_skip_snapshots,
 )
 from audible_deals.cli.options import (
-    _check_plus_flags,
     _common_filter_options,
     _complete_genre_names,
 )
@@ -367,7 +366,6 @@ def search(
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
-    _check_plus_flags(s.skip_plus, s.only_plus)
     if not query and not s.genre and not category:
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     if dry_run and output:
@@ -419,8 +417,8 @@ def search(
             dc, effective_genre, category, s.exclude_genre
         )
 
-        skip_asins, owned_snapshot, seen_snapshot = _resolve_skip_snapshots(
-            dc, s.skip_owned, exclude_seen
+        skip_asins, owned_snapshot, seen_snapshot, dismissed_snapshot = (
+            _resolve_skip_snapshots(dc, s.skip_owned, exclude_seen)
         )
 
         plan = bind_catalog_categories(plan, [category])
@@ -497,6 +495,7 @@ def search(
                 },
                 constraints={
                     "drop_zero_length": True,
+                    "always_skip_asins": sorted(dismissed_snapshot),
                     "owned_asins": sorted(owned_snapshot),
                     "owned_snapshot_available": s.skip_owned,
                     "seen_asins": sorted(seen_snapshot),
@@ -674,7 +673,6 @@ def find(
         only_plus=only_plus,
         exclude_keywords=exclude_keywords,
     )
-    _check_plus_flags(s.skip_plus, s.only_plus)
     if dry_run and output:
         raise click.UsageError("--dry-run cannot be combined with --output/-o")
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
@@ -732,8 +730,8 @@ def find(
             children = dc.get_categories(root=category)
             child_ids = [c["id"] for c in children if c.get("id")]
 
-        skip_asins, owned_snapshot, seen_snapshot = _resolve_skip_snapshots(
-            dc, s.skip_owned, exclude_seen
+        skip_asins, owned_snapshot, seen_snapshot, dismissed_snapshot = (
+            _resolve_skip_snapshots(dc, s.skip_owned, exclude_seen)
         )
 
         desc_parts = []
@@ -833,6 +831,7 @@ def find(
                 },
                 constraints={
                     "drop_zero_length": True,
+                    "always_skip_asins": sorted(dismissed_snapshot),
                     "owned_asins": sorted(owned_snapshot),
                     "owned_snapshot_available": s.skip_owned,
                     "seen_asins": sorted(seen_snapshot),
