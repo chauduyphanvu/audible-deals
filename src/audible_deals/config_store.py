@@ -14,6 +14,7 @@ from audible_deals.constants import (
     WEBHOOK_FORMATS,
 )
 from audible_deals.storage import load_json_file, save_json_file
+from audible_deals.validation import validate_finite_number
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +26,8 @@ _NUMERIC_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     "limit": (0, None),
     "max_price": (0, None),
     "max_pph": (0, None),
-    "min_rating": (0, None),
+    "credit_price": (0, None),
+    "min_rating": (0, 5),
     "min_ratings": (0, None),
     "min_hours": (0, None),
 }
@@ -73,6 +75,26 @@ def save_monitor_state(state: dict) -> None:
 
 def load_config() -> dict:
     return load_json_file(constants.CONFIG_FILE, dict, "config")
+
+
+def config_numeric_errors(config: dict) -> list[str]:
+    """Return invalid persisted numeric config values without blocking recovery."""
+    errors = []
+    for key, (minimum, maximum) in _NUMERIC_BOUNDS.items():
+        value = config.get(key)
+        if value is None:
+            continue
+        try:
+            validate_finite_number(
+                key,
+                value,
+                minimum,
+                maximum,
+                integer=_CONFIG_SCHEMA[key] is int,
+            )
+        except ValueError as exc:
+            errors.append(str(exc))
+    return errors
 
 
 def save_config(cfg: dict) -> None:
@@ -148,7 +170,13 @@ def coerce_config_value(key: str, raw: str):
     bounds = _NUMERIC_BOUNDS.get(key)
     if bounds is not None:
         lo, hi = bounds
-        if (lo is not None and result < lo) or (hi is not None and result > hi):
+        try:
+            validate_finite_number(key, result, lo, hi)
+        except ValueError as exc:
+            if "finite" in str(exc):
+                raise click.ClickException(
+                    f"Value for '{key}' must be a finite number."
+                ) from None
             rng = f"{lo}" if hi is None else f"{lo}-{hi}"
             raise click.ClickException(
                 f"Value for '{key}' out of range: {result} (expected >= {rng})"

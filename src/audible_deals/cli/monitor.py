@@ -29,6 +29,7 @@ from audible_deals.constants import (
     WEBHOOK_FORMATS,
 )
 from audible_deals.locking import LockHeldError
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.monitor_service import (
     MAX_MONITOR_API_CALLS_PER_RUN,
     MonitorExistsError,
@@ -123,9 +124,12 @@ def _monitor_settings(
     # disappearance/re-entry events as titles move in and out of the top N.
     values["limit"] = None
     allowed = {field.name for field in dataclasses.fields(Settings)}
-    settings = Settings(
-        **{key: value for key, value in values.items() if key in allowed}
-    )
+    try:
+        settings = Settings(
+            **{key: value for key, value in values.items() if key in allowed}
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
     if settings.skip_plus and settings.only_plus:
         raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
     if not settings.language and not settings.all_languages:
@@ -217,14 +221,14 @@ def monitor(ctx):
 
 def _monitor_filter_options(func):
     options = [
-        click.option("--max-price", type=click.FloatRange(min=0), default=None),
+        click.option("--max-price", type=NONNEGATIVE_FLOAT, default=None),
         click.option(
             "--sort", type=click.Choice(sorted(ALL_SORT_OPTIONS)), default=None
         ),
         click.option("--pages", type=click.IntRange(min=1), default=None),
-        click.option("--min-rating", type=click.FloatRange(min=0), default=None),
-        click.option("--min-ratings", type=click.IntRange(min=0), default=None),
-        click.option("--min-hours", type=click.FloatRange(min=0), default=None),
+        click.option("--min-rating", type=RATING_FLOAT, default=None),
+        click.option("--min-ratings", type=NONNEGATIVE_INT, default=None),
+        click.option("--min-hours", type=NONNEGATIVE_FLOAT, default=None),
         click.option(
             "--min-discount", type=click.IntRange(min=0, max=100), default=None
         ),

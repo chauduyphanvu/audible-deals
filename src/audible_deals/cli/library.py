@@ -10,6 +10,7 @@ from pathlib import Path
 import click
 
 from audible_deals.cli.helpers import _currency, _get_client, _resolve_output_quiet
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.client import DealsClient
 from audible_deals.filtering import filter_products, sort_local
 from audible_deals.presentation.products import display_products
@@ -153,9 +154,13 @@ def _emit_library_output(
     default="",
     help="Filter by genre/category (substring match on categories)",
 )
-@click.option("--min-rating", type=float, default=0.0, help="Minimum rating")
-@click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
-@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
+@click.option("--min-rating", type=RATING_FLOAT, default=0.0, help="Minimum rating")
+@click.option(
+    "--min-ratings", type=NONNEGATIVE_INT, default=0, help="Minimum number of ratings"
+)
+@click.option(
+    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
+)
 @click.option(
     "--stats",
     is_flag=True,

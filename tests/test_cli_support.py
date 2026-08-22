@@ -1361,6 +1361,56 @@ class TestCreditPriceConfig:
         assert result.exit_code != 0
 
 
+def test_corrupt_numeric_config_allows_doctor_and_recovery(tmp_config, mock_client):
+    constants_mod.CONFIG_FILE.write_text('{"max_price": NaN}')
+    runner = CliRunner()
+
+    doctor = runner.invoke(cli, ["doctor"])
+    assert doctor.exit_code == 1
+    assert "Config file valid" in doctor.output
+    assert "max_price" in doctor.output
+    assert "finite" in doctor.output
+
+    listed = runner.invoke(cli, ["config", "list"])
+    assert listed.exit_code == 0, listed.output
+
+    reset = runner.invoke(cli, ["config", "reset", "max-price"])
+    assert reset.exit_code == 0, reset.output
+    assert config_store_mod.load_config() == {}
+
+
+def test_corrupt_numeric_config_blocks_discovery_before_client(tmp_config, monkeypatch):
+    constants_mod.CONFIG_FILE.write_text('{"min_hours": Infinity}')
+    import audible_deals.cli.catalog as catalog_mod
+
+    monkeypatch.setattr(
+        catalog_mod,
+        "_get_client",
+        lambda locale: pytest.fail("invalid config constructed a client"),
+    )
+
+    result = CliRunner().invoke(cli, ["find", "--dry-run"])
+    assert result.exit_code != 0
+    assert "min_hours" in result.output
+    assert "finite" in result.output
+
+
+def test_corrupt_credit_price_blocks_catalog_before_client(tmp_config, monkeypatch):
+    constants_mod.CONFIG_FILE.write_text('{"credit_price": NaN}')
+    import audible_deals.cli.catalog as catalog_mod
+
+    monkeypatch.setattr(
+        catalog_mod,
+        "_get_client",
+        lambda locale: pytest.fail("invalid credit price constructed a client"),
+    )
+
+    result = CliRunner().invoke(cli, ["find", "--pages", "1"])
+    assert result.exit_code != 0
+    assert "credit_price" in result.output
+    assert "finite" in result.output
+
+
 class TestRoutesRootGroup:
     def test_help(self, tmp_config):
         result = _routes_run(CliRunner(), ["--help"])
@@ -1597,6 +1647,10 @@ class TestProfileSaveSortValidation:
         ("min_rating", "-1"),
         ("min_ratings", "-10"),
         ("min_hours", "-2"),
+        ("min_rating", "6"),
+        ("min_rating", "inf"),
+        ("max_price", "nan"),
+        ("credit_price", "nan"),
     ],
 )
 def test_config_coercion_rejects_out_of_range(key, value):
@@ -1635,6 +1689,20 @@ def test_config_set_rejects_negative_max_price(tmp_config, mock_client):
     cfg_file = tmp_config / "config.json"
     if cfg_file.exists():
         assert "max_price" not in json.loads(cfg_file.read_text())
+
+
+@pytest.mark.parametrize(
+    "args",
+    [
+        ["find", "--dry-run", "--max-price", "nan"],
+        ["find", "--dry-run", "--min-hours", "inf"],
+        ["find", "--dry-run", "--min-rating", "6"],
+        ["find", "--dry-run", "--min-ratings", "-1"],
+    ],
+)
+def test_discovery_numeric_options_reject_invalid_values(tmp_config, args):
+    result = CliRunner().invoke(cli, args)
+    assert result.exit_code != 0
 
 
 def test_config_set_rejects_zero_pages(tmp_config, mock_client):

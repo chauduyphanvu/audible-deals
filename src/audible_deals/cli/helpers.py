@@ -9,6 +9,7 @@ import click
 from audible_deals.client import DealsClient
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import LOCALE_CURRENCY
+from audible_deals.validation import validate_finite_number
 from audible_deals.presentation.terminal import console
 from audible_deals.results_cache import (
     load_seen_asins,
@@ -30,7 +31,13 @@ def _currency(ctx: click.Context) -> str:
 def _credit_price(ctx: click.Context) -> float | None:
     """Configured per-credit price ('deals config set credit-price'), if any."""
     value = ctx.obj.get("config", {}).get("credit_price")
-    return float(value) if value is not None else None
+    if value is None:
+        return None
+    try:
+        validate_finite_number("credit_price", value, 0)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    return float(value)
 
 
 def _resolve_skip_asins(

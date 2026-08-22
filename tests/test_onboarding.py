@@ -93,6 +93,30 @@ def test_doctor_expired_auth_probes_and_reports_refresh_failure(
     mock_client.check_connection.assert_called_once_with()
 
 
+def test_doctor_reports_invalid_profile_and_monitor_settings(tmp_config, monkeypatch):
+    import audible_deals.constants as constants
+
+    monkeypatch.setattr(constants, "MONITORS_FILE", tmp_config / "monitors.json")
+    monkeypatch.setattr(
+        constants, "MONITOR_STATE_FILE", tmp_config / "monitor_state.json"
+    )
+    constants.PROFILES_FILE.write_text('{"bad-profile": {"min_rating": 6}}')
+    constants.MONITORS_FILE.write_text(
+        '{"bad-monitor": {"mode": "find", "settings": {"min_hours": Infinity}}}'
+    )
+
+    result = CliRunner().invoke(cli, ["doctor"])
+    output = " ".join(result.output.split())
+
+    assert result.exit_code == 1
+    assert "Profile settings valid" in output
+    assert "bad-profile" in output
+    assert "expected at most 5" in output
+    assert "Saved-search monitors" in output
+    assert "bad-monitor" in output
+    assert "must be finite" in output
+
+
 def test_bare_dashboard_is_auth_aware_and_local(tmp_config, monkeypatch):
     import audible_deals.constants as constants
 

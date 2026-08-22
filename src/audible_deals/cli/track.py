@@ -16,6 +16,7 @@ from audible_deals.cli.helpers import (
 )
 from audible_deals.cli.helpers import _resolve_categories, _resolve_skip_asins
 from audible_deals.config_store import (
+    config_numeric_errors,
     load_monitors,
     load_notify_state,
     load_track_state,
@@ -86,6 +87,8 @@ def track(ctx):
 def track_run(ctx, cooldown):
     """Refresh tracked prices once (the command the scheduler runs)."""
     cfg = ctx.obj.get("config", {})
+    if errors := config_numeric_errors(cfg):
+        raise click.ClickException(errors[0])
     webhook = cfg.get("webhook")
     webhook_format = cfg.get("webhook_format") or "generic"
     webhook_headers = _parse_cfg_webhook_headers(cfg.get("webhook_headers") or [])

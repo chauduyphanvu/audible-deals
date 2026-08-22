@@ -16,6 +16,7 @@ from audible_deals.config_store import (
 )
 from audible_deals.constants import ALL_SORT_OPTIONS
 from audible_deals.presentation.terminal import console
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 
 @click.group("config", invoke_without_command=True)
@@ -110,11 +111,11 @@ def profile(ctx):
 @click.option("--genre", default="")
 @click.option("--exclude-genre", multiple=True)
 @click.option("--keywords", default="")
-@click.option("--max-price", type=click.FloatRange(min=0), default=None)
+@click.option("--max-price", type=NONNEGATIVE_FLOAT, default=None)
 @click.option("--sort", default="")
-@click.option("--min-rating", type=click.FloatRange(min=0), default=0.0)
-@click.option("--min-ratings", type=click.IntRange(min=0), default=0)
-@click.option("--min-hours", type=click.FloatRange(min=0), default=0.0)
+@click.option("--min-rating", type=RATING_FLOAT, default=0.0)
+@click.option("--min-ratings", type=NONNEGATIVE_INT, default=0)
+@click.option("--min-hours", type=NONNEGATIVE_FLOAT, default=0.0)
 @click.option("--narrator", default="")
 @click.option("--author", default="")
 @click.option("--series", default="")
@@ -122,9 +123,7 @@ def profile(ctx):
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True)
 @click.option("--on-sale/--no-on-sale", default=False)
 @click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0)
-@click.option(
-    "--max-price-per-hour", "max_pph", type=click.FloatRange(min=0), default=None
-)
+@click.option("--max-price-per-hour", "max_pph", type=NONNEGATIVE_FLOAT, default=None)
 @click.option("--publisher", default="")
 @click.option("--deep/--no-deep", default=False)
 @click.option("--pages", type=click.IntRange(min=1), default=None)

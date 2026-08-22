@@ -10,6 +10,7 @@ from dataclasses import dataclass, field, fields
 from typing import Any
 
 from audible_deals.constants import _CONFIG_SCHEMA, DEFAULT_LIMIT, DEFAULT_SORT
+from audible_deals.validation import validate_finite_number
 
 logger = logging.getLogger(__name__)
 
@@ -61,6 +62,21 @@ class Settings:
     skip_plus: bool = False
     only_plus: bool = False
     exclude_keywords: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        for name, minimum, maximum, integer in (
+            ("max_price", 0, None, False),
+            ("min_rating", 0, 5, False),
+            ("min_ratings", 0, None, True),
+            ("min_hours", 0, None, False),
+            ("min_discount", 0, 100, True),
+            ("max_pph", 0, None, False),
+            ("pages", 1, None, True),
+            ("limit", 0, None, True),
+        ):
+            value = getattr(self, name)
+            if value is not None:
+                validate_finite_number(name, value, minimum, maximum, integer=integer)
 
 
 @dataclass(frozen=True)

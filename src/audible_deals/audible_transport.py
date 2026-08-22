@@ -95,6 +95,7 @@ class AudibleTransport:
         """Execute a GET request with logging, retry, and tuple unwrapping."""
         self._begin_request()
         try:
+            client = self._get_client()
             debug = logger.isEnabledFor(logging.DEBUG)
             for attempt in range(1, 4):
                 if debug:
@@ -103,7 +104,7 @@ class AudibleTransport:
                     )
                     start = time.monotonic()
                 try:
-                    response = self._get_client().get(endpoint, **params)
+                    response = client.get(endpoint, **params)
                 except Exception as exc:
                     if isinstance(exc, click.ClickException):
                         raise

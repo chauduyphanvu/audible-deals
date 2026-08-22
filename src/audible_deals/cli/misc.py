@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import json as json_mod
 import os
@@ -22,12 +23,14 @@ from audible_deals.cli.helpers import (
     _resolve_cli_selectors,
 )
 from audible_deals.config_store import (
+    config_numeric_errors,
     load_monitor_state,
     load_monitors,
     load_notify_state,
     load_profiles,
 )
 from audible_deals.constants import _CONFIG_SCHEMA, product_url
+from audible_deals.monitor_service import MonitorServiceError, settings_from_dict
 from audible_deals.presentation.products import (
     display_comparison,
     display_product_detail,
@@ -35,7 +38,7 @@ from audible_deals.presentation.products import (
 from audible_deals.presentation.reports import display_categories
 from audible_deals.presentation.terminal import console
 from audible_deals.results_cache import load_seen_asins
-from audible_deals.settings import _PROFILE_EXTRA_KEYS
+from audible_deals.settings import _PROFILE_EXTRA_KEYS, Settings
 from audible_deals.wishlist import inspect_wishlist
 
 
@@ -389,6 +392,7 @@ def _config_checks() -> list[_Row]:
                     for k, v in cfg.items()
                     if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
                 ]
+                errors.extend(config_numeric_errors(cfg))
                 if errors:
                     rows.append(("Config file valid", "FAIL", "; ".join(errors)))
                 else:
@@ -411,10 +415,25 @@ def _config_checks() -> list[_Row]:
             profiles = load_profiles()
             valid_profile_keys = set(_CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
             bad_profiles: dict[str, list[str]] = {}
+            invalid_profiles: dict[str, str] = {}
+            setting_fields = {field.name for field in dataclasses.fields(Settings)}
             for pname, popts in profiles.items():
+                if not isinstance(popts, dict):
+                    invalid_profiles[pname] = "expected an object"
+                    continue
                 bad = sorted(k for k in popts if k not in valid_profile_keys)
                 if bad:
                     bad_profiles[pname] = bad
+                try:
+                    Settings(
+                        **{
+                            key: value
+                            for key, value in popts.items()
+                            if key in setting_fields
+                        }
+                    )
+                except (TypeError, ValueError) as exc:
+                    invalid_profiles[pname] = str(exc)
             if bad_profiles:
                 detail = "; ".join(
                     f"{n}: {', '.join(ks)}" for n, ks in sorted(bad_profiles.items())
@@ -422,6 +441,14 @@ def _config_checks() -> list[_Row]:
                 rows.append(("Unknown profile keys", "WARN", detail))
             else:
                 rows.append(("Unknown profile keys", "PASS", ""))
+            if invalid_profiles:
+                detail = "; ".join(
+                    f"{name}: {error}"
+                    for name, error in sorted(invalid_profiles.items())
+                )
+                rows.append(("Profile settings valid", "FAIL", detail))
+            else:
+                rows.append(("Profile settings valid", "PASS", ""))
         except Exception as e:
             rows.append(("Unknown profile keys", "WARN", str(e)))
 
@@ -611,6 +638,22 @@ def _monitor_checks() -> list[_Row]:
     if not monitors:
         return [("Saved-search monitors", "PASS", "No monitors configured")]
     state = load_monitor_state().get("monitors", {})
+    invalid: dict[str, str] = {}
+    for name, definition in monitors.items():
+        if not isinstance(definition, dict) or not isinstance(
+            definition.get("settings"), dict
+        ):
+            invalid[name] = "expected a settings object"
+            continue
+        try:
+            settings_from_dict(definition["settings"])
+        except MonitorServiceError as exc:
+            invalid[name] = str(exc)
+    if invalid:
+        detail = "; ".join(
+            f"{name}: {error}" for name, error in sorted(invalid.items())
+        )
+        return [("Saved-search monitors", "FAIL", detail)]
     enabled = [
         name
         for name, definition in monitors.items()

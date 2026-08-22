@@ -32,6 +32,7 @@ from audible_deals.serialization import (
     serialize_product,
     validate_export_path,
 )
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 _SORTS = [
     "price",
@@ -70,19 +71,17 @@ def _option_given(ctx: click.Context, name: str) -> bool:
 
 @click.command("last")
 @click.option("--sort", type=click.Choice(_SORTS), default=None, help="Re-sort results")
-@click.option("--max-price", type=click.FloatRange(min=0), default=None)
-@click.option(
-    "--max-price-per-hour", "max_pph", type=click.FloatRange(min=0), default=None
-)
+@click.option("--max-price", type=NONNEGATIVE_FLOAT, default=None)
+@click.option("--max-price-per-hour", "max_pph", type=NONNEGATIVE_FLOAT, default=None)
 @click.option(
     "--max-effective-price",
     "max_effective_price",
-    type=click.FloatRange(min=0),
+    type=NONNEGATIVE_FLOAT,
     default=None,
 )
-@click.option("--min-rating", type=float, default=None)
-@click.option("--min-ratings", type=click.IntRange(min=0), default=None)
-@click.option("--min-hours", type=click.FloatRange(min=0), default=None)
+@click.option("--min-rating", type=RATING_FLOAT, default=None)
+@click.option("--min-ratings", type=NONNEGATIVE_INT, default=None)
+@click.option("--min-hours", type=NONNEGATIVE_FLOAT, default=None)
 @click.option("--narrator", default=None, help="Filter by narrator name (client-side)")
 @click.option("--author", default=None)
 @click.option("--series", default=None)
@@ -100,7 +99,7 @@ def _option_given(ctx: click.Context, name: str) -> bool:
 @click.option("--exclude-keyword", "exclude_keywords", multiple=True)
 @click.option("--exclude-genre", "exclude_genres", multiple=True)
 @click.option("--hist-below", type=click.IntRange(min=0, max=100), default=None)
-@click.option("--min-price-drop", type=click.FloatRange(min=0), default=None)
+@click.option("--min-price-drop", type=NONNEGATIVE_FLOAT, default=None)
 @click.option("--require-history/--no-require-history", default=None)
 @click.option("--released-after", default=None)
 @click.option("--released-before", default=None)

@@ -386,6 +386,31 @@ def test_monitor_budget_round_robin_does_not_starve_expensive_monitor():
     assert [definition.name for definition in second.monitors] == ["b", "c"]
 
 
+def test_invalid_persisted_monitor_is_skipped_and_inspectable(
+    monkeypatch, monitor_files, caplog
+):
+    invalid = _definition("invalid", min_hours=float("nan"))
+    valid = _definition("valid")
+
+    selection = monitor_service.select_monitors_for_run(
+        {"invalid": invalid, "valid": valid}, 0
+    )
+
+    assert [definition.name for definition in selection.monitors] == ["valid"]
+    assert "Skipping malformed monitor invalid" in caplog.text
+
+    save_monitors({"invalid": invalid})
+    monkeypatch.setattr(
+        monitor_module,
+        "_get_client",
+        lambda locale: pytest.fail("invalid monitor constructed a client"),
+    )
+    result = CliRunner().invoke(cli, ["monitor", "test", "invalid"])
+    assert result.exit_code == 2
+    assert "Invalid monitor settings" in result.output
+    assert "finite" in result.output
+
+
 def test_pause_resume_are_idempotent_and_test_does_not_persist(
     monkeypatch, monitor_files
 ):

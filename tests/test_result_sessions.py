@@ -42,6 +42,7 @@ from audible_deals.result_models import (
     RecipePatch,
     ResultRecipe,
     ResultSession,
+    ResultSessionValidationError,
 )
 from audible_deals.selectors import resolve_selectors
 from audible_deals.serialization import serialize_product
@@ -135,6 +136,39 @@ def test_session_v2_round_trip_preserves_unknown_recipe_keys():
     assert restored.to_dict()["current_recipe"]["future_sort"] == "experimental"
     with pytest.raises(ValueError, match="Unknown result recipe field: future_filter"):
         result_recipe(future_filter=True)
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [("max_price", float("nan")), ("min_rating", 6), ("min_ratings", -1)],
+)
+def test_session_rejects_invalid_persisted_recipe_numbers(field, value):
+    product = make_product(asin="INVALID01", series_name="")
+    wire = _session([product], visible=[product.asin]).to_dict()
+    wire["current_recipe"][field] = value
+
+    with pytest.raises(ResultSessionValidationError, match="cache is corrupt"):
+        ResultSession.from_dict(wire)
+
+
+@pytest.mark.parametrize(
+    ("container", "field", "value"),
+    [
+        ("constraints", "always_skip_asins", [{}]),
+        ("constraints", "owned_asins", [1]),
+        ("constraints", "seen_asins", "A1"),
+        ("constraints", "excluded_category_ids", [None]),
+        ("ranking_context", "allowed_asins", [{}]),
+        ("ranking_context", "match_reasons", {"A1": 1}),
+    ],
+)
+def test_session_rejects_invalid_persisted_string_collections(container, field, value):
+    product = make_product(asin="INVALID02", series_name="")
+    wire = _session([product], visible=[product.asin]).to_dict()
+    wire[container][field] = value
+
+    with pytest.raises(ResultSessionValidationError, match="cache is corrupt"):
+        ResultSession.from_dict(wire)
 
 
 @pytest.mark.parametrize(

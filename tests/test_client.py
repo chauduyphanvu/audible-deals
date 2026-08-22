@@ -10,6 +10,7 @@ import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
+from unittest import mock
 
 import click
 import pytest
@@ -581,6 +582,19 @@ class TestRetryAfterBackoff:
         with pytest.raises(RuntimeError, match="Not authenticated"):
             transport.request("library", num_results=1)
 
+        assert sleeps == []
+
+    def test_client_setup_permission_error_is_not_retried(self, api, monkeypatch):
+        transport = self._make_transport(api)
+        sleeps = self._capture_retry_waits(monkeypatch, transport)
+        get_client = mock.Mock(side_effect=PermissionError("auth lock denied"))
+        monkeypatch.setattr(transport, "_get_client", get_client)
+
+        with pytest.raises(PermissionError, match="auth lock denied"):
+            transport.request("library", num_results=1)
+
+        assert get_client.call_count == 1
+        assert api.get_mock.call_count == 0
         assert sleeps == []
 
     @pytest.mark.parametrize("status", [None, 500])

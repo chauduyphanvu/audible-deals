@@ -58,20 +58,24 @@ from audible_deals.settings import (
     SettingsResolutionRequest,
     resolve_settings,
 )
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT
 
 logger = logging.getLogger(__name__)
 
 
 def _resolve_scan_settings(ctx, profile_name: str | None, **kwargs) -> Settings:
     explicit_options = {key for key in kwargs if ctx.get_parameter_source(key) == _CL}
-    settings = resolve_settings(
-        SettingsResolutionRequest(
-            config=ctx.obj.get("config", {}),
-            profile=_load_profile(profile_name),
-            cli_flags=dict(kwargs),
-            explicit_options=explicit_options,
+    try:
+        settings = resolve_settings(
+            SettingsResolutionRequest(
+                config=ctx.obj.get("config", {}),
+                profile=_load_profile(profile_name),
+                cli_flags=dict(kwargs),
+                explicit_options=explicit_options,
+            )
         )
-    )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
     if not settings.language and not settings.all_languages:
         settings = dataclasses.replace(
             settings, language=LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
@@ -238,7 +242,7 @@ def _validate_history_filter_options(
 @click.argument("query", required=False, default="")
 @click.option(
     "--max-price",
-    type=click.FloatRange(min=0),
+    type=NONNEGATIVE_FLOAT,
     default=None,
     help="Max price filter (e.g. 5.00)",
 )
@@ -256,9 +260,14 @@ def _validate_history_filter_options(
     help="Sort order (price/discount/price-per-hour/value are client-side)",
 )
 @click.option(
-    "--min-ratings", type=int, default=0, help="Minimum number of ratings (e.g. 100)"
+    "--min-ratings",
+    type=NONNEGATIVE_INT,
+    default=0,
+    help="Minimum number of ratings (e.g. 100)",
 )
-@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
+@click.option(
+    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
+)
 @click.option(
     "--pages",
     type=click.IntRange(min=1),
@@ -368,6 +377,7 @@ def search(
     except CatalogQueryError as exc:
         raise click.UsageError(str(exc)) from None
     queries = list(plan.queries)
+    credit_price = _credit_price(ctx)
 
     if dry_run:
         requested_category = category or effective_genre
@@ -419,7 +429,6 @@ def search(
             all_products = execute_catalog_scan(dc, plan, progress)
 
     cur = _currency(ctx)
-    credit_price = _credit_price(ctx)
     search_title = _search_title(queries, category_name)
     result = process_settings_discovery(
         SettingsFilterRequest(
@@ -517,7 +526,7 @@ def search(
 )
 @click.option(
     "--max-price",
-    type=click.FloatRange(min=0),
+    type=NONNEGATIVE_FLOAT,
     default=5.00,
     help="Max price threshold (default: $5.00)",
 )
@@ -529,13 +538,13 @@ def search(
 )
 @click.option(
     "--min-ratings",
-    type=int,
+    type=NONNEGATIVE_INT,
     default=1,
     help="Minimum number of ratings (default: 1, filters unreviewed)",
 )
 @click.option(
     "--min-hours",
-    type=float,
+    type=NONNEGATIVE_FLOAT,
     default=0.0,
     help="Minimum length in hours (filters out shorts)",
 )
@@ -674,6 +683,7 @@ def find(
         deep=s.deep,
         pages=s.pages,
     )
+    credit_price = _credit_price(ctx)
     if dry_run:
         requested_category = category or effective_genre
         render_catalog_dry_run(
@@ -743,7 +753,6 @@ def find(
             all_products = execute_catalog_scan(dc, plan, progress)
 
     cur = _currency(ctx)
-    credit_price = _credit_price(ctx)
     find_title = f"Deals under {cur}{s.max_price:.2f}"
     if category_name:
         find_title += f" in {category_name}"

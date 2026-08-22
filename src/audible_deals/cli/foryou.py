@@ -18,6 +18,7 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_output_quiet,
 )
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.client import DealsClient
 from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
 from audible_deals.price_history import (
@@ -135,18 +136,22 @@ def _fetch_candidates(
     help="Rebuild the taste profile (refetches your library)",
 )
 @click.option(
-    "--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter"
+    "--max-price", type=NONNEGATIVE_FLOAT, default=None, help="Max price filter"
 )
 @click.option(
     "--max-effective-price",
     "max_effective_price",
-    type=click.FloatRange(min=0),
+    type=NONNEGATIVE_FLOAT,
     default=None,
     help="Max effective price — the cheaper of cash price and one credit",
 )
-@click.option("--min-rating", type=float, default=0.0, help="Minimum rating")
-@click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
-@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
+@click.option("--min-rating", type=RATING_FLOAT, default=0.0, help="Minimum rating")
+@click.option(
+    "--min-ratings", type=NONNEGATIVE_INT, default=0, help="Minimum number of ratings"
+)
+@click.option(
+    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
+)
 @click.option(
     "--on-sale/--no-on-sale", default=False, help="Only show discounted items"
 )

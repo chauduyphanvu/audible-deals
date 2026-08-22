@@ -9,6 +9,7 @@ import click
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import DEFAULT_LIMIT, GENRE_ALIASES
 from audible_deals.serialization import validate_export_path
+from audible_deals.validation import NONNEGATIVE_FLOAT, RATING_FLOAT
 
 
 def _check_plus_flags(skip_plus: bool, only_plus: bool) -> None:
@@ -44,14 +45,14 @@ def _common_filter_options(func):
         click.option(
             "--max-price-per-hour",
             "max_pph",
-            type=click.FloatRange(min=0),
+            type=NONNEGATIVE_FLOAT,
             default=None,
             help="Max price per hour (e.g. 0.50)",
         ),
         click.option(
             "--max-effective-price",
             "max_effective_price",
-            type=click.FloatRange(min=0),
+            type=NONNEGATIVE_FLOAT,
             default=None,
             help="Max effective price — the cheaper of cash price and one credit (set 'deals config set credit-price' first)",
         ),
@@ -62,7 +63,10 @@ def _common_filter_options(func):
             shell_complete=_complete_genre_names,
         ),
         click.option(
-            "--min-rating", type=float, default=0.0, help="Minimum rating (e.g. 4.0)"
+            "--min-rating",
+            type=RATING_FLOAT,
+            default=0.0,
+            help="Minimum rating (e.g. 4.0)",
         ),
         click.option(
             "--narrator",
@@ -206,7 +210,7 @@ def _common_filter_options(func):
         click.option(
             "--min-price-drop",
             "min_price_drop",
-            type=click.FloatRange(min=0),
+            type=NONNEGATIVE_FLOAT,
             default=0.0,
             help="Keep only items whose price dropped by at least PCT% from their last tracked price (no history = pass through)",
         ),

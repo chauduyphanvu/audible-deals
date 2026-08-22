@@ -67,7 +67,10 @@ def settings_to_dict(settings: Settings) -> dict[str, Any]:
 
 def settings_from_dict(data: dict) -> Settings:
     fields = {field.name for field in dataclasses.fields(Settings)}
-    return Settings(**{key: value for key, value in data.items() if key in fields})
+    try:
+        return Settings(**{key: value for key, value in data.items() if key in fields})
+    except (TypeError, ValueError) as exc:
+        raise MonitorServiceError(f"Invalid monitor settings: {exc}") from exc
 
 
 def build_scan_plan(definition: MonitorDefinition):

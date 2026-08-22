@@ -40,6 +40,7 @@ from audible_deals.settings import (
     SettingsResolutionRequest,
     resolve_settings,
 )
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 logger = logging.getLogger(__name__)
 
@@ -209,11 +210,17 @@ def _series_gaps_report(
     help="Filter to a specific series name (substring match)",
 )
 @click.option(
-    "--max-price", type=click.FloatRange(min=0), default=None, help="Max price filter"
+    "--max-price", type=NONNEGATIVE_FLOAT, default=None, help="Max price filter"
 )
-@click.option("--min-rating", type=float, default=0.0, help="Minimum rating (e.g. 4.0)")
-@click.option("--min-ratings", type=int, default=0, help="Minimum number of ratings")
-@click.option("--min-hours", type=float, default=0.0, help="Minimum length in hours")
+@click.option(
+    "--min-rating", type=RATING_FLOAT, default=0.0, help="Minimum rating (e.g. 4.0)"
+)
+@click.option(
+    "--min-ratings", type=NONNEGATIVE_INT, default=0, help="Minimum number of ratings"
+)
+@click.option(
+    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
+)
 @click.option(
     "--on-sale", is_flag=True, default=False, help="Only show discounted items"
 )
@@ -353,23 +360,26 @@ def series(
         )
         if ctx.get_parameter_source(name) == _CL
     }
-    s = resolve_settings(
-        SettingsResolutionRequest(
-            config=ctx.obj.get("config", {}),
-            profile=None,
-            explicit_options=explicit_options,
-            cli_flags=dict(
-                max_price=max_price,
-                min_rating=min_rating,
-                min_ratings=min_ratings,
-                min_hours=min_hours,
-                on_sale=on_sale,
-                limit=limit,
-                sort=sort,
-                pages=pages,
+    try:
+        s = resolve_settings(
+            SettingsResolutionRequest(
+                config=ctx.obj.get("config", {}),
+                profile=None,
+                explicit_options=explicit_options,
+                cli_flags=dict(
+                    max_price=max_price,
+                    min_rating=min_rating,
+                    min_ratings=min_ratings,
+                    min_hours=min_hours,
+                    on_sale=on_sale,
+                    limit=limit,
+                    sort=sort,
+                    pages=pages,
+                ),
             ),
         )
-    )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
     max_price, min_rating, min_ratings = s.max_price, s.min_rating, s.min_ratings
     min_hours, on_sale, limit = s.min_hours, s.on_sale, s.limit
     sort, pages = s.sort, s.pages

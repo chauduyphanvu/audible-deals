@@ -18,6 +18,7 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_cli_selectors,
 )
+from audible_deals.validation import NONNEGATIVE_FLOAT
 from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
 from audible_deals.presentation.common import price_str
@@ -84,7 +85,7 @@ def _add_author_watch(ctx, author: str, max_price: float) -> None:
 @click.argument("asins", nargs=-1, required=False, metavar="SELECTOR...")
 @click.option(
     "--max-price",
-    type=click.FloatRange(min=0),
+    type=NONNEGATIVE_FLOAT,
     default=None,
     callback=_finite_max_price,
     help="Alert when price drops below this",
@@ -197,7 +198,7 @@ def wishlist_remove(ctx, asins, last_refs, author):
 )
 @click.option(
     "--max-price",
-    type=click.FloatRange(min=0),
+    type=NONNEGATIVE_FLOAT,
     default=None,
     callback=_finite_max_price,
     help="Set the target price for the matching wishlist entries",
@@ -351,7 +352,7 @@ def wishlist_list(ctx, output, json_flag):
 @wishlist.command("sync")
 @click.option(
     "--max-price",
-    type=click.FloatRange(min=0),
+    type=NONNEGATIVE_FLOAT,
     default=None,
     callback=_finite_max_price,
     help="Set target price for all synced items",

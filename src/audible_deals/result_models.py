@@ -186,10 +186,35 @@ def _validate_recipe(recipe: dict[str, Any], field: str) -> None:
     for key in _RECIPE_NUMBER_FIELDS:
         value = recipe.get(key)
         if value is not None and (
-            not isinstance(value, (int, float)) or isinstance(value, bool)
+            not isinstance(value, (int, float))
+            or isinstance(value, bool)
+            or not math.isfinite(value)
         ):
             raise ResultSessionValidationError(
                 f"Last results cache is corrupt: {field}.{key} must be numeric."
+            )
+        if value is None:
+            continue
+        bounds = {
+            "max_price": (0, None, False),
+            "max_pph": (0, None, False),
+            "max_effective_price": (0, None, False),
+            "min_rating": (0, 5, False),
+            "min_ratings": (0, None, True),
+            "min_hours": (0, None, False),
+            "min_discount": (0, 100, True),
+            "limit": (0, None, True),
+            "hist_below": (0, 100, True),
+            "min_price_drop": (0, None, False),
+        }
+        minimum, maximum, integer = bounds[key]
+        if (
+            (integer and not isinstance(value, int))
+            or value < minimum
+            or (maximum is not None and value > maximum)
+        ):
+            raise ResultSessionValidationError(
+                f"Last results cache is corrupt: {field}.{key} is out of range."
             )
 
 
@@ -437,6 +462,39 @@ class ResultSession:
                 raise ResultSessionValidationError(
                     f"Last results cache is corrupt: constraints.{field} is invalid."
                 )
+        for field in (
+            "always_skip_asins",
+            "owned_asins",
+            "seen_asins",
+            "excluded_category_ids",
+        ):
+            values = constraints.get(field)
+            if values is not None and (
+                not isinstance(values, list)
+                or not all(isinstance(value, str) for value in values)
+            ):
+                raise ResultSessionValidationError(
+                    f"Last results cache is corrupt: constraints.{field} must be a string list."
+                )
+        allowed_asins = ranking.get("allowed_asins")
+        if allowed_asins is not None and (
+            not isinstance(allowed_asins, list)
+            or not all(isinstance(value, str) for value in allowed_asins)
+        ):
+            raise ResultSessionValidationError(
+                "Last results cache is corrupt: ranking_context.allowed_asins must be a string list."
+            )
+        match_reasons = ranking.get("match_reasons")
+        if match_reasons is not None and (
+            not isinstance(match_reasons, dict)
+            or any(
+                not isinstance(key, str) or not isinstance(value, str)
+                for key, value in match_reasons.items()
+            )
+        ):
+            raise ResultSessionValidationError(
+                "Last results cache is corrupt: ranking_context.match_reasons must map strings to strings."
+            )
         try:
             baseline_recipe = ResultRecipe.from_persisted_mapping(baseline)
             current_recipe = ResultRecipe.from_persisted_mapping(current)
