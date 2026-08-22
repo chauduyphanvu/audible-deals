@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-08-22
+
 ### Changed
 - `deals for-you` is now `deals for-me`. The old spelling remains as a deprecated alias for one minor release and prints a warning.
 - Bare `deals` now shows a local, state-aware dashboard; top-level help is organized by workflow; and bare wishlist, profile, config, monitor, and track groups show their current state.
@@ -121,6 +123,7 @@ A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.11.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.0
 [0.10.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.10.0
 [0.9.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.1
 [0.9.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.0
