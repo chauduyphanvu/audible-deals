@@ -391,7 +391,9 @@ def test_last_series_is_fetch_bound_for_series_session(tmp_config):
     ) in result.output
 
 
-def test_publication_snapshots_histories_before_recording_prices(tmp_config):
+def test_publication_snapshots_histories_before_recording_prices(
+    tmp_config, monkeypatch
+):
     product = make_product(asin="SNAPSHOT01", price=10, series_name="")
     history_file = constants.HISTORY_DIR / f"{product.asin}.json"
     constants.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -413,6 +415,10 @@ def test_publication_snapshots_histories_before_recording_prices(tmp_config):
             }
         )
     )
+    monkeypatch.setattr(
+        "audible_deals.presentation.result_output.load_price_history",
+        lambda *args: pytest.fail("presentation reloaded the history snapshot"),
+    )
 
     outcome = publish_discovery(
         ResultPublicationRequest(
@@ -421,7 +427,7 @@ def test_publication_snapshots_histories_before_recording_prices(tmp_config):
             limit=0,
             output=None,
             json_flag=False,
-            quiet=True,
+            quiet=False,
             max_price=None,
             currency="$",
             candidates=(product,),
@@ -781,6 +787,7 @@ def test_wishlist_keeps_inferred_locale_for_later_watch(tmp_config, monkeypatch)
     assert added.exit_code == 0, added.output
     assert wishlist_store.load_wishlist()[0]["locale"] == "uk"
 
+    locales.clear()
     watched = runner.invoke(cli, ["watch"])
     assert watched.exit_code == 0, watched.output
     assert locales == ["uk"]

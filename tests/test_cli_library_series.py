@@ -5,10 +5,10 @@ from __future__ import annotations
 import datetime
 import json
 
-import pytest
 from click.testing import CliRunner
 
 import audible_deals.constants as constants_mod
+from audible_deals.client import SeriesProductsBatch
 from audible_deals.cli import cli
 from tests.conftest import make_product
 
@@ -227,10 +227,6 @@ class TestLibraryPages:
 
 
 class TestSeriesCommand:
-    @pytest.fixture(autouse=True)
-    def _no_sleep(self, monkeypatch):
-        monkeypatch.setattr("audible_deals.cli.series.time.sleep", lambda _: None)
-
     def test_series_direct_lookup(self, tmp_config, mock_client):
         """With series_asin, uses direct lookup via get_series_products."""
         lib = [
@@ -260,6 +256,66 @@ class TestSeriesCommand:
         assert "Alpha Book 3" in result.output
         mock_client.get_series_products.assert_called_once_with("SER_ALPHA")
         mock_client.search_pages.assert_not_called()
+
+    def test_series_reports_partial_lookup_failures(self, tmp_config, mock_client):
+        lib = [
+            make_product(
+                asin="A1",
+                series_name="Alpha Series",
+                series_asin="SER_ALPHA",
+            ),
+            make_product(
+                asin="A2",
+                series_name="Alpha Series",
+                series_asin="SER_ALPHA",
+            ),
+            make_product(
+                asin="B1",
+                series_name="Beta Series",
+                series_asin="SER_BETA",
+            ),
+            make_product(
+                asin="B2",
+                series_name="Beta Series",
+                series_asin="SER_BETA",
+            ),
+        ]
+        beta = make_product(asin="B3", title="Beta Book 3", series_name="Beta Series")
+        mock_client.get_library.return_value = lib
+        mock_client.get_series_products.side_effect = [
+            RuntimeError("temporary failure"),
+            [lib[2], lib[3], beta],
+        ]
+
+        result = CliRunner().invoke(cli, ["series"])
+
+        assert result.exit_code == 0, result.output
+        assert "Partial results: 1/2 series scanned; 1 failed" in result.output
+        assert "Alpha Series: RuntimeError: temporary failure" in result.output
+        assert "Beta Book 3" in result.output
+
+    def test_series_reports_missing_child_products(self, tmp_config, mock_client):
+        lib = [
+            make_product(
+                asin="A1", series_name="Alpha Series", series_asin="SER_ALPHA"
+            ),
+            make_product(
+                asin="A2", series_name="Alpha Series", series_asin="SER_ALPHA"
+            ),
+        ]
+        mock_client.get_library.return_value = lib
+        mock_client.get_series_products_many.side_effect = None
+        mock_client.get_series_products_many.return_value = SeriesProductsBatch(
+            products={"SER_ALPHA": tuple(lib)},
+            failures={},
+            missing_asins={"SER_ALPHA": ("A3",)},
+        )
+
+        result = CliRunner().invoke(cli, ["series"])
+
+        assert result.exit_code == 0, result.output
+        assert "1/1 series scanned; 1 incomplete" in result.output
+        assert "Alpha Series: 1 product(s) unavailable" in result.output
 
     def test_series_keyword_fallback(self, tmp_config, mock_client):
         """Without series_asin, falls back to keyword search."""
@@ -423,9 +479,7 @@ class TestSeriesCommand:
         runner = CliRunner()
         result = runner.invoke(cli, ["series", "--json"])
         assert result.exit_code == 0, result.output
-        # Progress bar may leak into stdout in test; extract JSON portion
-        json_start = result.output.index("[")
-        data = json.loads(result.output[json_start:])
+        data = json.loads(result.stdout)
         assert isinstance(data, list)
         assert any(item["asin"] == "A3" for item in data)
 
@@ -480,6 +534,20 @@ class TestForMeDryRunNoSideEffects:
         assert "Bobiverse" in result.output
         mock_client.get_library_pages.assert_not_called()
         mock_client.search_pages.assert_not_called()
+
+    def test_dry_run_json_reports_additional_series_batches(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+
+        result = CliRunner().invoke(cli, ["for-me", "--dry-run", "--json"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["known_api_calls"] == 5
+        assert payload["series"] == ["Bobiverse"]
+        assert "additional" in payload["series_product_batches"]
+        mock_client.get_library_pages.assert_not_called()
 
 
 class TestProfileGenreCategoryOverride:
@@ -560,7 +628,7 @@ class TestLibraryJsonStats:
             cli, ["library", "--json", "--stats"], catch_exceptions=False
         )
         assert result.exit_code == 0
-        payload = json.loads(result.output[result.output.index("{") :])
+        payload = json.loads(result.stdout)
         # Stats object, not a product array.
         assert isinstance(payload, dict)
         assert payload["total_books"] == 2
@@ -576,6 +644,6 @@ class TestLibraryJsonStats:
         _routes_setup_library_mock(mock_client, products)
         result = CliRunner().invoke(cli, ["library", "--json"], catch_exceptions=False)
         assert result.exit_code == 0
-        payload = json.loads(result.output[result.output.index("[") :])
+        payload = json.loads(result.stdout)
         assert isinstance(payload, list)
         assert {p["asin"] for p in payload} == {"JS3", "JS4"}

@@ -713,6 +713,56 @@ class TestConfigBooleanOverride:
         assert s.on_sale is True
         assert s.deep is True
 
+
+class TestLanguagePrecedence:
+    def test_cli_all_languages_overrides_config_language(self):
+        s = resolve_settings(
+            SettingsResolutionRequest(
+                config={"language": "french"},
+                profile=None,
+                cli_flags={"language": "", "all_languages": True},
+                explicit_options={"all_languages"},
+            )
+        )
+
+        assert s.language == ""
+        assert s.all_languages is True
+
+    def test_cli_language_overrides_config_all_languages(self):
+        s = resolve_settings(
+            SettingsResolutionRequest(
+                config={"all_languages": True},
+                profile=None,
+                cli_flags={"language": "spanish", "all_languages": False},
+                explicit_options={"language"},
+            )
+        )
+
+        assert s.language == "spanish"
+        assert s.all_languages is False
+
+    def test_profile_language_overrides_config_all_languages(self):
+        s = resolve_settings(
+            SettingsResolutionRequest(
+                config={"all_languages": True},
+                profile={"language": "french"},
+                cli_flags={"language": "", "all_languages": False},
+            )
+        )
+
+        assert s.language == "french"
+        assert s.all_languages is False
+
+    def test_same_source_language_conflict_is_rejected(self):
+        with pytest.raises(ValueError, match="cannot both be enabled"):
+            resolve_settings(
+                SettingsResolutionRequest(
+                    config={"language": "french", "all_languages": True},
+                    profile=None,
+                    cli_flags={"language": "", "all_languages": False},
+                )
+            )
+
     def test_config_bool_false_applied_when_not_cli(self):
         """Config with explicit False should set ns to False when source is DEFAULT."""
         from unittest.mock import MagicMock

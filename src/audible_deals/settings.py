@@ -118,6 +118,25 @@ def resolve_settings(request: SettingsResolutionRequest) -> Settings:
 
     known = {item.name for item in fields(Settings)}
     kwargs = {key: value for key, value in merged.items() if key in known}
+    language_rank = _setting_source_rank(request, "language")
+    all_languages_rank = _setting_source_rank(request, "all_languages")
+    if kwargs.get("language") and kwargs.get("all_languages"):
+        if language_rank > all_languages_rank:
+            kwargs["all_languages"] = False
+        elif all_languages_rank > language_rank:
+            kwargs["language"] = ""
+        else:
+            raise ValueError("language and all_languages cannot both be enabled")
     if debug:
         logger.debug("Settings sources: %s", source)
     return Settings(**kwargs)
+
+
+def _setting_source_rank(request: SettingsResolutionRequest, key: str) -> int:
+    if key in request.explicit_options:
+        return 3
+    if request.profile and request.profile.get(key) is not None:
+        return 2
+    if request.config.get(key) is not None:
+        return 1
+    return 0

@@ -9,6 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from audible_deals.client import CatalogSearchResult, SeriesProductsBatch
 from audible_deals.product import Product
 
 
@@ -269,6 +270,48 @@ def mock_client(monkeypatch):
     client = MagicMock()
     client.__enter__ = MagicMock(return_value=client)
     client.__exit__ = MagicMock(return_value=False)
+
+    def search_segments(requests, page_callback=None):
+        results = []
+        for index, request in enumerate(requests):
+            pages = []
+            error = None
+            try:
+                query_args = (
+                    {"title": request.title}
+                    if request.title
+                    else {"keywords": request.keywords}
+                )
+                for products, page, total in client.search_pages(
+                    **query_args,
+                    category_id=request.category_id,
+                    sort_by=request.sort_by,
+                    max_pages=request.max_pages,
+                ):
+                    pages.append((products, page, total))
+                    if page_callback is not None:
+                        page_callback(index, products, page, total)
+            except Exception as exc:
+                error = exc
+                if not request.optional:
+                    raise
+                if not pages and page_callback is not None:
+                    page_callback(index, [], 1, 0)
+            results.append(CatalogSearchResult(tuple(pages), error))
+        return results
+
+    def get_series_products_many(series_asins):
+        products = {}
+        failures = {}
+        for series_asin in dict.fromkeys(series_asins):
+            try:
+                products[series_asin] = tuple(client.get_series_products(series_asin))
+            except Exception as exc:
+                failures[series_asin] = exc
+        return SeriesProductsBatch(products, failures, {})
+
+    client.search_segments.side_effect = search_segments
+    client.get_series_products_many.side_effect = get_series_products_many
 
     def _get_mock(locale):
         return client

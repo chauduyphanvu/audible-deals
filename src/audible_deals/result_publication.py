@@ -5,6 +5,7 @@ from __future__ import annotations
 import copy
 import dataclasses
 import logging
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -85,20 +86,14 @@ def record_prices_safely(products: list[Product]) -> None:
 def _session_for_request(
     request: ResultPublicationRequest,
     visible: list[Product],
+    histories: dict[str, list[dict]] | None,
 ) -> ResultSession | None:
     spec = request.session_spec
     if spec is None:
         return None
     constraints = copy.deepcopy(spec.constraints)
-    histories = request.result.histories
     if histories is None:
-        histories = {
-            history_key(product.asin, product.locale): load_price_history(
-                product.asin, product.locale
-            )
-            for product in request.candidates
-            if product.price is not None
-        }
+        histories = {}
     constraints["history_percentiles"] = hist_percentiles(
         list(request.candidates), histories
     )
@@ -133,11 +128,22 @@ def publish_discovery(
 
     if request.output:
         export_products(visible, request.output)
-        console.print(
-            f"[green]Exported {len(visible)} items to {request.output}[/green]"
-        )
+        export_message = f"Exported {len(visible)} items to {request.output}"
+        if request.json_flag:
+            print(export_message, file=sys.stderr)
+        else:
+            console.print(f"[green]{export_message}[/green]")
 
-    session = _session_for_request(request, visible)
+    histories = request.result.histories
+    if histories is None and request.session_spec is not None:
+        histories = {
+            history_key(product.asin, product.locale): load_price_history(
+                product.asin, product.locale
+            )
+            for product in request.candidates
+            if product.price is not None
+        }
+    session = _session_for_request(request, visible, histories)
     if request.record_price_history:
         record_prices_safely(all_products)
 
@@ -153,7 +159,11 @@ def publish_discovery(
             logger.warning("Could not save last result session", exc_info=True)
         save_seen_asins({product.asin for product in visible})
 
-    visible_result = dataclasses.replace(request.result, products=tuple(visible))
+    visible_result = dataclasses.replace(
+        request.result,
+        products=tuple(visible),
+        histories=histories,
+    )
     emit_results(
         ResultPresentationRequest(
             result=visible_result,

@@ -187,7 +187,8 @@ class TestFetchWithProgress:
 
         recorder = ProgressRecorder()
         monkeypatch.setattr(
-            "audible_deals.presentation.terminal.create_scan_progress", lambda: recorder
+            "audible_deals.presentation.terminal.create_scan_progress",
+            lambda **kwargs: recorder,
         )
         plan = CatalogScanPlan.create(
             queries=["query"],

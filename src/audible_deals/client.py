@@ -8,7 +8,8 @@ import logging
 import math
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable, Iterator
 
@@ -31,6 +32,30 @@ def _validate_category_id(value: str) -> None:
 
 
 _MAX_CONCURRENT_FETCHES = 4
+
+
+@dataclass(frozen=True)
+class CatalogSearchRequest:
+    keywords: str = ""
+    title: str = ""
+    category_id: str = ""
+    sort_by: str = "Relevance"
+    max_pages: int = 10
+    optional: bool = False
+
+
+@dataclass(frozen=True)
+class CatalogSearchResult:
+    pages: tuple[tuple[list[_product.Product], int, int], ...]
+    error: Exception | None = None
+
+
+@dataclass(frozen=True)
+class SeriesProductsBatch:
+    products: dict[str, tuple[_product.Product, ...]]
+    failures: dict[str, Exception]
+    missing_asins: dict[str, tuple[str, ...]]
+    product_failures: dict[str, tuple[Exception, ...]] = field(default_factory=dict)
 
 
 class DealsClient:
@@ -181,6 +206,119 @@ class DealsClient:
             # get GC'd under them, stalling each until its 10s socket timeout.
             pool.shutdown(wait=True, cancel_futures=True)
             self._transport.reset_abort()
+
+    def search_segments(
+        self,
+        requests: list[CatalogSearchRequest],
+        page_callback: Callable[[int, list[_product.Product], int, int], None]
+        | None = None,
+    ) -> list[CatalogSearchResult]:
+        """Fetch independent catalog segments through one four-worker pool."""
+        if not requests:
+            return []
+
+        pages: list[dict[int, tuple[list[_product.Product], int]]] = [
+            {} for _ in requests
+        ]
+        errors: list[Exception | None] = [None for _ in requests]
+        next_callback_page = [1 for _ in requests]
+        callback_stopped = [False for _ in requests]
+
+        def fetch(index: int, logical_page: int):
+            request = requests[index]
+            api_page = logical_page - 1 if request.title else logical_page
+            products, total = self.search_catalog(
+                keywords=request.keywords,
+                title=request.title,
+                category_id=request.category_id,
+                sort_by=request.sort_by,
+                page=api_page,
+            )
+            return index, logical_page, products, total
+
+        def store(index: int, logical_page: int, products, total: int) -> None:
+            pages[index][logical_page] = (products, total)
+            while not callback_stopped[index]:
+                next_page = next_callback_page[index]
+                page_result = pages[index].get(next_page)
+                if page_result is None:
+                    break
+                page_products, page_total = page_result
+                if page_callback is not None:
+                    page_callback(index, page_products, next_page, page_total)
+                next_callback_page[index] += 1
+                if not page_products:
+                    callback_stopped[index] = True
+
+        def remaining_pages(index: int, products, total: int) -> range:
+            if not products:
+                return range(0)
+            last_page = (
+                min(
+                    requests[index].max_pages,
+                    math.ceil(total / _constants.MAX_PAGE_SIZE),
+                )
+                if total
+                else 1
+            )
+            return range(2, last_page + 1)
+
+        try:
+            index, logical_page, products, total = fetch(0, 1)
+        except Exception as exc:
+            if not requests[0].optional:
+                raise
+            errors[0] = exc
+            store(0, 1, [], 0)
+            initial_remaining = range(0)
+        else:
+            store(index, logical_page, products, total)
+            initial_remaining = remaining_pages(0, products, total)
+
+        pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
+        pending = {}
+        try:
+            for index in range(1, len(requests)):
+                future = pool.submit(fetch, index, 1)
+                pending[future] = (index, 1)
+            for logical_page in initial_remaining:
+                future = pool.submit(fetch, 0, logical_page)
+                pending[future] = (0, logical_page)
+
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    request_index, requested_page = pending.pop(future)
+                    try:
+                        index, logical_page, products, total = future.result()
+                    except Exception as exc:
+                        if not requests[request_index].optional:
+                            raise
+                        errors[request_index] = exc
+                        store(request_index, requested_page, [], 0)
+                        continue
+                    store(index, logical_page, products, total)
+                    if logical_page == 1:
+                        for next_page in remaining_pages(index, products, total):
+                            next_future = pool.submit(fetch, index, next_page)
+                            pending[next_future] = (index, next_page)
+        except BaseException:
+            self._transport.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            self._transport.reset_abort()
+
+        results: list[CatalogSearchResult] = []
+        for index, page_map in enumerate(pages):
+            ordered = []
+            for logical_page in sorted(page_map):
+                products, total = page_map[logical_page]
+                ordered.append((products, logical_page, total))
+                if not products:
+                    break
+            results.append(CatalogSearchResult(tuple(ordered), errors[index]))
+        return results
 
     def get_library_asins(self) -> set[str]:
         """Fetch all ASINs in the user's Audible library.
@@ -427,27 +565,133 @@ class DealsClient:
 
         Returns an empty list if the series is not found.
         """
-        try:
-            resp = self._transport.request(
-                f"1.0/catalog/products/{series_asin}",
-                response_groups="relationships",
-            )
-        except Exception:
-            logger.warning(
-                "get_series_products failed for %s", series_asin, exc_info=True
-            )
+        child_asins = self._get_series_child_asins(series_asin)
+        if not child_asins:
             return []
+        return self.get_products_batch(child_asins)
+
+    def _get_series_child_asins(self, series_asin: str) -> list[str]:
+        resp = self._transport.request(
+            f"1.0/catalog/products/{series_asin}",
+            response_groups="relationships",
+        )
         product_data = resp.get("product")
         if not product_data:
             return []
-        child_asins = [
+        return [
             r["asin"]
             for r in product_data.get("relationships", [])
             if r.get("relationship_to_product") == "child" and r.get("asin")
         ]
-        if not child_asins:
-            return []
-        return self.get_products_batch(child_asins)
+
+    def get_series_products_many(self, series_asins: list[str]) -> SeriesProductsBatch:
+        """Fetch multiple series with bounded relationship and product batches."""
+        unique_series = list(dict.fromkeys(series_asins))
+        children: dict[str, list[str]] = {}
+        failures: dict[str, Exception] = {}
+
+        def fetch_relationship(series_asin: str):
+            return series_asin, self._get_series_child_asins(series_asin)
+
+        if len(unique_series) <= 1:
+            for series_asin in unique_series:
+                try:
+                    _, child_asins = fetch_relationship(series_asin)
+                except Exception as exc:
+                    failures[series_asin] = exc
+                else:
+                    children[series_asin] = child_asins
+        else:
+            pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
+            try:
+                futures = {
+                    series_asin: pool.submit(fetch_relationship, series_asin)
+                    for series_asin in unique_series
+                }
+                for series_asin, future in futures.items():
+                    try:
+                        _, child_asins = future.result()
+                    except Exception as exc:
+                        failures[series_asin] = exc
+                    else:
+                        children[series_asin] = child_asins
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+
+        all_child_asins = list(
+            dict.fromkeys(asin for values in children.values() for asin in values)
+        )
+        batches = [
+            all_child_asins[i : i + _constants.MAX_PAGE_SIZE]
+            for i in range(0, len(all_child_asins), _constants.MAX_PAGE_SIZE)
+        ]
+        fetched: list[_product.Product] = []
+        failed_batches: list[tuple[tuple[str, ...], Exception]] = []
+        if len(batches) <= 1:
+            for batch in batches:
+                try:
+                    fetched.extend(self._fetch_products_batch(batch))
+                except Exception as exc:
+                    failed_batches.append((tuple(batch), exc))
+        else:
+            pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
+            try:
+                futures = [
+                    (tuple(batch), pool.submit(self._fetch_products_batch, batch))
+                    for batch in batches
+                ]
+                for batch, future in futures:
+                    try:
+                        fetched.extend(future.result())
+                    except Exception as exc:
+                        failed_batches.append((batch, exc))
+            finally:
+                pool.shutdown(wait=True, cancel_futures=True)
+
+        by_asin = {product.asin: product for product in fetched}
+        products: dict[str, tuple[_product.Product, ...]] = {}
+        missing_asins: dict[str, tuple[str, ...]] = {}
+        product_failures: dict[str, tuple[Exception, ...]] = {}
+        for series_asin, child_asins in children.items():
+            products[series_asin] = tuple(
+                by_asin[asin] for asin in child_asins if asin in by_asin
+            )
+            failed_asins: set[str] = set()
+            series_errors: list[Exception] = []
+            for batch, exc in failed_batches:
+                affected = set(child_asins).intersection(batch)
+                if affected:
+                    failed_asins.update(affected)
+                    series_errors.append(exc)
+            if series_errors:
+                product_failures[series_asin] = tuple(series_errors)
+            missing = tuple(
+                asin
+                for asin in child_asins
+                if asin not in by_asin and asin not in failed_asins
+            )
+            if missing:
+                missing_asins[series_asin] = missing
+        return SeriesProductsBatch(
+            products,
+            failures,
+            missing_asins,
+            product_failures,
+        )
+
+    def _fetch_products_batch(self, batch: list[str]) -> list[_product.Product]:
+        resp = self._transport.request(
+            "1.0/catalog/products",
+            asins=",".join(batch),
+            num_results=len(batch),
+            response_groups=_constants.CATALOG_RESPONSE_GROUPS,
+        )
+        results = []
+        for raw in resp.get("products", []):
+            parsed = _product.parse_product(raw, locale=self.locale)
+            if parsed.asin and parsed.title:
+                results.append(parsed)
+        return results
 
     def get_products_batch(self, asins: list[str]) -> list[_product.Product]:
         """Fetch multiple products in batches of up to 50, concurrently.
@@ -460,21 +704,15 @@ class DealsClient:
             for i in range(0, len(asins), _constants.MAX_PAGE_SIZE)
         ]
 
-        def _fetch_batch(batch: list[str]) -> dict:
-            return self._transport.request(
-                "1.0/catalog/products",
-                asins=",".join(batch),
-                num_results=len(batch),
-                response_groups=_constants.CATALOG_RESPONSE_GROUPS,
-            )
-
         if len(batches) <= 1:
-            resps = [_fetch_batch(batch) for batch in batches]
+            product_batches = [self._fetch_products_batch(batch) for batch in batches]
         else:
             pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
             try:
-                futures = [pool.submit(_fetch_batch, batch) for batch in batches]
-                resps = [f.result() for f in futures]
+                futures = [
+                    pool.submit(self._fetch_products_batch, batch) for batch in batches
+                ]
+                product_batches = [future.result() for future in futures]
             except BaseException:
                 self._transport.cancel()
                 raise
@@ -482,11 +720,6 @@ class DealsClient:
                 pool.shutdown(wait=True, cancel_futures=True)
                 self._transport.reset_abort()
 
-        results: list[_product.Product] = []
-        for resp in resps:
-            for raw in resp.get("products", []):
-                parsed = _product.parse_product(raw, locale=self.locale)
-                if parsed.asin and parsed.title:
-                    results.append(parsed)
+        results = [product for batch in product_batches for product in batch]
         logger.debug("get_products_batch in=%d out=%d", len(asins), len(results))
         return results

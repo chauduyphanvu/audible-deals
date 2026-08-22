@@ -137,11 +137,14 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
     if plan.pending_asins:
         dc = _get_client(locale)
         with dc:
+            products = dc.get_products_batch(list(plan.pending_asins))
+            by_asin = {product.asin: product for product in products}
             for asin in plan.pending_asins:
-                try:
-                    fetched.append(dc.get_product(asin))
-                except ValueError:
+                product = by_asin.get(asin)
+                if product is None:
                     console.print(f"[red]Not found: {asin}[/red]")
+                else:
+                    fetched.append(product)
 
     if fetched:
         result = _wishlist_operation(add_products, fetched, max_price, locale=locale)

@@ -48,6 +48,10 @@ def config_set(key, value):
     coerced = coerce_config_value(norm_key, value)
     cfg = load_config()
     cfg[norm_key] = coerced
+    if norm_key == "language" and coerced:
+        cfg["all_languages"] = False
+    elif norm_key == "all_languages" and coerced:
+        cfg.pop("language", None)
     save_config(cfg)
     console.print(f"[green]Config set:[/green] {norm_key} = {coerced!r}")
 
@@ -150,6 +154,8 @@ def profile_save(ctx, name, **kwargs):
     profiles = load_profiles()
     # Only save values explicitly passed on the command line
     saved = {k: v for k, v in kwargs.items() if ctx.get_parameter_source(k) == _CL}
+    if saved.get("language") and saved.get("all_languages"):
+        raise click.UsageError("Use --language or --all-languages, not both.")
     if "sort" in saved and saved["sort"] not in ALL_SORT_OPTIONS:
         raise click.ClickException(
             f"Invalid sort {saved['sort']!r}. Choose from: "

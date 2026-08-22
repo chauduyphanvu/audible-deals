@@ -370,6 +370,8 @@ def search(
     _check_plus_flags(s.skip_plus, s.only_plus)
     if not query and not s.genre and not category:
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
+    if dry_run and output:
+        raise click.UsageError("--dry-run cannot be combined with --output/-o")
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     effective_genre = _resolve_genre_category(ctx, s.genre, category)
     try:
@@ -404,7 +406,9 @@ def search(
                         released_before=released_before,
                     )
                 ),
-            )
+            ),
+            json_flag=json_flag,
+            json_writer=click.echo,
         )
         return
 
@@ -425,7 +429,7 @@ def search(
             if len(queries) == 1
             else f"Searching {len(queries)} queries"
         )
-        with catalog_scan_progress(plan, description) as progress:
+        with catalog_scan_progress(plan, description, disable=json_flag) as progress:
             all_products = execute_catalog_scan(dc, plan, progress)
 
     cur = _currency(ctx)
@@ -671,6 +675,8 @@ def find(
         exclude_keywords=exclude_keywords,
     )
     _check_plus_flags(s.skip_plus, s.only_plus)
+    if dry_run and output:
+        raise click.UsageError("--dry-run cannot be combined with --output/-o")
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     effective_genre = _resolve_genre_category(ctx, s.genre, category)
 
@@ -708,7 +714,9 @@ def find(
                         released_before=released_before,
                     )
                 ),
-            )
+            ),
+            json_flag=json_flag,
+            json_writer=click.echo,
         )
         return
 
@@ -742,14 +750,16 @@ def find(
             description = f"Scanning {desc_str} ({len(child_ids)} subcategories)"
         else:
             if subcategories:
-                console.print(
-                    "[dim]No subcategories found; scanning the category directly.[/dim]"
-                )
+                message = "No subcategories found; scanning the category directly."
+                if json_flag:
+                    click.echo(message, err=True)
+                else:
+                    console.print(f"[dim]{message}[/dim]")
             scan_category_ids = [category]
             description = f"Scanning {desc_str}"
 
         plan = bind_catalog_categories(plan, scan_category_ids)
-        with catalog_scan_progress(plan, description) as progress:
+        with catalog_scan_progress(plan, description, disable=json_flag) as progress:
             all_products = execute_catalog_scan(dc, plan, progress)
 
     cur = _currency(ctx)

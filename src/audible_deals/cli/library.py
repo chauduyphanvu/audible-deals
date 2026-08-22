@@ -27,10 +27,12 @@ from audible_deals.serialization import (
 logger = logging.getLogger(__name__)
 
 
-def fetch_library_with_progress(dc: DealsClient) -> list[Product]:
+def fetch_library_with_progress(
+    dc: DealsClient, *, show_progress: bool = True
+) -> list[Product]:
     """Fetch the full library with a progress bar."""
     all_products: list[Product] = []
-    with create_scan_progress() as progress:
+    with create_scan_progress(disable=not show_progress) as progress:
         task = progress.add_task("Fetching library", total=None, items=0)
         page_count = 0
         for page_products, page_num in dc.get_library_pages():
@@ -84,7 +86,11 @@ def _emit_library_output(
     """Write library results to file, JSON stdout, or the terminal table."""
     if output:
         export_products(filtered, output)
-        console.print(f"[green]Exported {len(filtered)} items to {output}[/green]")
+        export_message = f"Exported {len(filtered)} items to {output}"
+        if json_flag:
+            click.echo(export_message, err=True)
+        else:
+            console.print(f"[green]{export_message}[/green]")
     if json_flag:
         payload: object = (
             _library_stats_json(stats_products)
@@ -209,7 +215,7 @@ def library(
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     dc = _get_client(ctx.obj["locale"])
     with dc:
-        all_products = fetch_library_with_progress(dc)
+        all_products = fetch_library_with_progress(dc, show_progress=not json_flag)
     outcome = filter_products(
         all_products,
         FilterContext(

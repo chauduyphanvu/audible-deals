@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import dataclasses
+import json
 import logging
 import shlex
-import time
 from inspect import cleandoc
 from pathlib import Path
 
@@ -13,13 +13,14 @@ import click
 
 from audible_deals import taste
 from audible_deals.cli.helpers import (
+    _CL,
     _credit_price,
     _currency,
     _get_client,
     _resolve_output_quiet,
 )
 from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
-from audible_deals.client import DealsClient
+from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
 from audible_deals.price_history import (
     history_key,
@@ -40,6 +41,7 @@ from audible_deals.result_publication import (
     publish_discovery,
 )
 from audible_deals.serialization import validate_export_path
+from audible_deals.settings import SettingsResolutionRequest, resolve_settings
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
 logger = logging.getLogger(__name__)
@@ -57,21 +59,63 @@ def _scan_plan(profile: dict) -> tuple[list[str], list[dict], list[dict]]:
     return authors, genres, series
 
 
-def _print_for_me_plan(
+def _for_me_plan(
     profile: dict, authors: list[str], genres: list[dict], series: list[dict]
-) -> None:
+) -> dict:
+    catalog_calls = (len(authors) + len(genres)) * _PAGES_PER_SCAN
+    relationship_calls = len(series)
+    return {
+        "dry_run": True,
+        "profile": {
+            "library_size": profile.get("library_size", 0),
+            "built_at": profile.get("built_at", "?"),
+        },
+        "series": [item["name"] for item in series],
+        "authors": list(authors),
+        "genres": [item["name"] for item in genres],
+        "known_api_calls": catalog_calls + relationship_calls,
+        "series_product_batches": "additional when a relationship has children",
+    }
+
+
+def _print_for_me_plan(plan: dict) -> None:
     console.print("\n[bold]Dry run[/bold] — would scan, based on your library:")
+    profile = plan["profile"]
     console.print(
         f"  Profile: {profile.get('library_size', 0)} books (built {profile.get('built_at', '?')})"
     )
+    series = plan["series"]
+    authors = plan["authors"]
+    genres = plan["genres"]
     if series:
-        console.print(f"  Series in progress: {', '.join(s['name'] for s in series)}")
+        console.print(f"  Series in progress: {', '.join(series)}")
     if authors:
         console.print(f"  Authors: {', '.join(authors)}")
     if genres:
-        console.print(f"  Genres: {', '.join(g['name'] for g in genres)}")
-    api_calls = len(series) + (len(authors) + len(genres)) * _PAGES_PER_SCAN
-    console.print(f"  API calls: ~{api_calls}")
+        console.print(f"  Genres: {', '.join(genres)}")
+    console.print(
+        f"  Known API calls: {plan['known_api_calls']} + series product batches"
+    )
+
+
+def _resolve_for_me_settings(ctx: click.Context, **flags):
+    explicit_options = {key for key in flags if ctx.get_parameter_source(key) == _CL}
+    try:
+        settings = resolve_settings(
+            SettingsResolutionRequest(
+                config=ctx.obj.get("config", {}),
+                profile=None,
+                cli_flags=flags,
+                explicit_options=explicit_options,
+            )
+        )
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from None
+    if not settings.language and not settings.all_languages:
+        settings = dataclasses.replace(
+            settings, language=LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
+        )
+    return settings
 
 
 def _fetch_candidates(
@@ -80,10 +124,14 @@ def _fetch_candidates(
     genres: list[dict],
     series: list[dict],
     owned: set[str],
-) -> tuple[list[Product], dict[str, str]]:
+    *,
+    show_progress: bool = True,
+) -> tuple[list[Product], dict[str, str], tuple[str, ...], tuple[str, ...]]:
     """Fetch series gaps, author works, and genre bestsellers, deduped vs owned."""
     candidates: dict[str, Product] = {}
     series_of: dict[str, str] = {}
+    failures: list[str] = []
+    incomplete: list[str] = []
     segments = len(series) + len(authors) + len(genres)
 
     def add(p: Product, series_name: str | None = None) -> None:
@@ -93,39 +141,106 @@ def _fetch_candidates(
         if series_name:
             series_of[p.asin] = series_name
 
-    with create_scan_progress() as progress:
+    with create_scan_progress(disable=not show_progress) as progress:
         task = progress.add_task("Scanning your taste", total=segments, items=0)
         done = 0
 
+        series_batch = dc.get_series_products_many(
+            [item["series_asin"] for item in series]
+        )
         for s in series:
-            for p in dc.get_series_products(s["series_asin"]):
-                add(p, series_name=s["name"])
+            try:
+                failure = series_batch.failures.get(s["series_asin"])
+                if failure is not None:
+                    raise failure
+                for p in series_batch.products.get(s["series_asin"], ()):
+                    add(p, series_name=s["name"])
+                product_failures = series_batch.product_failures.get(
+                    s["series_asin"], ()
+                )
+                missing = series_batch.missing_asins.get(s["series_asin"], ())
+                issues = []
+                if product_failures:
+                    issues.append(
+                        f"{len(product_failures)} product batch request(s) failed"
+                    )
+                if missing:
+                    issues.append(f"{len(missing)} product(s) unavailable")
+                if issues:
+                    detail = f"{s['name']}: {', '.join(issues)}"
+                    logger.warning("incomplete for-me series scan: %s", detail)
+                    incomplete.append(detail)
+            except Exception as exc:
+                logger.warning(
+                    "for-me series scan failed for %s", s["name"], exc_info=True
+                )
+                failures.append(f"{s['name']}: {type(exc).__name__}: {exc}")
             done += 1
             progress.update(task, completed=done, items=len(candidates))
-            time.sleep(0.3)  # rate limit between series lookups
 
-        for author in authors:
-            for page_products, _, _ in dc.search_pages(
-                keywords=author, sort_by="Relevance", max_pages=_PAGES_PER_SCAN
-            ):
+        catalog_requests = [
+            CatalogSearchRequest(
+                keywords=author,
+                sort_by="Relevance",
+                max_pages=_PAGES_PER_SCAN,
+            )
+            for author in authors
+        ]
+        catalog_requests.extend(
+            CatalogSearchRequest(
+                category_id=genre["id"],
+                sort_by="BestSellers",
+                max_pages=_PAGES_PER_SCAN,
+            )
+            for genre in genres
+        )
+        catalog_results = dc.search_segments(catalog_requests)
+
+        for author, segment in zip(authors, catalog_results[: len(authors)]):
+            for page_products, _, _ in segment.pages:
                 for p in page_products:
                     if any(author.lower() in a.lower() for a in p.authors):
                         add(p)
             done += 1
             progress.update(task, completed=done, items=len(candidates))
 
-        for genre in genres:
-            for page_products, _, _ in dc.search_pages(
-                category_id=genre["id"],
-                sort_by="BestSellers",
-                max_pages=_PAGES_PER_SCAN,
-            ):
+        for segment in catalog_results[len(authors) :]:
+            for page_products, _, _ in segment.pages:
                 for p in page_products:
                     add(p)
             done += 1
             progress.update(task, completed=done, items=len(candidates))
 
-    return list(candidates.values()), series_of
+    return list(candidates.values()), series_of, tuple(failures), tuple(incomplete)
+
+
+def _report_for_me_series_outcomes(
+    failures: tuple[str, ...],
+    incomplete: tuple[str, ...],
+    total: int,
+    *,
+    json_flag: bool,
+) -> None:
+    if not failures and not incomplete:
+        return
+    outcomes = []
+    if failures:
+        outcomes.append(f"{len(failures)} failed")
+    if incomplete:
+        outcomes.append(f"{len(incomplete)} incomplete")
+    summary = (
+        f"Partial results: {total - len(failures)}/{total} series scanned; "
+        f"{'; '.join(outcomes)}."
+    )
+    details = (*failures, *incomplete)
+    if json_flag:
+        click.echo(summary, err=True)
+        for detail in details:
+            click.echo(f"  {detail}", err=True)
+    else:
+        console.print(f"[yellow]{summary}[/yellow]")
+        for detail in details:
+            console.print(f"[dim]  {detail}[/dim]")
 
 
 @click.command("for-me")
@@ -283,8 +398,8 @@ def for_me(
     logger.info(
         "for-me refresh=%s max_price=%s dry_run=%s", refresh, max_price, dry_run
     )
-    if skip_plus and only_plus:
-        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    if dry_run and output:
+        raise click.UsageError("--dry-run cannot be combined with --output/-o")
     validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     dc = _get_client(ctx.obj["locale"])
@@ -301,24 +416,62 @@ def for_me(
             raise click.ClickException(
                 "Could not derive a taste profile from your library."
             )
-        _print_for_me_plan(profile, authors, genres, series)
+        plan = _for_me_plan(profile, authors, genres, series)
+        if json_flag:
+            click.echo(json.dumps(plan, indent=2, ensure_ascii=False))
+        else:
+            _print_for_me_plan(plan)
         return
+
+    settings = _resolve_for_me_settings(
+        ctx,
+        max_price=max_price,
+        min_rating=min_rating,
+        min_ratings=min_ratings,
+        min_hours=min_hours,
+        on_sale=on_sale,
+        limit=limit,
+        interactive=interactive,
+        sort=sort or "",
+        narrator=narrator,
+        skip_plus=skip_plus,
+        only_plus=only_plus,
+        language="",
+        all_languages=False,
+    )
+    if settings.skip_plus and settings.only_plus:
+        raise click.UsageError("--skip-plus and --only-plus are mutually exclusive")
+    max_price = settings.max_price
+    min_rating = settings.min_rating
+    min_ratings = settings.min_ratings
+    min_hours = settings.min_hours
+    on_sale = settings.on_sale
+    limit = settings.limit
+    interactive = settings.interactive
+    sort = settings.sort
+    narrator = settings.narrator
+    skip_plus = settings.skip_plus
+    only_plus = settings.only_plus
 
     with dc:
         if profile is None:
             from audible_deals.cli.library import fetch_library_with_progress
 
-            lib_products = fetch_library_with_progress(dc)
+            lib_products = fetch_library_with_progress(dc, show_progress=not json_flag)
             if not lib_products:
                 raise click.ClickException(
                     "Your library is empty — for-me learns your taste from books you own."
                 )
             profile = taste.build_profile(lib_products)
             taste.save_profile(profile)
-            console.print(
-                f"[dim]Taste profile built from {len(lib_products)} books "
-                "(cached for 24h; --refresh to rebuild).[/dim]"
+            profile_message = (
+                f"Taste profile built from {len(lib_products)} books "
+                "(cached for 24h; --refresh to rebuild)."
             )
+            if json_flag:
+                click.echo(profile_message, err=True)
+            else:
+                console.print(f"[dim]{profile_message}[/dim]")
 
         authors, genres, series = _scan_plan(profile)
         if not (authors or genres or series):
@@ -327,10 +480,24 @@ def for_me(
             )
 
         owned = set(profile.get("owned_asins", []))
-        candidates, series_of = _fetch_candidates(dc, authors, genres, series, owned)
+        candidates, series_of, failures, incomplete = _fetch_candidates(
+            dc,
+            authors,
+            genres,
+            series,
+            owned,
+            show_progress=not json_flag,
+        )
+
+    _report_for_me_series_outcomes(
+        failures,
+        incomplete,
+        len(series),
+        json_flag=json_flag,
+    )
 
     credit_price = _credit_price(ctx)
-    language = LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
+    language = "" if settings.all_languages else settings.language
     candidate_histories = {
         history_key(p.asin, p.locale): load_price_history(p.asin, p.locale)
         for p in candidates

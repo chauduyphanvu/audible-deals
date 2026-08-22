@@ -35,6 +35,29 @@ class TestSearchCommand:
         assert len(data) == 1
         assert data[0]["asin"] == "S1"
 
+    def test_json_stdout_is_not_prefixed_by_progress(self, mock_client, tmp_config):
+        product = make_product(asin="SJSON", price=5.0, language="english")
+        mock_client.search_pages.return_value = iter([([product], 1, 1)])
+        output = tmp_config / "search-json-output.json"
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "search",
+                "test",
+                "--pages",
+                "1",
+                "--json",
+                "--output",
+                str(output),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert [item["asin"] for item in json.loads(result.stdout)] == ["SJSON"]
+        assert "Exported 1 items" in result.stderr
+        assert json.loads(output.read_text())[0]["asin"] == "SJSON"
+
     def test_output_implies_quiet(self, mock_client, tmp_config):
         """When -o is set without -q, quiet should be implied (no table in stdout)."""
         products = [make_product(asin="S2", price=5.0)]
@@ -399,6 +422,17 @@ class TestDryRunSearch:
         result = runner.invoke(cli, ["search", "test", "--dry-run"])
         assert result.exit_code == 0, result.output
         mock_client.search_catalog.assert_not_called()
+
+    def test_search_dry_run_json_is_machine_readable(self, mock_client, tmp_config):
+        result = CliRunner().invoke(
+            cli, ["search", "fantasy", "--dry-run", "--json", "--pages", "2"]
+        )
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.output)
+        assert payload["dry_run"] is True
+        assert payload["query"] == "fantasy"
+        assert payload["api_calls"] == 3
 
     def test_search_dry_run_rejects_empty_or_query_before_planning(
         self, tmp_config, monkeypatch

@@ -38,9 +38,9 @@ def _routes_seed_last_results(tmp_config, products):
 
 class TestWishlistCommands:
     def test_add_list_remove(self, mock_client, tmp_config):
-        mock_client.get_product.return_value = make_product(
-            asin="W1", title="Wish Book"
-        )
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="W1", title="Wish Book")
+        ]
 
         runner = CliRunner()
 
@@ -950,7 +950,7 @@ class TestWishlistPurge:
 class TestRoutesWishlistCommands:
     def test_wishlist_add(self, tmp_config, mock_client):
         p = make_product(asin="W001", title="Wish Book")
-        mock_client.get_product.return_value = p
+        mock_client.get_products_batch.return_value = [p]
         result = _routes_run(
             CliRunner(), ["wishlist", "add", "W001", "--max-price", "5"]
         )
@@ -960,7 +960,7 @@ class TestRoutesWishlistCommands:
     def test_wishlist_add_with_last(self, tmp_config, mock_client):
         products = [make_product(asin="W002", title="Last Wish")]
         _routes_seed_last_results(tmp_config, products)
-        mock_client.get_product.return_value = products[0]
+        mock_client.get_products_batch.return_value = products
         result = _routes_run(CliRunner(), ["wishlist", "add", "--last", "1"])
         assert result.exit_code == 0
 
@@ -1084,18 +1084,32 @@ def test_bugfixwishlist_add_does_not_hold_wishlist_lock_during_api_call(
         finally:
             lock_held = False
 
-    def get_product(asin):
+    def get_products_batch(asins):
         assert not lock_held
-        return make_product(asin=asin, title="Fetched Book")
+        return [make_product(asin=asin, title="Fetched Book") for asin in asins]
 
     monkeypatch.setattr(wishlist_service_mod, "wishlist_lock", tracked_lock)
-    mock_client.get_product.side_effect = get_product
+    mock_client.get_products_batch.side_effect = get_products_batch
 
     result = CliRunner().invoke(cli, ["wishlist", "add", "B00R6S1RCY", "B00R6S1RCY"])
 
     assert result.exit_code == 0, result.output
-    mock_client.get_product.assert_called_once_with("B00R6S1RCY")
+    mock_client.get_products_batch.assert_called_once_with(["B00R6S1RCY"])
     assert [item["asin"] for item in wishlist_mod.load_wishlist()] == ["B00R6S1RCY"]
+
+
+def test_wishlist_add_batches_and_preserves_requested_order(mock_client, tmp_config):
+    mock_client.get_products_batch.return_value = [
+        make_product(asin="B003", title="Third"),
+        make_product(asin="B001", title="First"),
+    ]
+
+    result = CliRunner().invoke(cli, ["wishlist", "add", "B001", "B002", "B003"])
+
+    assert result.exit_code == 0, result.output
+    mock_client.get_products_batch.assert_called_once_with(["B001", "B002", "B003"])
+    assert "Not found: B002" in result.output
+    assert [item["asin"] for item in wishlist_mod.load_wishlist()] == ["B001", "B003"]
 
 
 def test_bugfixwishlist_purge_does_not_hold_wishlist_lock_during_api_or_prompt(

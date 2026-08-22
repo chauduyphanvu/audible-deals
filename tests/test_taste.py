@@ -9,6 +9,7 @@ from click.testing import CliRunner
 
 import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
+from audible_deals.client import SeriesProductsBatch
 from audible_deals.cli import cli
 from audible_deals.taste import (
     build_profile,
@@ -341,9 +342,10 @@ class TestForMeCommand:
         mock_client.get_library_pages.return_value = iter([(lib, 1)])
         _wire_scans(mock_client)
         runner = CliRunner()
-        result = runner.invoke(cli, ["for-me"])
+        result = runner.invoke(cli, ["for-me", "--json"])
         assert result.exit_code == 0, result.output
-        assert "Taste profile built from 2 books" in result.output
+        assert "Taste profile built from 2 books" in result.stderr
+        assert isinstance(json.loads(result.stdout), list)
         assert constants_mod.TASTE_CACHE_FILE.exists()
 
     def test_empty_library_errors(self, mock_client, tmp_config):
@@ -373,6 +375,50 @@ class TestForMeCommand:
         assert result.exit_code == 0, result.output
         asins = [d["asin"] for d in _json_payload(result.output)]
         assert asins == ["B00GAP0004"]
+
+    def test_config_defaults_apply_and_cli_overrides_them(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        constants_mod.CONFIG_FILE.write_text(json.dumps({"max_price": 5}))
+        runner = CliRunner()
+
+        configured = runner.invoke(cli, ["for-me", "--json"])
+        overridden = runner.invoke(cli, ["for-me", "--json", "--max-price", "20"])
+
+        assert configured.exit_code == 0, configured.output
+        assert [item["asin"] for item in _json_payload(configured.output)] == [
+            "B00GAP0004"
+        ]
+        assert overridden.exit_code == 0, overridden.output
+        assert len(_json_payload(overridden.output)) == 3
+
+    def test_missing_series_products_are_reported_on_json_stderr(
+        self, mock_client, tmp_config
+    ):
+        _seed_profile_cache()
+        _wire_scans(mock_client)
+        gap = make_product(
+            asin="B00GAP0004",
+            title="Bobiverse 4",
+            series_name="Bobiverse",
+            series_position="4",
+            price=4.99,
+        )
+        mock_client.get_series_products_many.side_effect = None
+        mock_client.get_series_products_many.return_value = SeriesProductsBatch(
+            products={"SERIESA01": (gap,)},
+            failures={},
+            missing_asins={"SERIESA01": ("B00MISSING",)},
+        )
+
+        result = CliRunner().invoke(cli, ["for-me", "--json"])
+
+        assert result.exit_code == 0, result.output
+        assert "1/1 series scanned; 1 incomplete" in result.stderr
+        assert "Bobiverse: 1 product(s) unavailable" in result.stderr
+        assert any(item["asin"] == gap.asin for item in json.loads(result.stdout))
 
     def test_narrow_terminal_folds_match_into_title(self, mock_client, tmp_config):
         # Default test console is 80 cols — the reason should appear inline

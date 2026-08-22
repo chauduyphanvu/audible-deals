@@ -460,6 +460,16 @@ class TestDryRunFind:
         assert "API calls" in result.output
         mock_client.search_pages.assert_not_called()
 
+    def test_find_dry_run_rejects_output(self, mock_client, tmp_config):
+        result = CliRunner().invoke(
+            cli,
+            ["find", "--dry-run", "--output", str(tmp_config / "plan.json")],
+        )
+
+        assert result.exit_code != 0
+        assert "--dry-run cannot be combined" in result.output
+        mock_client.search_pages.assert_not_called()
+
     def test_find_dry_run_shows_category(self, mock_client, tmp_config):
         """find --dry-run with genre resolved shows category name."""
         mock_client._categories_cache = [

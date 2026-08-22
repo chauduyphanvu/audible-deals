@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from collections.abc import Callable
 from dataclasses import dataclass
 
 from audible_deals.presentation.terminal import console
@@ -21,8 +23,33 @@ class CatalogDryRunSummary:
     def __post_init__(self) -> None:
         object.__setattr__(self, "active_filters", tuple(self.active_filters))
 
+    def to_dict(self) -> dict:
+        plan = self.plan
+        return {
+            "dry_run": True,
+            "category": self.category_name or None,
+            "subcategories": plan.category_multiplier,
+            "query": self.query or None,
+            "result_sort": self.result_sort,
+            "limit": self.limit if self.limit and self.limit > 0 else None,
+            "profile": self.profile_name,
+            "filters": list(self.active_filters),
+            "sort_orders": list(plan.sort_orders),
+            "pages_per_sort": plan.pages,
+            "max_items": plan.max_items,
+            "api_calls": plan.total_calls,
+        }
 
-def render_catalog_dry_run(summary: CatalogDryRunSummary) -> None:
+
+def render_catalog_dry_run(
+    summary: CatalogDryRunSummary,
+    *,
+    json_flag: bool = False,
+    json_writer: Callable[[str], object] = print,
+) -> None:
+    if json_flag:
+        json_writer(json.dumps(summary.to_dict(), indent=2, ensure_ascii=False))
+        return
     plan = summary.plan
     sort_label = ", ".join(plan.sort_orders)
     console.print("\n[bold]Dry run[/bold] — would scan:")

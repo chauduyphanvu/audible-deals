@@ -46,7 +46,11 @@ from audible_deals.monitor_service import (
     settings_to_dict,
 )
 from audible_deals.presentation.terminal import catalog_scan_progress, console
-from audible_deals.settings import Settings
+from audible_deals.settings import (
+    Settings,
+    SettingsResolutionRequest,
+    resolve_settings,
+)
 from audible_deals.validation import validate_webhook_url
 
 logger = logging.getLogger(__name__)
@@ -114,19 +118,23 @@ def _monitor_settings(
     values: dict[str, Any] = dict(
         _FIND_DEFAULTS if mode == "find" else _SEARCH_DEFAULTS
     )
-    values.update(ctx.obj.get("config", {}))
-    if profile:
-        values.update(profile)
+    explicit_options: set[str] = set()
     for key in _DIRECT_SETTING_FIELDS:
         if ctx.get_parameter_source(key) == _CL:
             values[key] = flags[key]
+            explicit_options.add(key)
     # Snapshots must be complete. A display limit would manufacture false
     # disappearance/re-entry events as titles move in and out of the top N.
     values["limit"] = None
-    allowed = {field.name for field in dataclasses.fields(Settings)}
+    explicit_options.add("limit")
     try:
-        settings = Settings(
-            **{key: value for key, value in values.items() if key in allowed}
+        settings = resolve_settings(
+            SettingsResolutionRequest(
+                config=ctx.obj.get("config", {}),
+                profile=profile,
+                cli_flags=values,
+                explicit_options=explicit_options,
+            )
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None

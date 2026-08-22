@@ -14,7 +14,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from audible_deals.client import DealsClient
+import audible_deals.config_store as config_store_mod
+from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.cli import cli
 from audible_deals.serialization import export_products as _export_products
 from audible_deals.price_history import record_prices as _record_prices
@@ -168,6 +169,66 @@ class TestClientIntegration:
         with pytest.raises(click.ClickException):
             list(gen)
 
+    def test_search_segments_keeps_optional_failures_and_orders_pages(self, api):
+        callbacks = []
+
+        def mock_get(endpoint, **kwargs):
+            if kwargs.get("title"):
+                raise click.ClickException("title unavailable")
+            page = kwargs["page"]
+            return {
+                "products": [make_raw(f"P{page}")],
+                "total_results": 100,
+            }
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+
+        results = dc.search_segments(
+            [
+                CatalogSearchRequest(keywords="query", max_pages=2),
+                CatalogSearchRequest(title="query", max_pages=1, optional=True),
+            ],
+            lambda *args: callbacks.append(args),
+        )
+
+        assert [page for _, page, _ in results[0].pages] == [1, 2]
+        assert isinstance(results[1].error, click.ClickException)
+        assert results[1].pages == (([], 1, 0),)
+        assert {callback[0] for callback in callbacks} == {0, 1}
+
+    def test_search_segments_does_not_report_pages_after_an_empty_page(self, api):
+        import threading
+        import time
+
+        third_page_finished = threading.Event()
+
+        def mock_get(endpoint, **kwargs):
+            page = kwargs["page"]
+            if page == 2:
+                assert third_page_finished.wait(1)
+                time.sleep(0.02)
+                products = []
+            else:
+                products = [make_raw(f"P{page}")]
+                if page == 3:
+                    third_page_finished.set()
+            return {"products": products, "total_results": 150}
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+        callbacks = []
+
+        results = dc.search_segments(
+            [CatalogSearchRequest(keywords="query", max_pages=3)],
+            lambda _, products, page, __: callbacks.append(
+                (page, [product.asin for product in products])
+            ),
+        )
+
+        assert callbacks == [(1, ["P1"]), (2, [])]
+        assert [page for _, page, _ in results[0].pages] == [1, 2]
+
     def test_get_products_batch_splits(self, api):
         """Batches of >50 are split into multiple API calls."""
 
@@ -235,6 +296,70 @@ class TestClientIntegration:
         api.get_mock.side_effect = None
         api.get_mock.return_value = {"products": [make_raw("RECOVERED")]}
         assert dc.get_products_batch(["RECOVERED"])[0].asin == "RECOVERED"
+
+    def test_get_series_products_many_isolates_relationship_failures(self, api):
+        def mock_get(endpoint, **kwargs):
+            if kwargs.get("response_groups") == "relationships":
+                if endpoint.endswith("SER2"):
+                    raise click.ClickException("series unavailable")
+                return {
+                    "product": {
+                        "relationships": [
+                            {
+                                "asin": "CHILD1",
+                                "relationship_to_product": "child",
+                            },
+                            {
+                                "asin": "MISSING",
+                                "relationship_to_product": "child",
+                            },
+                        ]
+                    }
+                }
+            return {"products": [make_raw("CHILD1")]}
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+
+        result = dc.get_series_products_many(["SER1", "SER2", "SER1"])
+
+        assert [product.asin for product in result.products["SER1"]] == ["CHILD1"]
+        assert isinstance(result.failures["SER2"], click.ClickException)
+        assert result.missing_asins == {"SER1": ("MISSING",)}
+        assert api.get_mock.call_count == 3
+
+    def test_get_series_products_many_isolates_product_batch_failures(self, api):
+        first_children = [f"CHILD{i:02d}" for i in range(50)]
+
+        def mock_get(endpoint, **kwargs):
+            if kwargs.get("response_groups") == "relationships":
+                child_asins = first_children if endpoint.endswith("SER1") else ["BAD"]
+                return {
+                    "product": {
+                        "relationships": [
+                            {
+                                "asin": asin,
+                                "relationship_to_product": "child",
+                            }
+                            for asin in child_asins
+                        ]
+                    }
+                }
+            batch_asins = kwargs["asins"].split(",")
+            if batch_asins == ["BAD"]:
+                raise click.ClickException("product batch unavailable")
+            return {"products": [make_raw(asin) for asin in batch_asins]}
+
+        api.get_mock.side_effect = mock_get
+        dc = self._make_client(api)
+
+        result = dc.get_series_products_many(["SER1", "SER2"])
+
+        assert len(result.products["SER1"]) == 50
+        assert result.products["SER2"] == ()
+        assert "SER1" not in result.product_failures
+        assert isinstance(result.product_failures["SER2"][0], click.ClickException)
+        assert result.failures == {}
 
     def test_get_library_asins_multi_page(self, api):
         """Library pagination fetches multiple pages until <1000 items."""
@@ -498,6 +623,36 @@ class TestCLIPipelineIntegration:
         langs = {item["language"] for item in data}
         assert "english" in langs
         assert "french" in langs
+
+    def test_all_languages_overrides_configured_language(self, mock_client, tmp_config):
+        config_store_mod.save_config({"language": "french"})
+        products = [
+            make_product(asin="EN2", price=3.0, language="english", series_name=""),
+            make_product(asin="FR2", price=3.0, language="french", series_name=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+        out_file = tmp_config / "alllang-config.json"
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "find",
+                "--all-languages",
+                "--pages",
+                "1",
+                "--max-price",
+                "20",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert {item["language"] for item in json.loads(out_file.read_text())} == {
+            "english",
+            "french",
+        }
 
     def test_default_language_filter(self, mock_client, tmp_config):
         """Default locale=us filters to english only."""

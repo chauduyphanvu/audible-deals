@@ -5,7 +5,6 @@ from __future__ import annotations
 import json as json_mod
 import logging
 import shlex
-import time
 from pathlib import Path
 
 import click
@@ -17,7 +16,7 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_output_quiet,
 )
-from audible_deals.client import DealsClient
+from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.parsing import parse_series_position
 from audible_deals.price_history import price_history_context
 from audible_deals.presentation.reports import display_series_gaps
@@ -75,46 +74,91 @@ def _fetch_series_candidates(
     owned_asins: set[str],
     *,
     pages: int,
-) -> tuple[list[Product], dict[str, str]]:
+    show_progress: bool = True,
+) -> tuple[list[Product], dict[str, str], tuple[str, ...], tuple[str, ...]]:
     """Fetch catalog entries for each invested series, skipping owned books.
 
-    Returns (candidates, asin -> series_name map).
+    Returns candidates, their series mapping, failed series, and incomplete series.
     """
     all_candidates: list[Product] = []
     candidate_series: dict[str, str] = {}  # asin -> series_name
     seen_asins: set[str] = set(owned_asins)
-
-    with create_scan_progress() as progress:
+    failures: list[str] = []
+    incomplete: list[str] = []
+    series_asins = [
+        next((book.series_asin for book in owned_books if book.series_asin), "")
+        for _, owned_books in invested_sorted
+    ]
+    fallback_indices = [
+        index for index, series_asin in enumerate(series_asins) if not series_asin
+    ]
+    fallback_requests = []
+    for index in fallback_indices:
+        series_name, owned_books = invested_sorted[index]
+        author_hint = next(
+            (book.authors[0] for book in owned_books if book.authors), ""
+        )
+        fallback_requests.append(
+            CatalogSearchRequest(
+                keywords=f"{series_name} {author_hint}".strip(),
+                sort_by="Relevance",
+                max_pages=pages,
+                optional=True,
+            )
+        )
+    with create_scan_progress(disable=not show_progress) as progress:
         task = progress.add_task(
             f"Scanning {len(invested_sorted)} series",
             total=len(invested_sorted),
             items=0,
         )
+        direct_batch = dc.get_series_products_many(
+            [series_asin for series_asin in series_asins if series_asin]
+        )
+        fallback_results = dc.search_segments(fallback_requests)
+        fallback_by_index = dict(zip(fallback_indices, fallback_results))
 
-        for series_idx, (sname, owned_books) in enumerate(invested_sorted):
-            series_asin = next(
-                (ob.series_asin for ob in owned_books if ob.series_asin), ""
-            )
-
-            if series_asin:
-                # Direct lookup via series ASIN
-                series_products = dc.get_series_products(series_asin)
-            else:
-                # Fallback: keyword search when no series ASIN available
-                series_products = []
-                author_hint = next(
-                    (ob.authors[0] for ob in owned_books if ob.authors), ""
+        for series_idx, ((sname, owned_books), series_asin) in enumerate(
+            zip(invested_sorted, series_asins)
+        ):
+            try:
+                if series_asin:
+                    failure = direct_batch.failures.get(series_asin)
+                    if failure is not None:
+                        raise failure
+                    series_products = list(direct_batch.products.get(series_asin, ()))
+                    product_failures = direct_batch.product_failures.get(
+                        series_asin, ()
+                    )
+                    missing = direct_batch.missing_asins.get(series_asin, ())
+                    issues = []
+                    if product_failures:
+                        issues.append(
+                            f"{len(product_failures)} product batch request(s) failed"
+                        )
+                    if missing:
+                        issues.append(f"{len(missing)} product(s) unavailable")
+                    if issues:
+                        detail = f"{sname}: {', '.join(issues)}"
+                        logger.warning("incomplete series scan: %s", detail)
+                        incomplete.append(detail)
+                else:
+                    series_products = []
+                    segment = fallback_by_index[series_idx]
+                    if segment.error is not None:
+                        raise segment.error
+                    sname_lower = sname.lower()
+                    for page_products, _, _ in segment.pages:
+                        for p in page_products:
+                            if p.series_name and p.series_name.lower() == sname_lower:
+                                series_products.append(p)
+            except Exception as exc:
+                logger.warning("series scan failed for %s", sname, exc_info=True)
+                failures.append(f"{sname}: {type(exc).__name__}: {exc}")
+                progress.update(
+                    task, completed=series_idx + 1, items=len(all_candidates)
                 )
-                keywords = f"{sname} {author_hint}".strip()
-                sname_lower = sname.lower()
-                for page_products, _, _ in dc.search_pages(
-                    keywords=keywords,
-                    sort_by="Relevance",
-                    max_pages=pages,
-                ):
-                    for p in page_products:
-                        if p.series_name and p.series_name.lower() == sname_lower:
-                            series_products.append(p)
+                continue
 
             for p in series_products:
                 if p.asin in seen_asins:
@@ -125,11 +169,36 @@ def _fetch_series_candidates(
 
             progress.update(task, completed=series_idx + 1, items=len(all_candidates))
 
-            # Rate limit between series lookups
-            if series_idx < len(invested_sorted) - 1:
-                time.sleep(0.3)
+    return all_candidates, candidate_series, tuple(failures), tuple(incomplete)
 
-    return all_candidates, candidate_series
+
+def _report_series_failures(
+    failures: tuple[str, ...],
+    incomplete: tuple[str, ...],
+    total: int,
+    *,
+    json_flag: bool,
+) -> None:
+    if not failures and not incomplete:
+        return
+    completed = total - len(failures)
+    outcomes = []
+    if failures:
+        outcomes.append(f"{len(failures)} failed")
+    if incomplete:
+        outcomes.append(f"{len(incomplete)} incomplete")
+    summary = (
+        f"Partial results: {completed}/{total} series scanned; {'; '.join(outcomes)}."
+    )
+    details = (*failures, *incomplete)
+    if json_flag:
+        click.echo(summary, err=True)
+        for detail in details:
+            click.echo(f"  {detail}", err=True)
+    else:
+        console.print(f"[yellow]{summary}[/yellow]")
+        for detail in details:
+            console.print(f"[dim]  {detail}[/dim]")
 
 
 def _series_gaps_report(
@@ -427,9 +496,22 @@ def series(
             )
 
         # 3. Fetch catalog entries for each series
-        all_candidates, candidate_series = _fetch_series_candidates(
-            dc, invested_sorted, owned_asins, pages=pages
+        all_candidates, candidate_series, failures, incomplete = (
+            _fetch_series_candidates(
+                dc,
+                invested_sorted,
+                owned_asins,
+                pages=pages,
+                show_progress=not json_flag,
+            )
         )
+
+    _report_series_failures(
+        failures,
+        incomplete,
+        len(invested_sorted),
+        json_flag=json_flag,
+    )
 
     series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
     result = process_discovery(

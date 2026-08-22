@@ -6,11 +6,10 @@ import dataclasses
 import logging
 import math
 import unicodedata
-from collections import Counter
-from collections.abc import Iterable, Sequence
+from collections.abc import Sequence
 from typing import Protocol
 
-from audible_deals.client import DealsClient
+from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.constants import DEEP_SORT_ORDERS, MAX_PAGE_SIZE, SORT_OPTIONS
 from audible_deals.product import Product
 from audible_deals.result_models import CatalogScanPlan, CatalogScanProgress
@@ -143,9 +142,9 @@ def execute_catalog_scan(
     total = plan.total_calls
     completed = 0
     item_asins: set[str] = set()
-    results: list[Product] = []
-    result_asins: set[str] = set()
-    remaining_probes = Counter(plan.exact_probe_queries)
+    requests: list[CatalogSearchRequest] = []
+    metadata: list[tuple[int, str, str, str]] = []
+    remaining_probes = list(plan.exact_probe_queries)
 
     def report(description: str) -> None:
         if callback is not None:
@@ -158,88 +157,90 @@ def execute_catalog_scan(
                 )
             )
 
-    def fetch_segment(
-        query: str, category_id: str, sort_order: str, pages: int, *, exact: bool
-    ) -> list[Product]:
-        nonlocal completed, total
-        description = f"Searching '{query}'" if query else "Scanning catalog"
-        query_args = {"title": query} if exact else {"keywords": query}
-        segment_products: list[Product] = []
-        segment_asins: set[str] = set()
-        first_page_seen = False
-        for products, page_num, segment_total in client.search_pages(
-            **query_args,
-            category_id=category_id,
-            sort_by=sort_order,
-            max_pages=pages,
-        ):
-            for product in products:
-                item_asins.add(product.asin)
-                if product.asin not in segment_asins:
-                    segment_asins.add(product.asin)
-                    segment_products.append(product)
-            completed += 1
-            if page_num == 1 and not first_page_seen:
-                actual = (
-                    min(pages, math.ceil(segment_total / MAX_PAGE_SIZE))
-                    if segment_total
-                    else 1
-                )
-                total -= pages - actual
-                first_page_seen = True
-            report(description)
-        return segment_products
-
-    def extend_unique(
-        destination: list[Product], seen: set[str], products: Iterable[Product]
+    def page_fetched(
+        request_index: int,
+        products: list[Product],
+        page_num: int,
+        segment_total: int,
     ) -> None:
-        for product in products:
-            if product.asin not in seen:
-                seen.add(product.asin)
-                destination.append(product)
+        nonlocal completed, total
+        request = requests[request_index]
+        query = request.title or request.keywords
+        description = f"Searching '{query}'" if query else "Scanning catalog"
+        item_asins.update(product.asin for product in products)
+        completed += 1
+        if page_num == 1:
+            actual = (
+                min(request.max_pages, math.ceil(segment_total / MAX_PAGE_SIZE))
+                if segment_total
+                else 1
+            )
+            total -= request.max_pages - actual
+        report(description)
 
-    for query in plan.queries:
-        broad_products: list[Product] = []
-        broad_asins: set[str] = set()
-        exact_products: list[Product] = []
-        exact_asins: set[str] = set()
+    for query_index, query in enumerate(plan.queries):
         for category_id in plan.category_ids:
             for sort_order in plan.sort_orders:
-                extend_unique(
-                    broad_products,
-                    broad_asins,
-                    fetch_segment(
-                        query, category_id, sort_order, plan.pages, exact=False
-                    ),
+                requests.append(
+                    CatalogSearchRequest(
+                        keywords=query,
+                        category_id=category_id,
+                        sort_by=sort_order,
+                        max_pages=plan.pages,
+                    )
                 )
-
-        if remaining_probes[query]:
-            remaining_probes[query] -= 1
-            description = f"Searching '{query}'"
+                metadata.append((query_index, "broad", query, category_id))
+        if query in remaining_probes:
+            remaining_probes.remove(query)
             for category_id in plan.category_ids:
-                completed_before = completed
-                try:
-                    products = fetch_segment(
-                        query, category_id, "Relevance", 1, exact=True
+                requests.append(
+                    CatalogSearchRequest(
+                        title=query,
+                        category_id=category_id,
+                        sort_by="Relevance",
+                        max_pages=1,
+                        optional=True,
                     )
-                except Exception as exc:
-                    if completed == completed_before:
-                        completed += 1
-                        report(description)
-                    logger.info(
-                        "Exact-title probe failed for %r in category %r; "
-                        "using broad results: %s",
-                        query,
-                        category_id,
-                        exc,
-                    )
-                else:
-                    extend_unique(exact_products, exact_asins, products)
+                )
+                metadata.append((query_index, "exact", query, category_id))
 
+    segment_results = client.search_segments(requests, page_fetched)
+    broad_by_query: list[list[Product]] = [[] for _ in plan.queries]
+    exact_by_query: list[list[Product]] = [[] for _ in plan.queries]
+    broad_seen: list[set[str]] = [set() for _ in plan.queries]
+    exact_seen: list[set[str]] = [set() for _ in plan.queries]
+
+    for meta, segment_result in zip(metadata, segment_results):
+        query_index, kind, query, category_id = meta
+        if segment_result.error is not None:
+            logger.info(
+                "Exact-title probe failed for %r in category %r; using broad results: %s",
+                query,
+                category_id,
+                segment_result.error,
+            )
+            continue
+        destination = (
+            exact_by_query[query_index]
+            if kind == "exact"
+            else broad_by_query[query_index]
+        )
+        seen = exact_seen[query_index] if kind == "exact" else broad_seen[query_index]
+        for products, _, _ in segment_result.pages:
+            for product in products:
+                if product.asin not in seen:
+                    seen.add(product.asin)
+                    destination.append(product)
+
+    results: list[Product] = []
+    result_asins: set[str] = set()
+    for query_index, query in enumerate(plan.queries):
         query_products: list[Product] = []
         query_asins: set[str] = set()
-        extend_unique(query_products, query_asins, exact_products)
-        extend_unique(query_products, query_asins, broad_products)
+        for product in (*exact_by_query[query_index], *broad_by_query[query_index]):
+            if product.asin not in query_asins:
+                query_asins.add(product.asin)
+                query_products.append(product)
         for product in rank_catalog_relevance(query_products, query):
             if product.asin not in result_asins:
                 result_asins.add(product.asin)
