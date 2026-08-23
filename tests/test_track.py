@@ -21,6 +21,7 @@ from audible_deals.scheduler import (
     generate_launchd_plist,
     generate_systemd_service,
     generate_systemd_timer,
+    generate_windows_task_command,
     track_command,
     uninstall,
 )
@@ -856,6 +857,93 @@ class TestBugfixSchedulerCronLineHonorsInterval:
             )
         with pytest.raises(SchedulerError, match="seconds"):
             generate_cron_line(["/usr/bin/deals", "track", "run"], 630, Path("/l"))
+
+
+class TestWindowsTaskCommand:
+    def test_exact_ordinary_payload(self):
+        payload = generate_windows_task_command(
+            [r"C:\Tools\deals.exe", "track", "run"],
+            Path(r"C:\Logs\track.log"),
+        )
+
+        assert payload == (
+            'cmd.exe /D /S /V:OFF /C ""C:\\Tools\\deals.exe" "track" "run" '
+            '>> "C:\\Logs\\track.log" 2>&1"'
+        )
+
+    def test_quotes_supported_metacharacters(self):
+        payload = generate_windows_task_command(
+            [
+                r"C:\Program Files\Deals & Tools\deals^(prod!).exe",
+                "track & review",
+                "run^(!)",
+            ],
+            Path(r"C:\Logs & Reports\track^(!).log"),
+        )
+
+        assert payload == (
+            'cmd.exe /D /S /V:OFF /C ""C:\\Program Files\\Deals & Tools\\'
+            'deals^(prod!).exe" "track & review" "run^(!)" >> '
+            '"C:\\Logs & Reports\\track^(!).log" 2>&1"'
+        )
+
+    def test_doubles_trailing_backslashes_before_the_closing_quote(self):
+        payload = generate_windows_task_command(
+            ["deals", "ends-with-backslash\\", "sentinel"],
+            Path(r"C:\Logs\track.log"),
+        )
+
+        assert '"ends-with-backslash\\\\" "sentinel"' in payload
+
+    @pytest.mark.parametrize(
+        "unsafe", ['"', "\r", "\n", "\0", "<", ">", "|", "%", "%%", "%TEMP%"]
+    )
+    @pytest.mark.parametrize("target", ["command", "log"])
+    def test_rejects_unsafe_or_expanding_values(self, unsafe, target):
+        cmd = ["deals", f"track{unsafe}", "run"] if target == "command" else ["deals"]
+        log_path = (
+            Path(r"C:\Logs\track.log")
+            if target == "command"
+            else Path(f"C:\\Logs\\track{unsafe}.log")
+        )
+
+        with pytest.raises(SchedulerError, match="unsafe characters"):
+            generate_windows_task_command(cmd, log_path)
+
+    def test_rejects_empty_command(self):
+        with pytest.raises(SchedulerError, match="cannot be empty"):
+            generate_windows_task_command([], Path(r"C:\Logs\track.log"))
+
+    def test_install_passes_exact_schtasks_argv(self, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            scheduler_mod,
+            "track_command",
+            lambda: [r"C:\Program Files\Audible Deals\deals.exe", "track", "run"],
+        )
+        monkeypatch.setattr(scheduler_mod, "_run", lambda cmd: calls.append(cmd))
+
+        scheduler_mod._schtasks_install(
+            30 * 60, Path(r"C:\Users\Me\Audible Deals\track.log")
+        )
+
+        assert calls == [
+            [
+                "schtasks",
+                "/Create",
+                "/F",
+                "/TN",
+                "AudibleDealsTrack",
+                "/TR",
+                'cmd.exe /D /S /V:OFF /C ""C:\\Program Files\\Audible Deals\\'
+                'deals.exe" "track" "run" >> "C:\\Users\\Me\\Audible Deals\\'
+                'track.log" 2>&1"',
+                "/SC",
+                "MINUTE",
+                "/MO",
+                "30",
+            ]
+        ]
 
 
 class TestBugfixSchedulerWindowsScheduleHonorsInterval:
