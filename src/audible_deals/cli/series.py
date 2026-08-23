@@ -14,6 +14,7 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _report_partial_series_outcomes,
     _resolve_output_quiet,
 )
 from audible_deals.client import CatalogSearchRequest, DealsClient
@@ -24,7 +25,6 @@ from audible_deals.presentation.terminal import (
     console,
     create_scan_progress,
     safe_markup,
-    safe_text,
 )
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
@@ -211,35 +211,6 @@ def _fetch_series_candidates(
         asin: tuple(targets) for asin, targets in candidate_series_lists.items()
     }
     return all_candidates, candidate_series, tuple(failures), tuple(incomplete)
-
-
-def _report_series_failures(
-    failures: tuple[str, ...],
-    incomplete: tuple[str, ...],
-    total: int,
-    *,
-    json_flag: bool,
-) -> None:
-    if not failures and not incomplete:
-        return
-    completed = total - len(failures)
-    outcomes = []
-    if failures:
-        outcomes.append(f"{len(failures)} failed")
-    if incomplete:
-        outcomes.append(f"{len(incomplete)} incomplete")
-    summary = (
-        f"Partial results: {completed}/{total} series scanned; {'; '.join(outcomes)}."
-    )
-    details = (*failures, *incomplete)
-    if json_flag:
-        click.echo(summary, err=True)
-        for detail in details:
-            click.echo(f"  {safe_text(detail)}", err=True)
-    else:
-        console.print(f"[yellow]{safe_markup(summary)}[/yellow]")
-        for detail in details:
-            console.print(f"[dim]  {safe_markup(detail)}[/dim]")
 
 
 def _series_gaps_report(
@@ -556,7 +527,7 @@ def series(
             )
         )
 
-    _report_series_failures(
+    _report_partial_series_outcomes(
         failures,
         incomplete,
         len(invested_sorted),

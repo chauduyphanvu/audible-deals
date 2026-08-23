@@ -745,8 +745,11 @@ class TestForMeCommand:
         result = CliRunner().invoke(cli, ["for-me", "--json"])
 
         assert result.exit_code == 0, result.output
-        assert "1/1 series scanned; 1 incomplete" in result.stderr
-        assert "Bobiverse: 1 product(s) unavailable" in result.stderr
+        assert result.stderr.endswith(
+            "Partial results: 1/1 series scanned; 1 incomplete.\n"
+            "  Bobiverse: 1 product(s) unavailable\n"
+        )
+        assert "Partial results:" not in result.stdout
         assert any(item["asin"] == gap.asin for item in json.loads(result.stdout))
 
     def test_narrow_terminal_folds_match_into_title(self, mock_client, tmp_config):

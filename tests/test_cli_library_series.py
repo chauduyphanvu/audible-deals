@@ -457,13 +457,18 @@ class TestSeriesCommand:
         mock_client.get_series_products_many.return_value = make_series_products_batch(
             {"SER_BETA": [lib[2], lib[3], beta]},
             failures={"SER_ALPHA": failure},
+            missing_asins={"SER_BETA": ("B4",)},
         )
 
         result = CliRunner().invoke(cli, ["series"])
 
         assert result.exit_code == 0, result.output
-        assert "Partial results: 1/2 series scanned; 1 failed" in result.output
-        assert "Alpha Series: RuntimeError: temporary failure" in result.output
+        assert (
+            "Partial results: 1/2 series scanned; 1 failed; 1 incomplete.\n"
+            "  Alpha Series: RuntimeError: temporary failure\n"
+            "  Beta Series: 1 product(s) unavailable\n"
+        ) in result.stdout
+        assert "Partial results:" not in result.stderr
         assert "Beta Book 3" in result.output
 
     def test_series_reports_missing_child_products(self, tmp_config, mock_client):
