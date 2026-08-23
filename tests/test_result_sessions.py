@@ -39,6 +39,7 @@ from audible_deals.results_cache import (
     clear_dismissed_asins,
     load_dismissed_asins,
     load_result_session,
+    load_seen_asins,
     save_dismissed_asins,
     save_result_session,
 )
@@ -532,7 +533,6 @@ def test_publication_snapshots_histories_before_recording_prices(
         )
     )
 
-    assert outcome.session is not None
     assert outcome.session.constraints["history_percentiles"] == {product.asin: 100}
     assert outcome.session.constraints["price_drop_pcts"] == {product.asin: -100.0}
     persisted = load_result_session()
@@ -559,16 +559,16 @@ def test_safe_history_wrapper_forwards_observation_date(monkeypatch):
     }
 
 
-def test_publication_records_and_marks_only_visible_numeric_products(tmp_config):
+def test_publication_scopes_surface_effects_to_visible_products(tmp_config):
     visible = make_product(asin="B00VISIBLE", price=4, series_name="")
     hidden = make_product(asin="B00HIDDEN1", price=5, series_name="")
     unavailable = make_product(asin="B00UNAVAIL", price=None, series_name="")
 
     outcome = publish_discovery(
         ResultPublicationRequest(
-            result=DiscoveryResult((visible, hidden, unavailable)),
+            result=DiscoveryResult((visible, unavailable, hidden)),
             title="Surface",
-            limit=1,
+            limit=2,
             output=None,
             json_flag=False,
             quiet=True,
@@ -578,15 +578,26 @@ def test_publication_records_and_marks_only_visible_numeric_products(tmp_config)
             session_spec=ResultSessionSpec(
                 producer="find",
                 locale="us",
-                recipe=result_recipe(limit=1),
+                recipe=result_recipe(limit=2),
                 source={"command": "deals find"},
                 constraints={"drop_zero_length": True},
             ),
         )
     )
 
-    assert outcome.session is not None
+    assert [product.asin for product in outcome.products] == [
+        visible.asin,
+        unavailable.asin,
+    ]
+    assert outcome.session.visible_asins == [visible.asin, unavailable.asin]
     assert {item["asin"] for item in outcome.session.candidates} == {
+        visible.asin,
+        hidden.asin,
+        unavailable.asin,
+    }
+    persisted = load_result_session()
+    assert persisted.visible_asins == [visible.asin, unavailable.asin]
+    assert {item["asin"] for item in persisted.candidates} == {
         visible.asin,
         hidden.asin,
         unavailable.asin,
@@ -597,6 +608,53 @@ def test_publication_records_and_marks_only_visible_numeric_products(tmp_config)
     assert load_refresh_eligibility() == {
         "us": {visible.asin: datetime.date.today().isoformat()}
     }
+    assert load_seen_asins() == {visible.asin, unavailable.asin}
+
+
+def test_publication_continues_surface_effects_when_session_save_fails(
+    tmp_config, monkeypatch, caplog
+):
+    product = make_product(asin="B00SAVEFAIL", price=4, series_name="")
+    written = []
+
+    def fail_save(_session):
+        raise OSError("cache unavailable")
+
+    monkeypatch.setattr(
+        "audible_deals.result_publication.save_result_session", fail_save
+    )
+
+    outcome = publish_discovery(
+        ResultPublicationRequest(
+            result=DiscoveryResult((product,)),
+            title="Save failure",
+            limit=0,
+            output=None,
+            json_flag=True,
+            quiet=False,
+            max_price=None,
+            currency="$",
+            candidates=(product,),
+            session_spec=ResultSessionSpec(
+                producer="find",
+                locale="us",
+                recipe=result_recipe(limit=0),
+                source={"command": "deals find"},
+                constraints={"drop_zero_length": True},
+            ),
+            json_writer=written.append,
+        )
+    )
+
+    assert json.loads(written[0])[0]["asin"] == product.asin
+    assert outcome.session.visible_asins == [product.asin]
+    assert not constants.LAST_RESULTS_FILE.exists()
+    assert load_price_history(product.asin) != []
+    assert load_refresh_eligibility() == {
+        "us": {product.asin: datetime.date.today().isoformat()}
+    }
+    assert load_seen_asins() == {product.asin}
+    assert "Could not save last result session" in caplog.text
 
 
 @pytest.mark.parametrize("failure", ["json", "export"])
