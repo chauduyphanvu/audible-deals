@@ -562,16 +562,6 @@ class DealsClient:
             raise ValueError(f"Product not found: {asin}")
         return results[0]
 
-    def get_series_products(self, series_asin: str) -> list[_product.Product]:
-        """Fetch all products in a series by its ASIN.
-
-        Returns an empty list if the series is not found.
-        """
-        child_asins = self._get_series_child_asins(series_asin)
-        if not child_asins:
-            return []
-        return self.get_products_batch(child_asins)
-
     def _get_series_child_asins(self, series_asin: str) -> list[str]:
         resp = self._transport.request(
             f"1.0/catalog/products/{series_asin}",

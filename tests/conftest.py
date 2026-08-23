@@ -45,6 +45,30 @@ def make_product(**overrides) -> Product:
     return Product(**defaults)
 
 
+def make_series_products_batch(
+    products=None,
+    *,
+    failures=None,
+    missing_asins=None,
+    product_failures=None,
+):
+    return SeriesProductsBatch(
+        products={
+            series_asin: tuple(series_products)
+            for series_asin, series_products in (products or {}).items()
+        },
+        failures=dict(failures or {}),
+        missing_asins={
+            series_asin: tuple(asins)
+            for series_asin, asins in (missing_asins or {}).items()
+        },
+        product_failures={
+            series_asin: tuple(errors)
+            for series_asin, errors in (product_failures or {}).items()
+        },
+    )
+
+
 @pytest.fixture
 def sample_product():
     return make_product()
@@ -320,18 +344,8 @@ def mock_client(monkeypatch):
             results.append(CatalogSearchResult(tuple(pages), error))
         return results
 
-    def get_series_products_many(series_asins):
-        products = {}
-        failures = {}
-        for series_asin in dict.fromkeys(series_asins):
-            try:
-                products[series_asin] = tuple(client.get_series_products(series_asin))
-            except Exception as exc:
-                failures[series_asin] = exc
-        return SeriesProductsBatch(products, failures, {})
-
     client.search_segments.side_effect = search_segments
-    client.get_series_products_many.side_effect = get_series_products_many
+    client.get_series_products_many.return_value = make_series_products_batch()
 
     def _get_mock(locale):
         return client
