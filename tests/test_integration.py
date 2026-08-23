@@ -55,6 +55,15 @@ class TestClientIntegration:
         assert len(products) == 1
         assert products[0].asin == "A2"
         assert api.get_mock.call_args.kwargs["products_sort_by"] == "Relevance"
+        assert api.get_mock.call_args.kwargs["page"] == 0
+
+    def test_search_catalog_preserves_explicit_api_page(self, api):
+        api.get_mock.return_value = {"products": [], "total_results": 0}
+        dc = self._make_client(api)
+
+        dc.search_catalog(keywords="test", page=7)
+
+        assert api.get_mock.call_args.kwargs["page"] == 7
 
     def test_check_connection_uses_raw_probe_and_ignores_payload(self, api):
         api.get_mock.return_value = {"unexpected": object()}
@@ -97,6 +106,31 @@ class TestClientIntegration:
         assert [page for _, page, _ in results] == [1, 2]
         assert [call.kwargs["page"] for call in api.get_mock.call_args_list] == [0, 1]
 
+    @pytest.mark.parametrize(
+        "search_kwargs",
+        [{"keywords": "Dune"}, {"category_id": "fiction"}],
+        ids=["keyword", "browse-category"],
+    )
+    def test_search_pages_maps_logical_pages_to_zero_indexed_api_pages(
+        self, api, search_kwargs
+    ):
+        api.get_mock.side_effect = [
+            {
+                "products": [make_raw(f"P{i}") for i in range(50)],
+                "total_results": 60,
+            },
+            {
+                "products": [make_raw(f"Q{i}") for i in range(10)],
+                "total_results": 60,
+            },
+        ]
+        dc = self._make_client(api)
+
+        results = list(dc.search_pages(max_pages=2, **search_kwargs))
+
+        assert [page for _, page, _ in results] == [1, 2]
+        assert [call.kwargs["page"] for call in api.get_mock.call_args_list] == [0, 1]
+
     def test_search_pages_stops_at_total(self, api):
         """Pagination stops when page * 50 >= total."""
         page1 = [make_raw(f"P{i}") for i in range(50)]
@@ -120,10 +154,10 @@ class TestClientIntegration:
 
         def mock_get(endpoint, **kwargs):
             pages = {
-                1: page1,
-                2: [],
+                0: page1,
+                1: [],
+                2: page3,
                 3: page3,
-                4: page3,
             }
             return {"products": pages[kwargs["page"]], "total_results": 200}
 
@@ -138,10 +172,10 @@ class TestClientIntegration:
         import time as time_mod
 
         def mock_get(endpoint, **kwargs):
-            page = kwargs["page"]
-            if page == 2:
+            logical_page = kwargs["page"] + 1
+            if logical_page == 2:
                 time_mod.sleep(0.05)  # page 3 finishes first
-            products = [make_raw(f"P{page}-{i}") for i in range(50)]
+            products = [make_raw(f"P{logical_page}-{i}") for i in range(50)]
             return {"products": products, "total_results": 150}
 
         api.get_mock.side_effect = mock_get
@@ -157,7 +191,7 @@ class TestClientIntegration:
         page1 = [make_raw(f"P{i}") for i in range(50)]
 
         def mock_get(endpoint, **kwargs):
-            if kwargs["page"] == 3:
+            if kwargs["page"] == 2:
                 raise click.ClickException("boom")  # non-retryable
             return {"products": page1, "total_results": 200}
 
@@ -196,6 +230,11 @@ class TestClientIntegration:
         assert isinstance(results[1].error, click.ClickException)
         assert results[1].pages == (([], 1, 0),)
         assert {callback[0] for callback in callbacks} == {0, 1}
+        assert sorted(call.kwargs["page"] for call in api.get_mock.call_args_list) == [
+            0,
+            0,
+            1,
+        ]
 
     def test_search_segments_does_not_report_pages_after_an_empty_page(self, api):
         import threading
@@ -204,14 +243,14 @@ class TestClientIntegration:
         third_page_finished = threading.Event()
 
         def mock_get(endpoint, **kwargs):
-            page = kwargs["page"]
-            if page == 2:
+            logical_page = kwargs["page"] + 1
+            if logical_page == 2:
                 assert third_page_finished.wait(1)
                 time.sleep(0.02)
                 products = []
             else:
-                products = [make_raw(f"P{page}")]
-                if page == 3:
+                products = [make_raw(f"P{logical_page}")]
+                if logical_page == 3:
                     third_page_finished.set()
             return {"products": products, "total_results": 150}
 

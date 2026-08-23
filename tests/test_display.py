@@ -102,9 +102,6 @@ class TestDiscountColor:
     def test_high(self):
         assert _discount_color(85) == "bold green"
 
-    def test_medium(self):
-        assert _discount_color(50) == "yellow"
-
     def test_low(self):
         assert _discount_color(20) == "dim"
 

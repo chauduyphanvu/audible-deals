@@ -137,9 +137,7 @@ class DealsClient:
     ) -> tuple[list[_product.Product], int]:
         """Search the Audible catalog. Returns (products, total_results)."""
         if page is None:
-            # Audible's title-only catalog filter is zero-indexed even though
-            # keyword and browse searches use one-indexed pages.
-            page = 0 if title else 1
+            page = 0
         params: dict[str, Any] = {
             "num_results": min(num_results, _constants.MAX_PAGE_SIZE),
             "page": page,
@@ -172,18 +170,16 @@ class DealsClient:
         """Yield (products, page_num, total) for each page of results.
 
         Logical page 1 is fetched first to learn the total (and to warm any
-        auth token refresh on a single thread); title-only searches map it to
-        API page 0. Remaining pages are fetched concurrently and yielded in
-        logical page order. Stops after an empty page, though later pages may
-        already be in flight.
+        auth token refresh on a single thread). Remaining pages are fetched
+        concurrently and yielded in logical page order. Stops after an empty
+        page, though later pages may already be in flight.
         """
-        first_api_page = 0 if title else 1
         products, total = self.search_catalog(
             keywords=keywords,
             title=title,
             category_id=category_id,
             sort_by=sort_by,
-            page=first_api_page,
+            page=0,
         )
         yield products, 1, total
 
@@ -202,7 +198,7 @@ class DealsClient:
                     title=title,
                     category_id=category_id,
                     sort_by=sort_by,
-                    page=page - 1 if title else page,
+                    page=page - 1,
                 )
                 for page in range(2, last_page + 1)
             }
@@ -239,7 +235,7 @@ class DealsClient:
 
         def fetch(index: int, logical_page: int):
             request = requests[index]
-            api_page = logical_page - 1 if request.title else logical_page
+            api_page = logical_page - 1
             products, total = self.search_catalog(
                 keywords=request.keywords,
                 title=request.title,

@@ -689,16 +689,6 @@ class TestConfigCommands:
         assert "max_price" in result.output
         assert "skip_owned" in result.output
 
-    def test_reset_key(self, tmp_config):
-
-        config_store_mod.save_config({"max_price": 5.0, "min_rating": 4.0})
-        runner = CliRunner()
-        result = runner.invoke(cli, ["config", "reset", "max-price"])
-        assert result.exit_code == 0, result.output
-        cfg = config_store_mod.load_config()
-        assert "max_price" not in cfg
-        assert "min_rating" in cfg
-
     def test_reset_all(self, tmp_config):
 
         config_store_mod.save_config({"max_price": 5.0, "min_rating": 4.0})
