@@ -464,18 +464,6 @@ def load_all_price_histories(locale: str = "us") -> dict[str, list[dict]]:
     return result
 
 
-def delete_price_histories(asins: list[str], locale: str = "us") -> int:
-    """Delete the history files for the given ASINs. Returns the number removed."""
-    removed = 0
-    for asin in asins:
-        hist_file = constants.HISTORY_DIR / f"{asin}.json"
-        with _history_update_lock(hist_file):
-            raw = load_json_file(hist_file, dict, f"price history {asin}")
-            if _delete_marketplace_history(hist_file, raw, locale):
-                removed += 1
-    return removed
-
-
 def _delete_marketplace_history(hist_file: Path, raw: dict, locale: str) -> bool:
     markets = raw.get(_MARKETPLACES_KEY)
     if not isinstance(markets, dict) or locale not in markets:
