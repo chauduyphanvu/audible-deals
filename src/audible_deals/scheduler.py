@@ -241,8 +241,29 @@ def _cron_uninstall() -> bool:
 # ---------------------------------------------------------------------------
 
 
+def _quote_windows_task_token(value: str) -> str:
+    trailing_backslashes = len(value) - len(value.rstrip("\\"))
+    if trailing_backslashes:
+        value += "\\" * trailing_backslashes
+    return f'"{value}"'
+
+
+def generate_windows_task_command(cmd: list[str], log_path: Path) -> str:
+    if not cmd:
+        raise SchedulerError("Windows scheduled task command cannot be empty")
+    tokens = [str(token) for token in cmd]
+    log = str(log_path)
+    unsafe = {'"', "<", ">", "|", "\0", "\r", "\n", "%"}
+    if any(char in value for value in [*tokens, log] for char in unsafe):
+        raise SchedulerError(
+            "Windows scheduled task command contains unsafe characters"
+        )
+    quoted = " ".join(_quote_windows_task_token(token) for token in tokens)
+    return f'cmd.exe /D /S /V:OFF /C "{quoted} >> "{log}" 2>&1"'
+
+
 def _schtasks_install(interval_s: int, log_path: Path) -> str:
-    cmd = " ".join(f'"{c}"' for c in track_command())
+    cmd = generate_windows_task_command(track_command(), log_path)
     if interval_s % 60:
         raise SchedulerError(
             "Windows Task Scheduler cannot represent intervals with seconds; use a whole number of minutes"

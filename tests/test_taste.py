@@ -10,7 +10,6 @@ from click.testing import CliRunner
 
 import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
-from audible_deals.client import SeriesProductsBatch
 from audible_deals.cli import cli
 from audible_deals.results_cache import (
     clear_dismissed_asins,
@@ -24,7 +23,7 @@ from audible_deals.taste import (
     rank_by_fit,
     save_profile,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, make_series_products_batch
 
 
 def _lib_book(asin, author, narrator="Narrator One", series="", pos="", **kw):
@@ -379,7 +378,9 @@ def _wire_scans(mock_client):
         series_name="",
         series_position="",
     )
-    mock_client.get_series_products.return_value = [series_book, owned_book]
+    mock_client.get_series_products_many.return_value = make_series_products_batch(
+        {"SERIESA01": [series_book, owned_book]}
+    )
 
     def fake_search_pages(**kwargs):
         if kwargs.get("category_id"):
@@ -464,7 +465,9 @@ class TestForMeCommand:
             series_asin="SERIESA01",
             series_position="4",
         )
-        mock_client.get_series_products.return_value = [alternate, gap]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SERIESA01": [alternate, gap]}
+        )
         mock_client.search_pages.side_effect = [
             iter([([alternate], 1, 1)]),
             iter([([alternate], 1, 1)]),
@@ -492,11 +495,9 @@ class TestForMeCommand:
         )
         expensive = dataclasses.replace(unavailable, asin="EXPENSIVE", price=8.0)
         cheapest = dataclasses.replace(unavailable, asin="CHEAPEST", price=3.0)
-        mock_client.get_series_products.return_value = [
-            unavailable,
-            expensive,
-            cheapest,
-        ]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SERIESA01": [unavailable, expensive, cheapest]}
+        )
         mock_client.search_pages.return_value = iter([])
 
         result = CliRunner().invoke(cli, ["for-me", "--json"])
@@ -526,7 +527,9 @@ class TestForMeCommand:
         next_book = dataclasses.replace(
             later, asin="NEXT", title="Actual Next", series_position="4"
         )
-        mock_client.get_series_products.return_value = [later, ambiguous, next_book]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SERIESA01": [later, ambiguous, next_book]}
+        )
         mock_client.search_pages.return_value = iter([])
 
         result = CliRunner().invoke(cli, ["for-me", "--json"])
@@ -569,11 +572,9 @@ class TestForMeCommand:
             price=2.0,
             length_minutes=0,
         )
-        mock_client.get_series_products.return_value = [
-            unavailable,
-            placeholder,
-            zero_runtime,
-        ]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SERIESA01": [unavailable, placeholder, zero_runtime]}
+        )
         mock_client.search_pages.return_value = iter([])
 
         result = CliRunner().invoke(cli, ["for-me", "--json"])
@@ -661,7 +662,7 @@ class TestForMeCommand:
         assert result.exit_code == 0, result.output
         assert "Bobiverse" in result.output
         assert "Fav Author" in result.output
-        mock_client.get_series_products.assert_not_called()
+        mock_client.get_series_products_many.assert_not_called()
         mock_client.search_pages.assert_not_called()
 
     def test_builds_profile_from_library_when_no_cache(self, mock_client, tmp_config):
@@ -736,18 +737,19 @@ class TestForMeCommand:
             series_position="4",
             price=4.99,
         )
-        mock_client.get_series_products_many.side_effect = None
-        mock_client.get_series_products_many.return_value = SeriesProductsBatch(
-            products={"SERIESA01": (gap,)},
-            failures={},
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SERIESA01": [gap]},
             missing_asins={"SERIESA01": ("B00MISSING",)},
         )
 
         result = CliRunner().invoke(cli, ["for-me", "--json"])
 
         assert result.exit_code == 0, result.output
-        assert "1/1 series scanned; 1 incomplete" in result.stderr
-        assert "Bobiverse: 1 product(s) unavailable" in result.stderr
+        assert result.stderr.endswith(
+            "Partial results: 1/1 series scanned; 1 incomplete.\n"
+            "  Bobiverse: 1 product(s) unavailable\n"
+        )
+        assert "Partial results:" not in result.stdout
         assert any(item["asin"] == gap.asin for item in json.loads(result.stdout))
 
     def test_narrow_terminal_folds_match_into_title(self, mock_client, tmp_config):

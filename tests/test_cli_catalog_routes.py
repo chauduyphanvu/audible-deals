@@ -10,7 +10,7 @@ from audible_deals.cli import cli
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, make_series_products_batch
 
 
 def _routes_run(runner, args, **kwargs):
@@ -545,7 +545,9 @@ class TestRoutesZeroLengthFiltering:
             price=14.99,
         )
         mock_client.get_library.return_value = [owned1, owned2]
-        mock_client.get_series_products.return_value = [preorder]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SARC1": [preorder]}
+        )
 
         result = _routes_run(
             CliRunner(),
@@ -715,7 +717,9 @@ class TestRoutesSeriesGapsMode:
     def test_gaps_basic_terminal_output(self, tmp_config, mock_client):
         """Gaps mode runs without error; missing book appears in JSON for verification."""
         mock_client.get_library.return_value = self._make_library()
-        mock_client.get_series_products.return_value = self._make_catalog()
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"EXPANSE1": self._make_catalog()}
+        )
 
         # Terminal display goes through Rich console (not captured by CliRunner).
         # Verify the command succeeds and produces correct JSON in a parallel call.
@@ -739,7 +743,9 @@ class TestRoutesSeriesGapsMode:
     def test_gaps_json_shape(self, tmp_config, mock_client):
         """--gaps --json emits correct per-series structure."""
         mock_client.get_library.return_value = self._make_library()
-        mock_client.get_series_products.return_value = self._make_catalog()
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"EXPANSE1": self._make_catalog()}
+        )
 
         result = _routes_run(
             CliRunner(),
@@ -806,7 +812,9 @@ class TestRoutesSeriesGapsMode:
         )
         mock_client.get_library.return_value = [owned1, owned2]
         # Catalog has the same books already owned — no new candidates
-        mock_client.get_series_products.return_value = [owned1, owned2]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"CSER1": [owned1, owned2]}
+        )
 
         result = _routes_run(
             CliRunner(),
@@ -852,7 +860,9 @@ class TestRoutesSeriesGapsMode:
             length_minutes=600,
         )
         mock_client.get_library.return_value = [owned, owned2]
-        mock_client.get_series_products.return_value = [owned, owned2, miss5, miss3]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SORT1": [owned, owned2, miss5, miss3]}
+        )
 
         result = _routes_run(
             CliRunner(),

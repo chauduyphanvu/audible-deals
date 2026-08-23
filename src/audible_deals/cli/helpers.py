@@ -9,8 +9,7 @@ import click
 from audible_deals.client import DealsClient
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import LOCALE_CURRENCY
-from audible_deals.validation import validate_finite_number
-from audible_deals.presentation.terminal import console, safe_markup
+from audible_deals.presentation.terminal import console, safe_markup, safe_text
 from audible_deals.results_cache import (
     load_dismissed_asins,
     load_seen_asins,
@@ -18,6 +17,7 @@ from audible_deals.results_cache import (
 )
 from audible_deals.selectors import resolve_selectors
 from audible_deals.settings import profile_validation_error
+from audible_deals.validation import validate_finite_number
 
 _CL = click.core.ParameterSource.COMMANDLINE
 
@@ -144,3 +144,32 @@ def _resolve_output_quiet(ctx: click.Context, output, json_flag, quiet) -> bool:
     if json_flag:
         console.file = sys.stderr
     return quiet
+
+
+def _report_partial_series_outcomes(
+    failures: tuple[str, ...],
+    incomplete: tuple[str, ...],
+    total: int,
+    *,
+    json_flag: bool,
+) -> None:
+    if not failures and not incomplete:
+        return
+    completed = total - len(failures)
+    outcomes = []
+    if failures:
+        outcomes.append(f"{len(failures)} failed")
+    if incomplete:
+        outcomes.append(f"{len(incomplete)} incomplete")
+    summary = (
+        f"Partial results: {completed}/{total} series scanned; {'; '.join(outcomes)}."
+    )
+    details = (*failures, *incomplete)
+    if json_flag:
+        click.echo(summary, err=True)
+        for detail in details:
+            click.echo(f"  {safe_text(detail)}", err=True)
+    else:
+        console.print(f"[yellow]{safe_markup(summary)}[/yellow]")
+        for detail in details:
+            console.print(f"[dim]  {safe_markup(detail)}[/dim]")

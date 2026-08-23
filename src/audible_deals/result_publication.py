@@ -28,7 +28,6 @@ from audible_deals.product import Product
 from audible_deals.refresh_eligibility import mark_refresh_eligible
 from audible_deals.result_models import DiscoveryResult, ResultRecipe, ResultSession
 from audible_deals.results_cache import (
-    save_last_results,
     save_result_session,
     save_seen_asins,
 )
@@ -57,13 +56,11 @@ class ResultPublicationRequest:
     quiet: bool
     max_price: float | None
     currency: str
+    session_spec: ResultSessionSpec
     interactive: bool = False
     show_url: bool = False
-    write_cache: bool = True
-    record_price_history: bool = True
     credit_price: float | None = None
     candidates: tuple[Product, ...] = ()
-    session_spec: ResultSessionSpec | None = None
     json_writer: Callable[[str], object] = print
 
     def __post_init__(self) -> None:
@@ -75,7 +72,7 @@ class ResultPublicationOutcome:
     products: tuple[Product, ...]
     serialized: tuple[dict, ...]
     total_before_limit: int
-    session: ResultSession | None = None
+    session: ResultSession
 
 
 def record_prices_safely(
@@ -104,14 +101,10 @@ def mark_refresh_eligible_safely(products: list[Product]) -> None:
 def _session_for_request(
     request: ResultPublicationRequest,
     visible: list[Product],
-    histories: dict[str, list[dict]] | None,
-) -> ResultSession | None:
+    histories: dict[str, list[dict]],
+) -> ResultSession:
     spec = request.session_spec
-    if spec is None:
-        return None
     constraints = copy.deepcopy(spec.constraints)
-    if histories is None:
-        histories = {}
     constraints["history_percentiles"] = hist_percentiles(
         list(request.candidates), histories
     )
@@ -153,7 +146,7 @@ def publish_discovery(
             console.print(f"[green]{safe_markup(export_message)}[/green]")
 
     histories = request.result.histories
-    if histories is None and request.session_spec is not None:
+    if histories is None:
         histories = {
             history_key(product.asin, product.locale): load_price_history(
                 product.asin, product.locale
@@ -174,23 +167,14 @@ def publish_discovery(
     serialized = serialized_all[: len(visible)]
 
     def commit_presentation() -> None:
-        if request.record_price_history:
-            observation_date = (
-                datetime.datetime.fromisoformat(session.timestamp).date()
-                if session is not None
-                else None
-            )
-            record_prices_safely(surfaced, observation_date=observation_date)
+        observation_date = datetime.datetime.fromisoformat(session.timestamp).date()
+        record_prices_safely(surfaced, observation_date=observation_date)
         mark_refresh_eligible_safely(surfaced)
-        if request.write_cache:
-            try:
-                if session is not None:
-                    save_result_session(session)
-                else:
-                    save_last_results(request.title, serialized_all)
-            except Exception:
-                logger.warning("Could not save last result session", exc_info=True)
-            save_seen_asins({product.asin for product in visible})
+        try:
+            save_result_session(session)
+        except Exception:
+            logger.warning("Could not save last result session", exc_info=True)
+        save_seen_asins({product.asin for product in visible})
 
     visible_result = dataclasses.replace(
         request.result,

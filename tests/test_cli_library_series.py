@@ -8,7 +8,6 @@ import json
 from click.testing import CliRunner
 
 import audible_deals.constants as constants_mod
-from audible_deals.client import SeriesProductsBatch
 from audible_deals.cli import cli
 from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from audible_deals.series_identity import (
@@ -16,7 +15,7 @@ from audible_deals.series_identity import (
     series_book_identity,
     series_identity,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, make_series_products_batch
 
 
 def _mock_library_pages(mock_client, products):
@@ -339,7 +338,9 @@ class TestSeriesCommand:
             series_asin="SER_DISMISSED",
         )
         mock_client.get_library.return_value = lib
-        mock_client.get_series_products.return_value = [dismissed, visible]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_DISMISSED": [dismissed, visible]}
+        )
         save_dismissed_asins({dismissed.asin})
 
         result = CliRunner().invoke(cli, ["series", "--json"])
@@ -371,7 +372,9 @@ class TestSeriesCommand:
             series_asin="SER_GAPS",
         )
         mock_client.get_library.return_value = lib
-        mock_client.get_series_products.return_value = [dismissed]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_GAPS": [dismissed]}
+        )
         save_dismissed_asins({dismissed.asin})
 
         result = CliRunner().invoke(cli, ["series", "--gaps", "--json"])
@@ -380,7 +383,7 @@ class TestSeriesCommand:
         assert json.loads(result.stdout) == []
 
     def test_series_direct_lookup(self, tmp_config, mock_client):
-        """With series_asin, uses direct lookup via get_series_products."""
+        """With series_asin, uses direct batch lookup."""
         lib = [
             make_product(
                 asin="A1",
@@ -405,13 +408,15 @@ class TestSeriesCommand:
             series_name="Alpha Series",
             series_position="3",
         )
-        mock_client.get_series_products.return_value = [lib[0], lib[1], unowned]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [lib[0], lib[1], unowned]}
+        )
 
         runner = CliRunner()
         result = runner.invoke(cli, ["series"])
         assert result.exit_code == 0, result.output
         assert "Alpha Book 3" in result.output
-        mock_client.get_series_products.assert_called_once_with("SER_ALPHA")
+        mock_client.get_series_products_many.assert_called_once_with(["SER_ALPHA"])
         mock_client.search_pages.assert_not_called()
 
     def test_series_reports_partial_lookup_failures(self, tmp_config, mock_client):
@@ -448,16 +453,22 @@ class TestSeriesCommand:
             series_position="3",
         )
         mock_client.get_library.return_value = lib
-        mock_client.get_series_products.side_effect = [
-            RuntimeError("temporary failure"),
-            [lib[2], lib[3], beta],
-        ]
+        failure = RuntimeError("temporary failure")
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_BETA": [lib[2], lib[3], beta]},
+            failures={"SER_ALPHA": failure},
+            missing_asins={"SER_BETA": ("B4",)},
+        )
 
         result = CliRunner().invoke(cli, ["series"])
 
         assert result.exit_code == 0, result.output
-        assert "Partial results: 1/2 series scanned; 1 failed" in result.output
-        assert "Alpha Series: RuntimeError: temporary failure" in result.output
+        assert (
+            "Partial results: 1/2 series scanned; 1 failed; 1 incomplete.\n"
+            "  Alpha Series: RuntimeError: temporary failure\n"
+            "  Beta Series: 1 product(s) unavailable\n"
+        ) in result.stdout
+        assert "Partial results:" not in result.stderr
         assert "Beta Book 3" in result.output
 
     def test_series_reports_missing_child_products(self, tmp_config, mock_client):
@@ -476,10 +487,8 @@ class TestSeriesCommand:
             ),
         ]
         mock_client.get_library.return_value = lib
-        mock_client.get_series_products_many.side_effect = None
-        mock_client.get_series_products_many.return_value = SeriesProductsBatch(
-            products={"SER_ALPHA": tuple(lib)},
-            failures={},
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": lib},
             missing_asins={"SER_ALPHA": ("A3",)},
         )
 
@@ -521,7 +530,7 @@ class TestSeriesCommand:
         result = runner.invoke(cli, ["series"])
         assert result.exit_code == 0, result.output
         assert "Alpha Book 3" in result.output
-        mock_client.get_series_products.assert_not_called()
+        mock_client.get_series_products_many.assert_called_once_with([])
         assert mock_client.search_pages.call_count == 1
 
     def test_series_min_books_filters(self, tmp_config, mock_client):
@@ -576,13 +585,15 @@ class TestSeriesCommand:
             series_name="Alpha Series",
             series_position="3",
         )
-        mock_client.get_series_products.return_value = [lib[0], lib[1], unowned_alpha]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [lib[0], lib[1], unowned_alpha]}
+        )
 
         runner = CliRunner()
         result = runner.invoke(cli, ["series", "--series", "Alpha"])
         assert result.exit_code == 0, result.output
 
-        mock_client.get_series_products.assert_called_once_with("SER_ALPHA")
+        mock_client.get_series_products_many.assert_called_once_with(["SER_ALPHA"])
         assert "Alpha Book 3" in result.output
 
     def test_series_skips_owned(self, tmp_config, mock_client):
@@ -623,7 +634,9 @@ class TestSeriesCommand:
             series_name="Alpha Series",
             series_position="3",
         )
-        mock_client.get_series_products.return_value = [a1, a2, a3]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [a1, a2, a3]}
+        )
 
         runner = CliRunner()
         result = runner.invoke(cli, ["series"])
@@ -690,7 +703,9 @@ class TestSeriesCommand:
             series_name="Alpha Series",
             series_position="3",
         )
-        mock_client.get_series_products.return_value = [lib[0], lib[1], unowned]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [lib[0], lib[1], unowned]}
+        )
 
         runner = CliRunner()
         result = runner.invoke(cli, ["series", "--json"])
@@ -773,11 +788,9 @@ class TestSeriesCommand:
             series_position="1-2",
         )
         mock_client.get_library.return_value = owned
-        mock_client.get_series_products.return_value = [
-            alternate_owned,
-            alternate_owned_title,
-            unowned,
-        ]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [alternate_owned, alternate_owned_title, unowned]}
+        )
 
         result = CliRunner().invoke(cli, ["series", "--json"])
 
@@ -865,12 +878,9 @@ class TestSeriesCommand:
             price=4.0,
         )
         mock_client.get_library.return_value = owned
-        mock_client.get_series_products.return_value = [
-            unavailable,
-            expensive,
-            cheapest,
-            tied,
-        ]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [unavailable, expensive, cheapest, tied]}
+        )
 
         result = CliRunner().invoke(cli, ["series", "--json"])
 
@@ -917,11 +927,9 @@ class TestSeriesCommand:
             length_minutes=0,
         )
         mock_client.get_library.return_value = owned
-        mock_client.get_series_products.return_value = [
-            unavailable,
-            placeholder,
-            preorder,
-        ]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [unavailable, placeholder, preorder]}
+        )
 
         result = CliRunner().invoke(cli, ["series", "--json"])
 
@@ -979,11 +987,9 @@ class TestSeriesCommand:
             alternate_edition,
             second,
         ]
-        mock_client.get_series_products.return_value = [
-            catalog_owned_edition,
-            unavailable,
-            placeholder,
-        ]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [catalog_owned_edition, unavailable, placeholder]}
+        )
 
         result = CliRunner().invoke(cli, ["series", "--gaps", "--json"])
 
@@ -1034,7 +1040,9 @@ class TestSeriesCommand:
             series_position="Books 1 & 3",
         )
         mock_client.get_library.return_value = owned
-        mock_client.get_series_products.return_value = [first, second]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [first, second]}
+        )
 
         result = CliRunner().invoke(cli, ["series", "--json"])
 
@@ -1076,7 +1084,9 @@ class TestSeriesCommand:
             series_name="Shared Universe",
             series_position="3",
         )
-        mock_client.get_series_products.side_effect = [[shared], [shared]]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [shared], "SER_BETA": [shared]}
+        )
 
         result = CliRunner().invoke(cli, ["series", "--gaps", "--json"])
 
@@ -1119,29 +1129,33 @@ class TestSeriesCommand:
                 series_position="2",
             ),
         ]
-        mock_client.get_series_products.return_value = [
-            make_product(
-                asin="A3",
-                title="Unavailable Book",
-                series_name="Alpha Series",
-                series_position="3",
-                price=None,
-            ),
-            make_product(
-                asin="A4",
-                title="Affordable Book",
-                series_name="Alpha Series",
-                series_position="4",
-                price=4.0,
-            ),
-            make_product(
-                asin="A5",
-                title="Expensive Book",
-                series_name="Alpha Series",
-                series_position="5",
-                price=6.0,
-            ),
-        ]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {
+                "SER_ALPHA": [
+                    make_product(
+                        asin="A3",
+                        title="Unavailable Book",
+                        series_name="Alpha Series",
+                        series_position="3",
+                        price=None,
+                    ),
+                    make_product(
+                        asin="A4",
+                        title="Affordable Book",
+                        series_name="Alpha Series",
+                        series_position="4",
+                        price=4.0,
+                    ),
+                    make_product(
+                        asin="A5",
+                        title="Expensive Book",
+                        series_name="Alpha Series",
+                        series_position="5",
+                        price=6.0,
+                    ),
+                ]
+            }
+        )
 
         result = CliRunner().invoke(cli, ["series", "--gaps", "--json", *options])
 
@@ -1172,7 +1186,9 @@ class TestSeriesCommand:
             price=None,
         )
         mock_client.get_library.return_value = owned
-        mock_client.get_series_products.return_value = [unavailable]
+        mock_client.get_series_products_many.return_value = make_series_products_batch(
+            {"SER_ALPHA": [unavailable]}
+        )
 
         result = CliRunner().invoke(cli, ["series", "--gaps"])
 

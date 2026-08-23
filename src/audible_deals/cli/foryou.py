@@ -18,6 +18,7 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _report_partial_series_outcomes,
     _resolve_output_quiet,
 )
 from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
@@ -33,7 +34,6 @@ from audible_deals.presentation.terminal import (
     console,
     create_scan_progress,
     safe_markup,
-    safe_text,
 )
 from audible_deals.result_models import FilterContext
 from audible_deals.results_cache import load_dismissed_asins
@@ -321,35 +321,6 @@ def _fetch_candidates(
     return list(candidates.values()), series_matches, tuple(failures), tuple(incomplete)
 
 
-def _report_for_me_series_outcomes(
-    failures: tuple[str, ...],
-    incomplete: tuple[str, ...],
-    total: int,
-    *,
-    json_flag: bool,
-) -> None:
-    if not failures and not incomplete:
-        return
-    outcomes = []
-    if failures:
-        outcomes.append(f"{len(failures)} failed")
-    if incomplete:
-        outcomes.append(f"{len(incomplete)} incomplete")
-    summary = (
-        f"Partial results: {total - len(failures)}/{total} series scanned; "
-        f"{'; '.join(outcomes)}."
-    )
-    details = (*failures, *incomplete)
-    if json_flag:
-        click.echo(summary, err=True)
-        for detail in details:
-            click.echo(f"  {safe_text(detail)}", err=True)
-    else:
-        console.print(f"[yellow]{safe_markup(summary)}[/yellow]")
-        for detail in details:
-            console.print(f"[dim]  {safe_markup(detail)}[/dim]")
-
-
 @click.command("for-me")
 @click.option(
     "--refresh",
@@ -595,7 +566,7 @@ def for_me(
             show_progress=not json_flag,
         )
 
-    _report_for_me_series_outcomes(
+    _report_partial_series_outcomes(
         failures,
         incomplete,
         len(series),
