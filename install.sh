@@ -15,7 +15,6 @@ REPO="chauduyphanvu/audible-deals"
 INSTALL_DIR="${INSTALL_DIR-$HOME/.local/bin}"
 LIB_DIR="${LIB_DIR-$HOME/.local/lib/deals}"
 BINARY_NAME="deals"
-FALLBACK_VERSION="0.9.1"
 INSTALL_MARKER_NAME=".audible-deals-install"
 INSTALL_MARKER_CONTENT="repository=chauduyphanvu/audible-deals"
 
@@ -86,18 +85,24 @@ resolve_version() {
         return
     fi
 
-    local latest
-    latest="$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" \
-        | grep '"tag_name"' | head -1 | cut -d'"' -f4)" || true
+    local release_prefix latest_url latest
+    release_prefix="https://github.com/$REPO/releases/tag/"
 
-    if [ -z "$latest" ]; then
-        echo "Warning: Could not determine latest version from GitHub API; falling back to v${FALLBACK_VERSION}" >&2
-        echo "${FALLBACK_VERSION}"
-        return
+    if latest_url="$(curl -fsSL -o /dev/null -w '%{url_effective}' "https://github.com/$REPO/releases/latest" 2>/dev/null)"; then
+        case "$latest_url" in
+            "$release_prefix"*)
+                latest="${latest_url#"$release_prefix"}"
+                latest="${latest#v}"
+                if [[ "$latest" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.]+)?$ ]]; then
+                    echo "$latest"
+                    return
+                fi
+                ;;
+        esac
     fi
 
-    # Strip leading 'v' if present
-    echo "${latest#v}"
+    echo "Error: Could not resolve the latest release from GitHub; retry or set VERSION explicitly." >&2
+    return 1
 }
 
 # --- Checksum helper ---

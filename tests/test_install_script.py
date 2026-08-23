@@ -51,11 +51,16 @@ def make_curl_shim(directory: Path) -> None:
         f"""#!/bin/bash
 set -eu
 output=""
+write_format=""
 url=""
 while [ "$#" -gt 0 ]; do
     case "$1" in
         -o)
             output="$2"
+            shift 2
+            ;;
+        -w)
+            write_format="$2"
             shift 2
             ;;
         -*)
@@ -67,6 +72,16 @@ while [ "$#" -gt 0 ]; do
             ;;
     esac
 done
+printf '%s\n' "$url" >> "$TEST_CURL_LOG"
+if [ "$url" = "https://github.com/chauduyphanvu/audible-deals/releases/latest" ]; then
+    [ "$output" = "/dev/null" ] || exit 64
+    [ "$write_format" = '%{{url_effective}}' ] || exit 64
+    if [ "${{TEST_LATEST_FAIL:-0}}" = "1" ]; then
+        exit 22
+    fi
+    printf '%s' "${{TEST_LATEST_URL:-}}"
+    exit 0
+fi
 if [ "${{TEST_DOWNLOAD_FAIL:-0}}" = "1" ] && [[ "$url" != *.sha256 ]]; then
     exit 22
 fi
@@ -192,6 +207,7 @@ def base_environment(
             "SHELL": BASH,
             "TEST_ARCHIVE": str(archive),
             "TEST_CHECKSUM": str(checksum),
+            "TEST_CURL_LOG": str(tmp_path / "curl.log"),
             "TMPDIR": str(download_root),
             "VERSION": "1.2.3",
         }
@@ -505,6 +521,119 @@ def test_rejects_reverse_install_path_overlap(tmp_path: Path) -> None:
     assert "must not overlap" in result.stderr
     assert not (install_dir / "deals").exists()
     assert list((tmp_path / "downloads").iterdir()) == []
+
+
+@pytest.mark.parametrize("configured_version", ["2.3.4", "v2.3.4"])
+def test_explicit_version_bypasses_latest_lookup_and_normalizes_leading_v(
+    tmp_path: Path, configured_version: str
+) -> None:
+    lib_dir, _, link, _, env = install_fixture(tmp_path)
+    env["VERSION"] = configured_version
+    env["TEST_LATEST_FAIL"] = "1"
+
+    result = run_installer(tmp_path, env)
+
+    assert result.returncode == 0, result.stderr
+    urls = Path(env["TEST_CURL_LOG"]).read_text().splitlines()
+    assert len(urls) == 2
+    assert all("/releases/latest" not in url for url in urls)
+    assert all("/releases/download/v2.3.4/" in url for url in urls)
+    assert urls[1] == f"{urls[0]}.sha256"
+    assert (
+        subprocess.run(
+            [str(link)], text=True, capture_output=True, check=True
+        ).stdout.strip()
+        == "new"
+    )
+    assert (lib_dir / "new-only").read_text() == "new payload\n"
+
+
+def test_unset_version_uses_latest_release_tag(tmp_path: Path) -> None:
+    lib_dir, _, link, _, env = install_fixture(tmp_path)
+    env.pop("VERSION")
+    env["TEST_LATEST_URL"] = (
+        "https://github.com/chauduyphanvu/audible-deals/releases/tag/v2.4.5"
+    )
+
+    result = run_installer(tmp_path, env)
+
+    assert result.returncode == 0, result.stderr
+    urls = Path(env["TEST_CURL_LOG"]).read_text().splitlines()
+    assert urls[0] == ("https://github.com/chauduyphanvu/audible-deals/releases/latest")
+    assert len(urls) == 3
+    assert all("/releases/download/v2.4.5/" in url for url in urls[1:])
+    assert urls[2] == f"{urls[1]}.sha256"
+    assert (
+        subprocess.run(
+            [str(link)], text=True, capture_output=True, check=True
+        ).stdout.strip()
+        == "new"
+    )
+    assert (lib_dir / "new-only").read_text() == "new payload\n"
+
+
+@pytest.mark.parametrize(
+    ("transport_failure", "latest_url"),
+    [
+        (
+            True,
+            "https://github.com/chauduyphanvu/audible-deals/releases/tag/v2.4.5",
+        ),
+        (False, ""),
+        (
+            False,
+            "https://example.com/chauduyphanvu/audible-deals/releases/tag/v2.4.5",
+        ),
+        (
+            False,
+            "https://github.com/chauduyphanvu/audible-deals/releases/download/v2.4.5",
+        ),
+        (
+            False,
+            "https://github.com/chauduyphanvu/audible-deals/releases/tag/not-a-version",
+        ),
+        (
+            False,
+            "https://github.com/chauduyphanvu/audible-deals/releases/tag/v2.4.5/notes",
+        ),
+        (
+            False,
+            "https://github.com/chauduyphanvu/audible-deals/releases/tag/v2.4.5?source=latest",
+        ),
+    ],
+    ids=[
+        "transport-error",
+        "empty-url",
+        "wrong-host",
+        "wrong-path",
+        "invalid-tag",
+        "trailing-component",
+        "query-string",
+    ],
+)
+def test_unset_version_resolution_failure_preserves_existing_install(
+    tmp_path: Path, transport_failure: bool, latest_url: str
+) -> None:
+    lib_dir, _, link, _, env = install_fixture(tmp_path)
+    env.pop("VERSION")
+    env["TEST_LATEST_URL"] = latest_url
+    if transport_failure:
+        env["TEST_LATEST_FAIL"] = "1"
+
+    result = run_installer(tmp_path, env)
+
+    assert result.returncode != 0
+    assert result.stderr.strip() == (
+        "Error: Could not resolve the latest release from GitHub; "
+        "retry or set VERSION explicitly."
+    )
+    assert Path(env["TEST_CURL_LOG"]).read_text().splitlines() == [
+        "https://github.com/chauduyphanvu/audible-deals/releases/latest"
+    ]
+    assert_old_install_works(lib_dir, link)
+    assert (lib_dir / "old-only").read_text() == "old payload"
+    assert (lib_dir / INSTALL_MARKER_NAME).read_text() == INSTALL_MARKER_CONTENT
+    assert_no_temporary_files(tmp_path, lib_dir)
 
 
 def test_download_failure_preserves_install(tmp_path: Path) -> None:
