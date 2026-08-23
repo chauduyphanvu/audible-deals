@@ -12,6 +12,7 @@ from rich.table import Table
 
 from audible_deals.metrics import buy_verdict, price_per_hour
 from audible_deals.presentation import terminal
+from audible_deals.presentation.terminal import safe_markup
 from audible_deals.presentation.common import (
     _VERDICT_MARKUP,
     _buy_cell,
@@ -268,11 +269,11 @@ def _price_cell(
 
 
 def _product_identity(product: Product) -> str:
-    identity = product.asin
+    identity = safe_markup(product.asin)
     if product.series_name:
-        identity += f" · {product.series_name}"
+        identity += f" · {safe_markup(product.series_name)}"
         if product.series_position:
-            identity += f" #{product.series_position}"
+            identity += f" #{safe_markup(product.series_position)}"
     return identity
 
 
@@ -313,7 +314,9 @@ def _inline_signals(
             f"[dim]vs hist[/dim] {_hist_cell(hist_context.get(product.asin))}"
         )
     if include_match and match_context is not None and match_context.get(product.asin):
-        signals.append(f"[dim]Match[/dim] [cyan]{match_context[product.asin]}[/cyan]")
+        signals.append(
+            f"[dim]Match[/dim] [cyan]{safe_markup(match_context[product.asin])}[/cyan]"
+        )
     if signals:
         lines.append(" · ".join(signals))
     return lines
@@ -322,15 +325,15 @@ def _inline_signals(
 def _display_product_cards(
     products: list[Product], options: ProductDisplayOptions
 ) -> None:
-    terminal.console.print(f"[bold]{options.title}[/bold]")
+    terminal.console.print(f"[bold]{safe_markup(options.title)}[/bold]")
     for index, product in enumerate(products, 1):
         plus = " [magenta][+][/magenta]" if product.in_plus_catalog else ""
         terminal.console.print(
             f"\n[bold cyan]@{index}[/bold cyan]  "
-            f"[bold]{product.full_title}[/bold]{plus}"
+            f"[bold]{safe_markup(product.full_title)}[/bold]{plus}"
         )
         if product.authors_str:
-            terminal.console.print(f"[dim]By[/dim] {product.authors_str}")
+            terminal.console.print(f"[dim]By[/dim] {safe_markup(product.authors_str)}")
         terminal.console.print(
             f"[dim]Price[/dim] "
             f"{_price_cell(product, product.currency, options.max_price, options.atl_asins)}"
@@ -364,9 +367,9 @@ def _render_product_row(
 ) -> list[str]:
     currency = product.currency
     plus = " [magenta][+][/magenta]" if product.in_plus_catalog else ""
-    title_cell = f"{product.title}{plus}"
+    title_cell = f"{safe_markup(product.title)}{plus}"
     if product.authors_str:
-        title_cell += f"\n[dim]{product.authors_str}[/dim]"
+        title_cell += f"\n[dim]{safe_markup(product.authors_str)}[/dim]"
     if layout.mode == "compact":
         title_cell += "\n" + "\n".join(
             _inline_signals(
@@ -416,9 +419,9 @@ def _render_product_row(
         pct = options.hist_context.get(product.asin) if options.hist_context else None
         row.append(_hist_cell(pct))
     if layout.show_match_column:
-        row.append(options.match_context.get(product.asin, ""))
+        row.append(safe_markup(options.match_context.get(product.asin, "")))
     if layout.show_url_column:
-        row.append(product.url)
+        row.append(safe_markup(product.url))
     return row
 
 
@@ -428,7 +431,7 @@ def _build_product_table(
     layout: ProductLayout,
 ) -> Table:
     table = Table(
-        title=options.title,
+        title=safe_markup(options.title),
         show_lines=False,
         padding=(0, 1),
         title_style="bold",
@@ -477,7 +480,9 @@ def _display_url_fallback(products: list[Product]) -> None:
     terminal.console.print("\n[bold]URLs[/bold]")
     for index, product in enumerate(products, 1):
         terminal.console.print(
-            f"  @{index}. {product.url}", soft_wrap=True, overflow="fold"
+            f"  @{index}. {safe_markup(product.url)}",
+            soft_wrap=True,
+            overflow="fold",
         )
 
 
@@ -520,13 +525,17 @@ def display_products(
 
 
 def display_product_detail(product: Product, credit_price: float | None = None) -> None:
-    lines: list[str] = [f"[bold]{product.full_title}[/bold]", ""]
+    lines: list[str] = [f"[bold]{safe_markup(product.full_title)}[/bold]", ""]
     if product.authors:
-        lines.append(f"  [dim]By:[/dim]        {', '.join(product.authors)}")
+        lines.append(
+            f"  [dim]By:[/dim]        {safe_markup(', '.join(product.authors))}"
+        )
     if product.narrators:
-        lines.append(f"  [dim]Narrated:[/dim]   {', '.join(product.narrators)}")
+        lines.append(
+            f"  [dim]Narrated:[/dim]   {safe_markup(', '.join(product.narrators))}"
+        )
     if product.publisher:
-        lines.append(f"  [dim]Publisher:[/dim]  {product.publisher}")
+        lines.append(f"  [dim]Publisher:[/dim]  {safe_markup(product.publisher)}")
     lines.append("")
 
     currency = product.currency
@@ -557,21 +566,23 @@ def display_product_detail(product: Product, credit_price: float | None = None) 
         series = product.series_name
         if product.series_position:
             series += f", Book {product.series_position}"
-        lines.append(f"  [dim]Series:[/dim]     {series}")
+        lines.append(f"  [dim]Series:[/dim]     {safe_markup(series)}")
     if product.categories:
-        lines.append(f"  [dim]Genres:[/dim]     {' > '.join(product.categories)}")
+        lines.append(
+            f"  [dim]Genres:[/dim]     {safe_markup(' > '.join(product.categories))}"
+        )
     if product.language:
-        lines.append(f"  [dim]Language:[/dim]   {product.language}")
+        lines.append(f"  [dim]Language:[/dim]   {safe_markup(product.language)}")
     if product.release_date:
-        lines.append(f"  [dim]Released:[/dim]   {product.release_date}")
+        lines.append(f"  [dim]Released:[/dim]   {safe_markup(product.release_date)}")
     if product.in_plus_catalog:
         lines.append("  [magenta]Included in Audible Plus[/magenta]")
-    lines.extend(["", f"  [dim link={product.url}]{product.url}[/dim link]"])
+    lines.extend(["", f"  [dim]{safe_markup(product.url)}[/dim]"])
 
     terminal.console.print(
         Panel(
             "\n".join(lines),
-            title=f"[cyan]{product.asin}[/cyan]",
+            title=f"[cyan]{safe_markup(product.asin)}[/cyan]",
             border_style="dim",
             padding=(1, 2),
         )
@@ -591,12 +602,12 @@ def display_comparison(
     )
     table.add_column("Field", style="dim", width=12)
     for product in products:
-        table.add_column(product.asin, style="cyan", max_width=30)
+        table.add_column(safe_markup(product.asin), style="cyan", max_width=30)
 
     rows = [
-        ("Title", [product.title for product in products]),
-        ("Author", [product.authors_str for product in products]),
-        ("Narrator", [product.narrators_str for product in products]),
+        ("Title", [safe_markup(product.title) for product in products]),
+        ("Author", [safe_markup(product.authors_str) for product in products]),
+        ("Narrator", [safe_markup(product.narrators_str) for product in products]),
         ("Price", [price_str(product.price, product.currency) for product in products]),
         (
             "List Price",
@@ -621,14 +632,17 @@ def display_comparison(
         (
             "Series",
             [
-                f"{product.series_name} #{product.series_position}"
+                safe_markup(f"{product.series_name} #{product.series_position}")
                 if product.series_name
                 else "-"
                 for product in products
             ],
         ),
-        ("Language", [product.language or "-" for product in products]),
-        ("Released", [product.release_date or "-" for product in products]),
+        ("Language", [safe_markup(product.language or "-") for product in products]),
+        (
+            "Released",
+            [safe_markup(product.release_date or "-") for product in products],
+        ),
         ("Plus", ["Yes" if product.in_plus_catalog else "-" for product in products]),
     ]
     if credit_price is not None:
@@ -647,6 +661,6 @@ def display_comparison(
     if priced:
         best = min(priced, key=price_per_hour)
         terminal.console.print(
-            f"\n  Best value: [bold green]{best.title}[/bold green] "
+            f"\n  Best value: [bold green]{safe_markup(best.title)}[/bold green] "
             f"at {_pph_str(best, best.currency)}/hr"
         )

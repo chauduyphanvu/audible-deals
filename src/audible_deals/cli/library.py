@@ -15,7 +15,12 @@ from audible_deals.client import DealsClient
 from audible_deals.filtering import filter_products, sort_local
 from audible_deals.presentation.products import display_products
 from audible_deals.presentation.reports import display_library_stats, display_summary
-from audible_deals.presentation.terminal import console, create_scan_progress
+from audible_deals.presentation.terminal import (
+    console,
+    create_scan_progress,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
 from audible_deals.serialization import (
@@ -88,16 +93,18 @@ def _emit_library_output(
         export_products(filtered, output)
         export_message = f"Exported {len(filtered)} items to {output}"
         if json_flag:
-            click.echo(export_message, err=True)
+            click.echo(safe_text(export_message), err=True)
         else:
-            console.print(f"[green]{export_message}[/green]")
+            console.print(f"[green]{safe_markup(export_message)}[/green]")
     if json_flag:
         payload: object = (
             _library_stats_json(stats_products)
             if stats
             else [serialize_product(p) for p in filtered]
         )
-        click.echo(json_mod.dumps(payload, indent=2, ensure_ascii=False))
+        click.echo(
+            json_mod.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False)
+        )
     if not json_flag and not quiet:
         console.print()
         if stats:

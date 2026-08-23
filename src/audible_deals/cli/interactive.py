@@ -15,7 +15,7 @@ from audible_deals.presentation.products import (
     display_products,
 )
 from audible_deals.presentation.reports import display_price_history
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.price_history import load_price_history
 from audible_deals.product import Product
 from audible_deals.results_cache import save_dismissed_asins, update_session_view
@@ -182,7 +182,7 @@ class InteractiveBrowser:
         if not self._positions_in_bounds(command.positions):
             return True
         product = self.products[command.positions[0]]
-        console.print(f"[dim]Opening {product.url}[/dim]")
+        console.print(f"[dim]Opening {safe_markup(product.url)}[/dim]")
         click.launch(product.url)
         return True
 
@@ -192,7 +192,9 @@ class InteractiveBrowser:
         product = self.products[command.positions[0]]
         entries = load_price_history(product.asin, product.locale)
         if not entries:
-            console.print(f"[dim]No price history for {product.asin}[/dim]")
+            console.print(
+                f"[dim]No price history for {safe_markup(product.asin)}[/dim]"
+            )
         else:
             display_price_history(entries, product.asin, self.currency)
         return True
@@ -212,7 +214,9 @@ class InteractiveBrowser:
         pending_products: list[Product] = []
         for product in selected:
             if product.asin in stored_asins or product.asin in seen_pending:
-                console.print(f"[dim]{product.asin} already on wishlist[/dim]")
+                console.print(
+                    f"[dim]{safe_markup(product.asin)} already on wishlist[/dim]"
+                )
             elif product.asin in pending_asins:
                 seen_pending.add(product.asin)
                 pending_products.append(product)
@@ -225,7 +229,9 @@ class InteractiveBrowser:
         for event in result.events:
             product = event.product
             if event.action == "raced":
-                console.print(f"[dim]{product.asin} already on wishlist[/dim]")
+                console.print(
+                    f"[dim]{safe_markup(product.asin)} already on wishlist[/dim]"
+                )
             else:
                 target_note = (
                     f" (target: {product.currency}{target_price:.2f})"
@@ -233,7 +239,8 @@ class InteractiveBrowser:
                     else ""
                 )
                 console.print(
-                    f"[green]+[/green] {product.title} added to wishlist{target_note}"
+                    f"[green]+[/green] {safe_markup(product.title)} "
+                    f"added to wishlist{target_note}"
                 )
         return True
 
@@ -264,7 +271,7 @@ class InteractiveBrowser:
         sort_key = command.sort_key
         if sort_key not in _SORT_KEYS:
             console.print(
-                f"[dim]Unknown sort key '{sort_key}'. "
+                f"[dim]Unknown sort key '{safe_markup(sort_key)}'. "
                 f"Valid: {', '.join(_VALID_SORT_KEYS)}[/dim]"
             )
             return True
@@ -296,7 +303,7 @@ class InteractiveBrowser:
         try:
             save_dismissed_asins(asins)
         except Exception as exc:
-            console.print(f"[red]Could not dismiss selection: {exc}[/red]")
+            console.print(f"[red]Could not dismiss selection: {safe_markup(exc)}[/red]")
             return True
         self.products[:] = [
             product for product in self.products if product.asin not in asins
@@ -354,10 +361,10 @@ def _interactive_browse(
         try:
             command = parse_interactive_command(choice)
         except click.ClickException as exc:
-            console.print(f"[dim]{exc.format_message()}[/dim]")
+            console.print(f"[dim]{safe_markup(exc.format_message())}[/dim]")
             continue
         except InteractiveCommandParseError as exc:
-            console.print(str(exc))
+            console.print(safe_markup(exc))
             continue
         if not browser.dispatch(command):
             break

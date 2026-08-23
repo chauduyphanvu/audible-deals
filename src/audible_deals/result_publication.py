@@ -16,7 +16,7 @@ from audible_deals.presentation.result_output import (
     ResultPresentationRequest,
     emit_results,
 )
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_markup, safe_text
 from audible_deals.price_history import (
     history_key,
     hist_percentiles,
@@ -85,7 +85,9 @@ def record_prices_safely(
         record_prices(products, observation_date=observation_date)
     except Exception as exc:
         logger.exception("record_prices failed for %d products", len(products))
-        console.print(f"[dim]Warning: could not record price history: {exc}[/dim]")
+        console.print(
+            f"[dim]Warning: could not record price history: {safe_markup(exc)}[/dim]"
+        )
 
 
 def mark_refresh_eligible_safely(products: list[Product]) -> None:
@@ -146,9 +148,9 @@ def publish_discovery(
         export_products(visible, request.output)
         export_message = f"Exported {len(visible)} items to {request.output}"
         if request.json_flag:
-            print(export_message, file=sys.stderr)
+            print(safe_text(export_message), file=sys.stderr)
         else:
-            console.print(f"[green]{export_message}[/green]")
+            console.print(f"[green]{safe_markup(export_message)}[/green]")
 
     histories = request.result.histories
     if histories is None and request.session_spec is not None:

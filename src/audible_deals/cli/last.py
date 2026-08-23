@@ -14,7 +14,7 @@ from audible_deals.presentation.result_output import (
     emit_results,
 )
 from audible_deals.constants import LOCALE_CURRENCY
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.result_publication import (
     mark_refresh_eligible_safely,
     record_prices_safely,
@@ -323,7 +323,9 @@ def last_cmd(
 
     if output:
         export_products(visible, output)
-        console.print(f"[green]Exported {len(visible)} items to {output}[/green]")
+        console.print(
+            f"[green]Exported {len(visible)} items to {safe_markup(output)}[/green]"
+        )
 
     if count_only:
         if outcome.persist:

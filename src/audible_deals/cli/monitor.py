@@ -14,6 +14,7 @@ from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli.helpers import (
     _CL,
     _get_client,
+    _load_profile,
     _resolve_categories,
     _resolve_skip_asins,
 )
@@ -21,7 +22,6 @@ from audible_deals.cli.options import _complete_profile_names
 from audible_deals.config_store import (
     load_monitor_state,
     load_monitors,
-    load_profiles,
 )
 from audible_deals.constants import (
     ALL_SORT_OPTIONS,
@@ -44,8 +44,14 @@ from audible_deals.monitor_service import (
     scan_monitor as _scan_monitor,
     set_monitor_enabled,
     settings_to_dict,
+    validated_monitor_definition,
 )
-from audible_deals.presentation.terminal import catalog_scan_progress, console
+from audible_deals.presentation.terminal import (
+    catalog_scan_progress,
+    console,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.settings import (
     Settings,
     SettingsResolutionRequest,
@@ -112,9 +118,7 @@ def _monitor_settings(
     ctx: click.Context, mode: str, profile_name: str | None, flags: dict[str, Any]
 ) -> Settings:
     """Resolve the frozen monitor settings with the command's own defaults."""
-    profile = load_profiles().get(profile_name or "") if profile_name else None
-    if profile_name and profile is None:
-        raise click.ClickException(f"Profile '{profile_name}' not found.")
+    profile = _load_profile(profile_name)
     values: dict[str, Any] = dict(
         _FIND_DEFAULTS if mode == "find" else _SEARCH_DEFAULTS
     )
@@ -148,8 +152,8 @@ def _monitor_settings(
 def estimate_monitor_calls(definition: dict) -> int:
     """Estimated catalog-page requests; category lookup is excluded from the budget."""
     try:
-        return _estimate_monitor_calls(MonitorDefinition.from_dict(definition))
-    except MonitorServiceError as exc:
+        return _estimate_monitor_calls(validated_monitor_definition(definition))
+    except (TypeError, MonitorServiceError) as exc:
         raise click.UsageError(str(exc)) from None
 
 
@@ -161,7 +165,7 @@ def _monitor_slot(state: dict, name: str) -> dict:
 def scan_monitor(definition: dict) -> list[dict]:
     """Fetch a monitor without changing result caches, seen state, or history."""
     try:
-        return list(_scan_monitor(MonitorDefinition.from_dict(definition), _runtime()))
+        return list(_scan_monitor(validated_monitor_definition(definition), _runtime()))
     except MonitorServiceError as exc:
         raise click.UsageError(str(exc)) from None
 
@@ -183,12 +187,14 @@ def _print_monitor(name: str, definition: dict, state: dict) -> None:
         if definition.get("profile")
         else "direct options"
     )
-    console.print(f"[bold]{name}[/bold]  {status}")
+    console.print(f"[bold]{safe_markup(name)}[/bold]  {status}")
     console.print(
-        f"  Mode: {definition.get('mode')}  Locale: {definition.get('locale')}  Source: {source}"
+        f"  Mode: {safe_markup(definition.get('mode'))}  "
+        f"Locale: {safe_markup(definition.get('locale'))}  "
+        f"Source: {safe_markup(source)}"
     )
     if query:
-        console.print(f"  Query: {query}")
+        console.print(f"  Query: {safe_markup(query)}")
     console.print("  Frozen settings:")
     for key, value in sorted(definition.get("settings", {}).items()):
         if key == "limit":
@@ -199,7 +205,9 @@ def _print_monitor(name: str, definition: dict, state: dict) -> None:
             rendered = ", ".join(str(item) for item in value)
         else:
             rendered = str(value)
-        console.print(f"    {key.replace('_', '-')}: {rendered}")
+        console.print(
+            f"    {safe_markup(key.replace('_', '-'))}: {safe_markup(rendered)}"
+        )
     console.print(
         f"  Estimated catalog calls/run: {_estimate_label(definition)} (shared budget {MAX_MONITOR_API_CALLS_PER_RUN})"
     )
@@ -207,7 +215,7 @@ def _print_monitor(name: str, definition: dict, state: dict) -> None:
         f"  Snapshot: {len(slot.get('products', {}))} item(s)  Last success: {slot.get('last_success') or 'never'}"
     )
     if slot.get("last_error"):
-        console.print(f"  [red]Last error: {slot['last_error']}[/red]")
+        console.print(f"  [red]Last error: {safe_markup(slot['last_error'])}[/red]")
 
 
 def _estimate_label(definition: dict) -> str:
@@ -302,11 +310,11 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
     except MonitorExistsError as exc:
         raise click.ClickException(str(exc)) from exc
     console.print(
-        f"[green]Monitor '{name}' added[/green] ({mode}, locale {ctx.obj['locale']}, {estimate} catalog calls/run)"
+        f"[green]Monitor '{safe_markup(name)}' added[/green] "
+        f"({mode}, locale {ctx.obj['locale']}, {estimate} catalog calls/run)"
     )
-    console.print(
-        f"  Source: {'profile ' + profile_name if profile_name else 'direct query/options'}"
-    )
+    source = f"profile {profile_name}" if profile_name else "direct query/options"
+    console.print(f"  Source: {safe_markup(source)}")
     console.print(
         "[dim]Its first successful tracked run establishes a silent baseline.[/dim]"
     )
@@ -321,8 +329,13 @@ def list_monitors():
         console.print("[dim]No monitors. Use 'deals monitor add --profile NAME'.[/dim]")
         return
     for name, definition in sorted(monitors.items()):
-        if not isinstance(definition, dict):
-            console.print(f"  [red]{name}: malformed definition[/red]")
+        try:
+            validated_monitor_definition(definition)
+        except MonitorServiceError as exc:
+            console.print(
+                f"  [red]{safe_markup(name)}: malformed definition "
+                f"({safe_markup(exc)})[/red]"
+            )
             continue
         slot = _monitor_slot(state, name)
         status = "enabled" if definition.get("enabled", True) else "paused"
@@ -332,10 +345,17 @@ def list_monitors():
             else "direct options"
         )
         console.print(
-            f"  [bold]{name}[/bold]  {status}, {definition.get('mode')} {definition.get('locale')}, {source} — {len(slot.get('products', {}))} matches, last success: {slot.get('last_success') or 'never'}, estimate: {_estimate_label(definition)}"
+            f"  [bold]{safe_markup(name)}[/bold]  {status}, "
+            f"{safe_markup(definition.get('mode'))} "
+            f"{safe_markup(definition.get('locale'))}, {safe_markup(source)} — "
+            f"{len(slot.get('products', {}))} matches, last success: "
+            f"{safe_markup(slot.get('last_success') or 'never')}, "
+            f"estimate: {_estimate_label(definition)}"
         )
         if slot.get("last_error"):
-            console.print(f"    [red]last error: {slot['last_error']}[/red]")
+            console.print(
+                f"    [red]last error: {safe_markup(slot['last_error'])}[/red]"
+            )
 
 
 @monitor.command("show")
@@ -343,8 +363,12 @@ def list_monitors():
 def show(name):
     """Show frozen settings and latest health for one monitor."""
     definition = load_monitors().get(name)
-    if not isinstance(definition, dict):
+    if definition is None:
         raise click.ClickException(f"Monitor '{name}' not found.")
+    try:
+        validated_monitor_definition(definition)
+    except MonitorServiceError as exc:
+        raise click.ClickException(f"Monitor '{name}' is malformed: {exc}") from exc
     _print_monitor(name, definition, load_monitor_state())
 
 
@@ -353,7 +377,7 @@ def show(name):
 @click.option("--yes", is_flag=True, help="Do not ask for confirmation")
 def remove(name, yes):
     """Remove a monitor and its baseline."""
-    if not yes and not click.confirm(f"Remove monitor '{name}'?"):
+    if not yes and not click.confirm(f"Remove monitor '{safe_text(name)}'?"):
         console.print("[dim]Cancelled.[/dim]")
         return
     try:
@@ -362,7 +386,7 @@ def remove(name, yes):
         raise click.ClickException(f"Another run is in progress, try again: {exc}")
     except MonitorNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
-    console.print(f"[green]Monitor '{name}' removed[/green]")
+    console.print(f"[green]Monitor '{safe_markup(name)}' removed[/green]")
 
 
 def _set_enabled(name: str, enabled: bool) -> None:
@@ -372,13 +396,17 @@ def _set_enabled(name: str, enabled: bool) -> None:
         raise click.ClickException(f"Another run is in progress, try again: {exc}")
     except MonitorNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
+    except MonitorServiceError as exc:
+        raise click.ClickException(f"Monitor '{name}' is malformed: {exc}") from exc
     if not changed:
         console.print(
-            f"[dim]Monitor '{name}' is already {'enabled' if enabled else 'paused'}.[/dim]"
+            f"[dim]Monitor '{safe_markup(name)}' is already "
+            f"{'enabled' if enabled else 'paused'}.[/dim]"
         )
         return
     console.print(
-        f"[green]Monitor '{name}' {'resumed' if enabled else 'paused'}[/green]"
+        f"[green]Monitor '{safe_markup(name)}' "
+        f"{'resumed' if enabled else 'paused'}[/green]"
     )
 
 
@@ -401,8 +429,12 @@ def resume(name):
 def test(name):
     """Scan a monitor and show events without changing its baseline or health."""
     definition = load_monitors().get(name)
-    if not isinstance(definition, dict):
+    if definition is None:
         raise click.ClickException(f"Monitor '{name}' not found.")
+    try:
+        validated_monitor_definition(definition)
+    except MonitorServiceError as exc:
+        raise click.ClickException(f"Monitor '{name}' is malformed: {exc}") from exc
     current = scan_monitor(definition)
     slot = _monitor_slot(load_monitor_state(), name)
     events = (
@@ -425,6 +457,9 @@ def test(name):
             price_text = (
                 f"{currency}{price:.2f}" if isinstance(price, (int, float)) else "-"
             )
-            click.echo(f"  {title} — {price_text} — {product.get('asin', '')}")
+            click.echo(
+                f"  {safe_text(title)} — {price_text} — "
+                f"{safe_text(product.get('asin', ''))}"
+            )
     for event in events:
-        click.echo(f"{event['event']}: {event['title']}")
+        click.echo(f"{safe_text(event['event'])}: {safe_text(event['title'])}")

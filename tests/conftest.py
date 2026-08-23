@@ -185,6 +185,10 @@ def tmp_config(tmp_path, monkeypatch):
     monkeypatch.setattr(constants_mod, "WISHLIST_FILE", tmp_path / "wishlist.json")
     monkeypatch.setattr(constants_mod, "CONFIG_FILE", tmp_path / "config.json")
     monkeypatch.setattr(constants_mod, "PROFILES_FILE", tmp_path / "profiles.json")
+    monkeypatch.setattr(constants_mod, "MONITORS_FILE", tmp_path / "monitors.json")
+    monkeypatch.setattr(
+        constants_mod, "MONITOR_STATE_FILE", tmp_path / "monitor_state.json"
+    )
     monkeypatch.setattr(
         constants_mod, "NOTIFY_STATE_FILE", tmp_path / "notify_state.json"
     )

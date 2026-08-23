@@ -5,6 +5,7 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import math
 import os
 import statistics
 from pathlib import Path
@@ -35,12 +36,25 @@ def _marketplace_entries(raw: object, asin: str, locale: str) -> list[dict]:
     entries = markets.get(locale)
     if not isinstance(entries, list):
         return []
-    return [entry for entry in entries if isinstance(entry, dict)]
+    result = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        price = entry.get("price")
+        if isinstance(price, bool) or (
+            isinstance(price, (int, float)) and not math.isfinite(float(price))
+        ):
+            continue
+        result.append(entry)
+    return result
 
 
 def _as_float(value) -> float | None:
     """Return value as a float if it is numeric, else None."""
-    return float(value) if isinstance(value, (int, float)) else None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    result = float(value)
+    return result if math.isfinite(result) else None
 
 
 def _history_update_lock(hist_file: Path):
@@ -130,7 +144,7 @@ def record_prices(
         observed_on = datetime.date.fromisoformat(observation_date).isoformat()
     else:
         raise TypeError("observation_date must be a date or ISO date string")
-    priced = [p for p in products if p.price is not None]
+    priced = [p for p in products if _as_float(p.price) is not None]
     if not priced:
         logger.debug("record_prices: no priced products (input=%d)", len(products))
         return
@@ -196,7 +210,7 @@ def record_prices(
             entries.append(
                 {
                     "date": observed_on,
-                    "price": round(p.price, 2),
+                    "price": round(float(p.price), 2),
                     "title": p.title,
                 }
             )
@@ -206,7 +220,12 @@ def record_prices(
                 )
             )
             markets[p.locale] = entries[-_MAX_HISTORY_ENTRIES:]
-            _atomic_write(hist_file, json.dumps(raw))
+            for market_locale, market_entries in list(markets.items()):
+                if isinstance(market_entries, list):
+                    markets[market_locale] = _marketplace_entries(
+                        raw, p.asin, market_locale
+                    )
+            _atomic_write(hist_file, json.dumps(raw, allow_nan=False))
             written.add(hist_file)
 
     _log_legacy_migration(legacy_archived, legacy_failed)
@@ -245,14 +264,16 @@ def load_price_history(asin: str, locale: str = "us") -> list[dict]:
 def _numeric_prices(entries: list[dict]) -> list[float]:
     """Extract the numeric prices from history entries, in order."""
     return [
-        float(e["price"]) for e in entries if isinstance(e.get("price"), (int, float))
+        price
+        for entry in entries
+        if (price := _as_float(entry.get("price"))) is not None
     ]
 
 
 def _latest_title(entries: list[dict]) -> str:
     """Return the title from the most recent entry that has one."""
     for e in reversed(entries):
-        if e.get("title"):
+        if isinstance(e.get("title"), str) and e["title"]:
             return e["title"]
     return ""
 
@@ -266,12 +287,12 @@ def _atl_latest(entries: list[dict]) -> tuple[float, float] | None:
     if not entries:
         return None
     last_price = entries[-1].get("price")
-    if not isinstance(last_price, (int, float)):
+    latest = _as_float(last_price)
+    if latest is None:
         return None
     prices = _numeric_prices(entries)
     if len(prices) < 2:
         return None
-    latest = float(last_price)
     prev_min = min(prices[:-1])
     if latest > prev_min:
         return None
@@ -461,7 +482,12 @@ def _delete_marketplace_history(hist_file: Path, raw: dict, locale: str) -> bool
         return False
     del markets[locale]
     if markets:
-        _atomic_write(hist_file, json.dumps(raw))
+        for market_locale, market_entries in list(markets.items()):
+            if isinstance(market_entries, list):
+                markets[market_locale] = _marketplace_entries(
+                    raw, hist_file.stem, market_locale
+                )
+        _atomic_write(hist_file, json.dumps(raw, allow_nan=False))
     else:
         hist_file.unlink(missing_ok=True)
     return True
@@ -554,11 +580,9 @@ def find_wishlist_hits(locale: str = "us") -> list[dict]:
     for item, entries in _wishlist_with_history(locale):
         last = entries[-1].get("price") if entries else None
         max_price = item.get("max_price")
-        if (
-            isinstance(last, (int, float))
-            and isinstance(max_price, (int, float))
-            and last <= max_price
-        ):
+        last_price = _as_float(last)
+        target = _as_float(max_price)
+        if last_price is not None and target is not None and last_price <= target:
             hits.append(item)
     return hits
 

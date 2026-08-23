@@ -108,7 +108,7 @@ def run_recap(
     if not drops and not new_items and not has_price_history(locale):
         if json_flag:
             empty = empty_recap_payload(days, atl or atl_all)
-            click.echo(json_mod.dumps(empty, indent=2))
+            click.echo(json_mod.dumps(empty, indent=2, allow_nan=False))
             return
         console.print(
             "[dim]No price history yet. Run 'deals find' or 'deals search' to start tracking.[/dim]"
@@ -127,7 +127,7 @@ def run_recap(
     if json_flag or webhook:
         payload = _build_recap_payload(days, drops, new_items, wishlist_hits, atl_hits)
         if json_flag:
-            click.echo(json_mod.dumps(payload, indent=2))
+            click.echo(json_mod.dumps(payload, indent=2, allow_nan=False))
             return
         if webhook:
             nothing = (

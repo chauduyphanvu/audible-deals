@@ -10,13 +10,14 @@ from audible_deals.client import DealsClient
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.validation import validate_finite_number
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.results_cache import (
     load_dismissed_asins,
     load_seen_asins,
     merge_seen_asins,
 )
 from audible_deals.selectors import resolve_selectors
+from audible_deals.settings import profile_validation_error
 
 _CL = click.core.ParameterSource.COMMANDLINE
 
@@ -83,7 +84,7 @@ def _resolve_cli_selectors(
     locale = inferred_locale or ctx.obj["locale"]
     for item in resolved:
         if announce and item.description:
-            console.print(f"[dim]{item.description}[/dim]")
+            console.print(f"[dim]{safe_markup(item.description)}[/dim]")
     return resolved, locale
 
 
@@ -96,7 +97,13 @@ def _load_profile(profile_name: str | None) -> dict | None:
             f"Profile '{profile_name}' not found. "
             "Use 'deals profile list' to see available profiles."
         )
-    return profiles[profile_name]
+    profile = profiles[profile_name]
+    if error := profile_validation_error(profile):
+        raise click.ClickException(
+            f"Profile '{profile_name}' is malformed: {error}. "
+            "Save it again or delete it."
+        )
+    return profile
 
 
 def _resolve_categories(

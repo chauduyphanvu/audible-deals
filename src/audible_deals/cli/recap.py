@@ -105,4 +105,4 @@ def recap(
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
         if json_flag:
             empty = empty_recap_payload(days, atl or atl_all)
-            click.echo(json_mod.dumps(empty, indent=2))
+            click.echo(json_mod.dumps(empty, indent=2, allow_nan=False))

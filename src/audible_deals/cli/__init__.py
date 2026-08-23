@@ -50,6 +50,7 @@ from audible_deals.cli.helpers import _CL
 from audible_deals.config_store import load_config
 from audible_deals.constants import LOCALE_DOMAIN
 from audible_deals.logging_setup import configure_logging
+from audible_deals.presentation.terminal import safe_text
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +81,12 @@ class _HandleAuthErrors(click.Group):
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
+        except click.ClickException as exc:
+            exc.message = safe_text(exc.message)
+            raise
         except RuntimeError as e:
             if "Not authenticated" in str(e):
-                raise click.ClickException(str(e))
+                raise click.ClickException(safe_text(e))
             raise
         except RequestError:
             raise click.ClickException(
@@ -91,7 +95,7 @@ class _HandleAuthErrors(click.Group):
         except BrokenPipeError:
             raise
         except OSError as e:
-            raise click.ClickException(f"Filesystem error: {e}")
+            raise click.ClickException(f"Filesystem error: {safe_text(e)}")
 
     def format_commands(self, ctx, formatter):
         """Render command help in workflows rather than one long alphabetic list."""
@@ -168,8 +172,14 @@ def cli(ctx, locale, verbose):
     locale_explicit = ctx.get_parameter_source("locale") == _CL
     if not locale_explicit:
         cfg_locale = cfg.get("locale")
-        if cfg_locale:
+        if isinstance(cfg_locale, str) and cfg_locale in LOCALE_DOMAIN:
             locale = cfg_locale
+        elif cfg_locale is not None:
+            if ctx.invoked_subcommand not in {"config", "doctor"}:
+                raise click.ClickException(
+                    f"Stored locale {cfg_locale!r} is invalid. "
+                    "Run 'deals config set locale us' or 'deals config reset locale'."
+                )
     if locale not in LOCALE_DOMAIN:
         raise click.BadParameter(
             f"Invalid locale {locale!r}. Valid: {', '.join(sorted(LOCALE_DOMAIN))}",

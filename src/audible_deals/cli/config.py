@@ -8,15 +8,15 @@ from audible_deals.cli.helpers import _CL
 from audible_deals.cli.options import _complete_profile_names
 from audible_deals.config_store import (
     coerce_config_value,
+    config_transaction,
     load_config,
     load_profiles,
-    save_config,
-    save_profiles,
+    profiles_transaction,
     validate_config_key,
 )
 from audible_deals.constants import ALL_SORT_OPTIONS
-from audible_deals.presentation.terminal import console
-from audible_deals.settings import resolve_plus_flags
+from audible_deals.presentation.terminal import console, safe_markup
+from audible_deals.settings import profile_validation_error, resolve_plus_flags
 from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 
@@ -47,43 +47,56 @@ def config_set(key, value):
     """
     norm_key = validate_config_key(key)
     coerced = coerce_config_value(norm_key, value)
-    cfg = load_config()
     removed_key = None
-    if norm_key in {"skip_plus", "only_plus"} and coerced:
-        opposite = "only_plus" if norm_key == "skip_plus" else "skip_plus"
-        if opposite in cfg:
-            removed_key = opposite
-            del cfg[opposite]
-    else:
-        try:
-            resolve_plus_flags(cfg.get("skip_plus", False), cfg.get("only_plus", False))
-        except ValueError as exc:
-            raise click.ClickException(str(exc)) from None
-    cfg[norm_key] = coerced
-    if norm_key == "language" and coerced:
-        cfg["all_languages"] = False
-    elif norm_key == "all_languages" and coerced:
-        cfg.pop("language", None)
-    save_config(cfg)
-    console.print(f"[green]Config set:[/green] {norm_key} = {coerced!r}")
+    with config_transaction() as cfg:
+        if norm_key in {"skip_plus", "only_plus"} and coerced:
+            opposite = "only_plus" if norm_key == "skip_plus" else "skip_plus"
+            if opposite in cfg:
+                removed_key = opposite
+                del cfg[opposite]
+        else:
+            try:
+                resolve_plus_flags(
+                    cfg.get("skip_plus", False), cfg.get("only_plus", False)
+                )
+            except ValueError as exc:
+                raise click.ClickException(str(exc)) from None
+        cfg[norm_key] = coerced
+        if norm_key == "language" and coerced:
+            cfg["all_languages"] = False
+        elif norm_key == "all_languages" and coerced:
+            cfg.pop("language", None)
+    console.print(
+        f"[green]Config set:[/green] {norm_key} = "
+        f"{safe_markup(_config_value(norm_key, coerced, False))}"
+    )
     if removed_key:
         console.print(f"[yellow]Removed conflicting config key:[/yellow] {removed_key}")
 
 
 @config_cmd.command("get")
 @click.argument("key")
-def config_get(key):
+@click.option(
+    "--show-secrets", is_flag=True, help="Show webhook URLs and header values."
+)
+def config_get(key, show_secrets):
     """Get a global default value."""
     norm_key = validate_config_key(key)
     cfg = load_config()
     if norm_key not in cfg:
         console.print(f"[dim]{norm_key} is not set[/dim]")
     else:
-        console.print(f"{norm_key} = {cfg[norm_key]!r}")
+        console.print(
+            f"{norm_key} = "
+            f"{safe_markup(_config_value(norm_key, cfg[norm_key], show_secrets))}"
+        )
 
 
 @config_cmd.command("list")
-def config_list():
+@click.option(
+    "--show-secrets", is_flag=True, help="Show webhook URLs and header values."
+)
+def config_list(show_secrets=False):
     """List all set global defaults."""
     cfg = load_config()
     if not cfg:
@@ -92,25 +105,47 @@ def config_list():
         )
         return
     for k, v in sorted(cfg.items()):
-        console.print(f"  {k} = {v!r}")
+        console.print(
+            f"  {safe_markup(k)} = {safe_markup(_config_value(k, v, show_secrets))}"
+        )
+
+
+def _config_value(key: str, value, show_secrets: bool) -> str:
+    if show_secrets or key not in {"webhook", "webhook_headers"}:
+        return repr(value)
+    if key == "webhook":
+        return "<redacted>"
+    if not isinstance(value, (list, tuple)):
+        return "<redacted>"
+    names = []
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        name, separator, _ = item.partition(":")
+        if separator and name.strip():
+            names.append(f"{name.strip()}: <redacted>")
+    return repr(names) if names else "<redacted>"
 
 
 @config_cmd.command("reset")
 @click.argument("key", required=False, default=None)
 def config_reset(key):
     """Remove a key from global defaults, or clear all if no key given."""
-    cfg = load_config()
     if key is None:
         if not click.confirm("Remove all global defaults?"):
             console.print("[dim]Cancelled.[/dim]")
             return
-        save_config({})
+        with config_transaction() as cfg:
+            cfg.clear()
         console.print("[green]All global defaults cleared.[/green]")
         return
     norm_key = validate_config_key(key)
-    if norm_key in cfg:
-        del cfg[norm_key]
-        save_config(cfg)
+    removed = False
+    with config_transaction() as cfg:
+        if norm_key in cfg:
+            del cfg[norm_key]
+            removed = True
+    if removed:
         console.print(f"[green]Config key '{norm_key}' removed.[/green]")
     else:
         console.print(f"[dim]Config key '{norm_key}' was not set.[/dim]")
@@ -178,10 +213,11 @@ def profile_save(ctx, name, **kwargs):
             f"Invalid sort {saved['sort']!r}. Choose from: "
             f"{', '.join(sorted(ALL_SORT_OPTIONS))}."
         )
-    profiles = load_profiles()
-    profiles[name] = saved
-    save_profiles(profiles)
-    console.print(f"[green]Profile '{name}' saved[/green] ({len(saved)} options)")
+    with profiles_transaction() as profiles:
+        profiles[name] = saved
+    console.print(
+        f"[green]Profile '{safe_markup(name)}' saved[/green] ({len(saved)} options)"
+    )
 
 
 @profile.command("list")
@@ -195,20 +231,28 @@ def profile_list():
         return
 
     for name, opts in profiles.items():
+        error = profile_validation_error(opts)
+        if not isinstance(name, str) or error:
+            console.print(
+                f"  [red]{safe_markup(name)}  malformed profile"
+                f"{': ' + safe_markup(error) if error else ''}[/red]"
+            )
+            continue
         flags = " ".join(_opts_to_flag_parts(opts))
-        console.print(f"  [bold]{name}[/bold]  [dim]{flags}[/dim]")
+        console.print(
+            f"  [bold]{safe_markup(name)}[/bold]  [dim]{safe_markup(flags)}[/dim]"
+        )
 
 
 @profile.command("delete")
 @click.argument("name", shell_complete=_complete_profile_names)
 def profile_delete(name):
     """Delete a saved profile."""
-    profiles = load_profiles()
-    if name not in profiles:
-        raise click.ClickException(f"Profile '{name}' not found.")
-    del profiles[name]
-    save_profiles(profiles)
-    console.print(f"[green]Profile '{name}' deleted[/green]")
+    with profiles_transaction() as profiles:
+        if name not in profiles:
+            raise click.ClickException(f"Profile '{name}' not found.")
+        del profiles[name]
+    console.print(f"[green]Profile '{safe_markup(name)}' deleted[/green]")
 
 
 _KEY_TO_FLAG: dict[str, str] = {
@@ -241,7 +285,11 @@ def profile_show(name):
     if name not in profiles:
         raise click.ClickException(f"Profile '{name}' not found.")
     opts = profiles[name]
-    console.print(f"\n[bold]Profile: {name}[/bold]\n")
+    if error := profile_validation_error(opts):
+        raise click.ClickException(
+            f"Profile '{name}' is malformed: {error}; save it again."
+        )
+    console.print(f"\n[bold]Profile: {safe_markup(name)}[/bold]\n")
     for part in _opts_to_flag_parts(dict(sorted(opts.items()))):
-        console.print(f"  {part}")
+        console.print(f"  {safe_markup(part)}")
     console.print()

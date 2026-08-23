@@ -20,7 +20,12 @@ from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.parsing import parse_series_position
 from audible_deals.price_history import price_history_context
 from audible_deals.presentation.reports import display_series_gaps
-from audible_deals.presentation.terminal import console, create_scan_progress
+from audible_deals.presentation.terminal import (
+    console,
+    create_scan_progress,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
 from audible_deals.results_cache import load_dismissed_asins
@@ -230,11 +235,11 @@ def _report_series_failures(
     if json_flag:
         click.echo(summary, err=True)
         for detail in details:
-            click.echo(f"  {detail}", err=True)
+            click.echo(f"  {safe_text(detail)}", err=True)
     else:
-        console.print(f"[yellow]{summary}[/yellow]")
+        console.print(f"[yellow]{safe_markup(summary)}[/yellow]")
         for detail in details:
-            console.print(f"[dim]  {detail}[/dim]")
+            console.print(f"[dim]  {safe_markup(detail)}[/dim]")
 
 
 def _series_gaps_report(
@@ -296,7 +301,9 @@ def _series_gaps_report(
             }
             for g in gaps
         ]
-        click.echo(json_mod.dumps(stripped, indent=2, ensure_ascii=False))
+        click.echo(
+            json_mod.dumps(stripped, indent=2, ensure_ascii=False, allow_nan=False)
+        )
     elif not quiet:
         display_series_gaps(gaps, currency=currency)
 
@@ -514,7 +521,7 @@ def series(
         if not invested:
             if series_filter:
                 console.print(
-                    f"[dim]No invested series matching '{series_filter}' "
+                    f"[dim]No invested series matching '{safe_markup(series_filter)}' "
                     f"(need {min_books}+ owned books).[/dim]"
                 )
             else:

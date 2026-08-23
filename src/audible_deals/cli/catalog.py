@@ -26,6 +26,7 @@ from audible_deals.cli.options import (
 from audible_deals.constants import (
     CLIENT_SORT_OPTIONS,
     LOCALE_LANGUAGES,
+    MAX_CATALOG_CALLS_PER_SCAN,
     SORT_OPTIONS,
 )
 from audible_deals.catalog_workflow import (
@@ -36,7 +37,11 @@ from audible_deals.catalog_workflow import (
     execute_catalog_scan,
     normalized_search_text,
 )
-from audible_deals.presentation.terminal import catalog_scan_progress, console
+from audible_deals.presentation.terminal import (
+    catalog_scan_progress,
+    console,
+    safe_markup,
+)
 from audible_deals.presentation.dry_run import (
     CatalogDryRunSummary,
     render_catalog_dry_run,
@@ -60,6 +65,19 @@ from audible_deals.settings import (
 from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT
 
 logger = logging.getLogger(__name__)
+
+
+def _enforce_catalog_call_limit(plan, allow_large_scan: bool) -> None:
+    estimate = plan.total_calls
+    if (
+        estimate is not None
+        and estimate > MAX_CATALOG_CALLS_PER_SCAN
+        and not allow_large_scan
+    ):
+        raise click.UsageError(
+            f"Scan would use {estimate} catalog calls; limit is "
+            f"{MAX_CATALOG_CALLS_PER_SCAN}. Re-run with --allow-large-scan."
+        )
 
 
 def _resolve_scan_settings(ctx, profile_name: str | None, **kwargs) -> Settings:
@@ -273,6 +291,11 @@ def _validate_history_filter_options(
     default=3,
     help="Number of pages to scan (50 items/page)",
 )
+@click.option(
+    "--allow-large-scan",
+    is_flag=True,
+    help=f"Allow scans over {MAX_CATALOG_CALLS_PER_SCAN} catalog calls.",
+)
 @_common_filter_options
 @click.pass_context
 def search(
@@ -298,6 +321,7 @@ def search(
     min_discount,
     deep,
     pages,
+    allow_large_scan,
     language,
     all_languages,
     first_in_series,
@@ -410,6 +434,7 @@ def search(
         )
         return
 
+    _enforce_catalog_call_limit(plan, allow_large_scan)
     dc = _get_client(ctx.obj["locale"])
 
     with dc:
@@ -510,7 +535,8 @@ def search(
     if not s.author and not json_flag and not quiet:
         for author_query in _matching_author_queries(queries, all_products):
             console.print(
-                f"\n  [dim]Tip: Use --author '{author_query}' for exact author filtering.[/dim]"
+                f"\n  [dim]Tip: Use --author '{safe_markup(author_query)}' "
+                "for exact author filtering.[/dim]"
             )
 
 
@@ -562,6 +588,11 @@ def search(
     default=False,
     help="Scan each subcategory of the genre separately for deeper coverage (multiplies API calls)",
 )
+@click.option(
+    "--allow-large-scan",
+    is_flag=True,
+    help=f"Allow scans over {MAX_CATALOG_CALLS_PER_SCAN} catalog calls.",
+)
 @_common_filter_options
 @click.pass_context
 def find(
@@ -588,6 +619,7 @@ def find(
     deep,
     pages,
     subcategories,
+    allow_large_scan,
     language,
     all_languages,
     first_in_series,
@@ -718,6 +750,8 @@ def find(
         )
         return
 
+    if not subcategories:
+        _enforce_catalog_call_limit(plan, allow_large_scan)
     dc = _get_client(ctx.obj["locale"])
 
     with dc:
@@ -757,6 +791,8 @@ def find(
             description = f"Scanning {desc_str}"
 
         plan = bind_catalog_categories(plan, scan_category_ids)
+        if subcategories:
+            _enforce_catalog_call_limit(plan, allow_large_scan)
         with catalog_scan_progress(plan, description, disable=json_flag) as progress:
             all_products = execute_catalog_scan(dc, plan, progress)
 

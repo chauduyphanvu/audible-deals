@@ -61,7 +61,9 @@ def emit_results(request: ResultPresentationRequest) -> None:
     filtered = list(request.result.products)
     if request.json_flag:
         request.json_writer(
-            json.dumps(request.serialized, indent=2, ensure_ascii=False)
+            json.dumps(
+                request.serialized, indent=2, ensure_ascii=False, allow_nan=False
+            )
         )
     need_context = (not request.json_flag and not request.quiet) or request.interactive
     atl_asins = request.result.atl_asins

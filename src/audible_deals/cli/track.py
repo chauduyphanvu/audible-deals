@@ -27,7 +27,12 @@ from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import MonitorRuntime
 from audible_deals.notification_workflow import parse_webhook_headers
 from audible_deals.parsing import parse_interval
-from audible_deals.presentation.terminal import catalog_scan_progress, console
+from audible_deals.presentation.terminal import (
+    catalog_scan_progress,
+    console,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
 from audible_deals.track_service import (
     TrackRuntime,
@@ -122,14 +127,16 @@ def track_run(ctx, cooldown):
     try:
         result = run_track(request, runtime)
     except LockHeldError as e:
-        console.print(f"[dim]Another run is in progress, skipping: {e}[/dim]")
+        console.print(
+            f"[dim]Another run is in progress, skipping: {safe_markup(e)}[/dim]"
+        )
         return
     except WebhookDeliveryError as exc:
         raise click.ClickException(str(exc)) from exc
     except Exception as e:
         raise click.ClickException(f"track run failed: {e}")
     warn_wishlist_issues(result.wishlist_issues)
-    console.print(f"[dim]{result.summary()}[/dim]")
+    console.print(f"[dim]{safe_markup(result.summary())}[/dim]")
 
 
 @track.command("install")
@@ -174,17 +181,16 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
         parse_webhook_headers(webhook_headers)
 
     if webhook:
-        from audible_deals.config_store import load_config, save_config
+        from audible_deals.config_store import config_transaction
         from audible_deals.validation import validate_webhook_url
 
         validate_webhook_url(webhook)
-        cfg = load_config()
-        cfg["webhook"] = webhook
-        if webhook_format:
-            cfg["webhook_format"] = webhook_format
-        if webhook_headers:
-            cfg["webhook_headers"] = list(webhook_headers)
-        save_config(cfg)
+        with config_transaction() as cfg:
+            cfg["webhook"] = webhook
+            if webhook_format:
+                cfg["webhook_format"] = webhook_format
+            if webhook_headers:
+                cfg["webhook_headers"] = list(webhook_headers)
         console.print("[green]Webhook saved to config.[/green]")
     elif webhook_format:
         raise click.UsageError("--webhook-format requires --webhook")
@@ -203,9 +209,9 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
     }
     save_track_state(state)
 
-    console.print(f"[green]Installed:[/green] {description}")
-    console.print(f"  Runs 'deals track run' every {every}")
-    console.print(f"  Log: {constants.TRACK_LOG_FILE}")
+    console.print(f"[green]Installed:[/green] {safe_markup(description)}")
+    console.print(f"  Runs 'deals track run' every {safe_markup(every)}")
+    console.print(f"  Log: {safe_markup(constants.TRACK_LOG_FILE)}")
     console.print("  Check with: deals track status")
 
 
@@ -239,20 +245,26 @@ def track_status(show_history):
 
     state = load_track_state()
     install_info = state.get("install")
+    if install_info is not None and not isinstance(install_info, dict):
+        logger.warning("track state install record is malformed; ignoring it")
+        install_info = None
     present, where = scheduler.installed()
 
     if install_info:
         console.print(
-            f"  [dim]Schedule:[/dim]  every {install_info.get('every', '?')} "
-            f"via {install_info.get('method', '?')}"
+            f"  [dim]Schedule:[/dim]  every "
+            f"{safe_markup(install_info.get('every', '?'))} "
+            f"via {safe_markup(install_info.get('method', '?'))}"
         )
         if not present:
             console.print(
-                f"  [yellow]Warning: schedule not found at {where} — "
+                f"  [yellow]Warning: schedule not found at {safe_markup(where)} — "
                 "re-run 'deals track install'[/yellow]"
             )
     elif present:
-        console.print(f"  [dim]Schedule:[/dim]  found at {where} (no install record)")
+        console.print(
+            f"  [dim]Schedule:[/dim]  found at {safe_markup(where)} (no install record)"
+        )
     else:
         console.print(
             "  [dim]Not installed. Run 'deals track install' to enable "
@@ -279,24 +291,26 @@ def track_status(show_history):
     if enabled:
         detail = f"  [dim]Monitors:[/dim]  {len(enabled)} enabled"
         if failed:
-            detail += (
-                f", [yellow]{len(failed)} with errors: {', '.join(failed)}[/yellow]"
-            )
+            detail += f", [yellow]{len(failed)} with errors: "
+            detail += f"{safe_markup(', '.join(failed))}[/yellow]"
         console.print(detail)
     if not last:
         console.print("  [dim]Last run:[/dim]  never")
         return
     if last.get("error"):
-        console.print(f"  [red]Last run:[/red]  {last.get('at')} — {last['error']}")
+        console.print(
+            f"  [red]Last run:[/red]  {safe_markup(last.get('at'))} — "
+            f"{safe_markup(last['error'])}"
+        )
     else:
         console.print(
-            f"  [dim]Last run:[/dim]  {last.get('at')} "
-            f"({last.get('duration_s', '?')}s, "
-            f"{last.get('wishlist_checked', 0)} wishlist + "
-            f"{last.get('extra_tracked_checked', 0)} tracked checked, "
-            f"{last.get('hits', 0)} at target, "
-            f"{last.get('monitors_checked', 0)} monitor(s), "
-            f"{last.get('monitor_events', 0)} event(s))"
+            f"  [dim]Last run:[/dim]  {safe_markup(last.get('at'))} "
+            f"({safe_markup(last.get('duration_s', '?'))}s, "
+            f"{safe_markup(last.get('wishlist_checked', 0))} wishlist + "
+            f"{safe_markup(last.get('extra_tracked_checked', 0))} tracked checked, "
+            f"{safe_markup(last.get('hits', 0))} at target, "
+            f"{safe_markup(last.get('monitors_checked', 0))} monitor(s), "
+            f"{safe_markup(last.get('monitor_events', 0))} event(s))"
         )
 
     if show_history:
@@ -309,8 +323,8 @@ def track_log(lines):
     """Show the tail of the background tracking log."""
     log_file = constants.TRACK_LOG_FILE
     if not log_file.exists():
-        console.print(f"[dim]No log yet at {log_file}[/dim]")
+        console.print(f"[dim]No log yet at {safe_markup(log_file)}[/dim]")
         return
     content = log_file.read_text(errors="replace").splitlines()
     for line in content[-lines:]:
-        click.echo(line)
+        click.echo(safe_text(line))

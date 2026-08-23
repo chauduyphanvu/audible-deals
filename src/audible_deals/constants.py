@@ -84,6 +84,7 @@ LOCALE_LANGUAGES: dict[str, str] = {
 # ---------------------------------------------------------------------------
 
 MAX_PAGE_SIZE = 50
+MAX_CATALOG_CALLS_PER_SCAN = 60
 CATEGORIES_CACHE_TTL = 86400 * 7  # 7 days
 
 CATALOG_RESPONSE_GROUPS = ",".join(

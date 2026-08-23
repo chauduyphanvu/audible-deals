@@ -29,7 +29,12 @@ from audible_deals.price_history import (
     price_history_context,
 )
 from audible_deals.product import Product
-from audible_deals.presentation.terminal import console, create_scan_progress
+from audible_deals.presentation.terminal import (
+    console,
+    create_scan_progress,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.result_models import FilterContext
 from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.result_processing import (
@@ -96,17 +101,18 @@ def _print_for_me_plan(plan: dict) -> None:
     console.print("\n[bold]Dry run[/bold] — would scan, based on your library:")
     profile = plan["profile"]
     console.print(
-        f"  Profile: {profile.get('library_size', 0)} books (built {profile.get('built_at', '?')})"
+        f"  Profile: {profile.get('library_size', 0)} books "
+        f"(built {safe_markup(profile.get('built_at', '?'))})"
     )
     series = plan["series"]
     authors = plan["authors"]
     genres = plan["genres"]
     if series:
-        console.print(f"  Series in progress: {', '.join(series)}")
+        console.print(f"  Series in progress: {safe_markup(', '.join(series))}")
     if authors:
-        console.print(f"  Authors: {', '.join(authors)}")
+        console.print(f"  Authors: {safe_markup(', '.join(authors))}")
     if genres:
-        console.print(f"  Genres: {', '.join(genres)}")
+        console.print(f"  Genres: {safe_markup(', '.join(genres))}")
     console.print(
         f"  Known API calls: {plan['known_api_calls']} + series product batches"
     )
@@ -337,11 +343,11 @@ def _report_for_me_series_outcomes(
     if json_flag:
         click.echo(summary, err=True)
         for detail in details:
-            click.echo(f"  {detail}", err=True)
+            click.echo(f"  {safe_text(detail)}", err=True)
     else:
-        console.print(f"[yellow]{summary}[/yellow]")
+        console.print(f"[yellow]{safe_markup(summary)}[/yellow]")
         for detail in details:
-            console.print(f"[dim]  {detail}[/dim]")
+            console.print(f"[dim]  {safe_markup(detail)}[/dim]")
 
 
 @click.command("for-me")
@@ -535,7 +541,7 @@ def for_me(
             )
         plan = _for_me_plan(profile, authors, genres, series)
         if json_flag:
-            click.echo(json.dumps(plan, indent=2, ensure_ascii=False))
+            click.echo(json.dumps(plan, indent=2, ensure_ascii=False, allow_nan=False))
         else:
             _print_for_me_plan(plan)
         return

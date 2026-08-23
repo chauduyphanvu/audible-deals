@@ -9,7 +9,12 @@ import logging
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from audible_deals.constants import _CONFIG_SCHEMA, DEFAULT_LIMIT, DEFAULT_SORT
+from audible_deals.constants import (
+    _CONFIG_SCHEMA,
+    ALL_SORT_OPTIONS,
+    DEFAULT_LIMIT,
+    DEFAULT_SORT,
+)
 from audible_deals.validation import validate_finite_number
 
 logger = logging.getLogger(__name__)
@@ -48,6 +53,34 @@ _PROFILE_EXTRA_KEYS: tuple[str, ...] = (
     "exclude_narrators",
     "keywords",
     "exclude_keywords",
+)
+
+_TEXT_FIELDS = frozenset(
+    {
+        "sort",
+        "language",
+        "narrator",
+        "author",
+        "series",
+        "publisher",
+        "genre",
+        "keywords",
+    }
+)
+_TUPLE_FIELDS = frozenset(
+    {"exclude_genre", "exclude_authors", "exclude_narrators", "exclude_keywords"}
+)
+_BOOL_FIELDS = frozenset(
+    {
+        "on_sale",
+        "deep",
+        "first_in_series",
+        "all_languages",
+        "skip_owned",
+        "interactive",
+        "skip_plus",
+        "only_plus",
+    }
 )
 
 
@@ -110,6 +143,33 @@ class SettingsResolutionRequest:
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "explicit_options", frozenset(self.explicit_options))
+
+
+def profile_validation_error(profile: object) -> str | None:
+    if not isinstance(profile, dict):
+        return "expected an object"
+    for key in _TEXT_FIELDS:
+        if key in profile and not isinstance(profile[key], str):
+            return f"{key} must be text"
+    for key in _BOOL_FIELDS:
+        if key in profile and type(profile[key]) is not bool:
+            return f"{key} must be boolean"
+    if profile.get("sort") and profile["sort"] not in ALL_SORT_OPTIONS:
+        return f"sort must be one of {', '.join(sorted(ALL_SORT_OPTIONS))}"
+    for key in _TUPLE_FIELDS:
+        if key not in profile:
+            continue
+        value = profile[key]
+        if not isinstance(value, (list, tuple)) or not all(
+            isinstance(item, str) for item in value
+        ):
+            return f"{key} must be a list of text values"
+    known = {item.name for item in fields(Settings)}
+    try:
+        Settings(**{key: value for key, value in profile.items() if key in known})
+    except (TypeError, ValueError) as exc:
+        return str(exc)
+    return None
 
 
 def resolve_settings(request: SettingsResolutionRequest) -> Settings:

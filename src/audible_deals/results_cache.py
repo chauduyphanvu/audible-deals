@@ -30,7 +30,7 @@ def save_seen_asins(new_asins: set[str]) -> None:
         return
     merged = sorted(existing | new_asins)
     try:
-        _atomic_write(constants.SEEN_ASINS_FILE, json.dumps(merged))
+        _atomic_write(constants.SEEN_ASINS_FILE, json.dumps(merged, allow_nan=False))
         logger.debug(
             "saved seen ASINs (%d total, +%d new)",
             len(merged),
@@ -83,7 +83,7 @@ def save_dismissed_asins(new_asins: set[str]) -> None:
     if new_asins <= existing:
         return
     merged = sorted(existing | new_asins)
-    _atomic_write(constants.DISMISSED_ASINS_FILE, json.dumps(merged))
+    _atomic_write(constants.DISMISSED_ASINS_FILE, json.dumps(merged, allow_nan=False))
     logger.debug(
         "saved dismissed ASINs (%d total, +%d new)",
         len(merged),
@@ -125,7 +125,7 @@ def save_result_session(session: result_models.ResultSession) -> None:
     """Atomically persist a complete result session."""
     _atomic_write(
         constants.LAST_RESULTS_FILE,
-        json.dumps(session.to_dict(), ensure_ascii=False),
+        json.dumps(session.to_dict(), ensure_ascii=False, allow_nan=False),
     )
     logger.debug(
         "saved result session producer=%s candidates=%d visible=%d",
@@ -145,7 +145,8 @@ def save_last_results(title: str, serialized: list[dict]) -> None:
     """Compatibility writer for callers that only have a limited legacy result list."""
     cache_obj = {"title": title, "results": serialized}
     _atomic_write(
-        constants.LAST_RESULTS_FILE, json.dumps(cache_obj, ensure_ascii=False)
+        constants.LAST_RESULTS_FILE,
+        json.dumps(cache_obj, ensure_ascii=False, allow_nan=False),
     )
 
 

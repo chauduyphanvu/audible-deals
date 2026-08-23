@@ -77,11 +77,15 @@ def load_json_file(path: Path, expected_type: type, desc: str):
             logger.warning(
                 "%s at %s is not a %s, ignoring", desc, path, expected_type.__name__
             )
-        except (json.JSONDecodeError, KeyError, OSError):
+        except (json.JSONDecodeError, KeyError, OSError, UnicodeDecodeError):
             logger.warning("%s at %s is corrupt, ignoring", desc, path, exc_info=True)
     return expected_type()
 
 
 def save_json_file(path: Path, data, desc: str, *, durable: bool = False) -> None:
-    _atomic_write(path, json.dumps(data, indent=2, ensure_ascii=False), durable=durable)
+    _atomic_write(
+        path,
+        json.dumps(data, indent=2, ensure_ascii=False, allow_nan=False),
+        durable=durable,
+    )
     logger.debug("saved %s (%d) to %s", desc, len(data), path)

@@ -36,10 +36,14 @@ def _restrictive_umask():
 
 def _auth_from_libation(data: dict, locale: str) -> dict:
     """Build Mkb79Auth-format auth data from Libation's AccountsSettings.json."""
-    accounts = data["Accounts"]
-    if not accounts:
+    accounts = data.get("Accounts")
+    if not isinstance(accounts, list) or not accounts:
         raise ValueError("No accounts found in Libation settings")
+    if not isinstance(accounts[0], dict):
+        raise ValueError("Libation account entry must be a JSON object")
     tokens = accounts[0].get("IdentityTokens", {})
+    if not isinstance(tokens, dict):
+        raise ValueError("Libation IdentityTokens must be a JSON object")
     for key in ("access_token", "refresh_token"):
         if not isinstance(tokens.get(key), str) or not tokens[key]:
             raise ValueError(f"Libation auth missing required key: {key!r}")
@@ -59,19 +63,28 @@ def _auth_from_libation(data: dict, locale: str) -> dict:
     }
 
 
-def _validate_audible_cli_auth(data: dict) -> dict:
+def _validate_audible_cli_auth(data: dict, locale: str | None = None) -> dict:
     """Validate auth data already in audible-cli / Mkb79Auth format."""
     for key in ("access_token", "refresh_token"):
         if not isinstance(data.get(key), str) or not data[key]:
             raise ValueError(f"Auth file missing required key: {key!r}")
-    if "locale_code" in data and data["locale_code"] not in LOCALE_DOMAIN:
+    if "locale_code" in data and (
+        not isinstance(data["locale_code"], str)
+        or data["locale_code"] not in LOCALE_DOMAIN
+    ):
         raise ValueError(
             f"Unknown locale_code: {data['locale_code']!r}. "
             f"Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
         )
     if "encryption" not in data:
         data["encryption"] = False
+    if "locale_code" not in data and locale is not None:
+        data["locale_code"] = locale
     return data
+
+
+def _reject_json_constant(value: str):
+    raise ValueError(f"invalid JSON constant: {value}")
 
 
 class AuthStore:
@@ -144,10 +157,12 @@ class AuthStore:
             if callback_url_file:
 
                 def _file_callback(oauth_url: str) -> str:
+                    from audible_deals.presentation.terminal import safe_text
+
                     print()
                     print("Open this URL in your browser and log in:")
                     print()
-                    print(oauth_url)
+                    print(safe_text(oauth_url))
                     print()
                     print(
                         "After login you'll see a 'Page not found' page. "
@@ -155,7 +170,7 @@ class AuthStore:
                     )
                     print(
                         "Copy the FULL URL from your browser's address bar "
-                        f"and save it to:\n  {callback_url_file}"
+                        f"and save it to:\n  {safe_text(callback_url_file)}"
                     )
                     print()
                     input("Press Enter here once the file is saved...")
@@ -197,16 +212,23 @@ class AuthStore:
                     "Expected a small JSON credentials file."
                 )
 
-            data = json.loads(raw)
+            data = json.loads(raw, parse_constant=_reject_json_constant)
+            if not isinstance(data, dict):
+                raise ValueError("Auth file must contain a JSON object")
             if "Accounts" in data:
-                auth_data = _auth_from_libation(data, self.locale)
+                auth_data = _validate_audible_cli_auth(
+                    _auth_from_libation(data, self.locale), self.locale
+                )
                 source_format = "Libation"
             else:
-                auth_data = _validate_audible_cli_auth(data)
+                auth_data = _validate_audible_cli_auth(data, self.locale)
                 source_format = "audible-cli"
 
             with self._auth_file_lock():
-                _atomic_write(self.auth_file, json.dumps(auth_data, indent=2))
+                _atomic_write(
+                    self.auth_file,
+                    json.dumps(auth_data, indent=2, allow_nan=False),
+                )
                 os.chmod(self.auth_file, 0o600)
         logger.info(
             "import_auth (%s format) written to %s", source_format, self.auth_file
@@ -264,7 +286,9 @@ class AuthStore:
                         self._auth_save_pending = False
                         self._auth_persistence_disabled = True
                         return
-                    serialized = json.dumps(auth.to_dict(), indent=4).encode("utf-8")
+                    serialized = json.dumps(
+                        auth.to_dict(), indent=4, allow_nan=False
+                    ).encode("utf-8")
                     _atomic_write_bytes(self.auth_file, serialized)
                     os.chmod(self.auth_file, 0o600)
                     self._auth_file_fingerprint = self._auth_fingerprint(serialized)

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import dataclasses
 import datetime
 import json as json_mod
 import os
@@ -26,20 +25,38 @@ from audible_deals.config_store import (
     config_numeric_errors,
     load_monitor_state,
     load_monitors,
-    load_notify_state,
-    load_profiles,
 )
 from audible_deals.constants import _CONFIG_SCHEMA, product_url
-from audible_deals.monitor_service import MonitorServiceError, settings_from_dict
+from audible_deals.monitor_service import (
+    MonitorServiceError,
+    validated_monitor_definition,
+)
 from audible_deals.presentation.products import (
     display_comparison,
     display_product_detail,
 )
 from audible_deals.presentation.reports import display_categories
-from audible_deals.presentation.terminal import console
-from audible_deals.results_cache import load_seen_asins
-from audible_deals.settings import _PROFILE_EXTRA_KEYS, Settings, resolve_plus_flags
+from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.settings import (
+    _PROFILE_EXTRA_KEYS,
+    profile_validation_error,
+    resolve_plus_flags,
+)
 from audible_deals.wishlist import inspect_wishlist
+
+
+def _reject_json_constant(value: str):
+    raise ValueError(f"invalid JSON constant: {value}")
+
+
+def _load_raw_json(path: Path, expected_type: type):
+    data = json_mod.loads(path.read_text(), parse_constant=_reject_json_constant)
+    if not isinstance(data, expected_type):
+        expected_name = {dict: "object", list: "array"}.get(
+            expected_type, expected_type.__name__
+        )
+        raise ValueError(f"Expected a JSON {expected_name}, got {type(data).__name__}")
+    return data
 
 
 @click.command()
@@ -89,7 +106,9 @@ def login(ctx, external, open_browser, via_file):
         password = click.prompt("Audible password", hide_input=True)
         dc.login(username, password)
 
-    console.print(f"[green]Authenticated.[/green] Auth saved to {dc.auth_file}")
+    console.print(
+        f"[green]Authenticated.[/green] Auth saved to {safe_markup(dc.auth_file)}"
+    )
 
 
 def _login_callback(via_file: Path | None, open_browser: bool):
@@ -99,7 +118,7 @@ def _login_callback(via_file: Path | None, open_browser: bool):
         click.echo()
         click.echo("Open this URL in your browser and sign in:")
         click.echo()
-        click.echo(oauth_url)
+        click.echo(safe_text(oauth_url))
         click.echo()
         if open_browser:
             try:
@@ -110,7 +129,9 @@ def _login_callback(via_file: Path | None, open_browser: bool):
         click.echo("A 'Page not found' page after sign-in is expected.")
 
         if via_file is not None:
-            click.echo(f"Save the full callback URL to {via_file}, then return here.")
+            click.echo(
+                f"Save the full callback URL to {safe_text(via_file)}, then return here."
+            )
             click.prompt(
                 "Press Enter once the file is saved", default="", show_default=False
             )
@@ -174,8 +195,11 @@ def _validate_callback_url(callback_url: str) -> str:
 def import_auth(ctx, path: Path):
     """Import auth from an audible-cli JSON file or Libation AccountsSettings.json."""
     dc = _get_client(ctx.obj["locale"])
-    dc.import_auth(path)
-    console.print(f"[green]Auth imported.[/green] Saved to {dc.auth_file}")
+    try:
+        dc.import_auth(path)
+    except (OSError, UnicodeError, ValueError, TypeError, KeyError) as exc:
+        raise click.ClickException(f"Could not import auth: {exc}") from exc
+    console.print(f"[green]Auth imported.[/green] Saved to {safe_markup(dc.auth_file)}")
 
 
 @click.command()
@@ -251,7 +275,7 @@ def open_cmd(ctx, asin, last_ref):
     )
     asin = resolved[0].asin
     url = product_url(asin, locale)
-    console.print(f"[dim]Opening {url}[/dim]")
+    console.print(f"[dim]Opening {safe_markup(url)}[/dim]")
     click.launch(url)
 
 
@@ -289,7 +313,7 @@ def compare(ctx, asins, last_refs):
     found_asins = {p.asin for p in products}
     for asin in all_asins:
         if asin not in found_asins:
-            console.print(f"[red]Not found: {asin}[/red]")
+            console.print(f"[red]Not found: {safe_markup(asin)}[/red]")
 
     if len(products) < 2:
         raise click.ClickException("Need at least 2 valid products to compare.")
@@ -423,11 +447,10 @@ def _config_checks() -> list[_Row]:
 
     if constants.PROFILES_FILE.exists():
         try:
-            profiles = load_profiles()
+            profiles = _load_raw_json(constants.PROFILES_FILE, dict)
             valid_profile_keys = set(_CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
             bad_profiles: dict[str, list[str]] = {}
             invalid_profiles: dict[str, str] = {}
-            setting_fields = {field.name for field in dataclasses.fields(Settings)}
             for pname, popts in profiles.items():
                 if not isinstance(popts, dict):
                     invalid_profiles[pname] = "expected an object"
@@ -435,16 +458,8 @@ def _config_checks() -> list[_Row]:
                 bad = sorted(k for k in popts if k not in valid_profile_keys)
                 if bad:
                     bad_profiles[pname] = bad
-                try:
-                    Settings(
-                        **{
-                            key: value
-                            for key, value in popts.items()
-                            if key in setting_fields
-                        }
-                    )
-                except (TypeError, ValueError) as exc:
-                    invalid_profiles[pname] = str(exc)
+                if error := profile_validation_error(popts):
+                    invalid_profiles[pname] = error
             if bad_profiles:
                 detail = "; ".join(
                     f"{n}: {', '.join(ks)}" for n, ks in sorted(bad_profiles.items())
@@ -461,6 +476,7 @@ def _config_checks() -> list[_Row]:
             else:
                 rows.append(("Profile settings valid", "PASS", ""))
         except Exception as e:
+            rows.append(("Profiles parseable", "FAIL", str(e)))
             rows.append(("Unknown profile keys", "WARN", str(e)))
 
     return rows
@@ -470,7 +486,11 @@ def _store_checks() -> list[_Row]:
     """Check notify-state health and that local state files are parseable."""
     rows: list[_Row] = []
     try:
-        ns = load_notify_state()
+        ns = (
+            _load_raw_json(constants.NOTIFY_STATE_FILE, dict)
+            if constants.NOTIFY_STATE_FILE.exists()
+            else {}
+        )
         today = datetime.date.today()
         malformed = 0
         stale = 0
@@ -569,14 +589,39 @@ def _store_checks() -> list[_Row]:
                     )
                 )
 
-    for check, loader in (
-        ("Profiles parseable", load_profiles),
-        ("Monitors parseable", load_monitors),
-        ("Seen-ASINs parseable", load_seen_asins),
+    for check, path, expected_type in (
+        ("Profiles parseable", constants.PROFILES_FILE, dict),
+        ("Monitors parseable", constants.MONITORS_FILE, dict),
+        ("Seen-ASINs parseable", constants.SEEN_ASINS_FILE, list),
     ):
+        if not path.exists():
+            rows.append((check, "PASS", "No entries"))
+            continue
         try:
-            loader()
-            rows.append((check, "PASS", ""))
+            data = _load_raw_json(path, expected_type)
+            if path == constants.PROFILES_FILE:
+                malformed = [
+                    name for name, value in data.items() if not isinstance(value, dict)
+                ]
+            elif path == constants.MONITORS_FILE:
+                malformed = []
+                for name, value in data.items():
+                    try:
+                        validated_monitor_definition(value)
+                    except MonitorServiceError:
+                        malformed.append(name)
+            else:
+                malformed = []
+            if malformed:
+                rows.append(
+                    (
+                        check,
+                        "FAIL",
+                        "Malformed entries: " + ", ".join(map(str, malformed)),
+                    )
+                )
+            else:
+                rows.append((check, "PASS", ""))
         except Exception as e:
             rows.append((check, "FAIL", str(e)))
 
@@ -592,10 +637,23 @@ def _store_checks() -> list[_Row]:
 def _track_checks() -> list[_Row]:
     """Check background-tracking schedule health."""
     from audible_deals.cli.track import _run_history
-    from audible_deals.storage import load_json_file
 
-    state = load_json_file(constants.TRACK_STATE_FILE, dict, "track state")
+    if constants.TRACK_STATE_FILE.exists():
+        try:
+            state = _load_raw_json(constants.TRACK_STATE_FILE, dict)
+        except Exception as exc:
+            return [("Background tracking state", "FAIL", str(exc))]
+    else:
+        state = {}
     install_info = state.get("install")
+    if install_info is not None and not isinstance(install_info, dict):
+        return [
+            (
+                "Background tracking state",
+                "FAIL",
+                "install record must be an object",
+            )
+        ]
     if not install_info:
         return [
             (
@@ -684,13 +742,8 @@ def _monitor_checks() -> list[_Row]:
     state = load_monitor_state().get("monitors", {})
     invalid: dict[str, str] = {}
     for name, definition in monitors.items():
-        if not isinstance(definition, dict) or not isinstance(
-            definition.get("settings"), dict
-        ):
-            invalid[name] = "expected a settings object"
-            continue
         try:
-            settings_from_dict(definition["settings"])
+            validated_monitor_definition(definition)
         except MonitorServiceError as exc:
             invalid[name] = str(exc)
     if invalid:
@@ -740,7 +793,7 @@ def _render_doctor_rows(rows: list[_Row]) -> int:
             rendered = "[yellow]⚠ WARN[/yellow]"
         else:
             rendered = "[green]✓ PASS[/green]"
-        table.add_row(check, rendered, detail)
+        table.add_row(safe_markup(check), rendered, safe_markup(detail))
     console.print(table)
     return failures
 

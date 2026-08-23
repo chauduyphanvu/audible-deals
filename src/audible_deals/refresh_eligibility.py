@@ -120,7 +120,7 @@ def _load_locked() -> tuple[dict[str, dict[str, str]], bool]:
             )
             return {}, False
     entries = _migrate_seen_histories()
-    _atomic_write(path, json.dumps(_wire(entries), indent=2))
+    _atomic_write(path, json.dumps(_wire(entries), indent=2, allow_nan=False))
     return entries, True
 
 
@@ -156,5 +156,5 @@ def mark_refresh_eligible(
         if changed:
             _atomic_write(
                 constants.REFRESH_ELIGIBILITY_FILE,
-                json.dumps(_wire(entries), indent=2),
+                json.dumps(_wire(entries), indent=2, allow_nan=False),
             )

@@ -13,7 +13,7 @@ from audible_deals.cli.helpers import (
 )
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.presentation.reports import display_price_history
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.price_history import (
     load_all_price_histories,
     load_price_history,
@@ -84,7 +84,7 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
             return
         if dry_run:
             examples = ", ".join(affected[:5])
-            suffix = f" (e.g. {examples})" if affected else ""
+            suffix = f" (e.g. {safe_markup(examples)})" if affected else ""
             console.print(
                 f"[dim]Would remove {count} stale history file(s) (>{purge_days} days since last entry){suffix}.[/dim]"
             )
@@ -110,6 +110,7 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
                 load_all_price_histories(ctx.obj["locale"]),
                 indent=2,
                 ensure_ascii=False,
+                allow_nan=False,
             )
         )
         return
@@ -126,11 +127,13 @@ def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):
     asin = resolved[0].asin
     entries = load_price_history(asin, locale)
     if json_flag:
-        click.echo(json_mod.dumps(entries, indent=2, ensure_ascii=False))
+        click.echo(
+            json_mod.dumps(entries, indent=2, ensure_ascii=False, allow_nan=False)
+        )
         return
     if not entries:
         console.print(
-            f"[dim]No price history for {asin}. "
+            f"[dim]No price history for {safe_markup(asin)}. "
             "History is recorded when items appear in search/find results.[/dim]"
         )
         return

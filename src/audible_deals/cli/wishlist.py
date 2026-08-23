@@ -23,7 +23,8 @@ from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
 from audible_deals.presentation.common import price_str
 from audible_deals.presentation.reports import display_watch_table, display_wishlist
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.serialization import sanitize_csv_cell, validate_export_path
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
 from audible_deals.wishlist import (
     load_wishlist,
@@ -73,10 +74,10 @@ def _add_author_watch(ctx, author: str, max_price: float) -> None:
     result = _wishlist_operation(add_author_watch, author, max_price)
     warn_wishlist_issues(result.issues)
     if not result.added:
-        console.print(f"[dim]Already watching author: {author}[/dim]")
+        console.print(f"[dim]Already watching author: {safe_markup(author)}[/dim]")
         return
     console.print(
-        f"[green]+[/green] Author watch: {author} "
+        f"[green]+[/green] Author watch: {safe_markup(author)} "
         f"(target {price_str(max_price, _currency(ctx))})"
     )
 
@@ -131,7 +132,7 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
     plan = _wishlist_operation(plan_product_add, all_asins)
     warn_wishlist_issues(plan.issues)
     for asin in plan.already_present:
-        console.print(f"[dim]{asin} already on wishlist[/dim]")
+        console.print(f"[dim]{safe_markup(asin)} already on wishlist[/dim]")
 
     fetched = []
     if plan.pending_asins:
@@ -142,7 +143,7 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
             for asin in plan.pending_asins:
                 product = by_asin.get(asin)
                 if product is None:
-                    console.print(f"[red]Not found: {asin}[/red]")
+                    console.print(f"[red]Not found: {safe_markup(asin)}[/red]")
                 else:
                     fetched.append(product)
 
@@ -151,9 +152,14 @@ def wishlist_add(ctx, asins, max_price, last_refs, author):
         for event in result.events:
             product = event.product
             if event.action == "raced":
-                console.print(f"[dim]{product.asin} already on wishlist[/dim]")
+                console.print(
+                    f"[dim]{safe_markup(product.asin)} already on wishlist[/dim]"
+                )
             else:
-                console.print(f"[green]+[/green] {product.title} ({product.asin})")
+                console.print(
+                    f"[green]+[/green] {safe_markup(product.title)} "
+                    f"({safe_markup(product.asin)})"
+                )
         added = len(result.added_products)
         valid_total = result.valid_total
     else:
@@ -241,15 +247,18 @@ def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
     for event in result.events:
         change = event.change
         if change is None:
-            console.print(f"[red]Not on wishlist: {event.asin}[/red]")
+            console.print(f"[red]Not on wishlist: {safe_markup(event.asin)}[/red]")
             continue
         if clear_target:
             console.print(
-                f"[yellow]~[/yellow] {change.title} ({change.asin}) → target cleared"
+                f"[yellow]~[/yellow] {safe_markup(change.title)} "
+                f"({safe_markup(change.asin)}) → target cleared"
             )
         else:
             console.print(
-                f"[yellow]~[/yellow] {change.title} ({change.asin}) → target {price_str(change.max_price, cur)}"
+                f"[yellow]~[/yellow] {safe_markup(change.title)} "
+                f"({safe_markup(change.asin)}) → target "
+                f"{price_str(change.max_price, cur)}"
             )
     console.print(
         f"\n[bold]{len(result.changes)}[/bold] updated, "
@@ -272,7 +281,8 @@ def _export_wishlist(
     if suffix == ".json":
         payload = {"items": asin_items, "author_watches": author_items}
         path.write_text(
-            json_mod.dumps(payload, indent=2, ensure_ascii=False), encoding="utf-8"
+            json_mod.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False),
+            encoding="utf-8",
         )
     elif suffix == ".csv":
         rows: list[dict] = []
@@ -301,7 +311,10 @@ def _export_wishlist(
         with open(path, "w", newline="", encoding="utf-8") as f:
             writer = csv.DictWriter(f, fieldnames=_WISHLIST_CSV_FIELDS)
             writer.writeheader()
-            writer.writerows(rows)
+            writer.writerows(
+                {key: sanitize_csv_cell(value) for key, value in row.items()}
+                for row in rows
+            )
     else:
         raise click.BadParameter(
             f"Unsupported extension '{suffix}'. Use .json or .csv.",
@@ -328,19 +341,31 @@ def _export_wishlist(
 @click.pass_context
 def wishlist_list(ctx, output, json_flag):
     """Show your wishlist."""
+    validate_export_path(output)
     cur = _currency(ctx)
     items = load_wishlist()
     asin_items, author_items = partition_wishlist(items)
 
+    total = None
+    if output:
+        total = _export_wishlist(asin_items, author_items, output)
+
     if json_flag:
         console.file = sys.stderr
         payload = {"items": asin_items, "author_watches": author_items}
-        click.echo(json_mod.dumps(payload, indent=2, ensure_ascii=False))
+        click.echo(
+            json_mod.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False)
+        )
+        if output:
+            console.print(
+                f"[green]Exported {total} entries to {safe_markup(output)}[/green]"
+            )
         return
 
     if output:
-        total = _export_wishlist(asin_items, author_items, output)
-        console.print(f"[green]Exported {total} entries to {output}[/green]")
+        console.print(
+            f"[green]Exported {total} entries to {safe_markup(output)}[/green]"
+        )
         return
 
     if not asin_items and not author_items:
@@ -394,10 +419,14 @@ def wishlist_sync(ctx, max_price, update):
         product = change.product
         if change.action == "updated":
             console.print(
-                f"[yellow]~[/yellow] {product.title} ({product.asin}) → target {price_str(max_price, cur)}"
+                f"[yellow]~[/yellow] {safe_markup(product.title)} "
+                f"({safe_markup(product.asin)}) → target {price_str(max_price, cur)}"
             )
         else:
-            console.print(f"[green]+[/green] {product.title} ({product.asin})")
+            console.print(
+                f"[green]+[/green] {safe_markup(product.title)} "
+                f"({safe_markup(product.asin)})"
+            )
     console.print(
         f"\n[bold]{result.added}[/bold] synced, "
         f"{result.updated} updated, "
@@ -439,7 +468,7 @@ def wishlist_repair(dry_run, yes):
 
     console.print(f"[bold]{len(plan.issues)} invalid wishlist entries:[/bold]")
     for issue in plan.issues:
-        click.echo(f"  [{issue.index}] {issue.reason}")
+        click.echo(f"  [{issue.index}] {safe_text(issue.reason)}")
 
     if dry_run:
         console.print(
@@ -457,7 +486,7 @@ def wishlist_repair(dry_run, yes):
     result = _wishlist_operation(repair_wishlist, plan)
     console.print(
         f"\n[green]Removed {result.removed} invalid entries.[/green] "
-        f"Backup: {result.backup}"
+        f"Backup: {safe_markup(result.backup)}"
     )
 
 
@@ -513,7 +542,8 @@ def wishlist_purge(ctx, owned, dry_run, yes):
     if dry_run:
         for item in to_remove:
             console.print(
-                f"[dim]Would remove: {item.get('title', '')} ({item.get('asin', '')})[/dim]"
+                f"[dim]Would remove: {safe_markup(item.get('title', ''))} "
+                f"({safe_markup(item.get('asin', ''))})[/dim]"
             )
         return
 
@@ -578,7 +608,8 @@ def _watch_once(
     for item in asin_items:
         if item["asin"] not in found_asins:
             console.print(
-                f"[red]Not found: {item['asin']} ({item.get('title', '')})[/red]"
+                f"[red]Not found: {safe_markup(item['asin'])} "
+                f"({safe_markup(item.get('title', ''))})[/red]"
             )
 
     if not products:
@@ -652,11 +683,16 @@ def watch(ctx, every, buy_only, sort_by, show_url, exit_code):
         return
 
     interval = parse_interval(every)
-    console.print(f"[dim]Watching every {every} (Ctrl+C to stop)...[/dim]\n")
+    console.print(
+        f"[dim]Watching every {safe_markup(every)} (Ctrl+C to stop)...[/dim]\n"
+    )
     try:
         while True:
             _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
-            console.print(f"\n  [dim]Next check in {every}... (Ctrl+C to stop)[/dim]\n")
+            console.print(
+                f"\n  [dim]Next check in {safe_markup(every)}... "
+                "(Ctrl+C to stop)[/dim]\n"
+            )
             time.sleep(interval)
     except KeyboardInterrupt:
         console.print("\n[dim]Stopped.[/dim]")

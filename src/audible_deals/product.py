@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+import math
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -69,6 +70,48 @@ class Product:
         return product_url(self.asin, self.locale)
 
 
+def _finite_float(
+    value: object,
+    default: float | None = None,
+    *,
+    minimum: float | None = None,
+    maximum: float | None = None,
+) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return default
+    try:
+        result = float(value)
+    except (TypeError, ValueError, OverflowError):
+        return default
+    if not math.isfinite(result):
+        return default
+    if minimum is not None and result < minimum:
+        return default
+    if maximum is not None and result > maximum:
+        return default
+    return result
+
+
+def _finite_int(value: object, default: int = 0) -> int:
+    number = _finite_float(value, minimum=0)
+    if number is None:
+        return default
+    try:
+        return int(number)
+    except (OverflowError, ValueError):
+        return default
+
+
+def _dict_items(value: object):
+    if not isinstance(value, list):
+        return
+    yield from (item for item in value if isinstance(item, dict))
+
+
+def _text(value: object) -> str:
+    return value if isinstance(value, str) else ""
+
+
 def _extract_rating(raw: dict) -> tuple[float, int]:
     """Extract (rating, num_ratings) from the nested overall_distribution."""
     rating_data = raw.get("rating") or {}
@@ -76,16 +119,21 @@ def _extract_rating(raw: dict) -> tuple[float, int]:
     num_ratings = 0
     if isinstance(rating_data, dict):
         dist = rating_data.get("overall_distribution") or {}
-        try:
-            rating = float(dist.get("display_average_rating", 0) or 0)
-        except (ValueError, TypeError):
+        if not isinstance(dist, dict):
+            return rating, num_ratings
+        parsed_rating = _finite_float(
+            dist.get("display_average_rating"), 0.0, minimum=0, maximum=5
+        )
+        if parsed_rating is None:
             logger.debug(
                 "parse_product %s: bad display_average_rating", raw.get("asin")
             )
-        try:
-            num_ratings = int(dist.get("num_ratings", 0) or 0)
-        except (ValueError, TypeError):
+        else:
+            rating = parsed_rating
+        parsed_count = _finite_int(dist.get("num_ratings"), 0)
+        if parsed_count == 0 and dist.get("num_ratings") not in (None, 0, 0.0, "", "0"):
             logger.debug("parse_product %s: bad num_ratings", raw.get("asin"))
+        num_ratings = parsed_count
     return rating, num_ratings
 
 
@@ -96,10 +144,10 @@ def _extract_categories(raw: dict) -> tuple[list[str], list[str]]:
     category_ids[i]; build_profile relies on that positional alignment.
     """
     by_id: dict[str, str] = {}
-    for ladder in raw.get("category_ladders") or []:
-        for cat in ladder.get("ladder") or []:
-            cid = cat.get("id", "")
-            name = cat.get("name", "")
+    for ladder in _dict_items(raw.get("category_ladders")):
+        for cat in _dict_items(ladder.get("ladder")):
+            cid = _text(cat.get("id"))
+            name = _text(cat.get("name"))
             if cid and name and cid not in by_id:
                 by_id[cid] = name
     return list(by_id.values()), list(by_id.keys())
@@ -107,17 +155,17 @@ def _extract_categories(raw: dict) -> tuple[list[str], list[str]]:
 
 def _extract_series(raw: dict) -> tuple[str, str, str]:
     """Extract (series_name, series_position, series_asin) from the first series entry."""
-    series_list = raw.get("series") or []
+    series_list = list(_dict_items(raw.get("series")))
     if series_list:
         s = series_list[0]
-        return s.get("title", ""), s.get("sequence", ""), s.get("asin", "")
+        return _text(s.get("title")), _text(s.get("sequence")), _text(s.get("asin"))
     return "", "", ""
 
 
 def _extract_plus(raw: dict) -> bool:
     """Detect Audible Plus / AYCE plan membership."""
-    for plan in raw.get("plans") or []:
-        pname = plan.get("plan_name", "")
+    for plan in _dict_items(raw.get("plans")):
+        pname = _text(plan.get("plan_name"))
         if "Plus" in pname or "AYCE" in pname:
             return True
     return False
@@ -128,11 +176,26 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
 
     Handles the nested response format from Audible's catalog API.
     """
+    if not isinstance(raw, dict):
+        raise ValueError("product record must be an object")
+    asin = raw.get("asin")
+    title = raw.get("title")
+    if not isinstance(asin, str) or not asin.strip():
+        raise ValueError("product record is missing a valid ASIN")
+    if not isinstance(title, str) or not title.strip():
+        raise ValueError("product record is missing a valid title")
+
     price, list_price = _extract_prices(raw)
 
-    authors = [a.get("name", "") for a in (raw.get("authors") or []) if a.get("name")]
+    authors = [
+        name
+        for author in _dict_items(raw.get("authors"))
+        if (name := _text(author.get("name")))
+    ]
     narrators = [
-        n.get("name", "") for n in (raw.get("narrators") or []) if n.get("name")
+        name
+        for narrator in _dict_items(raw.get("narrators"))
+        if (name := _text(narrator.get("name")))
     ]
 
     rating, num_ratings = _extract_rating(raw)
@@ -141,15 +204,15 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     in_plus = _extract_plus(raw)
 
     return Product(
-        asin=raw.get("asin", ""),
-        title=raw.get("title", ""),
-        subtitle=raw.get("subtitle", ""),
+        asin=asin,
+        title=title,
+        subtitle=_text(raw.get("subtitle")),
         authors=authors,
         narrators=narrators,
-        publisher=raw.get("publisher_name", ""),
+        publisher=_text(raw.get("publisher_name")),
         price=price,
         list_price=list_price,
-        length_minutes=raw.get("runtime_length_min", 0) or 0,
+        length_minutes=_finite_int(raw.get("runtime_length_min"), 0),
         rating=rating,
         num_ratings=num_ratings,
         categories=categories,
@@ -157,8 +220,8 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
         series_name=series_name,
         series_position=series_position,
         series_asin=series_asin,
-        language=raw.get("language", ""),
-        release_date=raw.get("release_date", ""),
+        language=_text(raw.get("language")),
+        release_date=_text(raw.get("release_date")),
         in_plus_catalog=in_plus,
         locale=locale,
     )
@@ -167,10 +230,7 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
 def _base_price(obj) -> float | None:
     """Pull the numeric base amount from a {'base': x} price dict."""
     if isinstance(obj, dict) and obj.get("base") is not None:
-        try:
-            return float(obj["base"])
-        except (ValueError, TypeError):
-            return None
+        return _finite_float(obj["base"], minimum=0)
     return None
 
 
@@ -183,10 +243,10 @@ def _extract_prices(raw: dict) -> tuple[float | None, float | None]:
         price = _base_price(price_obj.get("lowest_price"))
         if price is None:
             price = list_price
-    elif isinstance(price_obj, (int, float)):
-        price = float(price_obj)
+    elif isinstance(price_obj, (int, float)) and not isinstance(price_obj, bool):
+        price = _finite_float(price_obj, minimum=0)
     if list_price is None:
         lp = raw.get("list_price")
-        if isinstance(lp, (int, float)):
-            list_price = float(lp)
+        if isinstance(lp, (int, float)) and not isinstance(lp, bool):
+            list_price = _finite_float(lp, minimum=0)
     return price, list_price

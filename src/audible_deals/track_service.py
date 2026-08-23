@@ -70,6 +70,17 @@ class TrackRuntime:
 
 def append_run(state: dict, entry: dict) -> None:
     history = state.get("run_history", [])
+    if not isinstance(history, list):
+        logger.warning("track state run_history is malformed; starting a new history")
+        history = []
+    else:
+        malformed = len(history) - sum(isinstance(item, dict) for item in history)
+        if malformed:
+            logger.warning(
+                "track state run_history contains %d malformed record(s); skipping them",
+                malformed,
+            )
+            history = [item for item in history if isinstance(item, dict)]
     history.insert(0, entry)
     state["run_history"] = history[:RUN_HISTORY_MAX]
     state.pop("last_run", None)
@@ -77,8 +88,18 @@ def append_run(state: dict, entry: dict) -> None:
 
 def run_history(state: dict) -> list[dict]:
     if "run_history" in state:
-        return state["run_history"]
+        history = state["run_history"]
+        if not isinstance(history, list):
+            logger.warning("track state run_history is malformed; ignoring it")
+            return []
+        valid = [item for item in history if isinstance(item, dict)]
+        if len(valid) != len(history):
+            logger.warning("track state run_history contains malformed records")
+        return valid
     last = state.get("last_run")
+    if last and not isinstance(last, dict):
+        logger.warning("track state last_run is malformed; ignoring it")
+        return []
     return [last] if last else []
 
 
@@ -167,6 +188,9 @@ def _record_failure(
     runtime: TrackRuntime,
 ) -> None:
     state = runtime.load_track_state()
+    if not isinstance(state, dict):
+        logger.warning("track state is malformed; starting with an empty state")
+        state = {}
     result = TrackRunResult(
         at=runtime.now().isoformat(timespec="seconds"),
         duration_s=round(runtime.monotonic() - started, 1),
@@ -262,9 +286,12 @@ def _run_locked(
             runtime.webhook_client,
         )
 
-    selection = select_monitors_for_run(
-        runtime.load_monitors(), int(state.get("monitor_cursor", 0))
-    )
+    try:
+        monitor_cursor = int(state.get("monitor_cursor", 0))
+    except (TypeError, ValueError, OverflowError):
+        logger.warning("track state monitor_cursor is malformed; resetting it")
+        monitor_cursor = 0
+    selection = select_monitors_for_run(runtime.load_monitors(), monitor_cursor)
     if selection.monitors:
         state["monitor_cursor"] = selection.cursor
     for definition in selection.monitors:
@@ -308,6 +335,9 @@ def run_track(request: TrackRunRequest, runtime: TrackRuntime) -> TrackRunResult
     try:
         with runtime.lock():
             state = runtime.load_track_state()
+            if not isinstance(state, dict):
+                logger.warning("track state is malformed; starting with an empty state")
+                state = {}
             return _run_locked(request, runtime, state, started)
     except LockHeldError:
         raise

@@ -110,7 +110,11 @@ def notify(
                 )
             elif not result.hits:
                 if not webhook:
-                    click.echo(json_mod.dumps({"deals": [], "count": 0}, indent=2))
+                    click.echo(
+                        json_mod.dumps(
+                            {"deals": [], "count": 0}, indent=2, allow_nan=False
+                        )
+                    )
                 elif result.suppressed:
                     console.print(
                         f"[dim]{result.suppressed} deal(s) suppressed by cooldown. Nothing sent.[/dim]"
@@ -126,7 +130,11 @@ def notify(
             else:
                 deals = [hit.to_dict() for hit in result.hits]
                 click.echo(
-                    json_mod.dumps({"deals": deals, "count": len(deals)}, indent=2)
+                    json_mod.dumps(
+                        {"deals": deals, "count": len(deals)},
+                        indent=2,
+                        allow_nan=False,
+                    )
                 )
             commit_notification_state(result, runtime)
             if exit_code:
@@ -134,7 +142,9 @@ def notify(
     except LockHeldError:
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
         if not webhook:
-            click.echo(json_mod.dumps({"deals": [], "count": 0}, indent=2))
+            click.echo(
+                json_mod.dumps({"deals": [], "count": 0}, indent=2, allow_nan=False)
+            )
         if exit_code:
             ctx.exit(1)
     except (ValueError, WebhookDeliveryError) as exc:

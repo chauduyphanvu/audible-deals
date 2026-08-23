@@ -34,6 +34,22 @@ def _validate_category_id(value: str) -> None:
 _MAX_CONCURRENT_FETCHES = 4
 
 
+def _parse_api_products(raw_products: object, locale: str) -> list[_product.Product]:
+    if not isinstance(raw_products, list):
+        logger.warning("API products payload is not a list; ignoring it")
+        return []
+    products: list[_product.Product] = []
+    for raw in raw_products:
+        if not isinstance(raw, dict):
+            logger.warning("Skipping malformed API product record")
+            continue
+        try:
+            products.append(_product.parse_product(raw, locale=locale))
+        except ValueError as exc:
+            logger.warning("Skipping malformed API product record: %s", exc)
+    return products
+
+
 @dataclass(frozen=True)
 class CatalogSearchRequest:
     keywords: str = ""
@@ -139,10 +155,7 @@ class DealsClient:
 
         resp = self._transport.request("1.0/catalog/products", **params)
 
-        products = [
-            _product.parse_product(p, locale=self.locale)
-            for p in resp.get("products", [])
-        ]
+        products = _parse_api_products(resp.get("products", []), self.locale)
         total = resp.get("total_results", len(products))
 
         return products, total
@@ -365,11 +378,7 @@ class DealsClient:
                 response_groups=_constants.CATALOG_RESPONSE_GROUPS,
             )
             items = resp.get("items", [])
-            products = [
-                _product.parse_product(raw, locale=self.locale)
-                for raw in items
-                if raw.get("asin") and raw.get("title")
-            ]
+            products = _parse_api_products(items, self.locale)
             yield products, page
             if len(items) < _constants.MAX_PAGE_SIZE:
                 break
@@ -402,11 +411,7 @@ class DealsClient:
                 sort_by="-DateAdded",
             )
             raw_products = resp.get("products", [])
-            products = [
-                _product.parse_product(p, locale=self.locale)
-                for p in raw_products
-                if p.get("asin") and p.get("title")
-            ]
+            products = _parse_api_products(raw_products, self.locale)
             all_products.extend(products)
             if len(raw_products) < _constants.MAX_PAGE_SIZE:
                 break
@@ -517,7 +522,8 @@ class DealsClient:
             f".{self.locale}.json"
         )
         _atomic_write(
-            cache_file, json.dumps({"ts": time.time(), "categories": categories})
+            cache_file,
+            json.dumps({"ts": time.time(), "categories": categories}, allow_nan=False),
         )
         logger.debug(
             "categories cache saved (%s, %d items)", cache_file, len(categories)
@@ -687,10 +693,8 @@ class DealsClient:
             response_groups=_constants.CATALOG_RESPONSE_GROUPS,
         )
         results = []
-        for raw in resp.get("products", []):
-            parsed = _product.parse_product(raw, locale=self.locale)
-            if parsed.asin and parsed.title:
-                results.append(parsed)
+        for parsed in _parse_api_products(resp.get("products", []), self.locale):
+            results.append(parsed)
         return results
 
     def get_products_batch(self, asins: list[str]) -> list[_product.Product]:

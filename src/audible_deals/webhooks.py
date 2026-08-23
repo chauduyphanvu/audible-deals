@@ -17,6 +17,10 @@ from audible_deals.presentation.common import price_str
 logger = logging.getLogger(__name__)
 
 
+def _strict_json_dumps(value, **kwargs) -> str:
+    return json.dumps(value, allow_nan=False, **kwargs)
+
+
 def parse_webhook_headers(
     raw: tuple[str, ...] | list[str], *, strict: bool
 ) -> dict[str, str]:
@@ -112,7 +116,7 @@ def _render_webhook_template(
 
 
 def _webhook_generic(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
-    body = json.dumps({"deals": hits, "count": len(hits)}, indent=2)
+    body = _strict_json_dumps({"deals": hits, "count": len(hits)}, indent=2)
     return body, {"Content-Type": "application/json"}
 
 
@@ -121,7 +125,9 @@ def _webhook_slack(hits: list[dict], currency: str) -> tuple[str, dict[str, str]
         f"• {_webhook_item_prefix(h)}<{h['url']}|{h['title']}> — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
         for h in hits
     )
-    body = json.dumps({"text": f"*{_webhook_heading(hits)} ({len(hits)})*\n{lines}"})
+    body = _strict_json_dumps(
+        {"text": f"*{_webhook_heading(hits)} ({len(hits)})*\n{lines}"}
+    )
     return body, {"Content-Type": "application/json"}
 
 
@@ -130,7 +136,7 @@ def _webhook_discord(hits: list[dict], currency: str) -> tuple[str, dict[str, st
         f"• {_webhook_item_prefix(h)}[{h['title']}](<{h['url']}>) — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
         for h in hits
     )
-    body = json.dumps(
+    body = _strict_json_dumps(
         {"content": f"**{_webhook_heading(hits)} ({len(hits)})**\n{lines}"}
     )
     return body, {"Content-Type": "application/json"}
@@ -141,7 +147,7 @@ def _webhook_teams(hits: list[dict], currency: str) -> tuple[str, dict[str, str]
         f"• {_webhook_item_prefix(h)}[{h['title']}]({h['url']}) — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
         for h in hits
     )
-    body = json.dumps(
+    body = _strict_json_dumps(
         {
             "@type": "MessageCard",
             "@context": "https://schema.org/extensions",
@@ -208,7 +214,7 @@ def format_monitor_webhook_payload(
     """Format monitor events without changing the wishlist payload contract."""
     if fmt == "generic":
         monitor = events[0].get("monitor", "") if events else ""
-        body = json.dumps(
+        body = _strict_json_dumps(
             {
                 "monitor": monitor,
                 "locale": locale,
@@ -226,13 +232,13 @@ def format_webhook_message(
 ) -> tuple[bytes, dict[str, str]]:
     """Format a plain status message (e.g. a re-auth warning) for the given platform."""
     if fmt == "slack":
-        body = json.dumps({"text": f"*{title}*\n{text}"})
+        body = _strict_json_dumps({"text": f"*{title}*\n{text}"})
         headers = {"Content-Type": "application/json"}
     elif fmt == "discord":
-        body = json.dumps({"content": f"**{title}**\n{text}"})
+        body = _strict_json_dumps({"content": f"**{title}**\n{text}"})
         headers = {"Content-Type": "application/json"}
     elif fmt == "teams":
-        body = json.dumps(
+        body = _strict_json_dumps(
             {
                 "@type": "MessageCard",
                 "@context": "https://schema.org/extensions",
@@ -252,7 +258,7 @@ def format_webhook_message(
             "Priority": "high",
         }
     elif fmt == "generic":
-        body = json.dumps({"message": text, "title": title})
+        body = _strict_json_dumps({"message": text, "title": title})
         headers = {"Content-Type": "application/json"}
     else:
         raise ValueError(f"Unknown webhook format: {fmt!r}")
@@ -285,11 +291,11 @@ def _recap_atl_section(payload: dict, currency: str, sep: str = "\n") -> str:
 
 
 def _recap_generic(payload: dict, currency: str) -> tuple[str, dict[str, str]]:
-    return json.dumps(payload, indent=2), {"Content-Type": "application/json"}
+    return _strict_json_dumps(payload, indent=2), {"Content-Type": "application/json"}
 
 
 def _recap_slack(payload: dict, currency: str) -> tuple[str, dict[str, str]]:
-    body = json.dumps(
+    body = _strict_json_dumps(
         {
             "text": f"*{_recap_title(payload)}*\n{_recap_drop_lines(payload, currency)}\n"
             f"{_recap_footer(payload)}{_recap_atl_section(payload, currency)}"
@@ -299,7 +305,7 @@ def _recap_slack(payload: dict, currency: str) -> tuple[str, dict[str, str]]:
 
 
 def _recap_discord(payload: dict, currency: str) -> tuple[str, dict[str, str]]:
-    body = json.dumps(
+    body = _strict_json_dumps(
         {
             "content": f"**{_recap_title(payload)}**\n{_recap_drop_lines(payload, currency)}\n"
             f"{_recap_footer(payload)}{_recap_atl_section(payload, currency)}"
@@ -312,7 +318,7 @@ def _recap_teams(payload: dict, currency: str) -> tuple[str, dict[str, str]]:
     title_str = _recap_title(payload)
     text = _recap_drop_lines(payload, currency, "  \n")
     atl_section = _recap_atl_section(payload, currency, "  \n")
-    body = json.dumps(
+    body = _strict_json_dumps(
         {
             "@type": "MessageCard",
             "@context": "https://schema.org/extensions",

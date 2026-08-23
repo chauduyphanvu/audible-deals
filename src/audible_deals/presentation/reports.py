@@ -4,11 +4,13 @@ from __future__ import annotations
 
 import collections
 import datetime
+import math
 
 from rich.table import Table
 
 from audible_deals.presentation import terminal
 from audible_deals.presentation.common import _buy_cell, price_str
+from audible_deals.presentation.terminal import safe_markup, safe_text
 from audible_deals.product import Product
 
 
@@ -18,11 +20,19 @@ def display_categories(
     if not categories:
         terminal.console.print("[dim]No categories found.[/dim]")
         return
-    table = Table(title=title, show_lines=False, padding=(0, 1), title_style="bold")
+    table = Table(
+        title=safe_markup(title),
+        show_lines=False,
+        padding=(0, 1),
+        title_style="bold",
+    )
     table.add_column("ID", style="cyan", width=16)
     table.add_column("Name", min_width=30)
     for category in categories:
-        table.add_row(category["id"], category["name"])
+        table.add_row(
+            safe_markup(category.get("id", "")),
+            safe_markup(category.get("name", "")),
+        )
     terminal.console.print(table)
 
 
@@ -72,7 +82,7 @@ def _relative_date(date_str: str, today: datetime.date) -> str:
         if delta < 30:
             return f"{delta // 7}w ago"
         return f"{delta // 30}mo ago"
-    except ValueError:
+    except (TypeError, ValueError):
         return ""
 
 
@@ -89,7 +99,7 @@ def _sparkline(prices: list[float]) -> str:
 def display_price_history(entries: list[dict], asin: str, currency: str = "$") -> None:
     today = datetime.date.today()
     table = Table(
-        title=f"Price History: {asin}",
+        title=f"Price History: {safe_markup(asin)}",
         show_lines=False,
         padding=(0, 1),
         title_style="bold",
@@ -103,7 +113,11 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
     prices: list[float] = []
     for entry in entries:
         raw = entry.get("price")
-        if not isinstance(raw, (int, float)):
+        if (
+            isinstance(raw, bool)
+            or not isinstance(raw, (int, float))
+            or not math.isfinite(float(raw))
+        ):
             continue
         price = float(raw)
         rendered_price = f"{currency}{price:.2f}"
@@ -114,7 +128,7 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
         else:
             change = f"[red]+{price - previous_price:.2f}[/red]"
         table.add_row(
-            entry.get("date", ""),
+            safe_markup(entry.get("date", "")),
             _relative_date(entry.get("date", ""), today),
             rendered_price,
             change,
@@ -150,10 +164,12 @@ def display_recap(
     terminal.console.print(f"\n[bold]Recap[/bold] (last {days} days)\n")
 
     def _label(asin: str, title: str) -> str:
+        asin = asin if isinstance(asin, str) else str(asin)
+        title = title if isinstance(title, str) else str(title)
         if not title:
-            return asin
+            return safe_markup(asin)
         rendered_title = title if len(title) <= 40 else title[:37] + "..."
-        return f"{rendered_title}  {asin}"
+        return f"{safe_markup(rendered_title)}  {safe_markup(asin)}"
 
     if drops:
         terminal.console.print(f"  [green]Price drops: {len(drops)}[/green]")
@@ -181,7 +197,10 @@ def display_recap(
             f"{len(wishlist_hits)}[/bold green]"
         )
         for item in wishlist_hits:
-            terminal.console.print(f"    {item['asin']}  {item['title']}")
+            terminal.console.print(
+                f"    {safe_markup(item.get('asin', ''))}  "
+                f"{safe_markup(item.get('title', ''))}"
+            )
 
     if atl_hits is not None:
         atl_header = (
@@ -221,7 +240,11 @@ def display_wishlist(
         table.add_column("Target", justify="right", width=10)
         for item in asin_items:
             target = price_str(item.get("max_price"), currency)
-            table.add_row(item.get("asin", ""), item.get("title", ""), target)
+            table.add_row(
+                safe_markup(item.get("asin", "")),
+                safe_markup(item.get("title", "")),
+                target,
+            )
         terminal.console.print(table)
 
     if author_items:
@@ -236,7 +259,11 @@ def display_wishlist(
         table.add_column("Added", width=12)
         for item in author_items:
             target = price_str(item.get("max_price"), currency)
-            table.add_row(item.get("author", ""), target, item.get("added", ""))
+            table.add_row(
+                safe_markup(item.get("author", "")),
+                target,
+                safe_markup(item.get("added", "")),
+            )
         terminal.console.print(table)
 
 
@@ -302,8 +329,8 @@ def display_watch_table(
             continue
         displayed_products.append(product)
         row = [
-            f"{product.title}\n[dim]{product.authors_str}  "
-            f"[cyan]{product.asin}[/cyan][/dim]",
+            f"{safe_markup(product.title)}\n[dim]{safe_markup(product.authors_str)}  "
+            f"[cyan]{safe_markup(product.asin)}[/cyan][/dim]",
             product_price,
             target_str,
             status,
@@ -311,7 +338,7 @@ def display_watch_table(
         if credit_price is not None:
             row.append(_buy_cell(product, credit_price))
         if show_url_column:
-            row.append(product.url)
+            row.append(safe_markup(product.url))
         table.add_row(*row)
 
     terminal.console.print(table)
@@ -319,7 +346,7 @@ def display_watch_table(
         terminal.console.print("\n[bold]URLs[/bold]")
         for product in displayed_products:
             terminal.console.print(
-                f"  {product.asin}: {product.url}",
+                f"  {safe_markup(product.asin)}: {safe_markup(product.url)}",
                 soft_wrap=True,
                 overflow="ignore",
             )
@@ -345,12 +372,13 @@ def display_series_gaps(gaps: list[dict], currency: str = "$") -> None:
         return
     for entry in gaps:
         terminal.console.print(
-            f"\n[bold]{entry['series']}[/bold] "
-            f"[dim]— own {entry['owned']} of {entry['total_known']}[/dim]"
+            f"\n[bold]{safe_markup(entry.get('series', ''))}[/bold] "
+            f"[dim]— own {safe_markup(entry.get('owned', 0))} of "
+            f"{safe_markup(entry.get('total_known', 0))}[/dim]"
         )
         for book in entry["missing"]:
             position = book["position"]
-            position_str = f"#{position}" if position else "  "
+            position_str = safe_markup(f"#{position}" if position else "  ")
             price = book["price"]
             rendered_price = (
                 price_str(price, currency) if price is not None else "unavailable"
@@ -358,7 +386,7 @@ def display_series_gaps(gaps: list[dict], currency: str = "$") -> None:
             atl = "[bold gold1] ★[/bold gold1]" if book.get("atl") else ""
             terminal.console.print(
                 f"  [dim]missing[/dim]  {position_str:<6} "
-                f"{book['title']:<45} {rendered_price}{atl}"
+                f"{safe_markup(book.get('title', '')):<45} {rendered_price}{atl}"
             )
 
 
@@ -380,20 +408,20 @@ def display_track_history(runs: list[dict]) -> None:
     table.add_column("Status", min_width=4)
 
     for run in runs:
-        at = run.get("at", "?")
+        at = safe_markup(run.get("at", "?"))
         duration = run.get("duration_s")
-        duration_str = f"{duration}s" if duration is not None else "-"
+        duration_str = safe_markup(f"{duration}s" if duration is not None else "-")
         wishlist = run.get("wishlist_checked", 0) or 0
         extra = run.get("extra_tracked_checked", 0) or 0
-        checked_str = f"{wishlist}+{extra}"
-        hits = str(run.get("hits", 0) or 0)
+        checked_str = safe_markup(f"{wishlist}+{extra}")
+        hits = safe_markup(run.get("hits", 0) or 0)
         if any(
             key in run
             for key in ("monitors_checked", "monitor_events", "monitor_failures")
         ):
             failures = run.get("monitor_failures", [])
             failure_count = len(failures) if isinstance(failures, list) else 0
-            monitors = (
+            monitors = safe_markup(
                 f"{run.get('monitors_checked', 0) or 0}/"
                 f"{run.get('monitor_events', 0) or 0}/{failure_count}"
             )
@@ -401,9 +429,7 @@ def display_track_history(runs: list[dict]) -> None:
             monitors = "-"
         error = run.get("error")
         if error:
-            status = (
-                f"[red]{error[:60]}[/red]" if len(error) > 60 else f"[red]{error}[/red]"
-            )
+            status = f"[red]{safe_markup(safe_text(error)[:60])}[/red]"
         else:
             status = "[green]ok[/green]"
         table.add_row(at, duration_str, checked_str, hits, monitors, status)
@@ -454,7 +480,7 @@ def display_library_stats(products: list[Product], currency: str = "$") -> None:
         table.add_column("Name", min_width=30)
         table.add_column("#", justify="right", width=6)
         for name, count in counter.most_common(5):
-            table.add_row(name, str(count))
+            table.add_row(safe_markup(name), str(count))
         terminal.console.print(table)
 
     _top_table("Top Genres", genre_counts)

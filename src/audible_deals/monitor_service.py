@@ -15,6 +15,11 @@ from audible_deals.automation_models import (
     MonitorSelection,
     MonitorSnapshot,
 )
+from audible_deals.constants import (
+    LOCALE_DOMAIN,
+    MAX_CATALOG_CALLS_PER_SCAN,
+    WEBHOOK_FORMATS,
+)
 from audible_deals.catalog_workflow import (
     CatalogQueryError,
     bind_catalog_categories,
@@ -33,11 +38,11 @@ from audible_deals.result_processing import (
     process_settings_discovery,
 )
 from audible_deals.serialization import serialize_product
-from audible_deals.settings import Settings
+from audible_deals.settings import Settings, profile_validation_error
 
 logger = logging.getLogger(__name__)
 
-MAX_MONITOR_API_CALLS_PER_RUN = 60
+MAX_MONITOR_API_CALLS_PER_RUN = MAX_CATALOG_CALLS_PER_SCAN
 
 
 class MonitorServiceError(ValueError):
@@ -66,11 +71,58 @@ def settings_to_dict(settings: Settings) -> dict[str, Any]:
 
 
 def settings_from_dict(data: dict) -> Settings:
+    if not isinstance(data, dict):
+        raise MonitorServiceError("Invalid monitor settings: expected an object")
+    if error := profile_validation_error(data):
+        raise MonitorServiceError(f"Invalid monitor settings: {error}")
     fields = {field.name for field in dataclasses.fields(Settings)}
     try:
         return Settings(**{key: value for key, value in data.items() if key in fields})
     except (TypeError, ValueError) as exc:
         raise MonitorServiceError(f"Invalid monitor settings: {exc}") from exc
+
+
+def validated_monitor_definition(data: object) -> MonitorDefinition:
+    if not isinstance(data, dict):
+        raise MonitorServiceError("Invalid monitor definition: expected an object")
+    if not isinstance(data.get("settings", {}), dict):
+        raise MonitorServiceError(
+            "Invalid monitor definition: expected settings object"
+        )
+    mode = data.get("mode", "find")
+    if not isinstance(mode, str) or mode not in {"find", "search"}:
+        raise MonitorServiceError(
+            "Invalid monitor definition: mode must be find or search"
+        )
+    locale = data.get("locale", "us")
+    if not isinstance(locale, str) or locale not in LOCALE_DOMAIN:
+        raise MonitorServiceError("Invalid monitor definition: unsupported locale")
+    if "enabled" in data and type(data["enabled"]) is not bool:
+        raise MonitorServiceError("Invalid monitor definition: enabled must be boolean")
+    if "query" in data and not isinstance(data["query"], str):
+        raise MonitorServiceError("Invalid monitor definition: query must be text")
+    if "name" in data and not isinstance(data["name"], str):
+        raise MonitorServiceError("Invalid monitor definition: name must be text")
+    for key in ("profile", "webhook", "created_at"):
+        if key in data and data[key] is not None and not isinstance(data[key], str):
+            raise MonitorServiceError(f"Invalid monitor definition: {key} must be text")
+    if "webhook_format" in data and data["webhook_format"] is not None:
+        if (
+            not isinstance(data["webhook_format"], str)
+            or data["webhook_format"] not in WEBHOOK_FORMATS
+        ):
+            raise MonitorServiceError(
+                "Invalid monitor definition: unsupported webhook format"
+            )
+    if "version" in data and (
+        isinstance(data["version"], bool) or not isinstance(data["version"], int)
+    ):
+        raise MonitorServiceError(
+            "Invalid monitor definition: version must be an integer"
+        )
+    definition = MonitorDefinition.from_dict(data)
+    settings_from_dict(definition.settings)
+    return definition
 
 
 def build_scan_plan(definition: MonitorDefinition):
@@ -247,8 +299,8 @@ def select_monitors_for_run(monitors: dict[str, dict], cursor: int) -> MonitorSe
         ):
             logger.warning("Skipping malformed monitor %s", name)
             continue
-        definition = MonitorDefinition.from_dict(raw_definition)
         try:
+            definition = validated_monitor_definition(raw_definition)
             estimate = estimate_monitor_calls(definition)
         except (KeyError, TypeError, MonitorServiceError) as exc:
             logger.warning("Skipping malformed monitor %s: %s", name, exc)
@@ -312,6 +364,7 @@ def set_monitor_enabled(name: str, enabled: bool) -> bool:
         raw = monitors.get(name)
         if not isinstance(raw, dict):
             raise MonitorNotFoundError(f"Monitor '{name}' not found.")
+        validated_monitor_definition(raw)
         if raw.get("enabled", True) == enabled:
             return False
         raw["enabled"] = enabled

@@ -6,8 +6,9 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.result_models import CatalogScanPlan
+from audible_deals.constants import MAX_CATALOG_CALLS_PER_SCAN
 
 
 @dataclass(frozen=True)
@@ -38,6 +39,12 @@ class CatalogDryRunSummary:
             "pages_per_sort": plan.pages,
             "max_items": plan.max_items,
             "api_calls": plan.total_calls,
+            "catalog_call_limit": MAX_CATALOG_CALLS_PER_SCAN,
+            "requires_large_scan_override": (
+                None
+                if plan.total_calls is None
+                else plan.total_calls > MAX_CATALOG_CALLS_PER_SCAN
+            ),
         }
 
 
@@ -48,29 +55,33 @@ def render_catalog_dry_run(
     json_writer: Callable[[str], object] = print,
 ) -> None:
     if json_flag:
-        json_writer(json.dumps(summary.to_dict(), indent=2, ensure_ascii=False))
+        json_writer(
+            json.dumps(summary.to_dict(), indent=2, ensure_ascii=False, allow_nan=False)
+        )
         return
     plan = summary.plan
     sort_label = ", ".join(plan.sort_orders)
     console.print("\n[bold]Dry run[/bold] — would scan:")
     if summary.category_name:
-        console.print(f"  Category: {summary.category_name}")
+        console.print(f"  Category: {safe_markup(summary.category_name)}")
     if plan.category_ids is None:
         console.print("  Subcategories: unknown (resolved during scan)")
     elif plan.category_multiplier != 1:
         console.print(f"  Subcategories: {plan.category_multiplier}")
     if summary.query:
-        console.print(f"  Query: {summary.query}")
-    console.print(f"  Result sort: {summary.result_sort}")
+        console.print(f"  Query: {safe_markup(summary.query)}")
+    console.print(f"  Result sort: {safe_markup(summary.result_sort)}")
     console.print(
         f"  Limit: {summary.limit if summary.limit and summary.limit > 0 else 'unlimited'}"
     )
-    console.print(f"  Profile: {summary.profile_name or 'none'}")
+    console.print(f"  Profile: {safe_markup(summary.profile_name or 'none')}")
     console.print(
         "  Filters: "
-        + ("; ".join(summary.active_filters) if summary.active_filters else "none")
+        + safe_markup(
+            "; ".join(summary.active_filters) if summary.active_filters else "none"
+        )
     )
-    console.print(f"  Sort orders: {sort_label}")
+    console.print(f"  Sort orders: {safe_markup(sort_label)}")
     console.print(f"  Pages per sort: {plan.pages}")
     if plan.total_calls is None:
         console.print("  Max items: unknown (depends on subcategory count)")
@@ -78,3 +89,8 @@ def render_catalog_dry_run(
     else:
         console.print(f"  Max items: ~{plan.max_items}")
         console.print(f"  API calls: {plan.total_calls}")
+        if plan.total_calls > MAX_CATALOG_CALLS_PER_SCAN:
+            console.print(
+                "  [yellow]Warning: a live run requires --allow-large-scan "
+                f"(limit: {MAX_CATALOG_CALLS_PER_SCAN} calls).[/yellow]"
+            )

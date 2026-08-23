@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import contextlib
 import logging
+import math
 
 import click
 
@@ -14,6 +16,7 @@ from audible_deals.constants import (
     WEBHOOK_FORMATS,
 )
 from audible_deals.storage import load_json_file, save_json_file
+from audible_deals.locking import advisory_lock
 from audible_deals.validation import validate_finite_number
 
 logger = logging.getLogger(__name__)
@@ -99,6 +102,32 @@ def config_numeric_errors(config: dict) -> list[str]:
 
 def save_config(cfg: dict) -> None:
     save_json_file(constants.CONFIG_FILE, cfg, "config")
+
+
+def _state_lock(path):
+    return advisory_lock(path.with_name(f".{path.name}.lock"), wait=True)
+
+
+@contextlib.contextmanager
+def config_transaction():
+    """Lock, load, mutate, and atomically save the global config."""
+    with _state_lock(constants.CONFIG_FILE):
+        config = load_config()
+        yield config
+        for key, value in list(config.items()):
+            if isinstance(value, float) and not math.isfinite(value):
+                logger.warning("Removing non-finite config value for %s", key)
+                del config[key]
+        save_config(config)
+
+
+@contextlib.contextmanager
+def profiles_transaction():
+    """Lock, load, mutate, and atomically save saved profiles."""
+    with _state_lock(constants.PROFILES_FILE):
+        profiles = load_profiles()
+        yield profiles
+        save_profiles(profiles)
 
 
 def load_notify_state() -> dict:
