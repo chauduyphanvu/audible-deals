@@ -14,6 +14,7 @@ from click.testing import CliRunner
 
 import audible_deals.constants as constants_mod
 import audible_deals.price_history as price_history
+import audible_deals.selectors as selectors_mod
 import audible_deals.wishlist as wishlist_mod
 from audible_deals.cli import cli
 from audible_deals.price_history import (
@@ -35,7 +36,11 @@ from audible_deals.results_cache import (
     save_dismissed_asins,
     save_seen_asins,
 )
-from audible_deals.selectors import _expand_ref_string, resolve_last_references
+from audible_deals.selectors import (
+    _expand_ref_string,
+    resolve_last_references,
+    resolve_selectors,
+)
 from tests.conftest import make_product
 
 
@@ -253,6 +258,77 @@ class TestResolveLastReferencesRangeSyntax:
         self._write_cache(tmp_config)
         with pytest.raises(click.ClickException, match="out of range"):
             resolve_last_references(("1-3,50",))
+
+
+class TestResolveSelectorsSessionReuse:
+    @staticmethod
+    def _write_cache(tmp_config):
+        data = [
+            {"asin": f"B00CACHE{i}", "title": f"Book {i}", "locale": "us"}
+            for i in range(1, 4)
+        ]
+        constants_mod.LAST_RESULTS_FILE.write_text(
+            json.dumps({"title": "Test results", "results": data})
+        )
+
+    def test_at_and_last_references_share_one_session_load(
+        self, tmp_config, monkeypatch
+    ):
+        self._write_cache(tmp_config)
+        real_load = selectors_mod.results_cache.load_result_session
+        calls = 0
+
+        def counted_load():
+            nonlocal calls
+            calls += 1
+            return real_load()
+
+        monkeypatch.setattr(
+            selectors_mod.results_cache, "load_result_session", counted_load
+        )
+
+        resolved, locale = resolve_selectors(("@1", "@2"), last_refs=("3", "1"))
+
+        assert calls == 1
+        assert [item.asin for item in resolved] == [
+            "B00CACHE1",
+            "B00CACHE2",
+            "B00CACHE3",
+        ]
+        assert [item.description for item in resolved] == [
+            "Result #1 from 'Test results': Book 1 (B00CACHE1)",
+            "Result #2 from 'Test results': Book 2 (B00CACHE2)",
+            "Result #3 from 'Test results': Book 3 (B00CACHE3)",
+        ]
+        assert locale == "us"
+
+    @pytest.mark.parametrize(
+        ("selectors", "last_refs", "message"),
+        [
+            (("@1", "@9"), (), "selector 9 is out of range"),
+            (("@1",), ("9",), "--last 9 is out of range"),
+        ],
+    )
+    def test_reused_session_preserves_error_labels(
+        self, tmp_config, monkeypatch, selectors, last_refs, message
+    ):
+        self._write_cache(tmp_config)
+        real_load = selectors_mod.results_cache.load_result_session
+        calls = 0
+
+        def counted_load():
+            nonlocal calls
+            calls += 1
+            return real_load()
+
+        monkeypatch.setattr(
+            selectors_mod.results_cache, "load_result_session", counted_load
+        )
+
+        with pytest.raises(click.ClickException, match=message):
+            resolve_selectors(selectors, last_refs=last_refs)
+
+        assert calls == 1
 
 
 class TestFindWishlistAtlHits:

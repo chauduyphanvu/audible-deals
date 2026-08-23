@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import json
-import subprocess as sp
 import time
 from unittest.mock import patch
 
@@ -292,27 +291,35 @@ class TestCompletionsCommand:
         assert result.exit_code == 0
         assert "bash" in result.output
 
-    def test_completions_no_shell_invocation(self, monkeypatch):
-        """Verify subprocess.run is called directly, not via /bin/sh -c."""
-        import subprocess as sp
-
-        calls = []
-
-        def fake_run(*args, **kwargs):
-            calls.append((args, kwargs))
-            return sp.CompletedProcess(args[0], 0, stdout="# completion", stderr="")
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _: None)
-
+    @pytest.mark.parametrize(
+        ("shell", "markers"),
+        [
+            (
+                "bash",
+                ("_deals_completion()", "_DEALS_COMPLETE=bash_complete", "COMP_WORDS"),
+            ),
+            (
+                "zsh",
+                ("#compdef deals", "_DEALS_COMPLETE=zsh_complete", "compdef"),
+            ),
+            (
+                "fish",
+                (
+                    "function _deals_completion",
+                    "_DEALS_COMPLETE=fish_complete",
+                    "complete --no-files --command deals",
+                ),
+            ),
+        ],
+    )
+    def test_completions_generate_shell_script(self, shell, markers):
         runner = CliRunner()
-        result = runner.invoke(cli, ["completions", "bash"])
+        result = runner.invoke(cli, ["completions", shell])
+
         assert result.exit_code == 0
-        assert len(calls) == 1
-        cmd = calls[0][0][0]
-        assert "/bin/sh" not in cmd
-        assert "env" in calls[0][1]
-        assert "_DEALS_COMPLETE" in calls[0][1]["env"]
+        assert "Usage:" not in result.output
+        for marker in markers:
+            assert marker in result.output
 
 
 class TestAsinValidationInCommands:
@@ -2005,94 +2012,6 @@ def test_config_set_accepts_valid_values(tmp_config, mock_client):
     result = _routes_run(CliRunner(), ["config", "set", "min-discount", "70"])
     assert result.exit_code == 0
     assert json.loads((tmp_config / "config.json").read_text())["min_discount"] == 70
-
-
-class TestCompletionsHelpTextLeak:
-    def _fake_help_run(self, *args, **kwargs):
-        """Mimic the python -m fallback emitting plain help text on stdout."""
-        return sp.CompletedProcess(
-            args[0],
-            0,
-            stdout=(
-                "Usage: python -m audible_deals [OPTIONS] COMMAND [ARGS]...\n\n"
-                "Options:\n  --help  Show this message and exit.\n"
-            ),
-            stderr="",
-        )
-
-    def test_fallback_does_not_echo_help_text(self, monkeypatch):
-        """When the spawned process returns help text, completions must fail
-        rather than echoing the help banner into the shell config."""
-        monkeypatch.setattr("subprocess.run", self._fake_help_run)
-        monkeypatch.setattr("shutil.which", lambda _: None)
-
-        result = CliRunner().invoke(cli, ["completions", "bash"])
-
-        assert result.exit_code != 0
-        assert "Usage:" not in result.output
-
-    def test_fallback_uses_fixed_prog_name(self, monkeypatch):
-        """The fallback must spawn with a stable prog_name so Click derives the
-        _DEALS_COMPLETE var, not the python -m form."""
-        calls = []
-
-        def fake_run(*args, **kwargs):
-            calls.append((args, kwargs))
-            return sp.CompletedProcess(
-                args[0], 0, stdout="_deals_completion() { :; }\n", stderr=""
-            )
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _: None)
-
-        result = CliRunner().invoke(cli, ["completions", "bash"])
-
-        assert result.exit_code == 0
-        cmd = calls[0][0][0]
-        assert "-m" not in cmd
-        joined = " ".join(cmd)
-        assert "prog_name='deals'" in joined
-
-    def test_valid_completion_script_is_echoed(self, monkeypatch):
-        """A genuine completion script (no Usage banner) is still emitted."""
-
-        def fake_run(*args, **kwargs):
-            return sp.CompletedProcess(
-                args[0], 0, stdout="_deals_completion() { :; }\n", stderr=""
-            )
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _: None)
-
-        result = CliRunner().invoke(cli, ["completions", "bash"])
-
-        assert result.exit_code == 0
-        assert "_deals_completion" in result.output
-
-
-class TestCompletionsExitCode:
-    def test_nonzero_subprocess_surfaces_failure(self, monkeypatch):
-        def fake_run(*args, **kwargs):
-            return sp.CompletedProcess(args[0], 1, stdout="", stderr="boom\n")
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/deals")
-
-        result = CliRunner().invoke(cli, ["completions", "bash"])
-
-        assert result.exit_code != 0
-        assert "boom" in result.output
-
-    def test_empty_output_surfaces_failure(self, monkeypatch):
-        def fake_run(*args, **kwargs):
-            return sp.CompletedProcess(args[0], 0, stdout="", stderr="")
-
-        monkeypatch.setattr("subprocess.run", fake_run)
-        monkeypatch.setattr("shutil.which", lambda _: "/usr/bin/deals")
-
-        result = CliRunner().invoke(cli, ["completions", "bash"])
-
-        assert result.exit_code != 0
 
 
 class TestWebhookCgnatSsrf:

@@ -21,7 +21,7 @@ Usage:
 
 from __future__ import annotations
 
-import logging
+import importlib
 import sys
 
 try:
@@ -30,29 +30,167 @@ except ImportError:
     pass  # unavailable on Windows
 
 import click
-from audible.exceptions import RequestError
 
-from audible_deals.auth_state import inspect_auth_file
-from audible_deals.cli import catalog as catalog_commands
-from audible_deals.cli import config as config_commands
-from audible_deals.cli import foryou as foryou_commands
-from audible_deals.cli import history as history_commands
-from audible_deals.cli import last as last_commands
-from audible_deals.cli import library as library_commands
-from audible_deals.cli import misc as misc_commands
-from audible_deals.cli import monitor as monitor_commands
-from audible_deals.cli import notify as notify_commands
-from audible_deals.cli import recap as recap_commands
-from audible_deals.cli import series as series_commands
-from audible_deals.cli import track as track_commands
-from audible_deals.cli import wishlist as wishlist_commands
-from audible_deals.cli.helpers import _CL
-from audible_deals.config_store import load_config
-from audible_deals.constants import LOCALE_DOMAIN
-from audible_deals.logging_setup import configure_logging
-from audible_deals.presentation.terminal import safe_text
 
-logger = logging.getLogger(__name__)
+_COMMAND_SPECS = {
+    "login": (
+        "audible_deals.cli.misc",
+        "login",
+        "Authenticate with Audible.",
+        False,
+    ),
+    "import-auth": (
+        "audible_deals.cli.misc",
+        "import_auth",
+        "Import auth from an audible-cli JSON file or Libation AccountsSettings.json.",
+        False,
+    ),
+    "categories": (
+        "audible_deals.cli.misc",
+        "categories",
+        "List Audible categories.",
+        False,
+    ),
+    "detail": (
+        "audible_deals.cli.misc",
+        "detail",
+        "Show product details using an ASIN, Audible URL, or @N selector.",
+        False,
+    ),
+    "open": (
+        "audible_deals.cli.misc",
+        "open_cmd",
+        "Open a product selected by ASIN, Audible URL, or @N.",
+        False,
+    ),
+    "compare": (
+        "audible_deals.cli.misc",
+        "compare",
+        "Compare multiple products side-by-side.",
+        False,
+    ),
+    "doctor": (
+        "audible_deals.cli.misc",
+        "doctor",
+        "Diagnostic checks for auth, config, and marketplace reachability.",
+        False,
+    ),
+    "completions": (
+        "audible_deals.cli.misc",
+        "completions",
+        "Generate shell completion script.",
+        False,
+    ),
+    "search": (
+        "audible_deals.cli.catalog",
+        "search",
+        "Search the Audible catalog by keyword.",
+        False,
+    ),
+    "find": (
+        "audible_deals.cli.catalog",
+        "find",
+        "Find deals: browse the catalog filtered by price and genre.",
+        False,
+    ),
+    "for-me": (
+        "audible_deals.cli.foryou",
+        "for_me",
+        "Personalized deals from your own library's taste profile.",
+        False,
+    ),
+    "for-you": (
+        "audible_deals.cli.foryou",
+        "for_you",
+        "Deprecated alias for `deals for-me`.",
+        True,
+    ),
+    "library": (
+        "audible_deals.cli.library",
+        "library",
+        "List all audiobooks in your Audible library.",
+        False,
+    ),
+    "series": (
+        "audible_deals.cli.series",
+        "series",
+        "Find continuation books in series you're invested in.",
+        False,
+    ),
+    "last": (
+        "audible_deals.cli.last",
+        "last_cmd",
+        "Re-display and cumulatively refine the last result session without API calls.",
+        False,
+    ),
+    "wishlist": (
+        "audible_deals.cli.wishlist",
+        "wishlist",
+        "Manage your audiobook wishlist.",
+        False,
+    ),
+    "watch": (
+        "audible_deals.cli.wishlist",
+        "watch",
+        "Check wishlist prices and highlight deals.",
+        False,
+    ),
+    "config": (
+        "audible_deals.cli.config",
+        "config_cmd",
+        "Manage global defaults for deals commands.",
+        False,
+    ),
+    "profile": (
+        "audible_deals.cli.config",
+        "profile",
+        "Manage saved search profiles.",
+        False,
+    ),
+    "history": (
+        "audible_deals.cli.history",
+        "history",
+        "Show price history for an ASIN, Audible URL, or @N selector.",
+        False,
+    ),
+    "recap": (
+        "audible_deals.cli.recap",
+        "recap",
+        "Show a recap of price changes across tracked items.",
+        False,
+    ),
+    "notify": (
+        "audible_deals.cli.notify",
+        "notify",
+        "Check wishlist and send notifications for items at target price.",
+        False,
+    ),
+    "track": (
+        "audible_deals.cli.track",
+        "track",
+        "Background price tracking on an OS schedule.",
+        False,
+    ),
+    "monitor": (
+        "audible_deals.cli.monitor",
+        "monitor",
+        "Manage saved-search monitors run by deals track run.",
+        False,
+    ),
+}
+
+_COMMAND_GROUPS = (
+    ("Discover", ("find", "search", "for-me", "series", "categories")),
+    ("Library & Results", ("library", "last", "detail", "compare", "open")),
+    (
+        "Watch & Automate",
+        ("wishlist", "watch", "history", "recap", "notify", "monitor", "track"),
+    ),
+    (
+        "Setup & Support",
+        ("login", "import-auth", "profile", "config", "doctor", "completions"),
+    ),
+)
 
 
 def _force_utf8_output() -> None:
@@ -78,55 +216,79 @@ _force_utf8_output()
 class _HandleAuthErrors(click.Group):
     """Catch RuntimeError from missing auth and show a friendly message."""
 
+    def get_command(self, ctx, cmd_name):
+        command = super().get_command(ctx, cmd_name)
+        if command is not None:
+            return command
+        spec = _COMMAND_SPECS.get(cmd_name)
+        if spec is None:
+            return None
+        module_name, attribute, _, _ = spec
+        command = getattr(importlib.import_module(module_name), attribute)
+        self.add_command(command, cmd_name)
+        return command
+
+    def list_commands(self, ctx):
+        return sorted({*super().list_commands(ctx), *_COMMAND_SPECS})
+
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
         except click.ClickException as exc:
-            exc.message = safe_text(exc.message)
+            exc.message = _safe_text(exc.message)
             raise
         except RuntimeError as e:
             if "Not authenticated" in str(e):
-                raise click.ClickException(safe_text(e))
+                raise click.ClickException(_safe_text(e))
             raise
-        except RequestError:
-            raise click.ClickException(
-                "Audible request failed. Check your network connection and authentication, then try again."
-            )
         except BrokenPipeError:
             raise
         except OSError as e:
-            raise click.ClickException(f"Filesystem error: {safe_text(e)}")
+            raise click.ClickException(f"Filesystem error: {_safe_text(e)}")
+        except Exception as exc:
+            if not _is_audible_request_error(exc):
+                raise
+            raise click.ClickException(
+                "Audible request failed. Check your network connection and authentication, then try again."
+            )
 
     def format_commands(self, ctx, formatter):
         """Render command help in workflows rather than one long alphabetic list."""
-        groups = (
-            ("Discover", ("find", "search", "for-me", "series", "categories")),
-            (
-                "Library & Results",
-                ("library", "last", "detail", "compare", "open"),
-            ),
-            (
-                "Watch & Automate",
-                ("wishlist", "watch", "history", "recap", "notify", "monitor", "track"),
-            ),
-            (
-                "Setup & Support",
-                ("login", "import-auth", "profile", "config", "doctor", "completions"),
-            ),
-        )
-        classified = {name for _, names in groups for name in names}
+        classified = {name for _, names in _COMMAND_GROUPS for name in names}
 
-        for heading, names in (*groups, ("Other", tuple(self.list_commands(ctx)))):
+        for heading, names in (
+            *_COMMAND_GROUPS,
+            ("Other", tuple(self.list_commands(ctx))),
+        ):
             rows = []
             for name in names:
                 if heading == "Other" and name in classified:
                     continue
-                command = self.get_command(ctx, name)
+                spec = _COMMAND_SPECS.get(name)
+                if spec is not None:
+                    _, _, short_help, hidden = spec
+                    if not hidden:
+                        rows.append((name, short_help))
+                    continue
+                command = super().get_command(ctx, name)
                 if command is not None and not command.hidden:
                     rows.append((name, command.get_short_help_str(limit=10_000)))
             if rows:
                 with formatter.section(heading):
                     formatter.write_dl(rows)
+
+
+def _safe_text(value: object) -> str:
+    from audible_deals.presentation.terminal import safe_text
+
+    return safe_text(value)
+
+
+def _is_audible_request_error(exc: Exception) -> bool:
+    """Recognize SDK request errors without importing Audible during startup."""
+    exceptions_module = sys.modules.get("audible.exceptions")
+    request_error = getattr(exceptions_module, "RequestError", None)
+    return isinstance(request_error, type) and isinstance(exc, request_error)
 
 
 def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
@@ -166,10 +328,15 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 @click.pass_context
 def cli(ctx, locale, verbose):
     """Audible deal finder - find cheap audiobooks during sales."""
+    from audible_deals.config_store import load_config
+    from audible_deals.constants import LOCALE_DOMAIN
+
     ctx.ensure_object(dict)
     cfg = load_config()
     ctx.obj["config"] = cfg
-    locale_explicit = ctx.get_parameter_source("locale") == _CL
+    locale_explicit = (
+        ctx.get_parameter_source("locale") == click.core.ParameterSource.COMMANDLINE
+    )
     if not locale_explicit:
         cfg_locale = cfg.get("locale")
         if isinstance(cfg_locale, str) and cfg_locale in LOCALE_DOMAIN:
@@ -190,12 +357,20 @@ def cli(ctx, locale, verbose):
     if ctx.invoked_subcommand is None:
         _print_dashboard(locale)
         return
+    import logging
+
+    from audible_deals.logging_setup import configure_logging
+
     configure_logging(verbose)
-    logger.debug("cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand)
+    logging.getLogger(__name__).debug(
+        "cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand
+    )
 
 
 def _print_dashboard(locale: str) -> None:
     """Print a useful, local-only starting point for a bare invocation."""
+    from audible_deals.auth_state import inspect_auth_file
+
     inspection = inspect_auth_file()
     click.echo(f"audible-deals · marketplace: {locale}")
 
@@ -225,29 +400,3 @@ def _print_dashboard(locale: str) -> None:
         click.echo("     deals wishlist")
         click.echo("     deals track")
     click.echo("Run deals --help for the complete reference.")
-
-
-cli.add_command(misc_commands.login)
-cli.add_command(misc_commands.import_auth)
-cli.add_command(misc_commands.categories)
-cli.add_command(misc_commands.detail)
-cli.add_command(misc_commands.open_cmd)
-cli.add_command(misc_commands.compare)
-cli.add_command(misc_commands.doctor)
-cli.add_command(misc_commands.completions)
-cli.add_command(catalog_commands.search)
-cli.add_command(catalog_commands.find)
-cli.add_command(foryou_commands.for_me)
-cli.add_command(foryou_commands.for_you)
-cli.add_command(library_commands.library)
-cli.add_command(series_commands.series)
-cli.add_command(last_commands.last_cmd)
-cli.add_command(wishlist_commands.wishlist)
-cli.add_command(wishlist_commands.watch)
-cli.add_command(config_commands.config_cmd)
-cli.add_command(config_commands.profile)
-cli.add_command(history_commands.history)
-cli.add_command(recap_commands.recap)
-cli.add_command(notify_commands.notify)
-cli.add_command(track_commands.track)
-cli.add_command(monitor_commands.monitor)

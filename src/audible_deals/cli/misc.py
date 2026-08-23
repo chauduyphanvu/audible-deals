@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json as json_mod
-import os
 import stat
-import sys
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
 
@@ -814,7 +812,8 @@ def doctor(ctx):
 
 @click.command("completions")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
-def completions(shell):
+@click.pass_context
+def completions(ctx, shell):
     """Generate shell completion script.
 
     \b
@@ -823,31 +822,13 @@ def completions(shell):
         deals completions zsh >> ~/.zshrc
         deals completions fish > ~/.config/fish/completions/deals.fish
     """
-    import shutil
-    import subprocess
+    from click.shell_completion import get_completion_class
 
-    env = {**os.environ, "_DEALS_COMPLETE": f"{shell}_source"}
-
-    deals_bin = shutil.which("deals")
-    if deals_bin:
-        cmd = [deals_bin]
-    else:
-        # Spawn with a fixed prog_name so Click derives the same _DEALS_COMPLETE
-        # var; "python -m audible_deals" would derive a different var and emit
-        # plain help text instead of a completion script.
-        cmd = [
-            sys.executable,
-            "-c",
-            "from audible_deals.cli import cli; cli(prog_name='deals')",
-        ]
-
-    result = subprocess.run(cmd, capture_output=True, text=True, env=env)
-
-    # A real completion script never contains the CLI's "Usage:" banner; if it
-    # does (or the subprocess failed / produced nothing), surface the error
-    # instead of echoing help text or an empty script into the shell config.
-    if result.returncode != 0 or not result.stdout.strip() or "Usage:" in result.stdout:
-        raise click.ClickException(
-            result.stderr.strip() or "failed to generate completion script"
-        )
-    click.echo(result.stdout)
+    completion_class = get_completion_class(shell)
+    completion = completion_class(
+        ctx.find_root().command,
+        {},
+        "deals",
+        "_DEALS_COMPLETE",
+    )
+    click.echo(completion.source())

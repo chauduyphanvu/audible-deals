@@ -235,11 +235,15 @@ def _cli_console_modules():
     """All cli submodules that bind the shared Rich console by name."""
     import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
+    import audible_deals.cli.history as cli_history_mod
     import audible_deals.cli.interactive as cli_interactive_mod
     import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.catalog as cli_catalog_mod
+    import audible_deals.cli.config as cli_config_mod
     import audible_deals.cli.last as cli_last_mod
     import audible_deals.cli.library as cli_library_mod
+    import audible_deals.cli.monitor as cli_monitor_mod
+    import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.series as cli_series_mod
     import audible_deals.cli.track as cli_track_mod
     import audible_deals.cli.wishlist as cli_wishlist_mod
@@ -255,10 +259,14 @@ def _cli_console_modules():
         presentation_dry_run_mod,
         cli_interactive_mod,
         cli_catalog_mod,
+        cli_config_mod,
+        cli_history_mod,
         cli_library_mod,
         cli_series_mod,
         cli_last_mod,
         cli_wishlist_mod,
+        cli_monitor_mod,
+        cli_notify_mod,
         notification_workflow_mod,
         cli_misc_mod,
         cli_track_mod,

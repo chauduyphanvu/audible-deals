@@ -6,6 +6,8 @@
 
 import os
 
+from PyInstaller.utils.hooks import collect_submodules
+
 _artifact = os.environ.get('DEALS_ARTIFACT', 'deals')
 _strip = os.name != 'nt'  # strip on Linux/macOS, skip on Windows
 
@@ -14,7 +16,7 @@ a = Analysis(
     pathex=[],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=collect_submodules('audible_deals.cli'),
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

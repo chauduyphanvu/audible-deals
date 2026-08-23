@@ -9,6 +9,7 @@ import urllib.parse
 import click
 
 from audible_deals import constants, results_cache
+from audible_deals.result_models import ResultSession
 from audible_deals.validation import validate_asin
 
 
@@ -85,10 +86,13 @@ def parse_audible_url(value: str) -> tuple[str, str] | None:
     return matches[-1], locale
 
 
-def _cached_selectors(ref: str, label: str) -> list[ResolvedSelector]:
-    session = results_cache.load_result_session()
+def _cached_selectors(
+    ref: str,
+    label: str,
+    session: ResultSession,
+    visible: list[dict],
+) -> list[ResolvedSelector]:
     refs = _expand_ref_string(ref, label=label)
-    visible = session.visible_results
     resolved: list[ResolvedSelector] = []
     for position in refs:
         if position < 1 or position > len(visible):
@@ -123,13 +127,23 @@ def resolve_selectors(
 ) -> tuple[list[ResolvedSelector], str | None]:
     """Resolve ASINs, Audible URLs, ``@N`` lists/ranges, and legacy ``--last``."""
     resolved: list[ResolvedSelector] = []
+    cached_view: tuple[ResultSession, list[dict]] | None = None
+
+    def resolve_cached(ref: str, label: str) -> list[ResolvedSelector]:
+        nonlocal cached_view
+        if cached_view is None:
+            session = results_cache.load_result_session()
+            cached_view = session, session.visible_results
+        session, visible = cached_view
+        return _cached_selectors(ref, label, session, visible)
+
     for selector in selectors:
         if selector.startswith("@"):
             if selector == "@":
                 raise click.ClickException(
                     "Invalid selector '@': provide a result number."
                 )
-            resolved.extend(_cached_selectors(selector[1:], "selector"))
+            resolved.extend(resolve_cached(selector[1:], "selector"))
             continue
         parsed_url = parse_audible_url(selector)
         if parsed_url is not None:
@@ -145,7 +159,7 @@ def resolve_selectors(
         validate_asin(selector)
         resolved.append(ResolvedSelector(asin=selector.upper()))
     for last_ref in last_refs:
-        resolved.extend(_cached_selectors(str(last_ref), "--last"))
+        resolved.extend(resolve_cached(str(last_ref), "--last"))
 
     if single and len(resolved) != 1:
         raise click.ClickException(
