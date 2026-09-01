@@ -267,6 +267,8 @@ def test_browser_login_is_default_and_pastes_callback(
     )
     assert result.exit_code == 0, result.output
     assert "Page not found" in result.output
+    assert "will not appear while you paste or type it" in result.output
+    assert "openid.oa2.authorization_code=x" not in result.output
     assert "Could not open a browser" not in result.output
     launch.assert_called_once_with("https://auth.example/login")
     mock_client.login_external.assert_called_once()

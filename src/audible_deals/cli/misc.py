@@ -156,8 +156,11 @@ def _login_callback(via_file: Path | None, open_browser: bool):
                 "The callback file contains a sign-in code; delete it after this command finishes."
             )
         else:
+            click.echo(
+                "For security, the URL will not appear while you paste or type it."
+            )
             callback_url = click.prompt(
-                "Paste the full callback URL",
+                "Paste the full callback URL, then press Enter",
                 default="",
                 show_default=False,
                 hide_input=True,
