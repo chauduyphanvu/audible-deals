@@ -362,11 +362,11 @@ class DealsClient:
     def get_library_pages(self) -> Iterator[tuple[list[_product.Product], int]]:
         """Yield (products, page_num) for each page of the user's library.
 
-        Paginates through the library endpoint using MAX_PAGE_SIZE per page
-        and the same response groups as catalog queries.
+        Fetches the first page synchronously, then uses the reported result
+        count to fetch remaining pages with up to four workers.
         """
-        page = 1  # library API uses 1-indexed pages
-        while True:
+
+        def fetch(page: int):
             resp = self._transport.request(
                 "1.0/library",
                 num_results=_constants.MAX_PAGE_SIZE,
@@ -375,10 +375,75 @@ class DealsClient:
             )
             items = resp.get("items", [])
             products = _parse_api_products(items, self.locale)
-            yield products, page
-            if len(items) < _constants.MAX_PAGE_SIZE:
-                break
-            page += 1
+            item_count = len(items) if isinstance(items, list) else 0
+            return products, item_count, resp.get("total_results")
+
+        def fetch_serially(start_page: int):
+            page = start_page
+            while True:
+                products, item_count, _ = fetch(page)
+                yield products, page
+                if item_count < _constants.MAX_PAGE_SIZE:
+                    return
+                page += 1
+
+        products, item_count, total_results = fetch(1)
+        yield products, 1
+        if item_count < _constants.MAX_PAGE_SIZE:
+            return
+
+        if (
+            isinstance(total_results, bool)
+            or not isinstance(total_results, int)
+            or total_results < item_count
+        ):
+            yield from fetch_serially(2)
+            return
+
+        last_page = (
+            total_results + _constants.MAX_PAGE_SIZE - 1
+        ) // _constants.MAX_PAGE_SIZE
+        if last_page < 2:
+            yield from fetch_serially(2)
+            return
+        if last_page == 2:
+            products, item_count, _ = fetch(2)
+            yield products, 2
+            if item_count == _constants.MAX_PAGE_SIZE:
+                yield from fetch_serially(3)
+            return
+
+        pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
+        try:
+            next_page = 2
+            pending = {}
+            ready = {}
+            while next_page <= last_page and len(pending) < _MAX_CONCURRENT_FETCHES:
+                pending[pool.submit(fetch, next_page)] = next_page
+                next_page += 1
+            for page in range(2, last_page + 1):
+                while page not in ready:
+                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                    for future in done:
+                        completed_page = pending.pop(future)
+                        ready[completed_page] = future
+                products, item_count, _ = ready.pop(page).result()
+                yield products, page
+                if item_count < _constants.MAX_PAGE_SIZE and page < last_page:
+                    self._transport.cancel()
+                    break
+                if next_page <= last_page:
+                    pending[pool.submit(fetch, next_page)] = next_page
+                    next_page += 1
+        except BaseException:
+            self._transport.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            self._transport.reset_abort()
+
+        if item_count == _constants.MAX_PAGE_SIZE:
+            yield from fetch_serially(last_page + 1)
 
     def get_library(self) -> list[_product.Product]:
         """Fetch all products in the user's Audible library with full metadata.

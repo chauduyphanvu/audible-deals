@@ -18,6 +18,7 @@ import pytest
 from audible_deals.audible_transport import AudibleTransport
 from audible_deals.auth_store import AuthStore
 from audible_deals.client import DealsClient, _validate_category_id
+from audible_deals.constants import MAX_PAGE_SIZE
 from audible_deals.product import (
     _base_price,
     _extract_categories,
@@ -519,6 +520,341 @@ class TestImportAuthValidation:
                 callback_url_file=tmp_path / "callback.txt",
                 login_url_callback=lambda url: url,
             )
+
+
+class TestLibraryPagination:
+    @staticmethod
+    def _client(transport):
+        client = object.__new__(DealsClient)
+        client.locale = "us"
+        client._transport = transport
+        return client
+
+    def test_reported_total_fetches_remaining_pages_concurrently_in_order(self):
+        class Transport:
+            def __init__(self):
+                self.concurrent_pages_started = threading.Event()
+                self.lock = threading.Lock()
+                self.calls = []
+                self.started = set()
+                self.active = 0
+                self.max_active = 0
+
+            def request(self, path, **params):
+                assert path == "1.0/library"
+                page = params["page"]
+                with self.lock:
+                    self.calls.append(page)
+                    self.active += 1
+                    self.max_active = max(self.max_active, self.active)
+                try:
+                    if page > 1:
+                        with self.lock:
+                            self.started.add(page)
+                            if len(self.started) == 3:
+                                self.concurrent_pages_started.set()
+                        assert self.concurrent_pages_started.wait(10)
+                    count = MAX_PAGE_SIZE if page < 4 else 1
+                    start = (page - 1) * MAX_PAGE_SIZE
+                    return {
+                        "items": [
+                            {"asin": f"B{start + index:09d}", "title": "Book"}
+                            for index in range(count)
+                        ],
+                        "total_results": 3 * MAX_PAGE_SIZE + 1,
+                    }
+                finally:
+                    with self.lock:
+                        self.active -= 1
+
+            def cancel(self):
+                pass
+
+            def reset_abort(self):
+                pass
+
+        transport = Transport()
+        pages = list(self._client(transport).get_library_pages())
+
+        assert [page for _, page in pages] == [1, 2, 3, 4]
+        assert [products[0].asin for products, _ in pages] == [
+            "B000000000",
+            "B000000050",
+            "B000000100",
+            "B000000150",
+        ]
+        assert set(transport.calls) == {1, 2, 3, 4}
+        assert transport.max_active == 3
+
+    def test_missing_total_results_preserves_serial_pagination(self):
+        class Transport:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, path, **params):
+                page = params["page"]
+                self.calls.append(page)
+                count = MAX_PAGE_SIZE if page == 1 else 1
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(count)
+                    ]
+                }
+
+        transport = Transport()
+        pages = list(self._client(transport).get_library_pages())
+
+        assert [page for _, page in pages] == [1, 2]
+        assert transport.calls == [1, 2]
+
+    def test_two_page_total_avoids_executor_overhead(self, monkeypatch):
+        import audible_deals.client as client_mod
+
+        class Transport:
+            def request(self, path, **params):
+                page = params["page"]
+                count = MAX_PAGE_SIZE if page == 1 else 1
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(count)
+                    ],
+                    "total_results": MAX_PAGE_SIZE + 1,
+                }
+
+        monkeypatch.setattr(
+            client_mod,
+            "ThreadPoolExecutor",
+            lambda *args, **kwargs: pytest.fail("two pages do not need an executor"),
+        )
+
+        pages = list(self._client(Transport()).get_library_pages())
+
+        assert [page for _, page in pages] == [1, 2]
+
+    def test_huge_total_results_does_not_overflow(self):
+        class Transport:
+            def __init__(self):
+                self.cancel_count = 0
+
+            def request(self, path, **params):
+                page = params["page"]
+                count = MAX_PAGE_SIZE if page == 1 else 1
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(count)
+                    ],
+                    "total_results": 10**1000,
+                }
+
+            def cancel(self):
+                self.cancel_count += 1
+
+            def reset_abort(self):
+                pass
+
+        transport = Transport()
+        pages = list(self._client(transport).get_library_pages())
+
+        assert [page for _, page in pages] == [1, 2]
+        assert transport.cancel_count == 1
+
+    def test_underreported_total_continues_until_a_short_page(self):
+        class Transport:
+            def __init__(self):
+                self.calls = []
+
+            def request(self, path, **params):
+                page = params["page"]
+                self.calls.append(page)
+                count = MAX_PAGE_SIZE if page < 3 else 1
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(count)
+                    ],
+                    "total_results": MAX_PAGE_SIZE,
+                }
+
+            def cancel(self):
+                pass
+
+            def reset_abort(self):
+                pass
+
+        transport = Transport()
+        pages = list(self._client(transport).get_library_pages())
+
+        assert [page for _, page in pages] == [1, 2, 3]
+        assert transport.calls == [1, 2, 3]
+
+    def test_overreported_total_keeps_prefetch_bounded(self):
+        class Transport:
+            def __init__(self):
+                self.prefetch_started = threading.Event()
+                self.cancelled = threading.Event()
+                self.lock = threading.Lock()
+                self.calls = []
+                self.started = set()
+                self.cancel_count = 0
+                self.reset_count = 0
+
+            def request(self, path, **params):
+                page = params["page"]
+                with self.lock:
+                    self.calls.append(page)
+                    if page > 1:
+                        self.started.add(page)
+                        if len(self.started) == 4:
+                            self.prefetch_started.set()
+                if page > 1:
+                    assert self.prefetch_started.wait(10)
+                if page > 2:
+                    assert self.cancelled.wait(10)
+                count = MAX_PAGE_SIZE if page == 1 or page > 2 else 1
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(count)
+                    ],
+                    "total_results": 10 * MAX_PAGE_SIZE,
+                }
+
+            def cancel(self):
+                self.cancel_count += 1
+                self.cancelled.set()
+
+            def reset_abort(self):
+                self.reset_count += 1
+
+        transport = Transport()
+        pages = list(self._client(transport).get_library_pages())
+
+        assert [page for _, page in pages] == [1, 2]
+        assert set(transport.calls) == {1, 2, 3, 4, 5}
+        assert transport.cancel_count == 1
+        assert transport.reset_count == 1
+
+    def test_concurrent_page_failure_cancels_and_resets_transport(self):
+        class Transport:
+            def __init__(self):
+                self.cancel_count = 0
+                self.reset_count = 0
+
+            def request(self, path, **params):
+                page = params["page"]
+                if page == 2:
+                    raise click.ClickException("page failed")
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(MAX_PAGE_SIZE)
+                    ],
+                    "total_results": 4 * MAX_PAGE_SIZE,
+                }
+
+            def cancel(self):
+                self.cancel_count += 1
+
+            def reset_abort(self):
+                self.reset_count += 1
+
+        transport = Transport()
+
+        with pytest.raises(click.ClickException, match="page failed"):
+            list(self._client(transport).get_library_pages())
+
+        assert transport.cancel_count == 1
+        assert transport.reset_count == 1
+
+    def test_speculative_failure_after_short_page_is_ignored(self):
+        class Transport:
+            def __init__(self):
+                self.later_page_failed = threading.Event()
+                self.cancel_count = 0
+                self.reset_count = 0
+
+            def request(self, path, **params):
+                page = params["page"]
+                if page == 2:
+                    assert self.later_page_failed.wait(10)
+                    count = 1
+                elif page == 3:
+                    self.later_page_failed.set()
+                    raise click.ClickException("unneeded page failed")
+                else:
+                    count = MAX_PAGE_SIZE
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(count)
+                    ],
+                    "total_results": 10 * MAX_PAGE_SIZE,
+                }
+
+            def cancel(self):
+                self.cancel_count += 1
+
+            def reset_abort(self):
+                self.reset_count += 1
+
+        transport = Transport()
+        pages = list(self._client(transport).get_library_pages())
+
+        assert [page for _, page in pages] == [1, 2]
+        assert transport.cancel_count == 1
+        assert transport.reset_count == 1
+
+    def test_closing_generator_cancels_and_resets_prefetch(self):
+        class Transport:
+            def __init__(self):
+                self.prefetch_started = threading.Event()
+                self.cancelled = threading.Event()
+                self.lock = threading.Lock()
+                self.calls = []
+                self.started = set()
+                self.cancel_count = 0
+                self.reset_count = 0
+
+            def request(self, path, **params):
+                page = params["page"]
+                with self.lock:
+                    self.calls.append(page)
+                    if page > 1:
+                        self.started.add(page)
+                        if len(self.started) == 4:
+                            self.prefetch_started.set()
+                if page > 1:
+                    assert self.prefetch_started.wait(10)
+                if page > 2:
+                    assert self.cancelled.wait(10)
+                return {
+                    "items": [
+                        {"asin": f"B{page:09d}{index}", "title": "Book"}
+                        for index in range(MAX_PAGE_SIZE)
+                    ],
+                    "total_results": 10 * MAX_PAGE_SIZE,
+                }
+
+            def cancel(self):
+                self.cancel_count += 1
+                self.cancelled.set()
+
+            def reset_abort(self):
+                self.reset_count += 1
+
+        transport = Transport()
+        pages = self._client(transport).get_library_pages()
+
+        assert next(pages)[1] == 1
+        assert next(pages)[1] == 2
+        pages.close()
+
+        assert transport.cancel_count == 1
+        assert transport.reset_count == 1
+        assert set(transport.calls) <= {1, 2, 3, 4, 5}
 
 
 class TestRetryAfterBackoff:
