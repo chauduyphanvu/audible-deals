@@ -6,6 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-08-31
+
+### Fixed
+- `deals login` now explains that callback URL input is hidden for security and that users should press Enter after pasting, instead of appearing unresponsive.
+
 ## [0.11.0] - 2026-08-22
 
 ### Changed
@@ -123,6 +128,7 @@ A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.11.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.1
 [0.11.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.0
 [0.10.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.10.0
 [0.9.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.9.1
