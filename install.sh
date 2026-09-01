@@ -597,11 +597,11 @@ main() {
 
     echo "Installing audible-deals v${version} (${platform})..."
 
-    url="https://github.com/$REPO/releases/download/v${version}/${artifact}.tar.gz"
+    url="https://github.com/$REPO/releases/download/v${version}/${artifact}.tar.xz"
 
     DOWNLOAD_DIR="$(mktemp -d)"
-    archive="$DOWNLOAD_DIR/$artifact.tar.gz"
-    checksum="$DOWNLOAD_DIR/$artifact.tar.gz.sha256"
+    archive="$DOWNLOAD_DIR/$artifact.tar.xz"
+    checksum="$DOWNLOAD_DIR/$artifact.tar.xz.sha256"
     trap cleanup_install EXIT
     trap 'exit 129' HUP
     trap 'exit 130' INT
@@ -637,7 +637,7 @@ main() {
     TRANSACTION_DIR="$(mktemp -d "$lib_parent/.deals-install.XXXXXX")"
     mkdir "$TRANSACTION_DIR/payload"
 
-    if ! tar xzf "$archive" -C "$TRANSACTION_DIR/payload" --strip-components=1; then
+    if ! tar xJf "$archive" -C "$TRANSACTION_DIR/payload" --strip-components=1; then
         echo "Error: Could not extract downloaded archive." >&2
         exit 1
     fi

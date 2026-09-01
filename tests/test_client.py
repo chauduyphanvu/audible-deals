@@ -16,7 +16,7 @@ import click
 import pytest
 
 from audible_deals.audible_transport import AudibleTransport
-from audible_deals.auth_store import AuthStore
+from audible_deals.auth_store import AuthStore, _captcha_callback
 from audible_deals.client import DealsClient, _validate_category_id
 from audible_deals.constants import MAX_PAGE_SIZE
 from audible_deals.product import (
@@ -497,20 +497,45 @@ class TestImportAuthValidation:
         import stat
 
         auth_file = tmp_path / "private" / "auth.json"
+        callbacks = []
 
         class FakeAuth:
             def to_file(self, path):
                 path.write_text("saved")
 
-        monkeypatch.setattr(
-            "audible.Authenticator.from_login",
-            lambda username, password, *, locale, with_username: FakeAuth(),
-        )
+        def fake_login(username, password, *, locale, with_username, captcha_callback):
+            callbacks.append(captcha_callback)
+            return FakeAuth()
+
+        monkeypatch.setattr("audible.Authenticator.from_login", fake_login)
 
         AuthStore(auth_file, "us").login("user", "password")
 
+        assert callbacks == [_captcha_callback]
         assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+
+    def test_captcha_callback_opens_browser_and_normalizes_answer(
+        self, monkeypatch, capsys
+    ):
+        opened = []
+        monkeypatch.setattr("audible_deals.auth_store.webbrowser.open", opened.append)
+        monkeypatch.setattr("builtins.input", lambda prompt: "  AbC  ")
+
+        answer = _captcha_callback("https://example.com/captcha")
+
+        assert answer == "abc"
+        assert opened == ["https://example.com/captcha"]
+        assert "https://example.com/captcha" in capsys.readouterr().out
+
+    def test_captcha_callback_allows_manual_open_when_browser_fails(self, monkeypatch):
+        def fail_to_open(url):
+            raise OSError("browser unavailable")
+
+        monkeypatch.setattr("audible_deals.auth_store.webbrowser.open", fail_to_open)
+        monkeypatch.setattr("builtins.input", lambda prompt: "answer")
+
+        assert _captcha_callback("https://example.com/captcha") == "answer"
 
     def test_external_login_rejects_both_callback_modes(self, tmp_path):
         store = AuthStore(tmp_path / "auth.json", "us")

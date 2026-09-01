@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import threading
+import webbrowser
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
 
@@ -21,6 +22,19 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 _UMASK_LOCK = threading.Lock()
+
+
+def _captcha_callback(captcha_url: str) -> str:
+    from audible_deals.presentation.terminal import safe_text
+
+    print()
+    print("Open this CAPTCHA image in your browser:")
+    print(safe_text(captcha_url))
+    try:
+        webbrowser.open(captcha_url)
+    except Exception:
+        pass
+    return input("Answer for CAPTCHA: ").strip().lower()
 
 
 @contextlib.contextmanager
@@ -131,6 +145,7 @@ class AuthStore:
                 password,
                 locale=self.locale,
                 with_username=True,
+                captcha_callback=_captcha_callback,
             )
             with self._auth_file_lock():
                 with _restrictive_umask():

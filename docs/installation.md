@@ -22,14 +22,14 @@ Download the archive for your platform from the [latest release](https://github.
 
 | Platform | File |
 |----------|------|
-| macOS (Apple Silicon) | `deals-macos-arm64.tar.gz` |
-| Linux (x64) | `deals-linux-x64.tar.gz` |
+| macOS (Apple Silicon) | `deals-macos-arm64.tar.xz` |
+| Linux (x64) | `deals-linux-x64.tar.xz` |
 | Windows (x64) | `deals-windows-x64.zip` |
 
 For example, on Apple Silicon:
 
 ```bash
-tar xzf deals-macos-arm64.tar.gz
+tar xJf deals-macos-arm64.tar.xz
 mkdir -p ~/.local/lib/deals ~/.local/bin
 mv deals-macos-arm64/* ~/.local/lib/deals/
 ln -sf ~/.local/lib/deals/deals ~/.local/bin/deals
