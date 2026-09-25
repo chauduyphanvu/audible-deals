@@ -47,6 +47,7 @@ LOCALE_CURRENCY: dict[str, str] = {
     "fr": "€",
     "jp": "¥",
     "es": "€",
+    "br": "R$",
 }
 LOCALE_DOMAIN: dict[str, str] = {
     "us": "www.audible.com",
@@ -58,6 +59,7 @@ LOCALE_DOMAIN: dict[str, str] = {
     "fr": "www.audible.fr",
     "jp": "www.audible.co.jp",
     "es": "www.audible.es",
+    "br": "www.audible.com.br",
 }
 
 
@@ -77,6 +79,7 @@ LOCALE_LANGUAGES: dict[str, str] = {
     "fr": "french",
     "jp": "japanese",
     "es": "spanish",
+    "br": "portuguese",
 }
 
 # ---------------------------------------------------------------------------
