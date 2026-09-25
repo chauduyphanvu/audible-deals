@@ -316,7 +316,7 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 @click.option(
     "--locale",
     default="us",
-    help="Audible marketplace (us, uk, ca, de, fr, au, jp, in, es)",
+    help="Audible marketplace (us, uk, ca, de, fr, au, jp, in, es, br)",
 )
 @click.option(
     "-v",
