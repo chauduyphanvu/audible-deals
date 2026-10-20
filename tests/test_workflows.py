@@ -40,8 +40,12 @@ def test_every_action_is_pinned_to_a_commit_except_the_pypi_placeholder() -> Non
             unpinned.append((name, match["action"], "placeholder" in match["rest"]))
 
     # The one action whose commit could not be checked offline is spelled as an
-    # obvious placeholder and is the only thing allowed to be unpinned.
-    assert unpinned == [("release.yml", "pypa/gh-action-pypi-publish", True)]
+    # obvious placeholder, and is the only thing allowed to be unpinned. Once
+    # the owner pins it (CONTRIBUTING.md, "Publishing to PyPI") nothing is.
+    assert unpinned in (
+        [],
+        [("release.yml", "pypa/gh-action-pypi-publish", True)],
+    )
 
 
 def test_the_pypi_job_uses_trusted_publishing_and_publishes_nothing_by_default() -> (
