@@ -27,6 +27,7 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import Horizontal, Vertical, VerticalScroll
 from textual.screen import ModalScreen
+from textual.timer import Timer
 from textual.widgets import DataTable, Footer, Header, Input, Static
 
 from audible_deals import browse_actions
@@ -50,6 +51,9 @@ SideMode = Literal["detail", "history"]
 #: ``compare`` takes between these many marked titles (like the prompt loop's
 #: two, widened by the comparison table, which has room for four).
 COMPARE_MIN, COMPARE_MAX = 2, 4
+
+#: Seconds after the last keystroke before the ``/`` filter redraws the rows.
+FILTER_DEBOUNCE = 0.15
 
 #: (key, what it does): the help screen and the footer both come from here.
 KEY_HELP: tuple[tuple[str, str], ...] = (
@@ -176,6 +180,7 @@ class ResultsApp(App[None]):
     """Browse a list of results in the terminal."""
 
     TITLE = "deals"
+    filter_debounce = FILTER_DEBOUNCE
     CSS = """
     #filter { display: none; }
     #filter.active { display: block; }
@@ -239,6 +244,7 @@ class ResultsApp(App[None]):
         )
         self.sort_key = sort_key
         self.filter_text = ""
+        self._filter_timer: Timer | None = None
         self.marked: set[str] = set()
         self.side_mode: SideMode | None = None
         #: What was done, printed after the screen closes (it leaves no trace otherwise).
@@ -413,6 +419,7 @@ class ResultsApp(App[None]):
         """Esc: clear the filter, else close the side pane, else quit."""
         box = self.query_one("#filter", Input)
         if self.filter_text or box.has_class("active"):
+            self._cancel_filter_timer()
             self.filter_text = ""
             box.value = ""
             box.remove_class("active")
@@ -424,12 +431,29 @@ class ResultsApp(App[None]):
             self.exit()
 
     def on_input_changed(self, event: Input.Changed) -> None:
-        if event.input.id == "filter":
-            self.filter_text = event.value
-            self._rebuild()
+        if event.input.id != "filter" or event.value == self.filter_text:
+            return
+        # Redrawing a long table takes a noticeable fraction of a second, so
+        # the rows follow the text a moment after the last keystroke instead
+        # of once per key.
+        self.filter_text = event.value
+        self._cancel_filter_timer()
+        self._filter_timer = self.set_timer(self.filter_debounce, self._apply_filter)
+
+    def _cancel_filter_timer(self) -> None:
+        if self._filter_timer is not None:
+            self._filter_timer.stop()
+            self._filter_timer = None
+
+    def _apply_filter(self) -> None:
+        self._filter_timer = None
+        self._rebuild()
 
     def on_input_submitted(self, event: Input.Submitted) -> None:
         if event.input.id == "filter":
+            if self._filter_timer is not None:  # show the rows before handing over
+                self._cancel_filter_timer()
+                self._rebuild()
             self.table.focus()  # keep the filter, go back to the rows
 
     def action_cycle_sort(self) -> None:

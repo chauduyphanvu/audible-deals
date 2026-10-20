@@ -9,6 +9,7 @@ and the next `deals find`.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import io
 import json
 import os
@@ -134,6 +135,15 @@ def shown(app):
     return [p.asin for _position, p in app._visible]
 
 
+async def settle(pilot, app, timeout=10.0):
+    """Wait for the ``/`` filter's debounce to run and the rows to be redrawn."""
+    waited = 0.0
+    while app._filter_timer is not None and waited < timeout:
+        await pilot.pause(0.01)
+        waited += 0.01
+    await pilot.pause()
+
+
 def messages(app):
     return [n.message for n in app._notifications]
 
@@ -243,6 +253,7 @@ class TestFilter:
             await pilot.press("slash")
             seen["focus"] = app.focused.id
             await pilot.press("z", "e", "d")
+            await settle(pilot, app)
             seen["narrowed"] = shown(app)
             seen["title"] = app.sub_title
             refs = [str(app.table.get_row_at(r)[1]) for r in range(app.table.row_count)]
@@ -269,6 +280,7 @@ class TestFilter:
 
         async def scenario(pilot):
             await pilot.press("slash", "q", "s", "w", "n")
+            await settle(pilot, app)
 
         drive(app, scenario)
 
@@ -312,11 +324,138 @@ class TestFilter:
         async def scenario(pilot):
             await pilot.press("j", "j")  # Charlie Space
             await pilot.press("slash", "z")
+            await settle(pilot, app)
+            seen["narrowed"] = shown(app)
             seen["on"] = app.current().asin
 
         drive(app, scenario)
 
+        assert seen["narrowed"] == ["B0TUI00001", "B0TUI00003"]
         assert seen["on"] == "B0TUI00003"
+
+
+class TestFilterDebounce:
+    """Typing into ``/`` must not redraw a long table once per keystroke."""
+
+    @staticmethod
+    def big(products, count=150):
+        """*count* distinct titles; every third one is by "Zed Writer"."""
+        template = products[0]
+        return [
+            dataclasses.replace(
+                template,
+                asin=f"B0BIG{i:05d}",
+                title=f"Title {i:04d}",
+                authors=["Zed Writer" if i % 3 == 0 else f"Author {i}"],
+            )
+            for i in range(count)
+        ]
+
+    @staticmethod
+    def count_rebuilds(app):
+        calls = []
+        original = app._rebuild
+
+        def counting(*args, **kwargs):
+            calls.append(app.filter_text)
+            return original(*args, **kwargs)
+
+        app._rebuild = counting
+        return calls
+
+    def test_keystrokes_in_a_burst_redraw_a_1500_row_table_once(self, products):
+        app = ResultsApp(self.big(products, 1500))
+        app.filter_debounce = 1.0  # the gaps between presses can't outlast it
+        seen = {}
+
+        async def scenario(pilot):
+            calls = self.count_rebuilds(app)
+            await pilot.press("slash", "z", "e", "d", " ", "w")
+            seen["during"] = (len(calls), len(shown(app)), app.table.row_count)
+            seen["pending"] = app._filter_timer is not None
+            await settle(pilot, app)
+            seen["after"] = (list(calls), len(shown(app)), app.table.row_count)
+            seen["title"] = app.sub_title
+
+        drive(app, scenario)
+
+        assert seen["during"] == (0, 1500, 1500)  # still the full list while typing
+        assert seen["pending"] is True
+        redraws, rows, table_rows = seen["after"]
+        assert redraws == ["zed w"]  # once, with the finished text
+        assert rows == table_rows == 500
+        assert "500 of 1500" in seen["title"] and "filter: zed w" in seen["title"]
+
+    def test_the_rows_follow_within_a_moment_at_the_default_delay(self, products):
+        app = ResultsApp(self.big(products))
+        seen = {}
+        assert app.filter_debounce == pytest.approx(0.15)
+
+        async def scenario(pilot):
+            await pilot.press("slash", "z", "e", "d")
+            await settle(pilot, app)
+            seen["rows"] = len(shown(app))
+
+        drive(app, scenario)
+
+        assert seen["rows"] == 50
+
+    def test_enter_applies_a_pending_filter_at_once(self, products):
+        app = ResultsApp(self.big(products))
+        app.filter_debounce = 30.0  # would never fire by itself during the test
+        seen = {}
+
+        async def scenario(pilot):
+            await pilot.press("slash", "z", "e", "d")
+            seen["before"] = len(shown(app))
+            await pilot.press("enter")
+            seen["after"] = len(shown(app))
+            seen["pending"] = app._filter_timer
+            seen["focus"] = app.focused.id
+
+        drive(app, scenario)
+
+        assert seen["before"] == 150
+        assert seen["after"] == 50
+        assert seen["pending"] is None and seen["focus"] == "results"
+
+    def test_escape_drops_a_pending_filter_without_a_stray_redraw(self, products):
+        app = ResultsApp(self.big(products))
+        app.filter_debounce = 0.3
+        seen = {}
+
+        async def scenario(pilot):
+            calls = self.count_rebuilds(app)
+            await pilot.press("slash", "z", "e", "d", "escape")
+            seen["right_after"] = (len(shown(app)), app._filter_timer, list(calls))
+            await pilot.pause(0.6)  # long enough for the dropped timer to have fired
+            seen["later"] = (len(shown(app)), list(calls))
+
+        drive(app, scenario)
+
+        rows, timer, calls = seen["right_after"]
+        assert rows == 150 and timer is None and calls == [""]
+        assert seen["later"] == (150, [""])  # no second redraw from the old timer
+
+    def test_each_keystroke_restarts_the_wait(self, products):
+        app = ResultsApp(self.big(products))
+        app.filter_debounce = 0.4
+        seen = {}
+
+        async def scenario(pilot):
+            calls = self.count_rebuilds(app)
+            await pilot.press("slash", "z")
+            await pilot.pause(0.25)
+            await pilot.press("e")  # restarts the 0.4 s wait
+            await pilot.pause(0.25)  # 0.5 s after "z", only 0.25 s after "e"
+            seen["mid"] = list(calls)
+            await settle(pilot, app)
+            seen["end"] = list(calls)
+
+        drive(app, scenario)
+
+        assert seen["mid"] == []
+        assert seen["end"] == ["ze"]
 
 
 # -- sort ---------------------------------------------------------------------------
