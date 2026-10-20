@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import contextlib
+import os
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
@@ -40,6 +41,34 @@ _BIDI_CONTROLS = frozenset(
         "\u2069",
     }
 )
+
+
+COLOR_MODES = ("auto", "always", "never")
+
+
+def set_color_mode(mode: str) -> None:
+    """Apply ``--color``: ``always`` and ``never`` beat NO_COLOR/FORCE_COLOR.
+
+    ``auto`` keeps what Rich decided from the environment and the terminal.
+    Rich offers no public switch for this once a console exists (and every
+    module holds the same console object), so the color system is set directly;
+    ``tests/test_color.py`` fails if a Rich upgrade changes that.
+    """
+    if mode == "never":
+        console.no_color = True
+        console._color_system = None
+    elif mode == "always":
+        from rich.color import ColorSystem
+
+        console.no_color = False
+        if console._color_system is None:
+            truecolor = os.environ.get("COLORTERM", "").lower() in (
+                "truecolor",
+                "24bit",
+            )
+            console._color_system = (
+                ColorSystem.TRUECOLOR if truecolor else ColorSystem.EIGHT_BIT
+            )
 
 
 def safe_text(value: object) -> str:

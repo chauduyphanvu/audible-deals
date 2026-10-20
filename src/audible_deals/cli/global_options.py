@@ -9,8 +9,8 @@ where an option "belongs".
 Each shared option is a small builder returning a fresh ``click.Option`` whose
 callback updates the root ``ctx.obj`` dict, which every context in the chain
 shares. A value given on the subcommand wins over one given on the root.
-Adding another global option (for example ``--color``) means writing one
-callback + builder and listing the builder in ``_OPTION_BUILDERS``.
+Adding another global option means writing one callback + builder and listing
+the builder in ``_OPTION_BUILDERS`` (``--color`` was added that way).
 """
 
 from __future__ import annotations
@@ -66,6 +66,33 @@ def _apply_verbose(ctx: click.Context, param: click.Parameter, value: int):
     return value
 
 
+def _apply_color(ctx: click.Context, param: click.Parameter, value: str | None):
+    if value is None or not _given_on_command_line(ctx, param):
+        return value
+    from audible_deals.presentation.terminal import set_color_mode
+
+    set_color_mode(value)
+    obj = _shared_obj(ctx)
+    if obj is not None:
+        obj["color"] = value
+    return value
+
+
+def color_option() -> click.Option:
+    return click.Option(
+        ["--color"],
+        type=click.Choice(["auto", "always", "never"]),
+        default=None,
+        expose_value=False,
+        callback=_apply_color,
+        metavar="WHEN",
+        help=(
+            "Colored output: auto (default; honors NO_COLOR and FORCE_COLOR), "
+            "always or never. An explicit value wins over those variables."
+        ),
+    )
+
+
 def _locale_option() -> click.Option:
     return click.Option(
         ["--locale"],
@@ -96,6 +123,7 @@ def _verbose_option() -> click.Option:
 _OPTION_BUILDERS: tuple[Callable[[], click.Option], ...] = (
     _locale_option,
     _verbose_option,
+    color_option,
 )
 
 

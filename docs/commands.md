@@ -350,6 +350,10 @@ deals detail B00R6S1RCY --locale de
 | `jp` | ¥ | www.audible.co.jp |
 | `es` | € | www.audible.es |
 
+## Color
+
+`--color auto|always|never` works before or after any command (`deals --color never find ...` or `deals find ... --color never`). `auto` (the default) colors output only on a terminal and honors `NO_COLOR` and `FORCE_COLOR`; an explicit `always` or `never` wins over both variables. `never` also removes bold and other text styling, so the output is plain text.
+
 ## Exit codes and errors
 
 Every command uses the same statuses, so scripts and cron jobs can tell outcomes apart:

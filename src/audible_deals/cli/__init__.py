@@ -324,6 +324,15 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
     ctx.exit()
 
 
+def _apply_root_color(ctx, param, value):
+    """``--color`` before the subcommand; the shared callback does the work."""
+    if value is None:
+        return value
+    from audible_deals.cli.global_options import _apply_color
+
+    return _apply_color(ctx, param, value)
+
+
 @click.group(cls=_HandleAuthErrors, invoke_without_command=True)
 @click.option(
     "--version",
@@ -337,6 +346,18 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
     "--locale",
     default="us",
     help="Audible marketplace (us, uk, ca, de, fr, au, jp, in, es)",
+)
+@click.option(
+    "--color",
+    type=click.Choice(["auto", "always", "never"]),
+    default=None,
+    expose_value=False,
+    callback=_apply_root_color,
+    metavar="WHEN",
+    help=(
+        "Colored output: auto (default; honors NO_COLOR and FORCE_COLOR), "
+        "always or never. An explicit value wins over those variables."
+    ),
 )
 @click.option(
     "-v",

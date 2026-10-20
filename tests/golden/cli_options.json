@@ -1,77 +1,91 @@
 {
   "deals": [
+    "--color",
     "--locale",
     "--verbose",
     "--version",
     "-v"
   ],
   "deals cache": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals cache clear": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals cache info": [
+    "--color",
     "--json",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals categories": [
+    "--color",
     "--locale",
     "--parent",
     "--verbose",
     "-v"
   ],
   "deals compare": [
+    "--color",
     "--last",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals completions": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals config": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals config get": [
+    "--color",
     "--locale",
     "--show-secrets",
     "--verbose",
     "-v"
   ],
   "deals config list": [
+    "--color",
     "--locale",
     "--show-secrets",
     "--verbose",
     "-v"
   ],
   "deals config reset": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals config set": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals detail": [
+    "--color",
     "--last",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals doctor": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
@@ -81,6 +95,7 @@
     "--allow-large-scan",
     "--author",
     "--category",
+    "--color",
     "--deep",
     "--dry-run",
     "--exclude-author",
@@ -145,6 +160,7 @@
     "-v"
   ],
   "deals for-me": [
+    "--color",
     "--dry-run",
     "--exclude-author",
     "--exclude-narrator",
@@ -178,6 +194,7 @@
     "-v"
   ],
   "deals for-you": [
+    "--color",
     "--dry-run",
     "--exclude-author",
     "--exclude-narrator",
@@ -212,6 +229,7 @@
   ],
   "deals history": [
     "--all",
+    "--color",
     "--dry-run",
     "--json",
     "--last",
@@ -222,6 +240,7 @@
     "-v"
   ],
   "deals import-auth": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
@@ -233,6 +252,7 @@
     "--clear-dismissed",
     "--clear-filter",
     "--clear-seen",
+    "--color",
     "--count",
     "--deep",
     "--exclude-author",
@@ -297,6 +317,7 @@
   ],
   "deals library": [
     "--author",
+    "--color",
     "--genre",
     "--json",
     "--limit",
@@ -316,6 +337,7 @@
     "-v"
   ],
   "deals login": [
+    "--color",
     "--credentials",
     "--external",
     "--locale",
@@ -326,6 +348,7 @@
     "-v"
   ],
   "deals monitor": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
@@ -333,6 +356,7 @@
   "deals monitor add": [
     "--all-languages",
     "--author",
+    "--color",
     "--deep",
     "--exclude-author",
     "--exclude-genre",
@@ -379,37 +403,44 @@
     "-v"
   ],
   "deals monitor list": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals monitor pause": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals monitor remove": [
+    "--color",
     "--locale",
     "--verbose",
     "--yes",
     "-v"
   ],
   "deals monitor resume": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals monitor show": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals monitor test": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals notify": [
+    "--color",
     "--cooldown",
     "--exit-code",
     "--locale",
@@ -421,22 +452,26 @@
     "-v"
   ],
   "deals open": [
+    "--color",
     "--last",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals profile": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals profile delete": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals profile list": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
@@ -444,6 +479,7 @@
   "deals profile save": [
     "--all-languages",
     "--author",
+    "--color",
     "--deep",
     "--exclude-author",
     "--exclude-genre",
@@ -494,6 +530,7 @@
     "-v"
   ],
   "deals profile show": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
@@ -501,6 +538,7 @@
   "deals recap": [
     "--atl",
     "--atl-all",
+    "--color",
     "--days",
     "--json",
     "--locale",
@@ -516,6 +554,7 @@
     "--allow-large-scan",
     "--author",
     "--category",
+    "--color",
     "--deep",
     "--dry-run",
     "--exclude-author",
@@ -575,6 +614,7 @@
     "-v"
   ],
   "deals series": [
+    "--color",
     "--gaps",
     "--interactive",
     "--json",
@@ -601,11 +641,13 @@
     "-v"
   ],
   "deals track": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals track install": [
+    "--color",
     "--every",
     "--locale",
     "--verbose",
@@ -615,6 +657,7 @@
     "-v"
   ],
   "deals track log": [
+    "--color",
     "--lines",
     "--locale",
     "--verbose",
@@ -622,24 +665,28 @@
     "-v"
   ],
   "deals track run": [
+    "--color",
     "--cooldown",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals track status": [
+    "--color",
     "--history",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals track uninstall": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals watch": [
     "--buy-only",
+    "--color",
     "--every",
     "--exit-code",
     "--locale",
@@ -649,12 +696,14 @@
     "-v"
   ],
   "deals wishlist": [
+    "--color",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals wishlist add": [
     "--author",
+    "--color",
     "--last",
     "--locale",
     "--max-price",
@@ -662,6 +711,7 @@
     "-v"
   ],
   "deals wishlist list": [
+    "--color",
     "--json",
     "--locale",
     "--output",
@@ -670,6 +720,7 @@
     "-v"
   ],
   "deals wishlist purge": [
+    "--color",
     "--dry-run",
     "--locale",
     "--owned",
@@ -680,12 +731,14 @@
   ],
   "deals wishlist remove": [
     "--author",
+    "--color",
     "--last",
     "--locale",
     "--verbose",
     "-v"
   ],
   "deals wishlist repair": [
+    "--color",
     "--dry-run",
     "--locale",
     "--verbose",
@@ -694,6 +747,7 @@
     "-y"
   ],
   "deals wishlist sync": [
+    "--color",
     "--locale",
     "--max-price",
     "--update",
@@ -702,6 +756,7 @@
   ],
   "deals wishlist update": [
     "--clear-target",
+    "--color",
     "--last",
     "--locale",
     "--max-price",

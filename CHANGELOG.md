@@ -7,6 +7,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- `--color auto|always|never` on every command, before or after the subcommand. An explicit `always`/`never` beats `NO_COLOR`/`FORCE_COLOR`; `never` strips all styling.
 - Documented exit statuses for every command (`src/audible_deals/exit_codes.py`, "Exit codes and errors" in the command guide): 0 ok, 1 error, 2 usage, 3 authentication required or rejected, 4 the Audible request failed, 10 nothing matched (with `--exit-code`), 130 interrupted. Authentication problems are now a typed `AuthRequiredError` (and the SDK's `Unauthorized`, or any HTTP 401/403) instead of a text match, so `track run` also reports exit 3/4 for them.
 - `--exit-code` on `find`, `search` and `last`: exit 10 when nothing matched.
 - Errors are one line (`Error: ...`) and unexpected problems show the exception type with a hint to re-run with `-vv` for the traceback, instead of a raw traceback. With `--json` an error is written to stderr as `{"error": {"code": N, "message": "..."}}`.
