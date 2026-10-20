@@ -191,20 +191,19 @@ def cached_pages_for(
 ) -> int:
     """How many of one request's pages the cache can answer right now."""
 
-    def lookup(page: int):
-        return cache.lookup(
-            locale,
-            CATALOG_ENDPOINT,
-            catalog_products_params(
-                keywords=request.keywords,
-                title=request.title,
-                category_id=request.category_id,
-                sort_by=request.sort_by,
-                page=page,
-            ),
+    def params(page: int):
+        return catalog_products_params(
+            keywords=request.keywords,
+            title=request.title,
+            category_id=request.category_id,
+            sort_by=request.sort_by,
+            page=page,
         )
 
-    first = lookup(0)
+    # Only the first page is decoded: its total says how many pages there are.
+    # The rest are counted by asking whether a fresh entry exists, not by
+    # reading and parsing each stored page (about 24 kB of JSON apiece).
+    first = cache.lookup(locale, CATALOG_ENDPOINT, params(0))
     if first is None:
         return 0
     try:
@@ -212,7 +211,11 @@ def cached_pages_for(
         pages = page_count(total, request.max_pages) if first[0]["products"] else 1
     except (KeyError, TypeError):
         return 0
-    return 1 + sum(1 for page in range(1, pages) if lookup(page) is not None)
+    return 1 + sum(
+        1
+        for page in range(1, pages)
+        if cache.has_page(locale, CATALOG_ENDPOINT, params(page))
+    )
 
 
 def estimate_cached_calls(

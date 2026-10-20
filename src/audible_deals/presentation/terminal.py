@@ -214,3 +214,5 @@ def _live_scan(
             display.update(body(), refresh=True)
 
         yield update
+        if live.finish():  # the throttle may have held back the last pages
+            display.update(body(), refresh=True)

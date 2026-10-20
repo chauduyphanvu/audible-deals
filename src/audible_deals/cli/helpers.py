@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING
 
 import click
@@ -158,10 +159,26 @@ def _live_results(
         return None
     from audible_deals.presentation.live import LiveResults
     from audible_deals.presentation.products import ProductDisplayOptions
+    from audible_deals.price_history import history_key, load_product_histories
     from audible_deals.result_processing import (
         SettingsFilterRequest,
         process_settings_discovery,
     )
+
+    # Every pass ranks all the titles seen so far, so a history-based filter
+    # (--hist-below, --min-price-drop) would read the same titles' histories
+    # again on each page. They are read once per scan and remembered here.
+    histories: dict[str, list[dict]] = {}
+
+    def load_histories(products: Iterable[Product]) -> dict[str, list[dict]]:
+        wanted = [p for p in products if p.price is not None]
+        missing = [p for p in wanted if history_key(p.asin, p.locale) not in histories]
+        if missing:
+            histories.update(load_product_histories(missing))
+        return {
+            key: histories[key]
+            for key in (history_key(p.asin, p.locale) for p in wanted)
+        }
 
     def rank(products: list[Product]) -> list[Product]:
         return list(
@@ -172,6 +189,7 @@ def _live_results(
                     skip_asins=skip_asins,
                     exclude_category_ids=exclude_category_ids,
                     credit_price=credit_price,
+                    load_histories=load_histories,
                 )
             ).products
         )

@@ -24,7 +24,7 @@ from audible_deals.presentation.products import ProductDisplayOptions
 from audible_deals.price_history import load_price_history
 from audible_deals.result_models import CatalogScanProgress
 from audible_deals.settings import Settings
-from tests.conftest import make_product, make_raw
+from tests.conftest import make_product, make_raw, seed_history
 
 
 def cheap(n: int, price: float = 3.0):
@@ -37,13 +37,27 @@ def cheap(n: int, price: float = 3.0):
     )
 
 
-def make_live(rank=None, *, rows=3, width=100):
+def make_live(rank=None, *, rows=3, width=100, min_interval=0.0, clock=None):
+    """A LiveResults that ranks on every page unless told otherwise."""
+    extra = {} if clock is None else {"clock": clock}
     return LiveResults(
         rank or (lambda products: sorted(products, key=lambda p: p.price or 0)),
         ProductDisplayOptions(max_price=10.0),
         rows=rows,
         width=lambda: width,
+        min_interval=min_interval,
+        **extra,
     )
+
+
+class Clock:
+    """A clock the test moves by hand."""
+
+    def __init__(self):
+        self.now = 100.0
+
+    def __call__(self):
+        return self.now
 
 
 class TestLiveResults:
@@ -90,6 +104,65 @@ class TestLiveResults:
         console = Console(width=100, force_terminal=False, record=True)
         console.print(live.view())
         assert "Live 1" in console.export_text()
+
+    def test_ranking_is_throttled_and_the_last_pages_are_not_lost(self):
+        calls = []
+        clock = Clock()
+
+        def rank(products):
+            calls.append(len(products))
+            return sorted(products, key=lambda p: p.price or 0)
+
+        live = make_live(rank, min_interval=0.4, clock=clock)
+        live.add([cheap(1, 9.0)])  # the first page is ranked at once
+        clock.now += 0.1
+        live.add([cheap(2, 8.0)])  # too soon: remembered, not ranked
+        clock.now += 0.1
+        live.add([cheap(3, 7.0)])  # still too soon
+        assert calls == [1]
+        assert live.seen == 3
+
+        clock.now += 0.3  # 0.5 s since the last pass
+        live.add([cheap(4, 6.0)])
+        assert calls == [1, 4]  # one pass counts everything that arrived since
+
+        clock.now += 0.05
+        live.add([cheap(5, 1.0)])
+        assert calls == [1, 4]
+        assert live.finish() is True  # the final pass picks the held-back page up
+        assert calls == [1, 4, 5]
+        assert live.finish() is False  # nothing new: no needless pass
+        assert calls == [1, 4, 5]
+        console = Console(width=100, force_terminal=False, record=True)
+        console.print(live.view())
+        assert "Live 5" in console.export_text()
+
+    def test_a_slow_ranking_is_not_run_back_to_back(self):
+        clock = Clock()
+        calls = []
+
+        def slow_rank(products):
+            calls.append(len(products))
+            clock.now += 1.0  # the pass itself takes a second
+            return list(products)
+
+        live = make_live(slow_rank, min_interval=0.4, clock=clock)
+        live.add([cheap(1)])
+        live.add([cheap(2)])  # the clock is measured from the end of the pass...
+        assert calls == [1]
+        clock.now += 0.4
+        live.add([cheap(3)])
+        assert calls == [1, 3]
+
+    def test_finish_after_a_broken_ranking_does_nothing(self):
+        def rank(products):
+            raise RuntimeError("history unavailable")
+
+        live = make_live(rank)
+        live.add([cheap(1)])  # raises inside, swallowed
+        live.add([cheap(2)])
+
+        assert live.finish() is False
 
     def test_narrow_terminals_get_one_line_per_title(self):
         live = make_live(width=60)
@@ -218,6 +291,82 @@ class TestWhenToStream:
         text = console.export_text()
         # max price 5: the $9 title is filtered out, the cheapest comes first.
         assert "Live 3" in text and "Live 1" in text and "Live 2" not in text
+
+
+class TestPreviewHistories:
+    """The preview ranks every title seen so far on each pass; a history-based
+    filter must not read the same titles' histories from the database again."""
+
+    SETTINGS = Settings(max_price=5.0, min_price_drop=10.0)
+
+    def _titles(self, count=6):
+        titles = [cheap(number, 3.0) for number in range(1, count + 1)]
+        for product in titles:
+            seed_history(product.asin, [("2026-01-01", 5.0), ("2026-01-02", 4.0)])
+        return titles
+
+    def _live(self, monkeypatch):
+        from audible_deals.presentation import live as live_module
+
+        monkeypatch.setattr(live_module, "MIN_RANK_INTERVAL_S", 0.0)
+        console, _ = interactive_console()
+        monkeypatch.setattr(cli_helpers, "console", console)
+        live = cli_helpers._live_results(
+            self.SETTINGS,
+            currency="$",
+            credit_price=None,
+            skip_asins=None,
+            exclude_category_ids=set(),
+            json_flag=False,
+            quiet=False,
+        )
+        assert live is not None
+        return live
+
+    def test_each_title_history_is_read_once_per_scan(self, tmp_config, monkeypatch):
+        from audible_deals import price_history
+
+        titles = self._titles()
+        loaded = []
+        real = price_history.load_price_histories
+
+        def spy(keys):
+            keys = list(keys)
+            loaded.extend(keys)
+            return real(keys)
+
+        monkeypatch.setattr(price_history, "load_price_histories", spy)
+        live = self._live(monkeypatch)
+
+        for start in (0, 2, 4):  # three pages of two titles
+            live.add(titles[start : start + 2])
+
+        assert sorted(loaded) == sorted((p.asin, p.locale) for p in titles)
+
+    def test_the_preview_ranks_the_same_as_the_finished_table(
+        self, tmp_config, monkeypatch
+    ):
+        from audible_deals.result_processing import (
+            SettingsFilterRequest,
+            process_settings_discovery,
+        )
+
+        titles = self._titles()
+        # a seventh title the drop filter must exclude (it got more expensive)
+        dear = cheap(7, 4.9)
+        seed_history(dear.asin, [("2026-01-01", 3.0), ("2026-01-02", 3.0)])
+        titles.append(dear)
+        live = self._live(monkeypatch)
+        for start in range(0, len(titles), 3):
+            live.add(titles[start : start + 3])
+
+        direct = process_settings_discovery(
+            SettingsFilterRequest(products=tuple(titles), settings=self.SETTINGS)
+        ).products
+
+        assert dear.asin not in {p.asin for p in direct}
+        assert [p.asin for p in live._top] == [p.asin for p in direct][: len(live._top)]
+        assert len(live._top) == min(len(direct), live._rows)
 
 
 class FakeClient:

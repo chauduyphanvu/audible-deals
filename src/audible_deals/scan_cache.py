@@ -136,7 +136,6 @@ class ScanCache:
         self._oldest_age_s: float | None = None
         self._library_age_s: float | None = None
         self._cached_asins: set[str] = set()
-        self._live_asins: set[str] = set()
         self._pruned = False
 
     @classmethod
@@ -165,6 +164,16 @@ class ScanCache:
             max_age_s=self.ttl_s,
         )
 
+    def has_page(self, locale: str, endpoint: str, params: Mapping[str, Any]) -> bool:
+        """Whether :meth:`lookup` would hit, without decoding the (large) page."""
+        if self.refresh:
+            return False
+        return cache_store.has_entry(
+            self._namespace(locale),
+            entry_key(endpoint, params),
+            max_age_s=self.ttl_s,
+        )
+
     def store(
         self, locale: str, endpoint: str, params: Mapping[str, Any], value: Any
     ) -> None:
@@ -185,7 +194,6 @@ class ScanCache:
         with self._lock:
             if age_s is None:
                 self._pages_live += 1
-                self._live_asins |= asins
                 return
             self._pages_cached += 1
             self._cached_asins |= asins
@@ -193,7 +201,13 @@ class ScanCache:
                 self._oldest_age_s = age_s
 
     def cached_asins(self) -> frozenset[str]:
-        """Products whose price only ever came from a cached page in this run."""
+        """Products that appeared on at least one cached page in this run.
+
+        Their prices may be up to the cache lifetime old, so a run keeps them out
+        of the price history. A product that was also seen on a live page stays in
+        the set: which of the two prices ended up in the results is not tracked,
+        and leaving one history point out is the safe side of that doubt.
+        """
         with self._lock:
             return frozenset(self._cached_asins)
 

@@ -409,7 +409,10 @@ class DealsClient:
         """
         if self._library_cache is not None:
             return self._library_cache
-        if cache is not None and (stored := cache.library_lookup(self.locale)):
+        if (
+            cache is not None
+            and (stored := cache.library_lookup(self.locale)) is not None
+        ):
             self._library_cache = stored
             return stored
 

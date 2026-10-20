@@ -415,6 +415,21 @@ class TestClientOtherCaches:
         }
         assert ScanCache(600).library_lookup("us") == {"B0OWNED002"}
 
+    def test_an_empty_library_is_a_valid_cache_hit(self, api, client):
+        """A user with no books is a real answer, not a miss: no refetch, and the
+        note about what came from the cache matches what happened."""
+        api.get_mock.return_value = {"items": []}
+        assert client.get_library_asins(cache=ScanCache(600)) == set()
+        assert api.get_mock.call_count == 1
+
+        fresh_client = DealsClient(auth_file=api.tmp_path / "auth.json")
+        cache = ScanCache(600)
+        assert fresh_client.get_library_asins(cache=cache) == set()
+
+        assert api.get_mock.call_count == 1  # served from the cache
+        assert cache.use().library_age_s is not None
+        assert cache.use().any
+
     def test_library_asins_without_a_cache_stay_live_and_unrecorded(self, api, client):
         api.get_mock.return_value = {"items": [{"asin": "B0OWNED001"}]}
         client.get_library_asins()
@@ -494,6 +509,87 @@ class TestEstimate:
         assert (
             estimate_cached_calls(self._plan(), "us", ScanCache(600, refresh=True)) == 0
         )
+
+    def _store_pages(self, plan, cache, *, pages_per_request=None):
+        """Store a page for each page of each request in *plan*; returns the keys."""
+        from audible_deals.catalog_workflow import _plan_requests
+
+        keys = []
+        for request, _meta in _plan_requests(plan, None):
+            count = pages_per_request or request.max_pages
+            for number in range(count):
+                params = scan_cache.catalog_products_params(
+                    keywords=request.keywords,
+                    title=request.title,
+                    category_id=request.category_id,
+                    sort_by=request.sort_by,
+                    page=number,
+                )
+                cache.store(
+                    "us",
+                    scan_cache.CATALOG_ENDPOINT,
+                    params,
+                    {
+                        "total": 100_000,
+                        "products": scan_cache.pack_products([make_product()]),
+                    },
+                )
+                keys.append(
+                    (number, scan_cache.entry_key(scan_cache.CATALOG_ENDPOINT, params))
+                )
+        return keys
+
+    def test_every_cached_page_is_counted_but_only_the_first_is_decoded(
+        self, tmp_config, monkeypatch
+    ):
+        from audible_deals.catalog_workflow import _plan_requests
+
+        plan = self._plan(pages=6)
+        cache = ScanCache(600)
+        self._store_pages(plan, cache)
+        requests = _plan_requests(plan, None)
+        decoded = []
+        real = cache_store.get_entry
+
+        def counting(namespace, key, **kwargs):
+            decoded.append(key)
+            return real(namespace, key, **kwargs)
+
+        monkeypatch.setattr(cache_store, "get_entry", counting)
+
+        counted = estimate_cached_calls(plan, "us", cache)
+
+        assert counted == sum(request.max_pages for request, _ in requests)
+        assert counted > len(requests)  # several pages per request
+        # one decode per request (its first page); the other pages are probed
+        assert len(decoded) == len(requests)
+
+    def test_stale_and_missing_later_pages_are_not_counted(self, tmp_config):
+        from audible_deals.catalog_workflow import _plan_requests
+
+        plan = self._plan(pages=4)
+        cache = ScanCache(600)
+        keys = self._store_pages(plan, cache)
+        conn = db.cache()
+        # page 2 of every request is older than the lifetime; page 3 is gone
+        with db.transaction(conn):
+            for number, key in keys:
+                if number == 2:
+                    conn.execute(
+                        "UPDATE cache_entries SET stored_at = stored_at - 100000 "
+                        "WHERE key = ?",
+                        (key,),
+                    )
+                elif number == 3:
+                    conn.execute("DELETE FROM cache_entries WHERE key = ?", (key,))
+        full = [r for r, _ in _plan_requests(plan, None) if r.max_pages == 4]
+
+        counted = estimate_cached_calls(plan, "us", cache)
+
+        # pages 0 and 1 of each four-page request count (a single-page probe
+        # request, if the plan has one, counts its only page)
+        singles = len(_plan_requests(plan, None)) - len(full)
+        assert counted == 2 * len(full) + singles
 
     def test_unresolved_categories_cannot_be_estimated(self, tmp_config):
         plan = build_find_scan_plan("", pages=3, category_ids=None)

@@ -45,6 +45,27 @@ def get_entry(
         return None
 
 
+def has_entry(namespace: str, key: str, *, max_age_s: float | None = None) -> bool:
+    """Whether a fresh entry exists, without reading or decoding its value."""
+    try:
+        with db.exclusive():
+            row = (
+                db.cache()
+                .execute(
+                    "SELECT stored_at FROM cache_entries "
+                    "WHERE namespace = ? AND key = ?",
+                    (namespace, key),
+                )
+                .fetchone()
+            )
+    except Exception:
+        logger.debug("cache probe failed: %s/%s", namespace, key, exc_info=True)
+        return False
+    if row is None:
+        return False
+    return max_age_s is None or max(0.0, time.time() - row[0]) < max_age_s
+
+
 def get(namespace: str, key: str, *, max_age_s: float | None = None) -> Any | None:
     """The cached value, or ``None`` when absent, stale (older than *max_age_s*) or unreadable."""
     entry = get_entry(namespace, key, max_age_s=max_age_s)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Callable, Iterable
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import Any
@@ -29,6 +30,8 @@ from audible_deals.result_models import (
 )
 from audible_deals.serialization import deserialize_product
 from audible_deals.settings import Settings
+
+HistoryLoader = Callable[[Iterable[Product]], dict[str, list[dict]]]
 
 RECIPE_DEFAULTS = ResultRecipe()
 RECIPE_FIELDS = tuple(field.name for field in dataclasses.fields(ResultRecipe))
@@ -57,6 +60,9 @@ class DiscoveryProcessingRequest:
     products: tuple[Product, ...]
     context: FilterContext
     dedupe_series_editions: bool = True
+    #: Replaces the database read of price histories (the live preview passes a
+    #: loader that remembers what it has already read).
+    load_histories: HistoryLoader | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "products", tuple(self.products))
@@ -70,6 +76,7 @@ class SettingsFilterRequest:
     skip_asins: AbstractSet[str] | None = None
     exclude_category_ids: AbstractSet[str] = frozenset()
     credit_price: float | None = None
+    load_histories: HistoryLoader | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "products", tuple(self.products))
@@ -101,7 +108,7 @@ def process_discovery(request: DiscoveryProcessingRequest) -> DiscoveryResult:
     if (context.max_hist_percentile is not None and hist_percentile is None) or (
         context.min_price_drop > 0 and price_drops is None
     ):
-        histories = load_product_histories(request.products)
+        histories = (request.load_histories or load_product_histories)(request.products)
         if context.max_hist_percentile is not None and hist_percentile is None:
             hist_percentile = hist_percentiles(list(request.products), histories)
         if context.min_price_drop > 0 and price_drops is None:
@@ -166,6 +173,7 @@ def process_settings_discovery(request: SettingsFilterRequest) -> DiscoveryResul
                 exclude_category_ids=request.exclude_category_ids,
                 drop_zero_length=True,
             ),
+            load_histories=request.load_histories,
         )
     )
 

@@ -67,6 +67,7 @@ Breaking and behavior changes since 0.11.1.
 - `--skip-owned` reuses the list of owned titles for 24 hours (`deals library` and `--refresh` update it) and category names are cached for 7 days.
 - Internal: one paginator and worker-pool lifecycle serve the catalog, library, wishlist and series readers, and genre matching lives in `genres.py`; requests, ordering and call counts are unchanged.
 - Price history is purged per marketplace without the old "has no entries, skipping purge" warning; `-v`/`-vv` also apply to warnings emitted while loading saved configuration at startup.
+- The live "best so far" table re-ranks at most every 0.4 s (plus once at the end) instead of on every page, and reads each title's price history once per scan instead of again on every pass; with `--hist-below` or `--min-price-drop` a 30-page scan of 1,500 titles went from 23,250 history reads to 1,500. The final table is unchanged. `--dry-run` counts cached pages without decoding each one.
 - Catalog requests still ask for every response group, including `product_desc` and `media`, which nothing reads. Dropping them would shrink the responses, but needs one check against a live account that `language`, `subtitle`, `publisher_name` and `release_date` come from `product_attrs`; `tests/test_product_fields.py` records which group each parsed field is expected in.
 
 ### Fixed
@@ -80,6 +81,7 @@ Breaking and behavior changes since 0.11.1.
 - Importing a `seen_asins.json` or `dismissed_asins.json` that listed an ASIN twice reported the repeats as "entries that were not text", which printed a migration warning and made `deals doctor` warn. Repeats merge silently now.
 - Behind an HTTP(S) proxy, webhooks to a host that only the proxy can resolve were refused ("Cannot resolve webhook host") because `deals` looked the name up itself before handing the request to the proxy. Proxied webhooks are now left to the proxy to resolve; only URLs that name a private place outright (an address literal, `localhost`) are refused locally, and hosts in `NO_PROXY` still get the full check. See "Where a webhook may point" in the automation guide for the trade-off.
 - A webhook URL with a bad port (`https://example.com:99999/x`, `:abc`) ended in "Unexpected ValueError" (exit 1); it is now a usage error (exit 2) that names the problem, from `notify --webhook`, `config set webhook`, `monitor add`, `recap` and `track install`.
+- A cached list of owned titles that was empty (an account with no books) counted as a miss and was fetched again, while the "cached data used" note still reported it as used.
 - A webhook that could not be delivered made `deals track run` fail without a trace in the run history. The failed run is now recorded (`deals track status` shows `WebhookDeliveryError: ...`) and the alert is not marked as sent, so the next run sends it again.
 - Monitor alerts to ntfy failed to send because the `Title` header (`Audible Deals — <monitor>`) contains an em dash.
 - Error messages that list choices on a second line (`deals find --genre nosuchgenre`) printed a literal `\n`, and the `--json` error object carried a doubled backslash. They now print real separate lines.
