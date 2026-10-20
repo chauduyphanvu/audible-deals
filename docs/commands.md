@@ -314,6 +314,7 @@ deals --locale de detail B00R6S1RCY
 | `fr` | € | www.audible.fr |
 | `jp` | ¥ | www.audible.co.jp |
 | `es` | € | www.audible.es |
+| `br` | R$ | www.audible.com.br |
 
 ## Shell completions
 

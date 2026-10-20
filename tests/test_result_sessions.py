@@ -1083,6 +1083,13 @@ def test_audible_apex_url_and_lowercase_asin_are_canonicalized(tmp_config):
     assert locale == "uk"
 
 
+def test_brazil_audible_url_resolves_to_br_locale(tmp_config):
+    url = "https://www.audible.com.br/pd/example/B00EXAMPLE"
+    resolved, locale = resolve_selectors((url,))
+    assert [item.asin for item in resolved] == ["B00EXAMPLE"]
+    assert locale == "br"
+
+
 def test_malformed_audible_url_has_a_click_diagnostic(tmp_config):
     result = CliRunner().invoke(cli, ["detail", "https://[bad/pd/B00EXAMPLE"])
     assert result.exit_code != 0

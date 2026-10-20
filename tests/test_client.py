@@ -12,13 +12,14 @@ from concurrent.futures import ThreadPoolExecutor
 from types import SimpleNamespace
 from unittest import mock
 
+import audible.localization
 import click
 import pytest
 
 from audible_deals.audible_transport import AudibleTransport
 from audible_deals.auth_store import AuthStore, _captcha_callback
 from audible_deals.client import DealsClient, _validate_category_id
-from audible_deals.constants import MAX_PAGE_SIZE
+from audible_deals.constants import LOCALE_DOMAIN, MAX_PAGE_SIZE
 from audible_deals.product import (
     _base_price,
     _extract_categories,
@@ -1564,3 +1565,11 @@ class TestBugfixProductCategoryAlignment:
         # and the unnamed ID_A must not be mislabelled as Mystery.
         assert genres.get("ID_B") == "Mystery"
         assert genres.get("ID_A", "") != "Mystery"
+
+
+@pytest.mark.parametrize("locale", sorted(LOCALE_DOMAIN))
+def test_every_marketplace_has_an_audible_sdk_locale(locale):
+    # Login and API host resolution go through the SDK's locale templates.
+    template = audible.localization.search_template("country_code", locale)
+    assert template is not None
+    assert f"www.audible.{template['domain']}" == LOCALE_DOMAIN[locale]
