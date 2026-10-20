@@ -89,13 +89,23 @@ def set_color_mode(mode: str) -> None:
             )
 
 
-def safe_text(value: object) -> str:
-    """Render untrusted text without terminal control characters."""
+def safe_text(value: object, *, keep_newlines: bool = False) -> str:
+    """Render untrusted text without terminal control characters.
+
+    Newlines are shown as ``\\n`` so one value stays on one line. Messages we
+    write ourselves (an error that lists choices on a second line) pass
+    ``keep_newlines=True``: line breaks stay real, everything else is still
+    escaped, and ``\\r\\n`` counts as one break.
+    """
     text = value if isinstance(value, str) else str(value)
+    if keep_newlines:
+        text = text.replace("\r\n", "\n")
     rendered: list[str] = []
     for char in text:
         codepoint = ord(char)
-        if char == "\t":
+        if char == "\n" and keep_newlines:
+            rendered.append(char)
+        elif char == "\t":
             rendered.append(r"\t")
         elif char == "\n":
             rendered.append(r"\n")

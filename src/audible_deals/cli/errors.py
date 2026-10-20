@@ -73,16 +73,22 @@ def convert(exc: Exception, ctx: click.Context) -> CliError | None:
     json_mode = wants_json(ctx)
     if isinstance(exc, CliError):
         exc.json_mode = exc.json_mode or json_mode
-        exc.message = safe_text(exc.message)
+        exc.message = safe_text(exc.message, keep_newlines=True)
         return exc
     if isinstance(exc, click.UsageError):
         if not json_mode:
-            exc.message = safe_text(exc.message)
+            exc.message = safe_text(exc.message, keep_newlines=True)
             return None
-        return CliError(safe_text(exc.format_message()), ExitCode.USAGE, json_mode=True)
+        return CliError(
+            safe_text(exc.format_message(), keep_newlines=True),
+            ExitCode.USAGE,
+            json_mode=True,
+        )
     if isinstance(exc, click.ClickException):
         return CliError(
-            safe_text(exc.message), exc.exit_code or ExitCode.ERROR, json_mode=json_mode
+            safe_text(exc.message, keep_newlines=True),
+            exc.exit_code or ExitCode.ERROR,
+            json_mode=json_mode,
         )
     if isinstance(exc, BrokenPipeError):
         return None

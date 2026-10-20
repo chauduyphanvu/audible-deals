@@ -49,6 +49,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `-v`/`-vv` now also apply to warnings emitted while loading saved configuration at startup.
 
 ### Fixed
+- Error messages that list choices on a second line (`deals find --genre nosuchgenre`: `No genre matching ...` / `Available: ...`) printed a literal `\n` instead of a line break, and the `--json` error object carried a doubled backslash. They now print real separate lines (control characters and terminal escapes are still neutralized) and the JSON message holds a real newline.
 - A `config.json`, `profiles.json`, `monitors.json` or `dismissed_asins.json` that could not be parsed (for example after a typo while hand-editing) was silently replaced with an empty file the next time a command saved it, deleting every saved profile, monitor, or default. Commands that would write to such a file now stop with a one-line error naming the file and the line and column of the problem, and leave it untouched. Commands that only read it print a one-line warning (the traceback appears only with `-vv`).
 - Interactive mode printed the literal text `[dim]...[/dim]` around its "Invalid input" hint.
 - `install.sh` told users on unsupported platforms to run `pip install audible-deals`, which fails because the package is not on PyPI. It, and the README and installation guide, now show `uv tool install git+https://github.com/chauduyphanvu/audible-deals` (or the `pipx` equivalent).

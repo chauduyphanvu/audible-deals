@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import sys
+from unittest import mock
 
 import pytest
 from click.testing import CliRunner
@@ -240,3 +241,56 @@ class TestScanNotices:
             in result.stderr
         )
         assert "Traceback" not in result.output
+
+
+class TestMultilineErrors:
+    """An error that lists choices on a second line shows two real lines."""
+
+    def test_text_mode_prints_separate_lines(self, api):
+        FakeCatalog(api)
+
+        result = run("find", "--genre", "nosuchgenre")
+
+        assert result.exit_code == 1
+        lines = result.stderr.splitlines()
+        assert lines[0] == 'Error: No genre matching "nosuchgenre".'
+        assert lines[1].startswith("Available: ")
+        assert "\\n" not in result.stderr
+
+    def test_json_mode_carries_a_real_newline(self, api):
+        FakeCatalog(api)
+
+        result = run("find", "--genre", "nosuchgenre", "--json")
+
+        assert result.exit_code == 1
+        error = json.loads(result.stderr.strip().splitlines()[-1])["error"]
+        first, second = error["message"].split("\n")
+        assert first == 'No genre matching "nosuchgenre".'
+        assert second.startswith("Available: ")
+        assert "\\n" not in error["message"]
+        # One physical line on stderr: the break is the JSON escape \n.
+        assert len(result.stderr.strip().splitlines()) == 1
+
+    def test_a_usage_error_keeps_its_lines_too(self, tmp_config):
+        result = run("find", "--max-price", "5", "--min-price-drop", "oops")
+
+        assert result.exit_code == 2
+        assert "\\n" not in result.stderr
+
+    def test_escape_sequences_are_still_neutralized(self, api):
+        import click
+
+        FakeCatalog(api)
+        with mock.patch(
+            "audible_deals.cli.catalog.execute_catalog_scan",
+            side_effect=click.ClickException("first\x1b[2J\nsecond\rthird‮"),
+        ):
+            result = run("find", "--max-price", "5", "--pages", "1")
+
+        assert result.stderr == "Error: first\\x1b[2J\nsecond\\rthird\\u202e\n"
+
+    def test_crlf_counts_as_one_break(self):
+        from audible_deals.presentation.terminal import safe_text
+
+        assert safe_text("a\r\nb", keep_newlines=True) == "a\nb"
+        assert safe_text("a\r\nb") == "a\\r\\nb"  # values shown inline stay on one line
