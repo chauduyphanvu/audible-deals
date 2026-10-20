@@ -683,6 +683,7 @@
   "deals track run": [
     "--color",
     "--cooldown",
+    "--every",
     "--locale",
     "--verbose",
     "-v"

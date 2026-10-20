@@ -109,6 +109,18 @@ def convert(exc: Exception, ctx: click.Context) -> CliError | None:
     return None
 
 
+def describe(exc: BaseException) -> str:
+    """One line for a failure that does not end the program (a loop keeps going)."""
+    from audible_deals.presentation.terminal import safe_text
+
+    if isinstance(exc, click.ClickException):
+        return safe_text(exc.format_message())
+    code = exit_code_for(exc)
+    if code is not None:
+        return safe_text(message_for(exc, code))
+    return safe_text(f"{type(exc).__name__}: {exc}")
+
+
 def unexpected(exc: Exception, ctx: click.Context) -> CliError:
     """A one-line error for a bug or an unforeseen failure."""
     from audible_deals.presentation.terminal import safe_text

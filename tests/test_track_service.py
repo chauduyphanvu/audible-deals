@@ -201,9 +201,9 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
     )
 
     run_track(request(), track_runtime)
-    first = calls[1]
+    first = calls[0]  # an empty wishlist makes no lookup of its own
     run_track(request(), track_runtime)
-    second = calls[3]
+    second = calls[1]
 
     assert first == [f"A{index:03d}" for index in range(200)]
     assert second[:50] == [f"A{index:03d}" for index in range(200, 250)]
@@ -313,7 +313,9 @@ def test_auth_webhook_failure_does_not_latch_and_is_retried(tmp_config):
     assert load_track_state().auth_error_notified is False
 
 
-def test_wishlist_webhook_failure_does_not_record_run_or_notify_state(tmp_config):
+def test_wishlist_webhook_failure_is_a_recorded_failed_run_with_no_notify_state(
+    tmp_config,
+):
     product = make_product(asin="A1", price=3)
     webhook = Webhook(WebhookDeliveryError("Webhook failed: down"))
     notify_saves = []
@@ -330,8 +332,31 @@ def test_wishlist_webhook_failure_does_not_record_run_or_notify_state(tmp_config
     with pytest.raises(WebhookDeliveryError, match="Webhook failed: down"):
         run_track(request("https://example.test"), track_runtime)
 
-    assert notify_saves == []
-    assert load_track_state().runs == []
+    assert notify_saves == []  # so the next run alerts again
+    (recorded,) = load_track_state().runs
+    assert recorded["error"] == "WebhookDeliveryError: Webhook failed: down"
+    assert "hits" not in recorded
+
+
+def test_track_status_shows_a_webhook_failure(tmp_config, monkeypatch):
+    import audible_deals.cli.track as track_cli
+
+    monkeypatch.setattr(track_cli.scheduler, "installed", lambda: (False, "none"))
+    state = TrackState()
+    state.add_run(
+        {
+            "at": "2026-06-09T08:00:00",
+            "duration_s": 1.0,
+            "error": "WebhookDeliveryError: Webhook failed: down",
+        }
+    )
+    from audible_deals.state_store import save_track_state
+
+    save_track_state(state)
+
+    result = CliRunner().invoke(cli, ["track", "status"])
+
+    assert "Webhook failed: down" in result.output
 
 
 def test_track_cli_preserves_webhook_error_prefix(tmp_config, monkeypatch):
@@ -349,3 +374,42 @@ def test_track_cli_preserves_webhook_error_prefix(tmp_config, monkeypatch):
     assert result.exit_code != 0
     assert "Webhook failed: down" in result.output
     assert "track run failed:" not in result.output
+
+
+def test_a_wishlist_title_is_priced_in_its_own_marketplace(tmp_config):
+    """Like `notify`, `track run` looks a title up where it was added, not in the
+    command's marketplace (it used to price every title in the default one)."""
+    requested = []
+
+    class LocaleClient(Client):
+        def __init__(self, locale):
+            super().__init__(
+                products=[
+                    make_product(asin="B0UKTITLE1", price=3.0, locale=locale),
+                    make_product(asin="B0USTITLE1", price=3.0, locale=locale),
+                ]
+            )
+            self.locale = locale
+
+        def get_products_batch(self, asins):
+            requested.append((self.locale, list(asins)))
+            return super().get_products_batch(asins)
+
+    webhook = Webhook()
+    track_runtime = replace(
+        runtime(
+            None,
+            webhook,
+            wishlist=[
+                {"asin": "B0USTITLE1", "title": "US", "max_price": 5.0},
+                {"asin": "B0UKTITLE1", "title": "UK", "max_price": 5.0, "locale": "uk"},
+            ],
+        ),
+        get_client=LocaleClient,
+    )
+
+    result = run_track(request("https://hooks.example.test/x"), track_runtime)
+
+    assert ("us", ["B0USTITLE1"]) in requested
+    assert ("uk", ["B0UKTITLE1"]) in requested
+    assert result.hits == 2 and len(webhook.calls) == 1

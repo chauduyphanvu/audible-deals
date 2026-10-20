@@ -10,6 +10,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - `--color auto|always|never` on every command, before or after the subcommand. An explicit `always`/`never` beats `NO_COLOR`/`FORCE_COLOR`; `never` strips all styling.
 - Documented exit statuses for every command (`src/audible_deals/exit_codes.py`, "Exit codes and errors" in the command guide): 0 ok, 1 error, 2 usage, 3 authentication required or rejected, 4 the Audible request failed, 10 nothing matched (with `--exit-code`), 130 interrupted. Authentication problems are now a typed `AuthRequiredError` (and the SDK's `Unauthorized`, or any HTTP 401/403) instead of a text match, so `track run` also reports exit 3/4 for them.
 - `--exit-code` on `find`, `search` and `last`: exit 10 when nothing matched.
+- `deals track run --every 30m` runs the background job in the foreground for people without a scheduler: the same run lock as scheduled runs (a run that finds it held is skipped), exponential backoff with jitter after failures (capped at an hour), config re-read before each run, a clean stop on Ctrl+C or SIGTERM (exit 0).
 - `--webhook-format teams-legacy`: always sends a Microsoft Teams MessageCard.
 - `deals config set webhook-allow-private true` lets webhooks reach servers on your own network (self-hosted ntfy, Home Assistant). Off by default.
 - `deals completions bash|zsh|fish --install` writes the completion script to the per-user directory the shell loads from (`~/.local/share/bash-completion/completions/deals`, `~/.zfunc/_deals` with the `fpath` lines to add, `~/.config/fish/completions/deals.fish`) without touching any startup file, replaces only its own earlier copy, and is safe to re-run after an upgrade. Without the flag the script is still printed; the docs no longer suggest appending it to `.bashrc`/`.zshrc`, which duplicated it on every run.
@@ -53,7 +54,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 - A zero-byte or whitespace-only data file (`config.json`, `profiles.json`, ...) is now treated as empty without a warning; there is nothing in it to lose.
 - `-v`/`-vv` now also apply to warnings emitted while loading saved configuration at startup.
 
+### Deprecated
+- `deals watch --every` (use `deals track run --every`). It keeps working, prints a warning, and now takes the shared run lock and backs off after failures instead of ending with a traceback.
+
 ### Fixed
+- `deals track run` looked every wishlist title up in the command's marketplace, so a title added from another marketplace (`--locale uk wishlist add ...`) was priced in the wrong one. It now uses the same wishlist check as `notify`, which looks each title up where it was added.
+- A webhook that could not be delivered made `deals track run` fail without a trace in the run history. The failed run is now recorded (`deals track status` shows `WebhookDeliveryError: ...`) and, as before, the alert is not marked as sent, so the next run sends it again.
 - Monitor alerts to ntfy failed to send: the `Title` header (`Audible Deals — <monitor>`) contains an em dash, which HTTP headers cannot carry as plain text.
 - Error messages that list choices on a second line (`deals find --genre nosuchgenre`: `No genre matching ...` / `Available: ...`) printed a literal `\n` instead of a line break, and the `--json` error object carried a doubled backslash. They now print real separate lines (control characters and terminal escapes are still neutralized) and the JSON message holds a real newline.
 - A `config.json`, `profiles.json`, `monitors.json` or `dismissed_asins.json` that could not be parsed (for example after a typo while hand-editing) was silently replaced with an empty file the next time a command saved it, deleting every saved profile, monitor, or default. Commands that would write to such a file now stop with a one-line error naming the file and the line and column of the problem, and leave it untouched. Commands that only read it print a one-line warning (the traceback appears only with `-vv`).

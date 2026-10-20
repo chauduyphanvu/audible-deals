@@ -9,6 +9,7 @@ import click
 
 from audible_deals import constants, json_output, paths, scheduler
 from audible_deals.automation_models import TrackRunRequest
+from audible_deals.cli.errors import describe
 from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
@@ -19,12 +20,14 @@ from audible_deals.cli.helpers import (
 from audible_deals.cli.options import json_option
 from audible_deals.config_store import (
     config_numeric_errors,
+    load_config,
     load_monitors,
     webhook_allow_private,
 )
 from audible_deals.exit_codes import exit_code_for
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import MonitorRuntime
+from audible_deals.notices import note, warn
 from audible_deals.notification_workflow import parse_webhook_headers
 from audible_deals.parsing import parse_interval
 from audible_deals.presentation.terminal import (
@@ -43,6 +46,7 @@ from audible_deals.state_store import (
     save_notify_state,
     save_track_state,
 )
+from audible_deals.track_loop import human_seconds, run_every, stop_on_sigterm
 from audible_deals.track_service import TrackRuntime, run_track
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
 from audible_deals.webhooks import (
@@ -82,16 +86,15 @@ def track(ctx):
         ctx.invoke(track_status)
 
 
-@track.command("run")
-@click.option(
-    "--cooldown",
-    type=click.IntRange(min=0),
-    default=1,
-    help="Suppress repeat webhook alerts for N days unless the price drops further (default: 1, 0 turns it off)",
-)
-@click.pass_context
-def track_run(ctx, cooldown):
-    """Refresh tracked prices once (the command the scheduler runs)."""
+def _run_track_once(ctx, cooldown, *, reload_config: bool = False):
+    """One ``track run``: build the request from the config and run it.
+
+    Returns the :class:`TrackRunResult`; failures propagate (``LockHeldError``
+    when another run holds the lock). ``reload_config`` re-reads the config file,
+    so a loop notices edits between runs.
+    """
+    if reload_config:
+        ctx.obj["config"] = load_config()
     cfg = ctx.obj.get("config", {})
     if errors := config_numeric_errors(cfg):
         raise click.ClickException(errors[0])
@@ -127,21 +130,105 @@ def track_run(ctx, cooldown):
         lock=run_lock,
     )
     try:
-        result = run_track(request, runtime)
-    except LockHeldError as e:
-        # Not a failure: the scheduler's next run picks up (exit 0, like notify).
-        click.echo(
-            f"Note: another run is in progress, skipping: {safe_text(e)}", err=True
-        )
-        return
+        return run_track(request, runtime)
     except WebhookDeliveryError as exc:
         raise click.ClickException(str(exc)) from exc
+    except LockHeldError:
+        raise
     except Exception as e:
         if exit_code_for(e) is not None:
             raise  # authentication / request failures keep their own exit status
         raise click.ClickException(f"track run failed: {e}") from e
+
+
+def _print_track_result(result) -> None:
     warn_wishlist_issues(result.wishlist_issues)
     console.print(f"[dim]{safe_markup(result.summary())}[/dim]")
+
+
+@track.command("run")
+@click.option(
+    "--cooldown",
+    type=click.IntRange(min=0),
+    default=1,
+    help="Suppress repeat webhook alerts for N days unless the price drops further (default: 1, 0 turns it off)",
+)
+@click.option(
+    "--every",
+    default=None,
+    metavar="INTERVAL",
+    help=(
+        "Keep running in the foreground, one run per INTERVAL (e.g. 30m, 2h; "
+        "at least 10m), for use without a system scheduler. Failed runs are "
+        "retried with backoff; Ctrl+C stops."
+    ),
+)
+@click.pass_context
+def track_run(ctx, cooldown, every):
+    """Refresh tracked prices once (the command the scheduler runs).
+
+    With --every it keeps going in the foreground instead. It uses the same run
+    lock as scheduled runs, so a scheduler and a loop never run at once: a run
+    that finds the lock held is skipped. After a failed run it waits twice as
+    long each time (with some jitter, at most an hour) before trying again.
+
+    \b
+    Examples:
+        deals track run
+        deals track run --every 30m
+    """
+    if every is None:
+        try:
+            result = _run_track_once(ctx, cooldown)
+        except LockHeldError as e:
+            # Not a failure: the scheduler's next run picks up (exit 0, like notify).
+            click.echo(
+                f"Note: another run is in progress, skipping: {safe_text(e)}",
+                err=True,
+            )
+            return
+        _print_track_result(result)
+        return
+
+    interval = parse_interval(every)
+    if interval < _MIN_INTERVAL_SECONDS:
+        raise click.UsageError(
+            f"Minimum interval is 10m — '{every}' would hammer the API."
+        )
+    console.print(f"[dim]Running every {safe_markup(every)} (Ctrl+C to stop).[/dim]")
+
+    def stamp() -> str:
+        return datetime.datetime.now().strftime("%H:%M:%S")
+
+    def busy(error: Exception) -> None:
+        note(f"{stamp()} another run is in progress, skipped this one")
+
+    def failed(error: Exception, in_a_row: int, wait: float) -> None:
+        warn(
+            f"{stamp()} run failed ({in_a_row} in a row): {describe(error)}; "
+            f"trying again in {human_seconds(wait)}"
+        )
+
+    def waiting(seconds: float, backing_off: bool) -> None:
+        if not backing_off:
+            console.print(
+                f"[dim]Next run in {human_seconds(seconds)} (Ctrl+C to stop).[/dim]"
+            )
+
+    def succeeded(result) -> None:
+        console.print(f"[dim]{stamp()}[/dim]", end=" ")
+        _print_track_result(result)
+
+    with stop_on_sigterm():
+        run_every(
+            lambda: _run_track_once(ctx, cooldown, reload_config=True),
+            interval_s=interval,
+            on_result=succeeded,
+            on_busy=busy,
+            on_failure=failed,
+            on_wait=waiting,
+        )
+    note("Stopped.")
 
 
 @track.command("install")

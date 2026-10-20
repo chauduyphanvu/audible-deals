@@ -24,7 +24,7 @@ from audible_deals.monitor_service import (
 from audible_deals.notification_service import (
     apply_cooldown,
     build_notify_state,
-    collect_target_hits,
+    check_wishlist,
     deliver_auth_error,
     deliver_hits,
     deliver_monitor_events,
@@ -39,7 +39,7 @@ from audible_deals.state_store import (
     save_notify_state,
     save_track_state,
 )
-from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
+from audible_deals.webhook_client import WebhookClient
 from audible_deals.wishlist import inspect_wishlist, load_wishlist
 
 logger = logging.getLogger(__name__)
@@ -177,13 +177,15 @@ def _run_locked(
     today = runtime.today()
 
     client = runtime.get_client(request.locale)
-    hits, extras, hit_asins = collect_target_hits(
-        client,
+    check = check_wishlist(
         asin_items,
         author_items,
-        runtime.record_products,
+        default_locale=request.locale,
+        get_client=runtime.get_client,
+        record_products=runtime.record_products,
         credit_price=request.credit_price,
     )
+    hits, extras, hit_asins = check.hits, check.extras, check.hit_asins
 
     excluded_asins = wishlist_asins | runtime.load_dismissed_asins()
     eligibility = runtime.load_refresh_eligibility()
@@ -291,10 +293,11 @@ def run_track(request: TrackRunRequest, runtime: TrackRuntime) -> TrackRunResult
             return _run_locked(request, runtime, runtime.load_track_state(), started)
     except LockHeldError:
         raise
-    except WebhookDeliveryError:
-        raise
     except Exception as exc:
-        logger.exception("track run failed")
+        # Every failure, a webhook that could not be delivered included, goes
+        # into the run history (`deals track status` shows it); the caller
+        # reports it, so it is only logged at debug level here.
+        logger.debug("track run failed", exc_info=True)
         try:
             with runtime.lock():
                 _record_failure(exc, started, request, runtime)

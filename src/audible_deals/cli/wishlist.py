@@ -6,13 +6,13 @@ import csv
 import json as json_mod
 import logging
 import math
-import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
 import click
 
 from audible_deals import json_output
+from audible_deals.cli.errors import describe
 from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
@@ -22,6 +22,8 @@ from audible_deals.cli.helpers import (
 from audible_deals.cli.options import json_option
 from audible_deals.exit_codes import ExitCode
 from audible_deals.filtering import sort_local
+from audible_deals.locking import run_lock
+from audible_deals.notices import note, warn
 from audible_deals.parsing import parse_interval
 from audible_deals.presentation.common import price_str
 from audible_deals.presentation.reports import display_watch_table, display_wishlist
@@ -34,6 +36,7 @@ from audible_deals.presentation.terminal import (
 from audible_deals.product import Product
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
 from audible_deals.serialization import sanitize_csv_cell, validate_export_path
+from audible_deals.track_loop import human_seconds, run_every, stop_on_sigterm
 from audible_deals.validation import NONNEGATIVE_FLOAT
 from audible_deals.wishlist import (
     WishlistMutationError,
@@ -673,7 +676,10 @@ def _emit_watch_json(
 @click.option(
     "--every",
     default=None,
-    help="Re-check on an interval (e.g. '30m', '2h', '1h30m'). Runs until interrupted.",
+    help=(
+        "Deprecated: use 'deals track run --every'. Re-check on an interval "
+        "(e.g. '30m', '2h', '1h30m') until interrupted."
+    ),
 )
 @click.option(
     "--buy-only",
@@ -707,14 +713,15 @@ def watch(ctx, every, buy_only, sort_by, show_url, exit_code, json_flag):
     Fetches current prices for all wishlist items and shows which ones
     are at or below your target price.
 
-    Use --every to keep checking on an interval instead of exiting after
-    one check. Press Ctrl+C to stop.
+    --every keeps checking on an interval (Ctrl+C stops) but is deprecated:
+    'deals track run --every' does the same and also records history, sends
+    alerts and runs monitors. Like it, the loop takes the shared run lock
+    (a check is skipped while a scheduled run is working) and backs off after
+    failures.
 
     \b
     Examples:
         deals watch
-        deals watch --every 30m
-        deals watch --every 2h
         deals watch --buy-only
         deals watch --sort title
         deals watch --show-url
@@ -739,16 +746,43 @@ def watch(ctx, every, buy_only, sort_by, show_url, exit_code, json_flag):
         return
 
     interval = parse_interval(every)
+    warn(
+        "'deals watch --every' is deprecated; use 'deals track run --every "
+        f"{every}', which also records history, sends alerts and runs monitors."
+    )
     console.print(
         f"[dim]Watching every {safe_markup(every)} (Ctrl+C to stop)...[/dim]\n"
     )
-    try:
-        while True:
-            _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
+
+    def check() -> int:
+        # The same lock as scheduled runs, so the two never record at once.
+        with run_lock():
+            return _watch_once(
+                ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url
+            )
+
+    def busy(error: Exception) -> None:
+        note("another deals run is in progress; skipped this check")
+
+    def failed(error: Exception, in_a_row: int, wait: float) -> None:
+        warn(
+            f"check failed ({in_a_row} in a row): {describe(error)}; "
+            f"trying again in {human_seconds(wait)}"
+        )
+
+    def waiting(seconds: float, backing_off: bool) -> None:
+        if not backing_off:
             console.print(
-                f"\n  [dim]Next check in {safe_markup(every)}... "
+                f"\n  [dim]Next check in {human_seconds(seconds)}... "
                 "(Ctrl+C to stop)[/dim]\n"
             )
-            time.sleep(interval)
-    except KeyboardInterrupt:
-        console.print("\n[dim]Stopped.[/dim]")
+
+    with stop_on_sigterm():
+        run_every(
+            check,
+            interval_s=interval,
+            on_busy=busy,
+            on_failure=failed,
+            on_wait=waiting,
+        )
+    console.print("\n[dim]Stopped.[/dim]")

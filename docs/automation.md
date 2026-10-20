@@ -1,6 +1,6 @@
 # Price tracking and automation
 
-audible-deals keeps its watchlist and price history locally. You can check them manually, run a persistent terminal watcher, or install an operating-system schedule.
+audible-deals keeps its watchlist and price history locally. You can check them manually, keep a terminal loop running, or install an operating-system schedule.
 
 ## Wishlist
 
@@ -53,12 +53,6 @@ The watchlist is stored in `~/.config/audible-deals/wishlist.json`.
 # Check once
 deals watch
 
-# Keep checking every 30 minutes
-deals watch --every 30m
-
-# Durations can combine units
-deals watch --every 1h30m
-
 # Show only target hits, sorted by price, with Audible links
 deals watch --buy-only --sort price --show-url
 
@@ -66,7 +60,7 @@ deals watch --buy-only --sort price --show-url
 deals watch --exit-code
 ```
 
-`--every` accepts hours, minutes, seconds, or combinations and continues until you press Ctrl+C. `--buy-only` hides unavailable rows, but the summary still reports their count. Only `BUY` rows contribute to the hit count and `--exit-code` result.
+`watch --every` (re-check on an interval until Ctrl+C) is deprecated; use [`deals track run --every`](#running-without-a-scheduler), which does the same and more. Until it is removed `watch --every` still works, and now takes the same run lock and backs off after failures. `--buy-only` hides unavailable rows, but the summary still reports their count. Only `BUY` rows contribute to the hit count and `--exit-code` result.
 
 ## Price history
 
@@ -107,6 +101,16 @@ deals track uninstall
 
 The installer uses launchd on macOS, a systemd user timer or cron on Linux, and Task Scheduler on Windows. The minimum interval is 10 minutes. The job is pinned to the data directory in use when you install (it sets `DEALS_HOME` for the job), so it reads and writes the same data you see interactively even if `XDG_CONFIG_HOME` is only set in your shell; `deals track install` prints that directory. Re-run it after moving your data.
 
+### Running without a scheduler
+
+On a machine that is always on, or where you would rather not install a schedule, run the same job in the foreground:
+
+```bash
+deals track run --every 30m
+```
+
+It does exactly what a scheduled `deals track run` does (wishlist and author watches, extra tracked titles, monitors, alerts, run history), once per interval (at least 10 minutes), until you press Ctrl+C or send SIGTERM (for a service manager). It uses the same run lock as scheduled runs, `notify` and `recap`, so a loop and a scheduler never work at the same time: a run that finds the lock held is skipped with a note, and the next one happens a normal interval later. If a run fails (Audible or the webhook is down, the login expired), it is reported on one line and recorded in the run history, and the next attempt waits twice as long each time, with some random jitter, up to an hour, until a run succeeds. The config file is read again before every run, so changes apply without restarting it. Stopping it with Ctrl+C exits with status 0.
+
 Each run:
 
 - refreshes every wishlist item and author watch regardless of recent-result eligibility;
@@ -130,7 +134,7 @@ deals monitor test sci-fi-steals
 
 The first successful monitor run is a silent baseline. Later runs alert on new matches and price drops. Monitor definitions live in `monitors.json` and each monitor's independent snapshot in `state.db`; enabled monitors rotate through a shared 60 catalog-page-call budget per scheduled run.
 
-Runs share a cross-process lock with `notify`, so overlapping schedules exit cleanly. Authentication failures are recorded and can trigger a one-time reauthentication alert. `deals doctor` reports three or more consecutive tracking failures.
+Runs share a cross-process lock with `notify`, so overlapping schedules exit cleanly. A run that fails, including one whose webhook could not be delivered, is recorded with its error and shown by `deals track status`; the alert is sent again by the next run. Authentication failures are recorded and can trigger a one-time reauthentication alert. `deals doctor` reports three or more consecutive tracking failures.
 
 ## Recap
 
