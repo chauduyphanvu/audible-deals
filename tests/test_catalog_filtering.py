@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
-import audible_deals.constants as constants_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.filtering import (
     filter_products as _typed_filter_products,
@@ -145,7 +145,7 @@ class TestExcludeAuthorFilter:
                 series_position="",
             ),
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(p) for p in products])
         )
         out_file = tmp_config / "last_excl_author.json"
@@ -326,7 +326,7 @@ class TestAuthorFilter:
                 series_position="",
             ),
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(p) for p in products])
         )
         out_file = tmp_config / "last_author.json"
@@ -475,7 +475,7 @@ class TestExcludeNarratorFilter:
                 series_position="",
             ),
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(p) for p in products])
         )
         out_file = tmp_config / "last_excl_narrator.json"

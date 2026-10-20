@@ -10,6 +10,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
+from audible_deals import paths
 from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli import cli
 
@@ -56,11 +57,8 @@ def test_auth_inspection_states(tmp_path):
 
 
 def test_doctor_reuses_auth_inspection_for_malformed_auth(tmp_config, monkeypatch):
-    import audible_deals.constants as constants
-
     auth_file = tmp_config / "auth.json"
     auth_file.write_text("[]")
-    monkeypatch.setattr(constants, "AUTH_FILE", auth_file)
     result = CliRunner().invoke(cli, ["doctor"])
     assert result.exit_code == 1
     assert "Auth file parseable" in result.output
@@ -77,11 +75,8 @@ def test_doctor_reuses_auth_inspection_for_malformed_auth(tmp_config, monkeypatc
 def test_doctor_expired_auth_probes_and_reports_refresh_failure(
     tmp_config, mock_client, monkeypatch
 ):
-    import audible_deals.constants as constants
-
     auth_file = tmp_config / "auth.json"
     auth_file.write_text(json.dumps(_auth_data(time.time() - 1)))
-    monkeypatch.setattr(constants, "AUTH_FILE", auth_file)
     mock_client.check_connection.side_effect = RuntimeError("refresh rejected")
 
     result = CliRunner().invoke(cli, ["doctor"])
@@ -95,14 +90,8 @@ def test_doctor_expired_auth_probes_and_reports_refresh_failure(
 
 
 def test_doctor_reports_invalid_profile_and_monitor_settings(tmp_config, monkeypatch):
-    import audible_deals.constants as constants
-
-    monkeypatch.setattr(constants, "MONITORS_FILE", tmp_config / "monitors.json")
-    monkeypatch.setattr(
-        constants, "MONITOR_STATE_FILE", tmp_config / "monitor_state.json"
-    )
-    constants.PROFILES_FILE.write_text('{"bad-profile": {"min_rating": 6}}')
-    constants.MONITORS_FILE.write_text(
+    paths.profiles_file().write_text('{"bad-profile": {"min_rating": 6}}')
+    paths.monitors_file().write_text(
         '{"bad-monitor": {"mode": "find", "settings": {"min_hours": Infinity}}}'
     )
 
@@ -127,9 +116,7 @@ def test_doctor_reports_invalid_profile_and_monitor_settings(tmp_config, monkeyp
     ],
 )
 def test_doctor_strictly_fails_invalid_dismissed_state(tmp_config, payload, detail):
-    import audible_deals.constants as constants
-
-    constants.DISMISSED_ASINS_FILE.write_text(payload)
+    paths.dismissed_asins_file().write_text(payload)
 
     result = CliRunner().invoke(cli, ["doctor"])
     output = " ".join(result.output.split())
@@ -141,10 +128,8 @@ def test_doctor_strictly_fails_invalid_dismissed_state(tmp_config, payload, deta
 
 
 def test_doctor_passes_missing_and_valid_dismissed_state(tmp_config):
-    import audible_deals.constants as constants
-
     missing = CliRunner().invoke(cli, ["doctor"])
-    constants.DISMISSED_ASINS_FILE.write_text(json.dumps(["A1", "A2", "A1"]))
+    paths.dismissed_asins_file().write_text(json.dumps(["A1", "A2", "A1"]))
     valid = CliRunner().invoke(cli, ["doctor"])
 
     assert "Dismissed-ASINs state" in missing.output
@@ -154,10 +139,7 @@ def test_doctor_passes_missing_and_valid_dismissed_state(tmp_config):
 
 
 def test_bare_dashboard_is_auth_aware_and_local(tmp_config, monkeypatch):
-    import audible_deals.constants as constants
-
     auth_file = tmp_config / "auth.json"
-    monkeypatch.setattr(constants, "AUTH_FILE", auth_file)
     result = CliRunner().invoke(cli, [])
     assert result.exit_code == 0
     assert "Authentication is not set up" in result.output

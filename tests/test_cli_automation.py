@@ -19,9 +19,9 @@ from click.testing import CliRunner
 
 import audible_deals.cli.track as track_mod
 import audible_deals.config_store as config_store_mod
-import audible_deals.constants as constants_mod
 import audible_deals.notification_service as notification_service
 import audible_deals.wishlist as wishlist_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.cli.misc import _track_checks
 from audible_deals.parsing import parse_interval as _parse_interval
@@ -241,7 +241,7 @@ class TestWatchCommand:
 class TestRecapWithTitles:
     def _write_history(self, tmp_config, asin: str, entries: list[dict]) -> None:
 
-        hist_dir = constants_mod.HISTORY_DIR
+        hist_dir = paths.history_dir()
         hist_dir.mkdir(parents=True, exist_ok=True)
         (hist_dir / f"{asin}.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
@@ -294,7 +294,7 @@ class TestRecapWithTitles:
         p = make_product(asin="RC01", price=5.99, title="My Title Book")
         _record_prices([p])
 
-        hist_file = constants_mod.HISTORY_DIR / "RC01.json"
+        hist_file = paths.history_dir() / "RC01.json"
         entries = json.loads(hist_file.read_text())["marketplaces"]["us"]
         assert len(entries) == 1
         assert entries[0]["title"] == "My Title Book"
@@ -624,7 +624,7 @@ class TestPriceHistoryObservationDate:
             }
             for day in range(365)
         ]
-        history_file = constants_mod.HISTORY_DIR / f"{product.asin}.json"
+        history_file = paths.history_dir() / f"{product.asin}.json"
         history_file.write_text(json.dumps({"marketplaces": {"us": seeded}}))
         record_prices([product], datetime.date(2026, 1, 1))
 
@@ -921,10 +921,7 @@ class TestNotifyHitsSchema:
 class TestRunLock:
     def test_acquire_and_release(self, tmp_path):
         """Lock is acquired and its durable lock file remains after exit."""
-        import audible_deals.constants as constants_mod
-
         lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         from audible_deals.locking import run_lock
 
         with run_lock():
@@ -935,10 +932,7 @@ class TestRunLock:
         """The lock file records the current PID for diagnostics."""
         import os
 
-        import audible_deals.constants as constants_mod
-
         lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         from audible_deals.locking import run_lock
 
         with run_lock():
@@ -946,11 +940,8 @@ class TestRunLock:
 
     def test_contention_raises_lock_held_error(self, tmp_path):
         """A held (fresh) lock raises LockHeldError."""
-        import audible_deals.constants as constants_mod
         from audible_deals.locking import LockHeldError, run_lock
 
-        lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         with run_lock():
             with pytest.raises(LockHeldError):
                 with run_lock():
@@ -958,11 +949,9 @@ class TestRunLock:
 
     def test_old_unlocked_lock_file_is_acquired(self, tmp_path):
         """An old lock-file timestamp does not affect advisory lock acquisition."""
-        import audible_deals.constants as constants_mod
         from audible_deals.locking import run_lock
 
         lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         lock_file.write_text("99999")
         old_mtime = time.time() - 700  # 700s > 600s stale threshold
         os.utime(str(lock_file), (old_mtime, old_mtime))
@@ -971,11 +960,9 @@ class TestRunLock:
         assert lock_file.exists()
 
     def test_active_lock_is_not_broken_when_older_than_ten_minutes(self, tmp_path):
-        import audible_deals.constants as constants_mod
         from audible_deals.locking import LockHeldError, run_lock
 
         lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         with run_lock():
             old_mtime = time.time() - 700
             os.utime(str(lock_file), (old_mtime, old_mtime))
@@ -984,12 +971,10 @@ class TestRunLock:
                     pass
 
     def test_legacy_lock_probe_handles_disappearing_file(self, tmp_path, monkeypatch):
-        import audible_deals.constants as constants_mod
         import audible_deals.locking as locking_mod
 
         lock_file = tmp_path / ".deals.lock"
         lock_file.write_text("99999")
-        constants_mod.LOCK_FILE = lock_file
         real_open = locking_mod.os.open
         removed = False
 
@@ -1007,12 +992,10 @@ class TestRunLock:
             assert lock_file.exists()
 
     def test_live_legacy_owner_remains_protected(self, tmp_path):
-        import audible_deals.constants as constants_mod
         from audible_deals.locking import LockHeldError, run_lock
 
         lock_file = tmp_path / ".deals.lock"
         lock_file.write_text(str(os.getpid()))
-        constants_mod.LOCK_FILE = lock_file
 
         with pytest.raises(LockHeldError, match="legacy"):
             with run_lock():
@@ -1021,12 +1004,10 @@ class TestRunLock:
     def test_legacy_creator_winning_create_race_is_not_overwritten(
         self, tmp_path, monkeypatch
     ):
-        import audible_deals.constants as constants_mod
         import audible_deals.locking as locking_mod
         from audible_deals.locking import LockHeldError
 
         lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         real_open = locking_mod.os.open
 
         def _legacy_wins(path, flags, mode=0o777):
@@ -1042,19 +1023,15 @@ class TestRunLock:
         assert lock_file.read_text() == str(os.getpid())
 
     def test_subprocess_contention_releases_after_crash(self, tmp_path):
-        import audible_deals.constants as constants_mod
         from audible_deals.locking import LockHeldError, run_lock
 
         lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         script = """
 import sys
 import time
 from pathlib import Path
-import audible_deals.constants as constants
 from audible_deals.locking import run_lock
 
-constants.LOCK_FILE = Path(sys.argv[1])
 with run_lock():
     print("locked", flush=True)
     time.sleep(60)
@@ -1079,11 +1056,8 @@ with run_lock():
 
     def test_lock_released_on_exception(self, tmp_path):
         """Lock is released even when the body raises."""
-        import audible_deals.constants as constants_mod
         from audible_deals.locking import run_lock
 
-        lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         with pytest.raises(ValueError):
             with run_lock():
                 raise ValueError("boom")
@@ -1092,11 +1066,9 @@ with run_lock():
 
     def test_release_does_not_remove_foreign_pid_lock(self, tmp_path):
         """Lock-file diagnostics do not change ownership of the OS lock."""
-        import audible_deals.constants as constants_mod
         from audible_deals.locking import run_lock
 
         lock_file = tmp_path / ".deals.lock"
-        constants_mod.LOCK_FILE = lock_file
         with run_lock():
             # Simulate another process overwriting the lock with its own PID
             lock_file.write_text("99999")
@@ -1185,8 +1157,8 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD01", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"CD01": {"price": 3.99, "date": today}})
         )
         runner = CliRunner()
@@ -1200,8 +1172,8 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD02", 2.99, 5.0)
         today = _datetime.date.today().isoformat()
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"CD02": {"price": 3.99, "date": today}})
         )
         runner = CliRunner()
@@ -1217,8 +1189,8 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD03", 3.99, 5.0)
         old_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"CD03": {"price": 3.99, "date": old_date}})
         )
         runner = CliRunner()
@@ -1234,7 +1206,7 @@ class TestNotifyCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify"])
         assert result.exit_code == 0, result.output
-        assert not constants_mod.NOTIFY_STATE_FILE.exists()
+        assert not paths.notify_state_file().exists()
 
     def test_all_suppressed_exit_code_exits_0(self, mock_client, tmp_config):
         """Items hit target but all suppressed by cooldown + --exit-code → exit 0.
@@ -1245,8 +1217,8 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD05", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"CD05": {"price": 3.99, "date": today}})
         )
         runner = CliRunner()
@@ -1261,8 +1233,8 @@ class TestNotifyCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
-        assert constants_mod.NOTIFY_STATE_FILE.exists()
-        state = json.loads(constants_mod.NOTIFY_STATE_FILE.read_text())
+        assert paths.notify_state_file().exists()
+        state = json.loads(paths.notify_state_file().read_text())
         assert "CD06" in state
         assert state["CD06"]["price"] == pytest.approx(3.99)
         assert state["CD06"]["date"] == datetime.date.today().isoformat()
@@ -1272,14 +1244,14 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD07", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"OLD1": {"price": 1.0, "date": today}})
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
-        state = json.loads(constants_mod.NOTIFY_STATE_FILE.read_text())
+        state = json.loads(paths.notify_state_file().read_text())
         assert "OLD1" not in state
         assert "CD07" in state
 
@@ -1287,7 +1259,7 @@ class TestNotifyCooldown:
 class TestRecapJson:
     def _write_history(self, tmp_config, asin, entries):
 
-        hist_dir = constants_mod.HISTORY_DIR
+        hist_dir = paths.history_dir()
         hist_dir.mkdir(parents=True, exist_ok=True)
         (hist_dir / f"{asin}.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
@@ -1438,7 +1410,7 @@ class TestRecapJson:
 class TestRecapWebhook:
     def _write_history(self, tmp_config, asin, entries):
 
-        hist_dir = constants_mod.HISTORY_DIR
+        hist_dir = paths.history_dir()
         hist_dir.mkdir(parents=True, exist_ok=True)
         (hist_dir / f"{asin}.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
@@ -1816,7 +1788,7 @@ class TestNotifyAuthorCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "3"])
         assert result.exit_code == 0, result.output
-        state = json.loads(constants_mod.NOTIFY_STATE_FILE.read_text())
+        state = json.loads(paths.notify_state_file().read_text())
         assert "B00AUTH010" in state
 
     def test_author_hit_cooldown_suppressed_second_run(self, tmp_config, mock_client):
@@ -1824,8 +1796,8 @@ class TestNotifyAuthorCooldown:
 
         self._save_author_wishlist("Brandon Sanderson", 5.0)
         today = _datetime.date.today().isoformat()
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"B00AUTH011": {"price": 3.99, "date": today}})
         )
         author_product = make_product(
@@ -1859,7 +1831,7 @@ class TestNotifyAuthorCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
-        state = json.loads(constants_mod.NOTIFY_STATE_FILE.read_text())
+        state = json.loads(paths.notify_state_file().read_text())
         # B00AUTH012 is not a wishlist ASIN, but it should be retained (not pruned)
         assert "B00AUTH012" in state
 
@@ -1893,8 +1865,8 @@ class TestNotifyAuthorCooldown:
 
         today = _datetime.date.today().isoformat()
         # Pre-populate: day-1 author hit was recorded
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"B00AUTH020": {"price": 3.99, "date": today}})
         )
 
@@ -1919,7 +1891,7 @@ class TestNotifyAuthorCooldown:
         assert payload["deals"][0]["asin"] == "B00ASIN001"
 
         # Suppressed author ASIN state must survive
-        state = json.loads(constants_mod.NOTIFY_STATE_FILE.read_text())
+        state = json.loads(paths.notify_state_file().read_text())
         assert "B00AUTH020" in state, "Suppressed author ASIN was incorrectly pruned"
 
 
@@ -2262,7 +2234,7 @@ class TestRoutesWatchExitCode:
 class TestTrackChecksMalformedHistory:
     def test_run_history_string_does_not_crash(self, tmp_config):
         """run_history that is a string (not a list) must not raise."""
-        constants_mod.TRACK_STATE_FILE.write_text(
+        paths.track_state_file().write_text(
             json.dumps({"install": {"every": "6h"}, "run_history": "oops"})
         )
         rows = _track_checks()
@@ -2270,7 +2242,7 @@ class TestTrackChecksMalformedHistory:
 
     def test_run_history_non_dict_entry_does_not_crash(self, tmp_config):
         """A list containing non-dict entries must not raise AttributeError."""
-        constants_mod.TRACK_STATE_FILE.write_text(
+        paths.track_state_file().write_text(
             json.dumps({"install": {"every": "6h"}, "run_history": ["x", 5, None]})
         )
         rows = _track_checks()
@@ -2281,9 +2253,7 @@ class TestTrackChecksMalformedHistory:
     def test_doctor_survives_malformed_run_history(
         self, tmp_config, mock_client, monkeypatch
     ):
-        monkeypatch.setattr(constants_mod, "AUTH_FILE", tmp_config / "auth.json")
-        monkeypatch.setattr(constants_mod, "CONFIG_DIR", tmp_config)
-        constants_mod.TRACK_STATE_FILE.write_text(
+        paths.track_state_file().write_text(
             json.dumps({"install": {"every": "6h"}, "run_history": "oops"})
         )
         result = CliRunner().invoke(cli, ["doctor"])
@@ -2359,8 +2329,8 @@ class TestNotifyExitCodeWithCooldown:
         because an item did hit target, even though nothing was sent."""
         self._wishlist_at_target(mock_client, "EC01", 3.99, 5.0)
         today = datetime.date.today().isoformat()
-        constants_mod.NOTIFY_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.notify_state_file().write_text(
             json.dumps({"EC01": {"price": 3.99, "date": today}})
         )
         runner = CliRunner()
@@ -2397,7 +2367,7 @@ class TestTrackAuthErrorClassification:
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
 
-        state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
+        state = json.loads(paths.track_state_file().read_text())
         assert "connection timed out" in state["run_history"][0]["error"]
         # A transient (non-auth) failure must not fire the re-authenticate ping
         assert posts == []
@@ -2419,7 +2389,7 @@ class TestTrackAuthErrorClassification:
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
 
-        state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
+        state = json.loads(paths.track_state_file().read_text())
         assert len(posts) == 1
         assert state.get("auth_error_notified") is True
 
@@ -2488,7 +2458,7 @@ class TestTrackWebhookFormattingError:
         # The formatting error must surface as itself, not a re-auth ping,
         # and must not latch auth_error_notified.
         assert posts == []
-        state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
+        state = json.loads(paths.track_state_file().read_text())
         assert state.get("auth_error_notified") is not True
         assert "Unknown webhook format" in state["run_history"][0]["error"]
 
@@ -2518,7 +2488,7 @@ class TestTrackFailurePathLocking:
         # the failure-path state write.
         assert len(acquisitions) == 2
 
-        state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
+        state = json.loads(paths.track_state_file().read_text())
         assert "boom" in state["run_history"][0]["error"]
 
     def test_failure_state_write_does_not_bypass_held_lock(
@@ -2549,7 +2519,7 @@ class TestTrackFailurePathLocking:
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
         # A held lock must never be bypassed by an unlocked state write.
-        assert not constants_mod.TRACK_STATE_FILE.exists()
+        assert not paths.track_state_file().exists()
 
 
 @pytest.mark.parametrize("fmt", ["slack", "discord", "teams"])

@@ -8,7 +8,7 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
-from audible_deals import constants
+from audible_deals import constants, paths
 
 
 @dataclass(frozen=True)
@@ -27,7 +27,7 @@ def inspect_auth_file(
     path: Path | None = None, *, now: float | None = None
 ) -> AuthInspection:
     """Inspect local auth data without constructing a client or making requests."""
-    auth_file = path or constants.AUTH_FILE
+    auth_file = path or paths.auth_file()
     try:
         if not auth_file.exists():
             return AuthInspection("missing")

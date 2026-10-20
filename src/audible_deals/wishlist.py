@@ -13,7 +13,7 @@ from pathlib import Path
 
 import click
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.constants import _ASIN_RE, LOCALE_DOMAIN
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
@@ -130,13 +130,13 @@ def warn_wishlist_issues(issues: Sequence[WishlistIssue]) -> None:
 
 
 def load_wishlist() -> list[dict]:
-    return load_json_file(constants.WISHLIST_FILE, list, "wishlist")
+    return load_json_file(paths.wishlist_file(), list, "wishlist")
 
 
 def load_wishlist_for_mutation() -> list[dict]:
     """Load a list-shaped wishlist without replacing malformed saved data."""
     try:
-        contents = constants.WISHLIST_FILE.read_text()
+        contents = paths.wishlist_file().read_text()
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError) as exc:
@@ -158,7 +158,7 @@ def load_wishlist_for_mutation() -> list[dict]:
 def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
     """Load the exact saved bytes and require a list-shaped JSON document."""
     try:
-        contents = constants.WISHLIST_FILE.read_bytes()
+        contents = paths.wishlist_file().read_bytes()
     except FileNotFoundError:
         return [], None
     except OSError as exc:
@@ -184,16 +184,14 @@ def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
 @contextlib.contextmanager
 def wishlist_lock():
     """Serialize wishlist read-modify-write operations across processes."""
-    lock_file = constants.WISHLIST_FILE.with_name(
-        f".{constants.WISHLIST_FILE.name}.lock"
-    )
+    lock_file = paths.wishlist_file().with_name(f".{paths.wishlist_file().name}.lock")
     with advisory_lock(lock_file, wait=True):
         yield
 
 
 def create_wishlist_backup(contents: bytes) -> Path:
     """Create an owner-only, collision-safe backup beside the wishlist."""
-    source = constants.WISHLIST_FILE
+    source = paths.wishlist_file()
     suffix = 0
     while True:
         ending = ".bak" if suffix == 0 else f".bak.{suffix}"
@@ -217,7 +215,7 @@ def create_wishlist_backup(contents: bytes) -> Path:
 
 
 def save_wishlist(items: list[dict], *, durable: bool = False) -> None:
-    save_json_file(constants.WISHLIST_FILE, items, "wishlist", durable=durable)
+    save_json_file(paths.wishlist_file(), items, "wishlist", durable=durable)
 
 
 def partition_wishlist(items: list[dict]) -> tuple[list[dict], list[dict]]:

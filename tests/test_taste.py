@@ -8,8 +8,8 @@ import json
 
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.results_cache import (
     clear_dismissed_asins,
@@ -140,7 +140,7 @@ class TestProfileCache:
         assert load_cached_profile() is None
 
     def test_corrupt_built_at_returns_none(self, tmp_config):
-        constants_mod.TASTE_CACHE_FILE.write_text(json.dumps({"built_at": "soon"}))
+        paths.taste_cache_file().write_text(json.dumps({"built_at": "soon"}))
         assert load_cached_profile() is None
 
     def test_missing_and_older_versions_return_none(self, tmp_config):
@@ -333,7 +333,7 @@ def _seed_profile_cache():
             }
         ],
     }
-    constants_mod.TASTE_CACHE_FILE.write_text(json.dumps(profile))
+    paths.taste_cache_file().write_text(json.dumps(profile))
     return profile
 
 
@@ -591,7 +591,7 @@ class TestForMeCommand:
             {"name": "THE GREAT COURSES", "count": 50},
             {"name": "Great Courses Daily", "count": 4},
         ]
-        constants_mod.TASTE_CACHE_FILE.write_text(json.dumps(profile))
+        paths.taste_cache_file().write_text(json.dumps(profile))
 
         result = CliRunner().invoke(cli, ["for-me", "--dry-run", "--json"])
 
@@ -677,7 +677,7 @@ class TestForMeCommand:
         assert result.exit_code == 0, result.output
         assert "Taste profile built from 2 books" in result.stderr
         assert isinstance(json.loads(result.stdout), list)
-        assert constants_mod.TASTE_CACHE_FILE.exists()
+        assert paths.taste_cache_file().exists()
 
     def test_empty_library_errors(self, mock_client, tmp_config):
         mock_client.get_library_pages.return_value = iter([])
@@ -712,7 +712,7 @@ class TestForMeCommand:
     ):
         _seed_profile_cache()
         _wire_scans(mock_client)
-        constants_mod.CONFIG_FILE.write_text(json.dumps({"max_price": 5}))
+        paths.config_file().write_text(json.dumps({"max_price": 5}))
         runner = CliRunner()
 
         configured = runner.invoke(cli, ["for-me", "--json"])

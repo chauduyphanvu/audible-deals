@@ -46,6 +46,7 @@ UPDATE_GOLDEN=1 uv run pytest tests/test_golden.py
 - Code is type-checked with mypy. Prefer fixing the types; if a `# type: ignore[code]` is truly needed, add a short reason next to it.
 - Never overwrite a user-edited data file (`config.json`, `profiles.json`, `monitors.json`, ...) that fails to parse: call `storage.ensure_updatable()` before a read-modify-write so the user gets an error instead of lost data.
 - Follow the existing code patterns and naming conventions.
+- Where files live is decided at call time by `src/audible_deals/paths.py` (`DEALS_HOME`, then the legacy `~/.config/audible-deals`, then XDG/APPDATA). Never compute a path at import time and never patch path constants in tests: the autouse fixture in `tests/conftest.py` points `DEALS_HOME` (and `HOME`) at the test's own temporary directory, so a test cannot touch real data. If a test needs a different data directory, set `DEALS_HOME` with `monkeypatch.setenv`.
 
 ## Adding a filter
 

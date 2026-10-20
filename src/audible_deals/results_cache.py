@@ -8,7 +8,7 @@ from typing import Any
 
 import click
 
-from audible_deals import constants, result_models
+from audible_deals import paths, result_models
 from audible_deals.storage import _atomic_write, ensure_updatable, load_json_file
 
 logger = logging.getLogger(__name__)
@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 def load_seen_asins() -> set[str]:
     """Load cumulative seen ASINs for exclusion."""
-    return set(load_json_file(constants.SEEN_ASINS_FILE, list, "seen ASINs"))
+    return set(load_json_file(paths.seen_asins_file(), list, "seen ASINs"))
 
 
 def save_seen_asins(new_asins: set[str]) -> None:
@@ -29,7 +29,7 @@ def save_seen_asins(new_asins: set[str]) -> None:
         return
     merged = sorted(existing | new_asins)
     try:
-        _atomic_write(constants.SEEN_ASINS_FILE, json.dumps(merged, allow_nan=False))
+        _atomic_write(paths.seen_asins_file(), json.dumps(merged, allow_nan=False))
         logger.debug(
             "saved seen ASINs (%d total, +%d new)",
             len(merged),
@@ -37,7 +37,7 @@ def save_seen_asins(new_asins: set[str]) -> None:
         )
     except Exception:
         logger.warning(
-            "failed to write seen-asins at %s", constants.SEEN_ASINS_FILE, exc_info=True
+            "failed to write seen-asins at %s", paths.seen_asins_file(), exc_info=True
         )
 
 
@@ -56,8 +56,8 @@ def merge_seen_asins(
 def clear_seen_asins() -> bool:
     """Delete the cumulative seen-ASINs file. Returns True if deleted."""
     try:
-        constants.SEEN_ASINS_FILE.unlink()
-        logger.debug("cleared seen-asins: %s", constants.SEEN_ASINS_FILE)
+        paths.seen_asins_file().unlink()
+        logger.debug("cleared seen-asins: %s", paths.seen_asins_file())
         return True
     except FileNotFoundError:
         return False
@@ -68,7 +68,7 @@ def load_dismissed_asins() -> set[str]:
     return {
         asin
         for asin in load_json_file(
-            constants.DISMISSED_ASINS_FILE, list, "dismissed ASINs"
+            paths.dismissed_asins_file(), list, "dismissed ASINs"
         )
         if isinstance(asin, str)
     }
@@ -79,12 +79,12 @@ def save_dismissed_asins(new_asins: set[str]) -> None:
     if not new_asins:
         return
     # Dismissals are the user's own decisions: never replace a corrupt file.
-    ensure_updatable(constants.DISMISSED_ASINS_FILE, list, "dismissed ASINs")
+    ensure_updatable(paths.dismissed_asins_file(), list, "dismissed ASINs")
     existing = load_dismissed_asins()
     if new_asins <= existing:
         return
     merged = sorted(existing | new_asins)
-    _atomic_write(constants.DISMISSED_ASINS_FILE, json.dumps(merged, allow_nan=False))
+    _atomic_write(paths.dismissed_asins_file(), json.dumps(merged, allow_nan=False))
     logger.debug(
         "saved dismissed ASINs (%d total, +%d new)",
         len(merged),
@@ -95,21 +95,21 @@ def save_dismissed_asins(new_asins: set[str]) -> None:
 def clear_dismissed_asins() -> bool:
     """Delete the cumulative dismissed-ASINs file. Returns True if deleted."""
     try:
-        constants.DISMISSED_ASINS_FILE.unlink()
-        logger.debug("cleared dismissed ASINs: %s", constants.DISMISSED_ASINS_FILE)
+        paths.dismissed_asins_file().unlink()
+        logger.debug("cleared dismissed ASINs: %s", paths.dismissed_asins_file())
         return True
     except FileNotFoundError:
         return False
 
 
 def _read_cache_data() -> Any:
-    if not constants.LAST_RESULTS_FILE.exists():
+    if not paths.last_results_file().exists():
         raise click.ClickException(
             "No cached results found. Run 'deals find', 'deals search', "
             "'deals for-me', or 'deals series' first."
         )
     try:
-        return json.loads(constants.LAST_RESULTS_FILE.read_text(encoding="utf-8"))
+        return json.loads(paths.last_results_file().read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
         raise click.ClickException(f"Could not read last results cache: {exc}") from exc
 
@@ -125,7 +125,7 @@ def load_result_session() -> result_models.ResultSession:
 def save_result_session(session: result_models.ResultSession) -> None:
     """Atomically persist a complete result session."""
     _atomic_write(
-        constants.LAST_RESULTS_FILE,
+        paths.last_results_file(),
         json.dumps(session.to_dict(), ensure_ascii=False, allow_nan=False),
     )
     logger.debug(
@@ -146,7 +146,7 @@ def save_last_results(title: str, serialized: list[dict]) -> None:
     """Compatibility writer for callers that only have a limited legacy result list."""
     cache_obj = {"title": title, "results": serialized}
     _atomic_write(
-        constants.LAST_RESULTS_FILE,
+        paths.last_results_file(),
         json.dumps(cache_obj, ensure_ascii=False, allow_nan=False),
     )
 
@@ -165,8 +165,8 @@ def update_session_view(ordered_asins: list[str], *, sort: str | None = None) ->
 def clear_last_results() -> bool:
     """Delete the last-results cache. Returns True if deleted."""
     try:
-        constants.LAST_RESULTS_FILE.unlink()
-        logger.debug("cleared last results cache: %s", constants.LAST_RESULTS_FILE)
+        paths.last_results_file().unlink()
+        logger.debug("cleared last results cache: %s", paths.last_results_file())
         return True
     except FileNotFoundError:
         return False

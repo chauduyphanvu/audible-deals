@@ -25,7 +25,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.cli import cli
 from tests.conftest import make_raw
 
@@ -152,7 +152,7 @@ def catalog(api):
 
 def _seed_history_and_wishlist():
     today = datetime.date.today()
-    history_dir = constants.HISTORY_DIR
+    history_dir = paths.history_dir()
     history_dir.mkdir(parents=True, exist_ok=True)
     entries = [
         {
@@ -165,7 +165,7 @@ def _seed_history_and_wishlist():
     (history_dir / "GOLDWISH01.json").write_text(
         json.dumps({"marketplaces": {"us": entries}})
     )
-    constants.WISHLIST_FILE.write_text(
+    paths.wishlist_file().write_text(
         json.dumps(
             [
                 {

@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from audible_deals import constants as _constants
+from audible_deals import paths
 from audible_deals import product as _product
 from audible_deals.audible_transport import AudibleTransport as _AudibleTransport
 from audible_deals.auth_store import AuthStore as _AuthStore
@@ -82,7 +83,7 @@ class DealsClient:
     """Audible API client for catalog browsing."""
 
     def __init__(self, auth_file: Path | None = None, locale: str = "us"):
-        self.auth_file = _constants.AUTH_FILE if auth_file is None else auth_file
+        self.auth_file = paths.auth_file() if auth_file is None else auth_file
         self.locale = locale
         self._auth_store = _AuthStore(self.auth_file, locale)
         self._transport = _AudibleTransport(self._auth_store)
@@ -553,9 +554,7 @@ class DealsClient:
 
     def _load_categories_cache(self) -> list[dict[str, str]] | None:
         """Load top-level categories from disk cache if fresh."""
-        cache_file = _constants.CATEGORIES_CACHE_FILE.with_suffix(
-            f".{self.locale}.json"
-        )
+        cache_file = paths.categories_cache_file(self.locale)
         if not cache_file.exists():
             logger.debug("categories cache miss (no file): %s", cache_file)
             return None
@@ -583,9 +582,7 @@ class DealsClient:
 
     def _save_categories_cache(self, categories: list[dict[str, str]]) -> None:
         """Persist top-level categories to disk."""
-        cache_file = _constants.CATEGORIES_CACHE_FILE.with_suffix(
-            f".{self.locale}.json"
-        )
+        cache_file = paths.categories_cache_file(self.locale)
         _atomic_write(
             cache_file,
             json.dumps({"ts": time.time(), "categories": categories}, allow_nan=False),

@@ -7,6 +7,7 @@ import logging
 import pytest
 from click.testing import CliRunner
 
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.logging_setup import configure_logging
 
@@ -99,10 +100,9 @@ class TestVerboseFlag:
 
 class TestStateCorruptionWarnings:
     def test_load_wishlist_warns_on_corrupt(self, tmp_config, caplog):
-        import audible_deals.constants as constants_mod
         import audible_deals.wishlist as wishlist_mod
 
-        constants_mod.WISHLIST_FILE.write_text("not json")
+        paths.wishlist_file().write_text("not json")
         with caplog.at_level(logging.WARNING, logger="audible_deals.storage"):
             data = wishlist_mod.load_wishlist()
         assert data == []
@@ -110,19 +110,17 @@ class TestStateCorruptionWarnings:
 
     def test_load_config_warns_on_corrupt(self, tmp_config, caplog):
         import audible_deals.config_store as config_store_mod
-        import audible_deals.constants as constants_mod
 
-        constants_mod.CONFIG_FILE.write_text("not json")
+        paths.config_file().write_text("not json")
         with caplog.at_level(logging.WARNING, logger="audible_deals.storage"):
             data = config_store_mod.load_config()
         assert data == {}
         assert any("corrupt" in r.message for r in caplog.records)
 
     def test_load_seen_asins_warns_on_corrupt(self, tmp_config, caplog):
-        import audible_deals.constants as constants_mod
         import audible_deals.results_cache as results_cache_mod
 
-        constants_mod.SEEN_ASINS_FILE.write_text("not json")
+        paths.seen_asins_file().write_text("not json")
         with caplog.at_level(logging.WARNING, logger="audible_deals.storage"):
             data = results_cache_mod.load_seen_asins()
         assert data == set()

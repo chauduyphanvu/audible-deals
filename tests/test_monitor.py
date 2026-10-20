@@ -8,7 +8,7 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.monitor_service as monitor_service
-from audible_deals import constants
+from audible_deals import constants, paths
 from audible_deals.automation_models import MonitorDefinition, MonitorEvent
 from audible_deals.catalog_workflow import build_monitor_scan_plan
 from audible_deals.cli import cli
@@ -33,16 +33,9 @@ from audible_deals.webhooks import (
 
 
 @pytest.fixture
-def monitor_files(monkeypatch, tmp_path):
-    for name, filename in (
-        ("MONITORS_FILE", "monitors.json"),
-        ("MONITOR_STATE_FILE", "monitor-state.json"),
-        ("PROFILES_FILE", "profiles.json"),
-        ("CONFIG_FILE", "config.json"),
-        ("LOCK_FILE", "monitor.lock"),
-    ):
-        monkeypatch.setattr(constants, name, tmp_path / filename)
-    return tmp_path
+def monitor_files(tmp_config):
+    """The isolated data directory holding monitors, profiles, config and state."""
+    return tmp_config
 
 
 def _definition(name="cheap", *, locale="us", mode="find", **settings):
@@ -80,7 +73,7 @@ def _run_monitor(definition, *, deliver=None):
 
 
 def test_add_contract_frozen_precedence_show_and_remove(monitor_files):
-    constants.CONFIG_FILE.write_text(
+    paths.config_file().write_text(
         json.dumps({"pages": 2, "max_price": 9.0, "limit": 1})
     )
     save_profiles({"scifi": {"pages": 4, "max_price": 6.0, "limit": 2}})
@@ -297,7 +290,7 @@ def test_delivery_failure_keeps_snapshot_for_retry_and_persists_error(
 def test_malformed_state_self_heals_without_losing_valid_sibling(
     monkeypatch, monitor_files
 ):
-    constants.MONITOR_STATE_FILE.write_text(
+    paths.monitor_state_file().write_text(
         json.dumps(
             {
                 "version": 1,
@@ -321,7 +314,7 @@ def test_malformed_state_self_heals_without_losing_valid_sibling(
 
 
 def test_missing_monitor_state_mapping_is_repaired(monkeypatch, monitor_files):
-    constants.MONITOR_STATE_FILE.write_text(json.dumps({"version": 1}))
+    paths.monitor_state_file().write_text(json.dumps({"version": 1}))
     monkeypatch.setattr(monitor_service, "scan_monitor", lambda definition, runtime: ())
     _run_monitor(_definition())
     slot = load_monitor_state()["monitors"]["cheap"]
@@ -399,7 +392,7 @@ def test_invalid_persisted_monitor_is_skipped_and_inspectable(
     assert [definition.name for definition in selection.monitors] == ["valid"]
     assert "Skipping malformed monitor invalid" in caplog.text
 
-    constants.MONITORS_FILE.write_text(json.dumps({"invalid": invalid}, allow_nan=True))
+    paths.monitors_file().write_text(json.dumps({"invalid": invalid}, allow_nan=True))
     monkeypatch.setattr(
         monitor_module,
         "_get_client",
@@ -427,7 +420,7 @@ def test_pause_resume_are_idempotent_and_test_does_not_persist(
     assert runner.invoke(cli, ["monitor", "pause", "cheap"]).exit_code == 0
     assert "already paused" in runner.invoke(cli, ["monitor", "pause", "cheap"]).output
     assert runner.invoke(cli, ["monitor", "resume", "cheap"]).exit_code == 0
-    before = constants.MONITOR_STATE_FILE.read_text()
+    before = paths.monitor_state_file().read_text()
     monkeypatch.setattr(
         monitor_module, "scan_monitor", lambda definition: [_product("A2", 2.0)]
     )
@@ -435,7 +428,7 @@ def test_pause_resume_are_idempotent_and_test_does_not_persist(
     assert result.exit_code == 0
     assert "Current matches" in result.output
     assert "A2 — $2.00 — A2" in result.output
-    assert constants.MONITOR_STATE_FILE.read_text() == before
+    assert paths.monitor_state_file().read_text() == before
 
 
 def test_add_clears_orphaned_state(monitor_files):
@@ -478,7 +471,7 @@ def test_persisted_plus_conflict_is_diagnosed_without_repair(
 ):
     conflicting = _definition(skip_plus=True, only_plus=True)
     save_monitors({"bad-plus": conflicting})
-    before = constants.MONITORS_FILE.read_text()
+    before = paths.monitors_file().read_text()
     calls = []
     monkeypatch.setattr(
         monitor_module, "_get_client", lambda locale: calls.append(locale)
@@ -489,13 +482,13 @@ def test_persisted_plus_conflict_is_diagnosed_without_repair(
     assert result.exit_code != 0
     assert "mutually exclusive" in result.output
     assert calls == []
-    assert constants.MONITORS_FILE.read_text() == before
+    assert paths.monitors_file().read_text() == before
 
     doctor = CliRunner().invoke(cli, ["doctor"])
     assert doctor.exit_code == 1
     assert "Saved-search monitors" in doctor.output
     assert "FAIL" in doctor.output
-    assert constants.MONITORS_FILE.read_text() == before
+    assert paths.monitors_file().read_text() == before
 
 
 def test_scan_monitor_ignores_legacy_limit(monkeypatch, monitor_files):

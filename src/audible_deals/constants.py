@@ -1,37 +1,14 @@
 """Shared constants for audible-deals.
 
-Consolidates file paths, locale maps, sort options, genre aliases, and the
-configuration schema used across the package. This module is a dependency-free
+Consolidates locale maps, sort options, genre aliases, and the configuration
+schema used across the package. (File locations live in ``paths.py``, which
+resolves them at call time.) This module is a dependency-free
 leaf, so it can safely be imported by all other ``audible_deals`` modules.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# File paths
-# ---------------------------------------------------------------------------
-
-CONFIG_DIR = Path.home() / ".config" / "audible-deals"
-AUTH_FILE = CONFIG_DIR / "auth.json"
-CATEGORIES_CACHE_FILE = CONFIG_DIR / "categories_cache.json"
-WISHLIST_FILE = CONFIG_DIR / "wishlist.json"
-PROFILES_FILE = CONFIG_DIR / "profiles.json"
-LAST_RESULTS_FILE = CONFIG_DIR / "last_results.json"
-SEEN_ASINS_FILE = CONFIG_DIR / "seen_asins.json"
-REFRESH_ELIGIBILITY_FILE = CONFIG_DIR / "refresh_eligibility.json"
-DISMISSED_ASINS_FILE = CONFIG_DIR / "dismissed_asins.json"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-HISTORY_DIR = CONFIG_DIR / "history"
-NOTIFY_STATE_FILE = CONFIG_DIR / "notify_state.json"
-LOCK_FILE = CONFIG_DIR / ".deals.lock"
-TRACK_STATE_FILE = CONFIG_DIR / "track_state.json"
-MONITORS_FILE = CONFIG_DIR / "monitors.json"
-MONITOR_STATE_FILE = CONFIG_DIR / "monitor_state.json"
-TRACK_LOG_FILE = CONFIG_DIR / "track.log"
-TASTE_CACHE_FILE = CONFIG_DIR / "taste_cache.json"
 
 # ---------------------------------------------------------------------------
 # Locale maps

@@ -11,7 +11,7 @@ import datetime
 import logging
 from typing import Any
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.metrics import value_score
 from audible_deals.product import Product
 from audible_deals.series_identity import group_series_books
@@ -115,7 +115,7 @@ def load_cached_profile(
     max_age_s: int = PROFILE_MAX_AGE_SECONDS,
 ) -> dict | None:
     """Return the cached profile, or None when missing/stale/corrupt."""
-    data = load_json_file(constants.TASTE_CACHE_FILE, dict, "taste profile")
+    data = load_json_file(paths.taste_cache_file(), dict, "taste profile")
     if not data:
         return None
     if data.get("version") != PROFILE_VERSION:
@@ -132,7 +132,7 @@ def load_cached_profile(
 
 
 def save_profile(profile: dict) -> None:
-    save_json_file(constants.TASTE_CACHE_FILE, profile, "taste profile")
+    save_json_file(paths.taste_cache_file(), profile, "taste profile")
 
 
 def fit_score(

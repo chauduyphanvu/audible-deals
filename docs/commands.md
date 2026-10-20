@@ -341,7 +341,20 @@ DEALS_LOG_FILE=~/.cache/deals.log deals notify --webhook https://example.com/hoo
 
 ## Local data
 
-All application data is stored in `~/.config/audible-deals/`:
+### Where it lives
+
+Everything is kept in one data directory. It is chosen on every run, in this order:
+
+1. `DEALS_HOME`, if set (any directory; it is created when needed);
+2. an existing `~/.config/audible-deals/`, which earlier releases used, so your data never moves;
+3. `$XDG_CONFIG_HOME/audible-deals/` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/audible-deals/` (macOS uses `~/.config` too);
+4. on Windows, `%APPDATA%\audible-deals\` when the directory in step 2 does not exist.
+
+`deals doctor` shows the directory in use and which rule chose it. `DEALS_HOME` is also how to run against a scratch copy of your data, for example `DEALS_HOME=/tmp/try deals find`. `deals track install` writes the directory it is using into the scheduled job (launchd plist, systemd unit, crontab line, or Windows task), because those do not inherit your shell's environment.
+
+### What is stored
+
+The data directory contains:
 
 | Path | Contents |
 |------|----------|

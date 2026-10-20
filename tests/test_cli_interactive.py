@@ -8,8 +8,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.result_models import (
     DiscoveryResult,
@@ -102,8 +102,8 @@ class TestInteractiveBrowse:
         """Skips with a dim note if ASIN is already on the wishlist."""
 
         products = [make_product(asin="AW1", title="Already Book")]
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.WISHLIST_FILE.write_text(
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().write_text(
             json.dumps(
                 [
                     {
@@ -399,7 +399,7 @@ class TestInteractiveBrowserDispatcher:
                 {"asin": "IB2", "title": "Second"},
             ],
         )
-        before = constants_mod.LAST_RESULTS_FILE.read_text()
+        before = paths.last_results_file().read_text()
         rendered = []
         monkeypatch.setattr(
             interactive_mod,
@@ -415,7 +415,7 @@ class TestInteractiveBrowserDispatcher:
         assert browser.dispatch(interactive_mod.InteractiveCommand("hide", (0,)))
 
         assert [product.asin for product in browser.products] == ["IB1", "IB2"]
-        assert constants_mod.LAST_RESULTS_FILE.read_text() == before
+        assert paths.last_results_file().read_text() == before
         assert rendered == []
         assert load_dismissed_asins() == set()
 
@@ -645,17 +645,17 @@ class TestInteractiveBrowseWishlistCheck:
         """When all selected items are already on wishlist, file is not rewritten."""
 
         products = [make_product(asin="NW1", title="Already There")]
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
         original = [
             {"asin": "NW1", "title": "Already There", "max_price": None, "added": ""}
         ]
-        constants_mod.WISHLIST_FILE.write_text(json.dumps(original))
-        mtime_before = constants_mod.WISHLIST_FILE.stat().st_mtime
+        paths.wishlist_file().write_text(json.dumps(original))
+        mtime_before = paths.wishlist_file().stat().st_mtime
 
         result = _run_browse(products, "w 1\nq\n", tmp_config)
         assert result.exit_code == 0, result.output
         assert "already on wishlist" in result.output
-        assert constants_mod.WISHLIST_FILE.stat().st_mtime == mtime_before
+        assert paths.wishlist_file().stat().st_mtime == mtime_before
 
     def test_mixed_some_already_wishlisted_adds_only_new(self, tmp_config):
         """Partial overlap: already-on-wishlist items get a note; new items are added."""
@@ -664,8 +664,8 @@ class TestInteractiveBrowseWishlistCheck:
             make_product(asin="MX1", title="Already"),
             make_product(asin="MX2", title="New One"),
         ]
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.WISHLIST_FILE.write_text(
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().write_text(
             json.dumps(
                 [{"asin": "MX1", "title": "Already", "max_price": None, "added": ""}]
             )

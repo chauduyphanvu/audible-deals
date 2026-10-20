@@ -105,7 +105,7 @@ deals track log
 deals track uninstall
 ```
 
-The installer uses launchd on macOS, a systemd user timer or cron on Linux, and Task Scheduler on Windows. The minimum interval is 10 minutes.
+The installer uses launchd on macOS, a systemd user timer or cron on Linux, and Task Scheduler on Windows. The minimum interval is 10 minutes. The job is pinned to the data directory in use when you install (it sets `DEALS_HOME` for the job), so it reads and writes the same data you see interactively even if `XDG_CONFIG_HOME` is only set in your shell; `deals track install` prints that directory. Re-run it after moving your data.
 
 Each run:
 

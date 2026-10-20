@@ -7,7 +7,7 @@ import logging
 
 import click
 
-from audible_deals import constants, scheduler
+from audible_deals import constants, paths, scheduler
 from audible_deals.automation_models import TrackRunRequest
 from audible_deals.cli.helpers import (
     _credit_price,
@@ -198,7 +198,7 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
         raise click.UsageError("--webhook-format requires --webhook")
 
     try:
-        description = scheduler.install(interval_s, constants.TRACK_LOG_FILE)
+        description = scheduler.install(interval_s, paths.track_log_file())
     except scheduler.SchedulerError as e:
         raise click.ClickException(str(e)) from e
 
@@ -213,7 +213,8 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
 
     console.print(f"[green]Installed:[/green] {safe_markup(description)}")
     console.print(f"  Runs 'deals track run' every {safe_markup(every)}")
-    console.print(f"  Log: {safe_markup(constants.TRACK_LOG_FILE)}")
+    console.print(f"  Data: {safe_markup(paths.data_dir())}")
+    console.print(f"  Log: {safe_markup(paths.track_log_file())}")
     console.print("  Check with: deals track status")
 
 
@@ -323,7 +324,7 @@ def track_status(show_history):
 @click.option("--lines", "-n", type=click.IntRange(min=1), default=50)
 def track_log(lines):
     """Show the tail of the background tracking log."""
-    log_file = constants.TRACK_LOG_FILE
+    log_file = paths.track_log_file()
     if not log_file.exists():
         console.print(f"[dim]No log yet at {safe_markup(log_file)}[/dim]")
         return

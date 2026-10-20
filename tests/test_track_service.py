@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.track_service as track_service
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.automation_models import (
     MonitorEvent,
     MonitorRunResult,
@@ -331,7 +331,7 @@ def test_wishlist_webhook_failure_does_not_record_run_or_notify_state(tmp_config
         run_track(request("https://example.test"), track_runtime)
 
     assert notify_saves == []
-    assert not constants.TRACK_STATE_FILE.exists()
+    assert not paths.track_state_file().exists()
 
 
 def test_track_cli_preserves_webhook_error_prefix(tmp_config, monkeypatch):

@@ -191,50 +191,27 @@ def raw_api_product_minimal():
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(tmp_path, monkeypatch):
+    """Point every test at its own data directory (never the real one).
+
+    ``DEALS_HOME`` is read at call time, so one environment variable redirects
+    config, auth, the lock file and every other stored file.
+    """
+    monkeypatch.setenv("DEALS_HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    # Anything that still asks for the user's home (scheduler unit files, the
+    # legacy data directory) lands in the sandbox, never in the real one.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+
+
 @pytest.fixture
 def tmp_config(tmp_path, monkeypatch):
-    """Redirect all config paths to a temp directory and fix Rich console for Click."""
+    """The isolated data directory, with the Rich console fixed up for Click."""
     from rich.console import Console
 
-    import audible_deals.constants as constants_mod
     from audible_deals.presentation import terminal as display_mod
-
-    monkeypatch.setattr(constants_mod, "AUTH_FILE", tmp_path / "auth.json")
-    monkeypatch.setattr(
-        constants_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json"
-    )
-    # Store modules read path constants from audible_deals.constants at call
-    # time, so patching the constants module once redirects every consumer.
-    monkeypatch.setattr(constants_mod, "WISHLIST_FILE", tmp_path / "wishlist.json")
-    monkeypatch.setattr(constants_mod, "CONFIG_FILE", tmp_path / "config.json")
-    monkeypatch.setattr(constants_mod, "PROFILES_FILE", tmp_path / "profiles.json")
-    monkeypatch.setattr(constants_mod, "MONITORS_FILE", tmp_path / "monitors.json")
-    monkeypatch.setattr(
-        constants_mod, "MONITOR_STATE_FILE", tmp_path / "monitor_state.json"
-    )
-    monkeypatch.setattr(
-        constants_mod, "NOTIFY_STATE_FILE", tmp_path / "notify_state.json"
-    )
-    monkeypatch.setattr(
-        constants_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json"
-    )
-    monkeypatch.setattr(constants_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
-    monkeypatch.setattr(
-        constants_mod,
-        "REFRESH_ELIGIBILITY_FILE",
-        tmp_path / "refresh_eligibility.json",
-    )
-    monkeypatch.setattr(
-        constants_mod, "DISMISSED_ASINS_FILE", tmp_path / "dismissed_asins.json"
-    )
-    monkeypatch.setattr(constants_mod, "HISTORY_DIR", tmp_path / "history")
-    # Redirect the run lock so tests never collide with real lock files
-    monkeypatch.setattr(constants_mod, "LOCK_FILE", tmp_path / ".deals.lock")
-    monkeypatch.setattr(
-        constants_mod, "TRACK_STATE_FILE", tmp_path / "track_state.json"
-    )
-    monkeypatch.setattr(constants_mod, "TRACK_LOG_FILE", tmp_path / "track.log")
-    monkeypatch.setattr(constants_mod, "TASTE_CACHE_FILE", tmp_path / "taste.json")
 
     # Replace the Rich console with one that writes to a fresh stderr-like
     # stream, so it doesn't conflict with Click's CliRunner file handling.

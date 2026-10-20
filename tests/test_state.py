@@ -12,10 +12,10 @@ import click
 import pytest
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
 import audible_deals.price_history as price_history
 import audible_deals.selectors as selectors_mod
 import audible_deals.wishlist as wishlist_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.price_history import (
     find_all_atl_hits,
@@ -45,14 +45,13 @@ from tests.conftest import make_product
 
 
 def _write_history(tmp_config, asin: str, prices: list[float]) -> None:
-    import audible_deals.constants as constants_mod
 
-    constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    paths.history_dir().mkdir(parents=True, exist_ok=True)
     entries = [
         {"date": f"2024-01-{i + 1:02d}", "price": p, "title": "T"}
         for i, p in enumerate(prices)
     ]
-    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+    (paths.history_dir() / f"{asin}.json").write_text(
         json.dumps({"marketplaces": {"us": entries}})
     )
 
@@ -60,11 +59,10 @@ def _write_history(tmp_config, asin: str, prices: list[float]) -> None:
 def _write_history_with_dates(
     tmp_config, asin: str, dates: list[str], price: float = 5.0
 ) -> None:
-    import audible_deals.constants as constants_mod
 
-    constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    paths.history_dir().mkdir(parents=True, exist_ok=True)
     entries = [{"date": d, "price": price, "title": "T"} for d in dates]
-    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+    (paths.history_dir() / f"{asin}.json").write_text(
         json.dumps({"marketplaces": {"us": entries}})
     )
 
@@ -79,9 +77,8 @@ def _make_hist(asin: str, dated_prices: list[tuple[str, float | None]]) -> dict:
 
 class TestLoadSeenAsins:
     def test_loads_from_seen_file(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.SEEN_ASINS_FILE.write_text(json.dumps(["A1", "A2"]))
+        paths.seen_asins_file().write_text(json.dumps(["A1", "A2"]))
         seen = load_seen_asins()
         assert seen == {"A1", "A2"}
 
@@ -90,16 +87,14 @@ class TestLoadSeenAsins:
         assert seen == set()
 
     def test_returns_set_from_list(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.SEEN_ASINS_FILE.write_text(json.dumps(["B1", "B2", "B1"]))
+        paths.seen_asins_file().write_text(json.dumps(["B1", "B2", "B1"]))
         seen = load_seen_asins()
         assert seen == {"B1", "B2"}
 
     def test_empty_on_corrupt_file(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.SEEN_ASINS_FILE.write_text("not valid json")
+        paths.seen_asins_file().write_text("not valid json")
         seen = load_seen_asins()
         assert seen == set()
 
@@ -115,13 +110,12 @@ class TestCumulativeSeenAsins:
         assert load_seen_asins() == {"A1", "A2", "A3", "A4"}
 
     def test_no_duplicates(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         save_seen_asins({"A1", "A2"})
         save_seen_asins({"A2", "A3"})
         seen = load_seen_asins()
         assert seen == {"A1", "A2", "A3"}
-        data = json.loads(constants_mod.SEEN_ASINS_FILE.read_text())
+        data = json.loads(paths.seen_asins_file().read_text())
         assert data == sorted(data)
 
     def test_empty_when_no_file(self, tmp_config):
@@ -130,11 +124,11 @@ class TestCumulativeSeenAsins:
 
 class TestDismissedAsins:
     def test_dismissed_load_is_tolerant(self, tmp_config):
-        constants_mod.DISMISSED_ASINS_FILE.write_text("not json")
+        paths.dismissed_asins_file().write_text("not json")
         assert load_dismissed_asins() == set()
-        constants_mod.DISMISSED_ASINS_FILE.write_text(json.dumps({"asin": "A1"}))
+        paths.dismissed_asins_file().write_text(json.dumps({"asin": "A1"}))
         assert load_dismissed_asins() == set()
-        constants_mod.DISMISSED_ASINS_FILE.write_text(json.dumps(["A1", 2, {}]))
+        paths.dismissed_asins_file().write_text(json.dumps(["A1", 2, {}]))
         assert load_dismissed_asins() == {"A1"}
 
     def test_dismissed_save_is_cumulative_sorted_and_atomic(
@@ -154,7 +148,7 @@ class TestDismissedAsins:
         save_dismissed_asins({"C3", "B2"})
 
         assert load_dismissed_asins() == {"A1", "B2", "C3"}
-        assert json.loads(constants_mod.DISMISSED_ASINS_FILE.read_text()) == [
+        assert json.loads(paths.dismissed_asins_file().read_text()) == [
             "A1",
             "B2",
             "C3",
@@ -229,11 +223,10 @@ class TestExpandRefString:
 
 class TestResolveLastReferencesRangeSyntax:
     def _write_cache(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         data = [{"asin": f"B00TESTA{i:02d}", "title": f"Book {i}"} for i in range(1, 8)]
         cache = {"title": "Test results", "results": data}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache))
+        paths.last_results_file().write_text(json.dumps(cache))
 
     def test_range_string(self, tmp_config):
         self._write_cache(tmp_config)
@@ -267,7 +260,7 @@ class TestResolveSelectorsSessionReuse:
             {"asin": f"B00CACHE{i}", "title": f"Book {i}", "locale": "us"}
             for i in range(1, 4)
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps({"title": "Test results", "results": data})
         )
 
@@ -333,14 +326,12 @@ class TestResolveSelectorsSessionReuse:
 
 class TestFindWishlistAtlHits:
     def _write_wishlist(self, tmp_config, items):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.WISHLIST_FILE.write_text(json.dumps(items))
+        paths.wishlist_file().write_text(json.dumps(items))
 
     def _write_history(self, tmp_config, asin, prices):
-        import audible_deals.constants as constants_mod
 
-        hist_dir = constants_mod.HISTORY_DIR
+        hist_dir = paths.history_dir()
         hist_dir.mkdir(parents=True, exist_ok=True)
         entries = [
             {"date": f"2024-01-{i + 1:02d}", "price": p, "title": f"Book {asin}"}
@@ -383,34 +374,32 @@ class TestFindWishlistAtlHits:
         assert hits == []
 
     def test_one_numeric_price_returns_empty(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         self._write_wishlist(
             tmp_config, [{"asin": "B00ATL0004", "title": "T", "max_price": 5.0}]
         )
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [
             {"date": "2024-01-01", "price": None, "title": "T"},
             {"date": "2024-01-02", "price": 3.99, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "B00ATL0004.json").write_text(
+        (paths.history_dir() / "B00ATL0004.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
         assert find_wishlist_atl_hits() == []
 
     def test_latest_non_numeric_returns_empty(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         self._write_wishlist(
             tmp_config, [{"asin": "B00ATL0005", "title": "T", "max_price": 5.0}]
         )
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [
             {"date": "2024-01-01", "price": 4.99, "title": "T"},
             {"date": "2024-01-02", "price": 3.99, "title": "T"},
             {"date": "2024-01-03", "price": None, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "B00ATL0005.json").write_text(
+        (paths.history_dir() / "B00ATL0005.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
         assert find_wishlist_atl_hits() == []
@@ -463,9 +452,8 @@ class TestHistPercentiles:
         assert "HP06" not in result
 
     def test_non_numeric_history_entries_skipped(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [
             {"date": "2024-01-01", "price": None, "title": "T"},
             {"date": "2024-01-02", "price": 2.0, "title": "T"},
@@ -473,7 +461,7 @@ class TestHistPercentiles:
             {"date": "2024-01-04", "price": 4.0, "title": "T"},
             {"date": "2024-01-05", "price": 5.0, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "HP07.json").write_text(
+        (paths.history_dir() / "HP07.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
         # 4 numeric entries — fewer than 5, should be excluded
@@ -530,16 +518,15 @@ class TestPriceDropPcts:
 
     def test_same_day_rerun_skips_today_entry(self, tmp_config):
         """Same-day re-run: today's entry is skipped; reference is yesterday's price."""
-        import audible_deals.constants as constants_mod
 
         today = datetime.date.today().isoformat()
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [
             {"date": yesterday, "price": 10.0, "title": "T"},
             {"date": today, "price": 8.0, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "PD08.json").write_text(
+        (paths.history_dir() / "PD08.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
         p = make_product(asin="PD08", price=8.0)
@@ -549,12 +536,11 @@ class TestPriceDropPcts:
 
     def test_all_entries_today_excluded(self, tmp_config):
         """When all history entries are from today, ASIN is omitted (no reference price)."""
-        import audible_deals.constants as constants_mod
 
         today = datetime.date.today().isoformat()
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [{"date": today, "price": 10.0, "title": "T"}]
-        (constants_mod.HISTORY_DIR / "PD09.json").write_text(
+        (paths.history_dir() / "PD09.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
         p = make_product(asin="PD09", price=8.0)
@@ -576,20 +562,18 @@ class TestLoadAllPriceHistories:
         assert len(result["LA02"]) == 1
 
     def test_skips_corrupt_files(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / "CORRUPT.json").write_text("not json")
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
+        (paths.history_dir() / "CORRUPT.json").write_text("not json")
         _write_history(tmp_config, "GOOD01", [5.0])
         result = load_all_price_histories()
         assert "CORRUPT" not in result
         assert "GOOD01" in result
 
     def test_skips_empty_history(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / "EMPTY01.json").write_text(
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
+        (paths.history_dir() / "EMPTY01.json").write_text(
             '{"marketplaces": {"us": []}}'
         )
         _write_history(tmp_config, "VALID01", [4.0])
@@ -605,27 +589,24 @@ class TestPurgeStaleHistory:
         assert affected == []
 
     def test_stale_file_is_deleted(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
         _write_history_with_dates(tmp_config, "STALE01", [old_date])
         count, affected = purge_stale_history(90)
         assert count == 1
         assert "STALE01" in affected
-        assert not (constants_mod.HISTORY_DIR / "STALE01.json").exists()
+        assert not (paths.history_dir() / "STALE01.json").exists()
 
     def test_fresh_file_is_kept(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         fresh_date = datetime.date.today().isoformat()
         _write_history_with_dates(tmp_config, "FRESH01", [fresh_date])
         count, affected = purge_stale_history(90)
         assert count == 0
         assert "FRESH01" not in affected
-        assert (constants_mod.HISTORY_DIR / "FRESH01.json").exists()
+        assert (paths.history_dir() / "FRESH01.json").exists()
 
     def test_mixed_stale_and_fresh(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         old_date = (datetime.date.today() - datetime.timedelta(days=100)).isoformat()
         fresh_date = datetime.date.today().isoformat()
@@ -634,18 +615,17 @@ class TestPurgeStaleHistory:
         count, affected = purge_stale_history(90)
         assert count == 1
         assert "OLD01" in affected
-        assert not (constants_mod.HISTORY_DIR / "OLD01.json").exists()
-        assert (constants_mod.HISTORY_DIR / "NEW01.json").exists()
+        assert not (paths.history_dir() / "OLD01.json").exists()
+        assert (paths.history_dir() / "NEW01.json").exists()
 
     def test_dry_run_deletes_nothing(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
         _write_history_with_dates(tmp_config, "DRY01", [old_date])
         count, affected = purge_stale_history(90, dry_run=True)
         assert count == 1
         assert "DRY01" in affected
-        assert (constants_mod.HISTORY_DIR / "DRY01.json").exists()
+        assert (paths.history_dir() / "DRY01.json").exists()
 
     def test_rechecks_fresh_history_under_lock_before_deleting(
         self, tmp_config, monkeypatch
@@ -676,12 +656,11 @@ class TestPurgeStaleHistory:
         )
 
     def test_purge_only_removes_requested_marketplace(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
         old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
         fresh_date = datetime.date.today().isoformat()
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / "MARKETS01.json").write_text(
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
+        (paths.history_dir() / "MARKETS01.json").write_text(
             json.dumps(
                 {
                     "marketplaces": {
@@ -700,40 +679,36 @@ class TestPurgeStaleHistory:
         assert load_price_history("MARKETS01", "uk")[0]["price"] == 4.0
 
     def test_corrupt_file_is_skipped(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / "CORRUPT2.json").write_text("not json")
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
+        (paths.history_dir() / "CORRUPT2.json").write_text("not json")
         count, affected = purge_stale_history(90)
         assert "CORRUPT2" not in affected
-        assert (constants_mod.HISTORY_DIR / "CORRUPT2.json").exists()
+        assert (paths.history_dir() / "CORRUPT2.json").exists()
 
     def test_file_with_no_date_is_skipped(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [{"price": 5.0, "title": "T"}]
-        (constants_mod.HISTORY_DIR / "NODATE01.json").write_text(json.dumps(entries))
+        (paths.history_dir() / "NODATE01.json").write_text(json.dumps(entries))
         count, affected = purge_stale_history(90)
         assert "NODATE01" not in affected
-        assert (constants_mod.HISTORY_DIR / "NODATE01.json").exists()
+        assert (paths.history_dir() / "NODATE01.json").exists()
 
     def test_boundary_date_is_kept(self, tmp_config):
         # A file whose last entry is exactly `days` ago (not older) is kept
-        import audible_deals.constants as constants_mod
 
         cutoff_date = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
         _write_history_with_dates(tmp_config, "BOUND01", [cutoff_date])
         count, affected = purge_stale_history(90)
         assert count == 0
-        assert (constants_mod.HISTORY_DIR / "BOUND01.json").exists()
+        assert (paths.history_dir() / "BOUND01.json").exists()
 
 
 class TestFindAllAtlHits:
     def _write_history(self, tmp_config, asin, prices):
-        import audible_deals.constants as constants_mod
 
-        hist_dir = constants_mod.HISTORY_DIR
+        hist_dir = paths.history_dir()
         hist_dir.mkdir(parents=True, exist_ok=True)
         entries = [
             {"date": f"2024-01-{i + 1:02d}", "price": p, "title": f"Book {asin}"}
@@ -744,9 +719,8 @@ class TestFindAllAtlHits:
         )
 
     def _write_wishlist(self, tmp_config, items):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.WISHLIST_FILE.write_text(json.dumps(items))
+        paths.wishlist_file().write_text(json.dumps(items))
 
     def test_atl_non_wishlist_asin_found(self, tmp_config):
         self._write_history(tmp_config, "B00ALL0001", [9.99, 8.99, 6.99])
@@ -763,11 +737,10 @@ class TestFindAllAtlHits:
         assert hits == []
 
     def test_fewer_than_two_numeric_prices_excluded(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [{"date": "2024-01-01", "price": 5.99, "title": "T"}]
-        (constants_mod.HISTORY_DIR / "B00ALL0003.json").write_text(
+        (paths.history_dir() / "B00ALL0003.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
         hits = find_all_atl_hits()
@@ -805,14 +778,13 @@ class TestFindAllAtlHits:
         assert len(hits) == 3
 
     def test_latest_non_numeric_excluded(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
         entries = [
             {"date": "2024-01-01", "price": 9.99, "title": "T"},
             {"date": "2024-01-02", "price": None, "title": "T"},
         ]
-        (constants_mod.HISTORY_DIR / "B00ALL0008.json").write_text(
+        (paths.history_dir() / "B00ALL0008.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
         hits = find_all_atl_hits()
@@ -886,10 +858,9 @@ class TestScanPriceChanges:
 
 class TestPriceHistoryContext:
     def _write_history(self, tmp_config, asin, entries):
-        import audible_deals.constants as constants_mod
 
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
+        (paths.history_dir() / f"{asin}.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
 
@@ -948,9 +919,8 @@ class TestPriceHistoryContext:
 
 class TestRecordPricesCorruptBackup:
     def test_corrupt_file_backed_up(self, tmp_config):
-        import audible_deals.constants as constants_mod
 
-        hist_dir = constants_mod.HISTORY_DIR
+        hist_dir = paths.history_dir()
         hist_dir.mkdir(parents=True, exist_ok=True)
         asin = "B00CORRUPT1"
         hist_file = hist_dir / f"{asin}.json"
@@ -1018,8 +988,8 @@ class TestRecordPricesMarketplaceLocking:
 
 class TestBugfixPriceHistoryValidationFindWishlistHitsNumericGuard:
     def _write_history(self, asin: str, entries: list[dict]) -> None:
-        constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
-        (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+        paths.history_dir().mkdir(parents=True, exist_ok=True)
+        (paths.history_dir() / f"{asin}.json").write_text(
             json.dumps({"marketplaces": {"us": entries}})
         )
 
@@ -1081,8 +1051,8 @@ class TestBugfixPriceHistoryValidationMarketplaceScopedHistory:
 
     def test_legacy_history_is_not_assigned_to_a_marketplace(self, tmp_config):
         asin = "B00LEGACY1"
-        constants_mod.HISTORY_DIR.mkdir(parents=True)
-        (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+        paths.history_dir().mkdir(parents=True)
+        (paths.history_dir() / f"{asin}.json").write_text(
             json.dumps([{"date": "2024-01-01", "price": 10.0}])
         )
 
@@ -1093,15 +1063,15 @@ class TestBugfixPriceHistoryValidationLegacyHistoryMigration:
     def test_bulk_load_archives_once_with_collision_and_preserves_bytes(
         self, tmp_config, caplog
     ):
-        constants_mod.HISTORY_DIR.mkdir(parents=True)
-        first = constants_mod.HISTORY_DIR / "B00LEGACY1.json"
-        second = constants_mod.HISTORY_DIR / "B00LEGACY2.json"
-        current = constants_mod.HISTORY_DIR / "B00CURRENT1.json"
+        paths.history_dir().mkdir(parents=True)
+        first = paths.history_dir() / "B00LEGACY1.json"
+        second = paths.history_dir() / "B00LEGACY2.json"
+        current = paths.history_dir() / "B00CURRENT1.json"
         first_bytes = b'[ {"date": "2024-01-01", "price": 10.0} ]\n'
         second_bytes = b'[{"date":"2024-02-02","price":7.5}]'
         first.write_bytes(first_bytes)
         second.write_bytes(second_bytes)
-        (constants_mod.HISTORY_DIR / "B00LEGACY1.json.legacy").write_bytes(b"older")
+        (paths.history_dir() / "B00LEGACY1.json.legacy").write_bytes(b"older")
         current.write_text(
             json.dumps({"marketplaces": {"us": [{"date": "2026-01-01", "price": 3.0}]}})
         )
@@ -1113,18 +1083,18 @@ class TestBugfixPriceHistoryValidationLegacyHistoryMigration:
         assert not first.exists()
         assert not second.exists()
         assert (
-            constants_mod.HISTORY_DIR / "B00LEGACY1.json.legacy.1"
+            paths.history_dir() / "B00LEGACY1.json.legacy.1"
         ).read_bytes() == first_bytes
         assert (
-            constants_mod.HISTORY_DIR / "B00LEGACY2.json.legacy"
+            paths.history_dir() / "B00LEGACY2.json.legacy"
         ).read_bytes() == second_bytes
         messages = [
             r.message for r in caplog.records if "Legacy history migration" in r.message
         ]
         assert len(messages) == 1
         assert "archived 2" in messages[0]
-        assert (constants_mod.HISTORY_DIR / ".legacy-migration.lock").exists()
-        assert (constants_mod.HISTORY_DIR / ".B00LEGACY1.json.lock").exists()
+        assert (paths.history_dir() / ".legacy-migration.lock").exists()
+        assert (paths.history_dir() / ".B00LEGACY1.json.lock").exists()
 
         caplog.clear()
         assert price_history.load_all_price_histories("us") == loaded
@@ -1135,8 +1105,8 @@ class TestBugfixPriceHistoryValidationLegacyHistoryMigration:
     def test_failed_rename_is_untouched_and_retried(
         self, tmp_config, monkeypatch, caplog
     ):
-        constants_mod.HISTORY_DIR.mkdir(parents=True)
-        legacy = constants_mod.HISTORY_DIR / "B00LEGACY3.json"
+        paths.history_dir().mkdir(parents=True)
+        legacy = paths.history_dir() / "B00LEGACY3.json"
         original_bytes = b'[{"date":"2024-01-01","price":4}]'
         legacy.write_bytes(original_bytes)
         original_link = price_history.os.link
@@ -1162,8 +1132,8 @@ class TestBugfixPriceHistoryValidationLegacyHistoryMigration:
     def test_archive_retries_when_backup_appears_during_move(
         self, tmp_config, monkeypatch
     ):
-        constants_mod.HISTORY_DIR.mkdir(parents=True)
-        legacy = constants_mod.HISTORY_DIR / "B00LEGACY5.json"
+        paths.history_dir().mkdir(parents=True)
+        legacy = paths.history_dir() / "B00LEGACY5.json"
         original_bytes = b'[{"date":"2024-01-01","price":4}]\n'
         legacy.write_bytes(original_bytes)
         first_archive = legacy.with_name(f"{legacy.name}.legacy")
@@ -1188,8 +1158,8 @@ class TestBugfixPriceHistoryValidationLegacyHistoryMigration:
         )
 
     def test_history_all_keeps_json_stdout_clean(self, tmp_config):
-        constants_mod.HISTORY_DIR.mkdir(parents=True)
-        (constants_mod.HISTORY_DIR / "B00LEGACY4.json").write_text("[]")
+        paths.history_dir().mkdir(parents=True)
+        (paths.history_dir() / "B00LEGACY4.json").write_text("[]")
         result = CliRunner().invoke(cli, ["history", "--all", "--json"])
         assert result.exit_code == 0, result.output
         assert json.loads(result.stdout) == {}

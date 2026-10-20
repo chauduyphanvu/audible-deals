@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
-import audible_deals.constants as constants_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from tests.conftest import make_product
@@ -17,7 +17,7 @@ from tests.conftest import make_product
 
 def _seed_price_history(asin: str, prices: list[float]) -> None:
     """Write prior-day history entries for an ASIN (one per past day)."""
-    constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    paths.history_dir().mkdir(parents=True, exist_ok=True)
     today = datetime.date.today()
     entries = [
         {
@@ -27,7 +27,7 @@ def _seed_price_history(asin: str, prices: list[float]) -> None:
         }
         for i, price in enumerate(prices)
     ]
-    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+    (paths.history_dir() / f"{asin}.json").write_text(json.dumps(entries))
 
 
 def _capture_history_context(monkeypatch):

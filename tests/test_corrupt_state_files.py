@@ -14,7 +14,7 @@ import logging
 import pytest
 from click.testing import CliRunner
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli import cli
 from audible_deals.config_store import (
@@ -36,9 +36,8 @@ TRUNCATED = '{"a": {},'
 
 
 @pytest.fixture
-def lock_dir(tmp_config, monkeypatch):
-    """Point the run lock somewhere private so monitor mutators can take it."""
-    monkeypatch.setattr(constants, "LOCK_FILE", tmp_config / ".deals.lock")
+def lock_dir(tmp_config):
+    """The isolated data directory, whose private run lock monitor mutators take."""
     return tmp_config
 
 
@@ -70,27 +69,27 @@ def _definition(name="cheap"):
 
 
 def test_profile_save_refuses_to_overwrite_corrupt_profiles(tmp_config):
-    before = _write(constants.PROFILES_FILE, TRUNCATED)
+    before = _write(paths.profiles_file(), TRUNCATED)
 
     result = CliRunner().invoke(cli, ["profile", "save", "new", "--genre", "x"])
 
     assert result.exit_code == 1
     assert "Cannot update profiles" in result.output
-    assert str(constants.PROFILES_FILE) in result.output
+    assert str(paths.profiles_file()) in result.output
     # The parse position is part of the message so the user can find the typo.
     assert "line 1, column 10" in result.output
     assert "Traceback" not in result.output
-    assert constants.PROFILES_FILE.read_bytes() == before
+    assert paths.profiles_file().read_bytes() == before
 
 
 def test_profile_delete_refuses_corrupt_profiles(tmp_config):
-    before = _write(constants.PROFILES_FILE, TRUNCATED)
+    before = _write(paths.profiles_file(), TRUNCATED)
 
     result = CliRunner().invoke(cli, ["profile", "delete", "a"])
 
     assert result.exit_code == 1
     assert "Cannot update profiles" in result.output
-    assert constants.PROFILES_FILE.read_bytes() == before
+    assert paths.profiles_file().read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -102,15 +101,15 @@ def test_profile_delete_refuses_corrupt_profiles(tmp_config):
     ],
 )
 def test_config_mutations_refuse_corrupt_config(tmp_config, args, stdin):
-    before = _write(constants.CONFIG_FILE, '{"max_price": 3,')
+    before = _write(paths.config_file(), '{"max_price": 3,')
 
     result = CliRunner().invoke(cli, args, input=stdin)
 
     assert result.exit_code == 1
     assert "Cannot update config" in result.output
-    assert str(constants.CONFIG_FILE) in result.output
+    assert str(paths.config_file()) in result.output
     assert "Traceback" not in result.output
-    assert constants.CONFIG_FILE.read_bytes() == before
+    assert paths.config_file().read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -122,27 +121,27 @@ def test_config_mutations_refuse_corrupt_config(tmp_config, args, stdin):
     ],
 )
 def test_monitor_mutations_refuse_corrupt_monitors(lock_dir, args):
-    before = _write(constants.MONITORS_FILE, '{"cheap": ')
+    before = _write(paths.monitors_file(), '{"cheap": ')
 
     result = CliRunner().invoke(cli, args)
 
     assert result.exit_code == 1
     assert "Cannot update monitors" in result.output
-    assert str(constants.MONITORS_FILE) in result.output
-    assert constants.MONITORS_FILE.read_bytes() == before
+    assert str(paths.monitors_file()) in result.output
+    assert paths.monitors_file().read_bytes() == before
 
 
 def test_monitor_add_refuses_corrupt_monitors(lock_dir):
     from audible_deals.config_store import save_profiles
 
     save_profiles({"p": {"genre": "sci-fi"}})
-    before = _write(constants.MONITORS_FILE, "{oops")
+    before = _write(paths.monitors_file(), "{oops")
 
     result = CliRunner().invoke(cli, ["monitor", "add", "new", "--profile", "p"])
 
     assert result.exit_code == 1
     assert "Cannot update monitors" in result.output
-    assert constants.MONITORS_FILE.read_bytes() == before
+    assert paths.monitors_file().read_bytes() == before
 
 
 # ---------------------------------------------------------------------------
@@ -160,17 +159,17 @@ def test_monitor_add_refuses_corrupt_monitors(lock_dir):
     ids=["add", "remove", "enable"],
 )
 def test_monitor_services_raise_state_file_error(lock_dir, mutate):
-    before = _write(constants.MONITORS_FILE, "[not, json")
+    before = _write(paths.monitors_file(), "[not, json")
 
     with pytest.raises(StateFileError) as excinfo:
         mutate()
 
-    assert excinfo.value.path == constants.MONITORS_FILE
-    assert constants.MONITORS_FILE.read_bytes() == before
+    assert excinfo.value.path == paths.monitors_file()
+    assert paths.monitors_file().read_bytes() == before
 
 
 def test_transactions_do_not_run_the_body_or_save(tmp_config):
-    before = _write(constants.PROFILES_FILE, TRUNCATED)
+    before = _write(paths.profiles_file(), TRUNCATED)
     ran = False
 
     with pytest.raises(StateFileError, match="line 1, column 10"):
@@ -179,7 +178,7 @@ def test_transactions_do_not_run_the_body_or_save(tmp_config):
             profiles["new"] = {"genre": "x"}
 
     assert not ran
-    assert constants.PROFILES_FILE.read_bytes() == before
+    assert paths.profiles_file().read_bytes() == before
 
 
 @pytest.mark.parametrize(
@@ -192,19 +191,19 @@ def test_transactions_do_not_run_the_body_or_save(tmp_config):
     ],
 )
 def test_config_transaction_refuses_unusable_shapes(tmp_config, content, expected):
-    before = _write(constants.CONFIG_FILE, content)
+    before = _write(paths.config_file(), content)
 
     with pytest.raises(StateFileError) as excinfo:
         with config_transaction() as config:
             config["x"] = 1
 
     assert expected in str(excinfo.value)
-    assert constants.CONFIG_FILE.read_bytes() == before
+    assert paths.config_file().read_bytes() == before
 
 
 def test_unreadable_file_is_refused_with_the_os_reason(tmp_config):
     # A directory where the file should be: exists, but cannot be read.
-    constants.PROFILES_FILE.mkdir()
+    paths.profiles_file().mkdir()
 
     with pytest.raises(StateFileError, match="could not be read"):
         with profiles_transaction():
@@ -216,14 +215,14 @@ def test_missing_and_blank_files_are_fine_to_write(tmp_config):
     result = CliRunner().invoke(cli, ["profile", "save", "first", "--genre", "x"])
     assert result.exit_code == 0, result.output
 
-    constants.PROFILES_FILE.write_text("  \n")
+    paths.profiles_file().write_text("  \n")
     result = CliRunner().invoke(cli, ["profile", "save", "second", "--genre", "y"])
     assert result.exit_code == 0, result.output
     assert list(load_profiles()) == ["second"]
 
 
 def test_valid_files_still_round_trip(tmp_config):
-    constants.PROFILES_FILE.write_text(json.dumps({"keep": {"genre": "sci-fi"}}))
+    paths.profiles_file().write_text(json.dumps({"keep": {"genre": "sci-fi"}}))
 
     result = CliRunner().invoke(cli, ["profile", "save", "new", "--genre", "x"])
 
@@ -232,12 +231,12 @@ def test_valid_files_still_round_trip(tmp_config):
 
 
 def test_dismissals_are_not_replaced_when_the_file_is_corrupt(tmp_config):
-    before = _write(constants.DISMISSED_ASINS_FILE, '["B000000001", ')
+    before = _write(paths.dismissed_asins_file(), '["B000000001", ')
 
     with pytest.raises(StateFileError, match="dismissed ASINs"):
         save_dismissed_asins({"B000000002"})
 
-    assert constants.DISMISSED_ASINS_FILE.read_bytes() == before
+    assert paths.dismissed_asins_file().read_bytes() == before
 
 
 def test_ensure_updatable_accepts_matching_documents(tmp_path):
@@ -286,7 +285,7 @@ def test_read_only_load_includes_traceback_when_debugging(tmp_path, caplog):
 
 
 def test_cli_read_command_survives_corrupt_profiles_without_traceback(tmp_config):
-    before = _write(constants.PROFILES_FILE, TRUNCATED)
+    before = _write(paths.profiles_file(), TRUNCATED)
 
     result = CliRunner().invoke(cli, ["profile", "list"])
 
@@ -294,11 +293,11 @@ def test_cli_read_command_survives_corrupt_profiles_without_traceback(tmp_config
     assert "No profiles saved" in result.output
     assert "Traceback" not in result.output
     assert result.output.count("is corrupt") == 1
-    assert constants.PROFILES_FILE.read_bytes() == before
+    assert paths.profiles_file().read_bytes() == before
 
 
 def test_cli_double_verbose_shows_the_traceback(tmp_config):
-    _write(constants.PROFILES_FILE, TRUNCATED)
+    _write(paths.profiles_file(), TRUNCATED)
 
     result = CliRunner().invoke(cli, ["-vv", "profile", "list"])
 
@@ -307,16 +306,16 @@ def test_cli_double_verbose_shows_the_traceback(tmp_config):
 
 
 def test_read_only_monitor_listing_leaves_corrupt_file_alone(tmp_config):
-    before = _write(constants.MONITORS_FILE, "{bad")
+    before = _write(paths.monitors_file(), "{bad")
 
     assert load_monitors() == {}
     result = CliRunner().invoke(cli, ["monitor", "list"])
 
     assert result.exit_code == 0
-    assert constants.MONITORS_FILE.read_bytes() == before
+    assert paths.monitors_file().read_bytes() == before
 
 
 def test_dismissed_asins_read_path_is_still_tolerant(tmp_config):
-    _write(constants.DISMISSED_ASINS_FILE, "[")
+    _write(paths.dismissed_asins_file(), "[")
 
     assert load_dismissed_asins() == set()

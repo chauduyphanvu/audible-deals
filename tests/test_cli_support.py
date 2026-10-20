@@ -13,6 +13,7 @@ from click.testing import CliRunner
 import audible_deals.config_store as config_store_mod
 import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.config_store import coerce_config_value
 from audible_deals.serialization import (
@@ -753,13 +754,13 @@ class TestConfigCommands:
     ):
         existing = {"skip_plus": True, "only_plus": True}
         config_store_mod.save_config(existing)
-        before = constants_mod.CONFIG_FILE.read_text()
+        before = paths.config_file().read_text()
 
         result = CliRunner().invoke(cli, ["config", "set", "max-price", "5"])
 
         assert result.exit_code != 0
         assert "mutually exclusive" in result.output
-        assert constants_mod.CONFIG_FILE.read_text() == before
+        assert paths.config_file().read_text() == before
 
     def test_setting_true_repairs_existing_plus_conflict(self, tmp_config):
         config_store_mod.save_config({"skip_plus": True, "only_plus": True})
@@ -1363,14 +1364,7 @@ class TestStringKeyPrecedence:
 
 
 class TestDoctorCommand:
-    def _patch_auth(self, monkeypatch, tmp_config):
-        """Redirect AUTH_FILE in cli module to tmp_config."""
-
-        monkeypatch.setattr(constants_mod, "AUTH_FILE", tmp_config / "auth.json")
-        monkeypatch.setattr(constants_mod, "CONFIG_DIR", tmp_config)
-
     def test_auth_file_missing_fails(self, tmp_config, mock_client, monkeypatch):
-        self._patch_auth(monkeypatch, tmp_config)
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "FAIL" in result.output
@@ -1379,7 +1373,6 @@ class TestDoctorCommand:
     def test_auth_file_expired_refreshes(self, tmp_config, mock_client, monkeypatch):
         import time
 
-        self._patch_auth(monkeypatch, tmp_config)
         auth_file = tmp_config / "auth.json"
         auth_file.write_text(
             json.dumps(
@@ -1401,7 +1394,6 @@ class TestDoctorCommand:
     def test_auth_file_expires_soon_warns(self, tmp_config, mock_client, monkeypatch):
         import time
 
-        self._patch_auth(monkeypatch, tmp_config)
         auth_file = tmp_config / "auth.json"
         auth_file.write_text(
             json.dumps(
@@ -1420,7 +1412,6 @@ class TestDoctorCommand:
     def test_all_checks_pass(self, tmp_config, mock_client, monkeypatch):
         import time
 
-        self._patch_auth(monkeypatch, tmp_config)
         auth_file = tmp_config / "auth.json"
         auth_file.write_text(
             json.dumps(
@@ -1440,7 +1431,6 @@ class TestDoctorCommand:
     def test_marketplace_check_skipped_when_auth_fails(
         self, tmp_config, mock_client, monkeypatch
     ):
-        self._patch_auth(monkeypatch, tmp_config)
         runner = CliRunner()
         runner.invoke(cli, ["doctor"])
         mock_client.check_connection.assert_not_called()
@@ -1455,8 +1445,7 @@ class TestDoctorUnknownKeys:
     def test_unknown_config_key_warns(self, tmp_config, mock_client, monkeypatch):
         """A config.json key absent from the config schema triggers a WARN row."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.CONFIG_FILE.write_text(
+        paths.config_file().write_text(
             json.dumps({"max_price": 5.0, "typo_key": True, "another_bad": 1})
         )
         runner = CliRunner()
@@ -1469,8 +1458,7 @@ class TestDoctorUnknownKeys:
     def test_no_unknown_config_keys_passes(self, tmp_config, mock_client, monkeypatch):
         """All known keys → PASS for unknown-config-keys check."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.CONFIG_FILE.write_text(json.dumps({"max_price": 5.0}))
+        paths.config_file().write_text(json.dumps({"max_price": 5.0}))
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Unknown config keys" in result.output
@@ -1480,7 +1468,6 @@ class TestDoctorUnknownKeys:
         self, tmp_config, mock_client, monkeypatch
     ):
         """No config.json → unknown-config-key row is absent."""
-        self._patch_auth(monkeypatch, tmp_config)
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Unknown config keys" not in result.output
@@ -1488,8 +1475,7 @@ class TestDoctorUnknownKeys:
     def test_unknown_profile_key_warns(self, tmp_config, mock_client, monkeypatch):
         """A profile with a key outside the combined allowed set triggers WARN."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.PROFILES_FILE.write_text(
+        paths.profiles_file().write_text(
             json.dumps({"myprofile": {"max_price": 5.0, "ghost_key": "x"}})
         )
         runner = CliRunner()
@@ -1502,7 +1488,6 @@ class TestDoctorUnknownKeys:
         self, tmp_config, mock_client, monkeypatch
     ):
         """No profiles.json → unknown-profile-key row is absent entirely."""
-        self._patch_auth(monkeypatch, tmp_config)
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Unknown profile keys" not in result.output
@@ -1512,8 +1497,7 @@ class TestDoctorUnknownKeys:
     ):
         """A notify_state.json with a non-dict entry triggers WARN."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().write_text(
             json.dumps(
                 {"B001": "not-a-dict", "B002": {"date": "2025-01-01", "price": 3.99}}
             )
@@ -1527,8 +1511,7 @@ class TestDoctorUnknownKeys:
     def test_notify_state_stale_entry_warns(self, tmp_config, mock_client, monkeypatch):
         """A notify_state.json entry with a date >365 days old triggers WARN."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().write_text(
             json.dumps({"B003": {"date": "2000-01-01", "price": 1.99}})
         )
         runner = CliRunner()
@@ -1541,9 +1524,8 @@ class TestDoctorUnknownKeys:
         """A notify_state.json with a recent valid entry shows PASS."""
         import datetime as dt
 
-        self._patch_auth(monkeypatch, tmp_config)
         recent = dt.date.today().isoformat()
-        constants_mod.NOTIFY_STATE_FILE.write_text(
+        paths.notify_state_file().write_text(
             json.dumps({"B004": {"date": recent, "price": 2.99}})
         )
         runner = CliRunner()
@@ -1554,8 +1536,7 @@ class TestDoctorUnknownKeys:
     def test_notify_state_empty_passes(self, tmp_config, mock_client, monkeypatch):
         """An empty notify_state.json shows PASS with 'No entries'."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.NOTIFY_STATE_FILE.write_text(json.dumps({}))
+        paths.notify_state_file().write_text(json.dumps({}))
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Notify-state health" in result.output
@@ -1564,8 +1545,7 @@ class TestDoctorUnknownKeys:
     def test_corrupt_config_json_fails(self, tmp_config, mock_client, monkeypatch):
         """doctor reports FAIL for Config file valid when config.json is corrupt."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.CONFIG_FILE.write_text("not valid json {{{")
+        paths.config_file().write_text("not valid json {{{")
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Config file valid" in result.output
@@ -1574,8 +1554,7 @@ class TestDoctorUnknownKeys:
     def test_non_dict_config_json_fails(self, tmp_config, mock_client, monkeypatch):
         """doctor reports FAIL for Config file valid when config.json is not a JSON object."""
 
-        self._patch_auth(monkeypatch, tmp_config)
-        constants_mod.CONFIG_FILE.write_text(json.dumps([1, 2, 3]))
+        paths.config_file().write_text(json.dumps([1, 2, 3]))
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Config file valid" in result.output
@@ -1584,37 +1563,34 @@ class TestDoctorUnknownKeys:
     def test_plus_conflict_fails_config_check_without_repair(
         self, tmp_config, mock_client, monkeypatch
     ):
-        self._patch_auth(monkeypatch, tmp_config)
         conflicting = {"skip_plus": True, "only_plus": True}
-        constants_mod.CONFIG_FILE.write_text(json.dumps(conflicting))
+        paths.config_file().write_text(json.dumps(conflicting))
 
         result = CliRunner().invoke(cli, ["doctor"])
 
         assert result.exit_code == 1
         assert "Config file valid" in result.output
         assert "FAIL" in result.output
-        assert json.loads(constants_mod.CONFIG_FILE.read_text()) == conflicting
+        assert json.loads(paths.config_file().read_text()) == conflicting
 
     def test_plus_conflict_fails_profile_check_without_repair(
         self, tmp_config, mock_client, monkeypatch
     ):
-        self._patch_auth(monkeypatch, tmp_config)
         conflicting = {"bad": {"skip_plus": True, "only_plus": True}}
-        constants_mod.PROFILES_FILE.write_text(json.dumps(conflicting))
+        paths.profiles_file().write_text(json.dumps(conflicting))
 
         result = CliRunner().invoke(cli, ["doctor"])
 
         assert result.exit_code == 1
         assert "Profile settings valid" in result.output
         assert "mutually exclusive" in result.output
-        assert json.loads(constants_mod.PROFILES_FILE.read_text()) == conflicting
+        assert json.loads(paths.profiles_file().read_text()) == conflicting
 
     def test_non_boolean_plus_config_reports_type_without_false_conflict(
         self, tmp_config, mock_client, monkeypatch
     ):
-        self._patch_auth(monkeypatch, tmp_config)
         invalid = {"skip_plus": "true", "only_plus": True}
-        constants_mod.CONFIG_FILE.write_text(json.dumps(invalid))
+        paths.config_file().write_text(json.dumps(invalid))
 
         result = CliRunner().invoke(cli, ["doctor"])
 
@@ -1622,7 +1598,7 @@ class TestDoctorUnknownKeys:
         assert "skip_plus" in result.output
         assert "expected bool" in result.output
         assert "mutually exclusive" not in result.output
-        assert json.loads(constants_mod.CONFIG_FILE.read_text()) == invalid
+        assert json.loads(paths.config_file().read_text()) == invalid
 
 
 class TestCreditPriceConfig:
@@ -1641,7 +1617,7 @@ class TestCreditPriceConfig:
 
 
 def test_corrupt_numeric_config_allows_doctor_and_recovery(tmp_config, mock_client):
-    constants_mod.CONFIG_FILE.write_text('{"max_price": NaN}')
+    paths.config_file().write_text('{"max_price": NaN}')
     runner = CliRunner()
 
     doctor = runner.invoke(cli, ["doctor"])
@@ -1659,7 +1635,7 @@ def test_corrupt_numeric_config_allows_doctor_and_recovery(tmp_config, mock_clie
 
 
 def test_config_set_does_not_validate_unrelated_malformed_numeric(tmp_config):
-    constants_mod.CONFIG_FILE.write_text('{"max_price": NaN}')
+    paths.config_file().write_text('{"max_price": NaN}')
 
     result = CliRunner().invoke(cli, ["config", "set", "skip-owned", "true"])
 
@@ -1668,7 +1644,7 @@ def test_config_set_does_not_validate_unrelated_malformed_numeric(tmp_config):
 
 
 def test_corrupt_numeric_config_blocks_discovery_before_client(tmp_config, monkeypatch):
-    constants_mod.CONFIG_FILE.write_text('{"min_hours": Infinity}')
+    paths.config_file().write_text('{"min_hours": Infinity}')
     import audible_deals.cli.catalog as catalog_mod
 
     monkeypatch.setattr(
@@ -1684,7 +1660,7 @@ def test_corrupt_numeric_config_blocks_discovery_before_client(tmp_config, monke
 
 
 def test_corrupt_credit_price_blocks_catalog_before_client(tmp_config, monkeypatch):
-    constants_mod.CONFIG_FILE.write_text('{"credit_price": NaN}')
+    paths.config_file().write_text('{"credit_price": NaN}')
     import audible_deals.cli.catalog as catalog_mod
 
     monkeypatch.setattr(
@@ -2026,7 +2002,7 @@ class TestWebhookCgnatSsrf:
 
 
 def test_doctor_reports_indexed_wishlist_semantic_issues(tmp_config, mock_client):
-    constants_mod.AUTH_FILE.write_text(
+    paths.auth_file().write_text(
         json.dumps(
             {
                 "access_token": "at",
@@ -2049,7 +2025,7 @@ def test_doctor_reports_indexed_wishlist_semantic_issues(tmp_config, mock_client
 
 
 def test_doctor_fails_for_non_list_wishlist(tmp_config, mock_client):
-    constants_mod.AUTH_FILE.write_text(
+    paths.auth_file().write_text(
         json.dumps(
             {
                 "access_token": "at",
@@ -2059,7 +2035,7 @@ def test_doctor_fails_for_non_list_wishlist(tmp_config, mock_client):
             }
         )
     )
-    constants_mod.WISHLIST_FILE.write_text("{}")
+    paths.wishlist_file().write_text("{}")
 
     result = CliRunner().invoke(cli, ["doctor"])
 

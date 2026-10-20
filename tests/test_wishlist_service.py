@@ -13,10 +13,9 @@ from pathlib import Path
 
 import pytest
 
-import audible_deals.constants as constants
-import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
 import audible_deals.wishlist_service as wishlist_service
+from audible_deals import paths
 from audible_deals.wishlist import (
     WishlistMutationError,
     load_wishlist,
@@ -109,14 +108,14 @@ def test_all_existing_additions_do_not_rewrite_wishlist(tmp_config):
         b'[{"asin":"BOOK1","max_price":null},'
         b'{"type":"author","author":"Writer","max_price":4}]'
     )
-    constants.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     product_result = add_products([make_product(asin="BOOK1")], None)
     author_result = add_author_watch("writer", 2)
 
     assert product_result.raced_asins == ("BOOK1",)
     assert not author_result.added
-    assert constants.WISHLIST_FILE.read_bytes() == original
+    assert paths.wishlist_file().read_bytes() == original
 
 
 @pytest.mark.parametrize(
@@ -129,11 +128,11 @@ def test_all_existing_additions_do_not_rewrite_wishlist(tmp_config):
 )
 def test_existing_zero_effect_mutations_keep_their_write_policy(tmp_config, operation):
     original = b'[{"asin":"BOOK1","max_price":null}]'
-    constants.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     operation()
 
-    assert constants.WISHLIST_FILE.read_bytes() != original
+    assert paths.wishlist_file().read_bytes() != original
     assert load_wishlist() == [{"asin": "BOOK1", "max_price": None}]
 
 
@@ -265,7 +264,7 @@ def test_repair_preserves_order_and_creates_exact_owner_only_backup(tmp_config):
         [valid_book, "invalid", valid_author],
         separators=(",", ":"),
     ).encode()
-    constants.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     result = repair_wishlist(plan_repair())
 
@@ -276,15 +275,15 @@ def test_repair_preserves_order_and_creates_exact_owner_only_backup(tmp_config):
 
 
 def test_repair_rejects_changed_source_with_typed_error(tmp_config):
-    constants.WISHLIST_FILE.write_bytes(b'[{"asin":"GOOD1"},"invalid"]')
+    paths.wishlist_file().write_bytes(b'[{"asin":"GOOD1"},"invalid"]')
     plan = plan_repair()
     replacement = b'[{"asin":"GOOD1"},{"asin":"NEW1"},"invalid"]'
-    constants.WISHLIST_FILE.write_bytes(replacement)
+    paths.wishlist_file().write_bytes(replacement)
 
     with pytest.raises(WishlistSourceChangedError):
         repair_wishlist(plan)
 
-    assert constants.WISHLIST_FILE.read_bytes() == replacement
+    assert paths.wishlist_file().read_bytes() == replacement
     assert not (tmp_config / "wishlist.json.bak").exists()
 
 
@@ -321,12 +320,12 @@ def test_purge_preserves_entries_added_after_plan(tmp_config):
 def test_mutation_services_leave_malformed_roots_byte_identical(
     tmp_config, contents, operation
 ):
-    constants.WISHLIST_FILE.write_bytes(contents)
+    paths.wishlist_file().write_bytes(contents)
 
     with pytest.raises(WishlistMutationError):
         operation()
 
-    assert constants.WISHLIST_FILE.read_bytes() == contents
+    assert paths.wishlist_file().read_bytes() == contents
 
 
 def test_bugfixwishlist_semantic_inspector_rejects_bad_targets_and_entries_without_mutation():
@@ -366,11 +365,11 @@ def test_bugfixwishlist_semantic_inspector_accepts_large_nonnegative_integer_tar
 def test_bugfixwishlist_mutation_loader_refuses_unreadable_wishlist(
     tmp_config, monkeypatch
 ):
-    constants_mod.WISHLIST_FILE.write_text("[]")
+    paths.wishlist_file().write_text("[]")
     original_read_text = Path.read_text
 
     def fail_read(path, *args, **kwargs):
-        if path == constants_mod.WISHLIST_FILE:
+        if path == paths.wishlist_file():
             raise OSError("permission denied")
         return original_read_text(path, *args, **kwargs)
 

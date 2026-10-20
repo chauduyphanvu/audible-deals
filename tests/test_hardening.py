@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from click.testing import CliRunner
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.config_store import (
     config_transaction,
@@ -43,11 +43,11 @@ def test_terminal_text_and_product_markup_are_rendered_literally(capsys):
 
 
 def test_profile_config_and_monitor_markup_is_literal(tmp_config):
-    constants.CONFIG_FILE.write_text(json.dumps({"narrator": "[red]literal[/red]"}))
-    constants.PROFILES_FILE.write_text(
+    paths.config_file().write_text(json.dumps({"narrator": "[red]literal[/red]"}))
+    paths.profiles_file().write_text(
         json.dumps({"[green]profile[/green]": {"genre": "[blue]genre[/blue]"}})
     )
-    constants.MONITORS_FILE.write_text(
+    paths.monitors_file().write_text(
         json.dumps(
             {
                 "[yellow]monitor[/yellow]": {
@@ -116,7 +116,7 @@ def test_product_csv_neutralizes_dangerous_text_cells(tmp_path):
 
 
 def test_wishlist_csv_neutralizes_text_cells(tmp_config):
-    constants.WISHLIST_FILE.write_text(
+    paths.wishlist_file().write_text(
         json.dumps(
             [
                 {
@@ -158,7 +158,7 @@ def test_wishlist_csv_neutralizes_text_cells(tmp_config):
 )
 def test_import_auth_errors_preserve_existing_auth(tmp_config, source):
     original = b'{"existing": true}\n'
-    constants.AUTH_FILE.write_bytes(original)
+    paths.auth_file().write_bytes(original)
     source_path = tmp_config / "source.json"
     source_path.write_text(source)
 
@@ -166,7 +166,7 @@ def test_import_auth_errors_preserve_existing_auth(tmp_config, source):
 
     assert result.exit_code != 0
     assert "Could not import auth" in result.output
-    assert constants.AUTH_FILE.read_bytes() == original
+    assert paths.auth_file().read_bytes() == original
 
 
 def test_product_parser_skips_bad_nested_values_and_nonfinite_numbers():
@@ -232,8 +232,8 @@ def test_strict_state_writer_rejects_nonfinite_numbers(tmp_config):
 
 
 def test_nonfinite_history_is_ignored_without_rewriting(tmp_config):
-    constants.HISTORY_DIR.mkdir()
-    path = constants.HISTORY_DIR / "B001.json"
+    paths.history_dir().mkdir()
+    path = paths.history_dir() / "B001.json"
     original = (
         b'{"marketplaces":{"us":['
         b'{"date":"2026-01-01","price":NaN,"title":"Bad"},'
@@ -246,12 +246,12 @@ def test_nonfinite_history_is_ignored_without_rewriting(tmp_config):
 
     assert entries == [{"date": "2026-01-02", "price": 2.0, "title": "Good"}]
     assert path.read_bytes() == original
-    assert not (constants.HISTORY_DIR / "B002.json").exists()
+    assert not (paths.history_dir() / "B002.json").exists()
 
 
 def test_history_write_discards_poisoned_prices_in_other_marketplaces(tmp_config):
-    constants.HISTORY_DIR.mkdir()
-    path = constants.HISTORY_DIR / "B000TEST01.json"
+    paths.history_dir().mkdir()
+    path = paths.history_dir() / "B000TEST01.json"
     path.write_text(
         '{"marketplaces":{"uk":[{"date":"2026-01-01","price":NaN}],'
         '"us":[{"date":"2026-01-01","price":4.0}]}}'
@@ -268,7 +268,7 @@ def test_history_write_discards_poisoned_prices_in_other_marketplaces(tmp_config
 
 
 def test_invalid_stored_locale_allows_recovery_commands(tmp_config):
-    constants.CONFIG_FILE.write_text(json.dumps({"locale": "invalid"}))
+    paths.config_file().write_text(json.dumps({"locale": "invalid"}))
     runner = CliRunner()
 
     blocked = runner.invoke(cli, ["find", "--dry-run"])
@@ -283,8 +283,8 @@ def test_invalid_stored_locale_allows_recovery_commands(tmp_config):
 
 
 def test_malformed_profiles_and_monitors_are_marked_and_rejected(tmp_config):
-    constants.PROFILES_FILE.write_text(json.dumps({"broken": []}))
-    constants.MONITORS_FILE.write_text(json.dumps({"broken": []}))
+    paths.profiles_file().write_text(json.dumps({"broken": []}))
+    paths.monitors_file().write_text(json.dumps({"broken": []}))
     runner = CliRunner()
 
     profile_list = runner.invoke(cli, ["profile", "list"])
@@ -299,7 +299,7 @@ def test_malformed_profiles_and_monitors_are_marked_and_rejected(tmp_config):
 
 
 def test_malformed_monitor_field_types_are_rejected_cleanly(tmp_config):
-    constants.MONITORS_FILE.write_text(
+    paths.monitors_file().write_text(
         json.dumps(
             {
                 "bad-locale": {
@@ -341,8 +341,8 @@ def test_malformed_track_records_warn_instead_of_crashing(caplog):
 
 
 def test_doctor_fails_on_raw_profile_and_monitor_corruption(tmp_config, mock_client):
-    constants.PROFILES_FILE.write_text("[]")
-    constants.MONITORS_FILE.write_text(json.dumps({"bad": []}))
+    paths.profiles_file().write_text("[]")
+    paths.monitors_file().write_text(json.dumps({"bad": []}))
 
     result = CliRunner().invoke(cli, ["doctor"])
 
@@ -353,7 +353,7 @@ def test_doctor_fails_on_raw_profile_and_monitor_corruption(tmp_config, mock_cli
 
 
 def test_doctor_rejects_malformed_profile_field_shapes(tmp_config, mock_client):
-    constants.PROFILES_FILE.write_text(json.dumps({"bad": {"genre": []}}))
+    paths.profiles_file().write_text(json.dumps({"bad": {"genre": []}}))
 
     result = CliRunner().invoke(cli, ["doctor"])
 
@@ -363,7 +363,7 @@ def test_doctor_rejects_malformed_profile_field_shapes(tmp_config, mock_client):
 
 
 def test_tolerant_runtime_loader_recovers_from_invalid_utf8(tmp_config):
-    constants.CONFIG_FILE.write_bytes(b"\xff")
+    paths.config_file().write_bytes(b"\xff")
     runner = CliRunner()
 
     recovered = runner.invoke(cli, ["config", "list"])
@@ -381,7 +381,7 @@ def test_config_secrets_are_redacted_unless_explicitly_requested(
     monkeypatch.setattr(
         "audible_deals.validation.validate_webhook_url", lambda _value: None
     )
-    constants.CONFIG_FILE.write_text(
+    paths.config_file().write_text(
         json.dumps(
             {
                 "webhook": "https://example.com/secret",
@@ -548,7 +548,7 @@ def test_large_dry_run_is_nonblocking_and_reports_override(tmp_config):
 def test_wishlist_json_and_output_can_be_combined_and_extension_is_validated(
     tmp_config,
 ):
-    constants.WISHLIST_FILE.write_text(
+    paths.wishlist_file().write_text(
         json.dumps([{"asin": "B001", "title": "Book", "max_price": 5}])
     )
     runner = CliRunner()

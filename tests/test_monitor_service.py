@@ -6,7 +6,7 @@ from contextlib import contextmanager
 
 import pytest
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli.helpers import _resolve_skip_asins
 from audible_deals.config_store import load_monitor_state, save_monitor_state
@@ -131,8 +131,7 @@ def test_budget_selection_repairs_cursor_and_skips_malformed_or_oversized():
 def test_record_error_preserves_sparse_snapshot_and_unknown_fields(
     tmp_path, monkeypatch
 ):
-    monkeypatch.setattr(constants, "MONITOR_STATE_FILE", tmp_path / "state.json")
-    constants.MONITOR_STATE_FILE.write_text(
+    paths.monitor_state_file().write_text(
         json.dumps(
             {
                 "version": 1,
@@ -157,7 +156,6 @@ def test_loaded_definition_unknown_fields_survive_model_boundary():
 def test_success_preserves_unknown_slot_fields_and_valid_siblings(
     tmp_config, monkeypatch
 ):
-    monkeypatch.setattr(constants, "MONITOR_STATE_FILE", tmp_config / "monitors.json")
     save_monitor_state(
         {
             "version": 1,

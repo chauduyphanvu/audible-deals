@@ -8,7 +8,7 @@ import click
 import pytest
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.results_cache import (
     load_dismissed_asins,
@@ -48,7 +48,7 @@ class TestCachedResultRegressions:
     def test_last_does_not_record_cached_prices(self, tmp_config, monkeypatch):
         import audible_deals.result_publication as publication_mod
 
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps(
                 {
                     "title": "Cached",
@@ -97,12 +97,12 @@ class TestCachedResultRegressions:
         assert refined.exit_code == 0, refined.output
         recipe = load_result_session().current_recipe
         assert (recipe.skip_plus, recipe.only_plus) == (True, False)
-        before = constants_mod.LAST_RESULTS_FILE.read_text()
+        before = paths.last_results_file().read_text()
 
         conflicting = runner.invoke(cli, ["last", "--skip-plus", "--only-plus"])
         assert conflicting.exit_code != 0
         assert "mutually exclusive" in conflicting.output
-        assert constants_mod.LAST_RESULTS_FILE.read_text() == before
+        assert paths.last_results_file().read_text() == before
 
 
 class TestHistoryCommand:
@@ -154,7 +154,7 @@ class TestResolveLastReferences:
 
         p = make_product(asin="REF1")
         data = [_serialize_product(p)]
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        paths.last_results_file().write_text(json.dumps(data))
         results = _resolve_last_references((1,))
         assert len(results) == 1
         asin, desc = results[0]
@@ -166,7 +166,7 @@ class TestResolveLastReferences:
 
         products = [make_product(asin=f"R{i}") for i in range(1, 4)]
         data = [_serialize_product(p) for p in products]
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        paths.last_results_file().write_text(json.dumps(data))
         results = _resolve_last_references((1, 3))
         asins = [r[0] for r in results]
         assert asins == ["R1", "R3"]
@@ -174,7 +174,7 @@ class TestResolveLastReferences:
     def test_out_of_range(self, tmp_config):
 
         data = [_serialize_product(make_product(asin="ONLY1"))]
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        paths.last_results_file().write_text(json.dumps(data))
         with pytest.raises(click.ClickException, match="out of range"):
             _resolve_last_references((5,))
 
@@ -184,7 +184,7 @@ class TestResolveLastReferences:
 
     def test_corrupt_file(self, tmp_config):
 
-        constants_mod.LAST_RESULTS_FILE.write_text("not-json{{{{")
+        paths.last_results_file().write_text("not-json{{{{")
         with pytest.raises(click.ClickException, match="Could not read"):
             _resolve_last_references((1,))
 
@@ -193,7 +193,7 @@ class TestLastCommand:
     def _seed_cache(self, tmp_config, products):
 
         data = [_serialize_product(p) for p in products]
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        paths.last_results_file().write_text(json.dumps(data))
 
     def test_no_cache(self, tmp_config):
         runner = CliRunner()
@@ -293,7 +293,7 @@ class TestDetailLastFlag:
     def test_detail_last(self, mock_client, tmp_config):
         products = [make_product(asin="DL1")]
 
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(p) for p in products])
         )
         mock_client.get_product.return_value = make_product(
@@ -318,7 +318,7 @@ class TestCompareLastFlag:
             make_product(asin="CL2"),
         ]
 
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(p) for p in products])
         )
         mock_client.get_products_batch.return_value = [
@@ -334,7 +334,7 @@ class TestCompareLastFlag:
         """Mix positional ASIN with --last ref."""
         products = [make_product(asin="CM2")]
 
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(p) for p in products])
         )
         mock_client.get_products_batch.return_value = [
@@ -367,7 +367,7 @@ class TestLastQueryContext:
         )
         assert result.exit_code == 0, result.output
 
-        raw = json.loads(constants_mod.LAST_RESULTS_FILE.read_text())
+        raw = json.loads(paths.last_results_file().read_text())
         assert isinstance(raw, dict)
         assert "title" in raw
         assert "results" in raw
@@ -384,7 +384,7 @@ class TestLastQueryContext:
             "title": "Deals under $5.00 in Sci-Fi",
             "results": [_serialize_product(p) for p in products],
         }
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
         runner = CliRunner()
         result = runner.invoke(cli, ["last"])
         assert result.exit_code == 0, result.output
@@ -397,7 +397,7 @@ class TestLastQueryContext:
             make_product(asin="BC1", price=3.0, series_name="", series_position="")
         ]
         # Old format: plain list
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(p) for p in products])
         )
         runner = CliRunner()
@@ -414,7 +414,7 @@ class TestLastQueryContext:
             make_product(asin="Z1", title="zebra", series_name="", series_position=""),
             make_product(asin="A1", title="Alpha", series_name="", series_position=""),
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps([_serialize_product(product) for product in products])
         )
         monkeypatch.setattr(
@@ -434,7 +434,7 @@ class TestLastQueryContext:
     def test_corrupt_cache_raises(self, tmp_config):
         """deals last raises ClickException for a corrupt (non-list, non-dict) cache."""
 
-        constants_mod.LAST_RESULTS_FILE.write_text('"just a string"')
+        paths.last_results_file().write_text('"just a string"')
         runner = CliRunner()
         result = runner.invoke(cli, ["last"])
         assert result.exit_code != 0
@@ -445,7 +445,7 @@ class TestLastQueryContext:
 
         p = make_product(asin="NF1")
         cache_obj = {"title": "Test", "results": [_serialize_product(p)]}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
         results = _resolve_last_references((1,))
         asin, desc = results[0]
         assert asin == "NF1"
@@ -457,7 +457,7 @@ class TestLastFilters:
     def _seed_cache(self, tmp_config, products):
 
         data = [_serialize_product(p) for p in products]
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        paths.last_results_file().write_text(json.dumps(data))
 
     def test_last_narrator_filter(self, tmp_config):
         """deals last --narrator filters by narrator substring match."""
@@ -562,12 +562,12 @@ class TestLastFilters:
 class TestLastClearFlag:
     def test_clear_existing_cache(self, tmp_config):
 
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps([]))
+        paths.last_results_file().write_text(json.dumps([]))
         runner = CliRunner()
         result = runner.invoke(cli, ["last", "--clear"])
         assert result.exit_code == 0
         assert "cleared" in result.output.lower()
-        assert not constants_mod.LAST_RESULTS_FILE.exists()
+        assert not paths.last_results_file().exists()
 
     def test_clear_no_cache(self, tmp_config):
         runner = CliRunner()
@@ -578,7 +578,7 @@ class TestLastClearFlag:
     def test_clear_exits_without_display(self, tmp_config):
         """--clear should not attempt to read or display any results."""
 
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps([]))
+        paths.last_results_file().write_text(json.dumps([]))
         runner = CliRunner()
         result = runner.invoke(cli, ["last", "--clear"])
         assert result.exit_code == 0
@@ -593,7 +593,7 @@ class TestLastRefDescription:
 
         p = make_product(asin="DESC1", title="The Martian")
         cache_obj = {"title": "Search: Andy Weir", "results": [_serialize_product(p)]}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
         mock_client.get_product.return_value = make_product(
             asin="DESC1", title="The Martian"
         )
@@ -609,7 +609,7 @@ class TestLastRefDescription:
 
         p = make_product(asin="OPEN1", title="Some Book")
         cache_obj = {"title": "Search: test", "results": [_serialize_product(p)]}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
         runner = CliRunner()
         result = runner.invoke(cli, ["open", "--last", "1"])
         assert result.exit_code == 0, result.output
@@ -627,7 +627,7 @@ class TestLastRefDescription:
             "title": "Search: test",
             "results": [_serialize_product(p) for p in products],
         }
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
         mock_client.get_products_batch.return_value = [
             make_product(
                 asin="CMP1", title="Book Alpha", price=5.0, length_minutes=600
@@ -645,7 +645,7 @@ class TestLastRefDescription:
 
         p = make_product(asin="WADD1", title="Wishlist Book")
         cache_obj = {"title": "Search: test", "results": [_serialize_product(p)]}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
         mock_client.get_product.return_value = make_product(
             asin="WADD1", title="Wishlist Book"
         )
@@ -663,7 +663,7 @@ class TestHistoryLast:
             "title": "Search: test",
             "results": [_serialize_product(p) for p in products],
         }
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
 
     def test_history_last_resolves_from_cache(self, tmp_config):
         """history --last N resolves the ASIN from the last results cache."""
@@ -689,7 +689,7 @@ class TestHistoryLast:
 class TestLoadSeenAsins:
     def test_loads_from_seen_file(self, tmp_config):
 
-        constants_mod.SEEN_ASINS_FILE.write_text(json.dumps(["A1", "A2"]))
+        paths.seen_asins_file().write_text(json.dumps(["A1", "A2"]))
         seen = _load_seen_asins()
         assert seen == {"A1", "A2"}
 
@@ -699,13 +699,13 @@ class TestLoadSeenAsins:
 
     def test_returns_set_from_list(self, tmp_config):
 
-        constants_mod.SEEN_ASINS_FILE.write_text(json.dumps(["B1", "B2", "B1"]))
+        paths.seen_asins_file().write_text(json.dumps(["B1", "B2", "B1"]))
         seen = _load_seen_asins()
         assert seen == {"B1", "B2"}
 
     def test_empty_on_corrupt_file(self, tmp_config):
 
-        constants_mod.SEEN_ASINS_FILE.write_text("not valid json")
+        paths.seen_asins_file().write_text("not valid json")
         seen = _load_seen_asins()
         assert seen == set()
 
@@ -727,7 +727,7 @@ class TestCumulativeSeenAsins:
         seen = _load_seen_asins()
         assert seen == {"A1", "A2", "A3"}
         # Verify file is a clean sorted list
-        data = json.loads(constants_mod.SEEN_ASINS_FILE.read_text())
+        data = json.loads(paths.seen_asins_file().read_text())
         assert data == sorted(data)
 
     def test_empty_when_no_file(self, tmp_config):
@@ -757,7 +757,7 @@ class TestCumulativeSeenAsins:
         assert result.exit_code == 0, result.output
         assert load_dismissed_asins() == set()
         assert _load_seen_asins() == set()
-        assert not constants_mod.LAST_RESULTS_FILE.exists()
+        assert not paths.last_results_file().exists()
 
     def test_clear_seen_command(self, tmp_config, mock_client):
         _save_seen_asins({"A1", "A2"})
@@ -774,7 +774,7 @@ class TestLastCount:
 
         data = [_serialize_product(p) for p in products]
         payload = json.dumps({"title": "Test Results", "results": data})
-        constants_mod.LAST_RESULTS_FILE.write_text(payload)
+        paths.last_results_file().write_text(payload)
 
     def test_last_count_outputs_integer(self, tmp_config):
         """deals last --count prints the number of cached results."""
@@ -790,7 +790,7 @@ class TestLastCount:
     def test_last_count_zero_when_empty_cache(self, tmp_config):
         """deals last --count returns 0 for an empty result cache."""
 
-        constants_mod.LAST_RESULTS_FILE.write_text(
+        paths.last_results_file().write_text(
             json.dumps({"title": "Empty", "results": []})
         )
         runner = CliRunner()
@@ -807,7 +807,7 @@ class TestSingleRefLastValidation:
             {"asin": "B00TESTAA03", "title": "Book 3"},
         ]
         cache = {"title": "Test", "results": data}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache))
+        paths.last_results_file().write_text(json.dumps(cache))
 
     def test_detail_rejects_range(self, mock_client, tmp_config):
         self._seed_cache(tmp_config)
@@ -1137,13 +1137,13 @@ class TestResolveLastReferenceMissingAsin:
     def test_old_format_entry_without_asin_raises_clickexception(self, tmp_config):
         """A cache entry lacking 'asin' must surface as a clean ClickException."""
         data = [{"title": "NoAsinItem"}]
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(data))
+        paths.last_results_file().write_text(json.dumps(data))
         with pytest.raises(click.ClickException, match="no ASIN"):
             resolve_last_references((1,))
 
     def test_new_format_entry_without_asin_raises_clickexception(self, tmp_config):
         """New-format results entry with no 'asin' must also raise ClickException."""
         cache_obj = {"title": "Last results", "results": [{"title": "NoAsinItem"}]}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        paths.last_results_file().write_text(json.dumps(cache_obj))
         with pytest.raises(click.ClickException, match="no ASIN"):
             resolve_last_references((1,))

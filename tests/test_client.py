@@ -15,6 +15,7 @@ from unittest import mock
 import click
 import pytest
 
+from audible_deals import paths
 from audible_deals.audible_transport import AudibleTransport
 from audible_deals.auth_store import AuthStore, _captcha_callback
 from audible_deals.client import DealsClient, _validate_category_id
@@ -274,9 +275,7 @@ class TestCategoryCache:
         assert dc._load_categories_cache() is None
 
     def test_corrupt_cache(self, tmp_config):
-        from audible_deals.constants import CATEGORIES_CACHE_FILE
-
-        cache_file = CATEGORIES_CACHE_FILE.with_suffix(".us.json")
+        cache_file = paths.categories_cache_file("us")
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text("not json{{{")
 
@@ -1203,9 +1202,7 @@ def test_client_does_not_reexport_product_or_transport_internals():
 
 class TestBugfixClientNonDictCategoriesCache:
     def _write_cache(self, content: str) -> None:
-        from audible_deals.constants import CATEGORIES_CACHE_FILE
-
-        cache_file = CATEGORIES_CACHE_FILE.with_suffix(".us.json")
+        cache_file = paths.categories_cache_file("us")
         cache_file.parent.mkdir(parents=True, exist_ok=True)
         cache_file.write_text(content)
 

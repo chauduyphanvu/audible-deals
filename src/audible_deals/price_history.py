@@ -12,7 +12,7 @@ from collections.abc import Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from audible_deals import constants, wishlist
+from audible_deals import paths, wishlist
 from audible_deals.constants import _ASIN_RE
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
@@ -115,13 +115,13 @@ def _log_legacy_migration(archived: int, failed: int) -> None:
 
 def migrate_legacy_histories() -> tuple[int, int]:
     """Archive legacy top-level history lists without rewriting their bytes."""
-    if not constants.HISTORY_DIR.exists():
+    if not paths.history_dir().exists():
         return 0, 0
     archived = 0
     failed = 0
-    migration_lock = constants.HISTORY_DIR / ".legacy-migration.lock"
+    migration_lock = paths.history_dir() / ".legacy-migration.lock"
     with advisory_lock(migration_lock, wait=True):
-        for hist_file in sorted(constants.HISTORY_DIR.glob("*.json")):
+        for hist_file in sorted(paths.history_dir().glob("*.json")):
             with _history_update_lock(hist_file):
                 try:
                     raw = json.loads(hist_file.read_bytes())
@@ -161,7 +161,7 @@ def record_prices(
     if not priced:
         logger.debug("record_prices: no priced products (input=%d)", len(products))
         return
-    constants.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    paths.history_dir().mkdir(parents=True, exist_ok=True)
 
     written: set[Path] = set()
     skipped_today = 0
@@ -174,7 +174,7 @@ def record_prices(
         if not _ASIN_RE.fullmatch(p.asin):
             bad_asin += 1
             continue
-        hist_file = constants.HISTORY_DIR / f"{p.asin}.json"
+        hist_file = paths.history_dir() / f"{p.asin}.json"
         with _history_update_lock(hist_file):
             raw: object | None = None
             if hist_file.exists():
@@ -261,7 +261,7 @@ def load_price_history(asin: str, locale: str = "us") -> list[dict]:
 
     Returns an empty list if the file doesn't exist or is corrupt.
     """
-    hist_file = constants.HISTORY_DIR / f"{asin}.json"
+    hist_file = paths.history_dir() / f"{asin}.json"
     if not hist_file.exists():
         return []
     try:
@@ -464,11 +464,11 @@ def load_all_price_histories(locale: str = "us") -> dict[str, list[dict]]:
     Returns a dict keyed by ASIN; empty ASINs (corrupt or no entries) are skipped.
     Returns {} when the directory doesn't exist.
     """
-    if not constants.HISTORY_DIR.exists():
+    if not paths.history_dir().exists():
         return {}
     migrate_legacy_histories()
     result: dict[str, list[dict]] = {}
-    for hist_file in constants.HISTORY_DIR.glob("*.json"):
+    for hist_file in paths.history_dir().glob("*.json"):
         entries = load_price_history(hist_file.stem, locale)
         if entries:
             result[hist_file.stem] = entries
@@ -536,7 +536,7 @@ def purge_stale_history(
     Corrupt files and files with no parseable last-entry date are skipped.
     Returns (count, asins_affected).
     """
-    if not constants.HISTORY_DIR.exists():
+    if not paths.history_dir().exists():
         return 0, []
 
     cutoff = datetime.date.today() - datetime.timedelta(days=days)
@@ -544,9 +544,9 @@ def purge_stale_history(
     affected: list[str] = []
 
     hist_files = (
-        [constants.HISTORY_DIR / f"{asin}.json" for asin in asins]
+        [paths.history_dir() / f"{asin}.json" for asin in asins]
         if asins is not None
-        else constants.HISTORY_DIR.glob("*.json")
+        else paths.history_dir().glob("*.json")
     )
     for hist_file in hist_files:
         asin = hist_file.stem

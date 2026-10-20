@@ -7,11 +7,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 ## [Unreleased]
 
 ### Added
+- `DEALS_HOME` selects the data directory, read on every run (tests and scheduled jobs use it too). Without it, an existing `~/.config/audible-deals` is kept, otherwise `$XDG_CONFIG_HOME/audible-deals`, otherwise `~/.config/audible-deals` (`%APPDATA%\audible-deals` on Windows when that does not exist). `deals doctor` shows the directory and why it was chosen.
 - `--locale` and `-v/--verbose` are now accepted after the command as well as before it, on every command and subcommand (`deals find --locale uk`, `deals wishlist add ASIN -v`). If both positions are used, the one after the command wins.
 - Development: every filter's flag, type, bounds, help, default and availability is declared once in `src/audible_deals/filter_specs.py`; the command options, config schema, profile and monitor validation, `last --clear-filter` names and `--dry-run` filter list are generated from it, and `tests/test_filter_specs.py` fails when a hand-written mirror (`Settings`, the result recipe, `FilterContext`, the docs) drifts. CONTRIBUTING.md has an "Adding a filter" section.
 - Development: mypy is part of the `dev` extra and the CI lint job, ruff checks a wider rule set (`E`, `F`, `W`, `I`, `B`, `UP`), CI installs from `uv.lock`, and `tests/test_golden.py` pins every command's option names and the key structure of the JSON outputs.
 
 ### Changed
+- `deals track install` now writes the data directory into the scheduled job (launchd plist, systemd unit, crontab line, schtasks command) and prints it, because those jobs do not inherit the shell environment that may have chosen it (`XDG_CONFIG_HOME`, `DEALS_HOME`).
 - `deals profile save` and `deals monitor add` now take every filter `find` takes. Profiles gain `--max-effective-price`, `--hist-below`, `--min-price-drop`, `--require-history`, `--released-after`/`--released-before` and `--exclude-seen`; monitors gain those (except `--exclude-seen`, which cannot apply to a snapshot) plus `--max-price-per-hour`, `--exclude-genre`, `--series`, `--publisher` and `--all-languages`. A monitor built from a profile keeps all of the profile's filters, and `--max-effective-price` uses the credit price configured when the monitor runs.
 - `--released-after` and `--released-before` are checked when the command line is parsed, on `find`, `search`, `last`, `profile save` and `monitor add` (an invalid date is a usage error naming the option; compact `20240101` is still accepted and normalized to `2024-01-01`).
 - `find` and `search` gain `--no-exclude-seen` and `--no-require-history`, so a value saved in a profile can be turned off from the command line.

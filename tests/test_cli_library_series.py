@@ -7,7 +7,7 @@ import json
 
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from audible_deals.series_identity import (
@@ -55,7 +55,7 @@ def _seed_profile_cache():
             }
         ],
     }
-    constants_mod.TASTE_CACHE_FILE.write_text(json.dumps(profile))
+    paths.taste_cache_file().write_text(json.dumps(profile))
     return profile
 
 
@@ -935,7 +935,7 @@ class TestSeriesCommand:
 
         assert result.exit_code == 0, result.output
         assert [item["asin"] for item in json.loads(result.stdout)] == ["PREORDER"]
-        session = json.loads(constants_mod.LAST_RESULTS_FILE.read_text())
+        session = json.loads(paths.last_results_file().read_text())
         assert [item["asin"] for item in session["candidates"]] == ["PREORDER"]
 
     def test_gaps_retains_unavailable_and_counts_unique_identities(
@@ -1110,7 +1110,7 @@ class TestSeriesCommand:
     def test_gaps_config_max_price_keeps_unavailable_and_filters_priced(
         self, tmp_config, mock_client
     ):
-        constants_mod.CONFIG_FILE.write_text(json.dumps({"max_price": 5.0}))
+        paths.config_file().write_text(json.dumps({"max_price": 5.0}))
         self._assert_gaps_max_price(mock_client, [])
 
     @staticmethod
@@ -1226,7 +1226,7 @@ class TestForMeDryRunNoSideEffects:
         assert result.exit_code != 0
         assert "deals for-me" in result.output
         mock_client.get_library_pages.assert_not_called()
-        assert not constants_mod.TASTE_CACHE_FILE.exists()
+        assert not paths.taste_cache_file().exists()
 
     def test_refresh_dry_run_does_not_fetch_or_overwrite(self, mock_client, tmp_config):
         # --refresh forces profile=None; combined with --dry-run it must still
@@ -1237,7 +1237,7 @@ class TestForMeDryRunNoSideEffects:
         assert result.exit_code != 0
         mock_client.get_library_pages.assert_not_called()
         # The on-disk cache is untouched.
-        assert json.loads(constants_mod.TASTE_CACHE_FILE.read_text()) == seeded
+        assert json.loads(paths.taste_cache_file().read_text()) == seeded
 
     def test_dry_run_with_cache_still_prints_plan(self, mock_client, tmp_config):
         _seed_profile_cache()

@@ -8,7 +8,7 @@ import math
 
 import click
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.constants import LOCALE_DOMAIN, WEBHOOK_FORMATS
 from audible_deals.filter_specs import (
     CONFIG_FILTER_SCHEMA,
@@ -42,29 +42,29 @@ _NUMERIC_BOUNDS: dict[str, tuple[float | None, float | None]] = {
 
 
 def load_profiles() -> dict[str, dict]:
-    return load_json_file(constants.PROFILES_FILE, dict, "profiles")
+    return load_json_file(paths.profiles_file(), dict, "profiles")
 
 
 def save_profiles(profiles: dict[str, dict]) -> None:
-    save_json_file(constants.PROFILES_FILE, profiles, "profiles")
+    save_json_file(paths.profiles_file(), profiles, "profiles")
 
 
 def load_monitors() -> dict[str, dict]:
-    return load_json_file(constants.MONITORS_FILE, dict, "monitors")
+    return load_json_file(paths.monitors_file(), dict, "monitors")
 
 
 def load_monitors_for_update() -> dict[str, dict]:
     """Load monitors for a read-modify-write, refusing to replace a corrupt file."""
-    ensure_updatable(constants.MONITORS_FILE, dict, "monitors")
+    ensure_updatable(paths.monitors_file(), dict, "monitors")
     return load_monitors()
 
 
 def save_monitors(monitors: dict[str, dict]) -> None:
-    save_json_file(constants.MONITORS_FILE, monitors, "monitors")
+    save_json_file(paths.monitors_file(), monitors, "monitors")
 
 
 def load_monitor_state() -> dict:
-    state = load_json_file(constants.MONITOR_STATE_FILE, dict, "monitor state")
+    state = load_json_file(paths.monitor_state_file(), dict, "monitor state")
     if not state:
         return {"version": 1, "monitors": {}}
     if state.get("version") != 1:
@@ -84,11 +84,11 @@ def load_monitor_state() -> dict:
 def save_monitor_state(state: dict) -> None:
     state["version"] = 1
     state.setdefault("monitors", {})
-    save_json_file(constants.MONITOR_STATE_FILE, state, "monitor state")
+    save_json_file(paths.monitor_state_file(), state, "monitor state")
 
 
 def load_config() -> dict:
-    return load_json_file(constants.CONFIG_FILE, dict, "config")
+    return load_json_file(paths.config_file(), dict, "config")
 
 
 def config_numeric_errors(config: dict) -> list[str]:
@@ -112,7 +112,7 @@ def config_numeric_errors(config: dict) -> list[str]:
 
 
 def save_config(cfg: dict) -> None:
-    save_json_file(constants.CONFIG_FILE, cfg, "config")
+    save_json_file(paths.config_file(), cfg, "config")
 
 
 def _state_lock(path):
@@ -122,8 +122,8 @@ def _state_lock(path):
 @contextlib.contextmanager
 def config_transaction():
     """Lock, load, mutate, and atomically save the global config."""
-    with _state_lock(constants.CONFIG_FILE):
-        ensure_updatable(constants.CONFIG_FILE, dict, "config")
+    with _state_lock(paths.config_file()):
+        ensure_updatable(paths.config_file(), dict, "config")
         config = load_config()
         yield config
         for key, value in list(config.items()):
@@ -136,27 +136,27 @@ def config_transaction():
 @contextlib.contextmanager
 def profiles_transaction():
     """Lock, load, mutate, and atomically save saved profiles."""
-    with _state_lock(constants.PROFILES_FILE):
-        ensure_updatable(constants.PROFILES_FILE, dict, "profiles")
+    with _state_lock(paths.profiles_file()):
+        ensure_updatable(paths.profiles_file(), dict, "profiles")
         profiles = load_profiles()
         yield profiles
         save_profiles(profiles)
 
 
 def load_notify_state() -> dict:
-    return load_json_file(constants.NOTIFY_STATE_FILE, dict, "notify state")
+    return load_json_file(paths.notify_state_file(), dict, "notify state")
 
 
 def save_notify_state(state: dict) -> None:
-    save_json_file(constants.NOTIFY_STATE_FILE, state, "notify state")
+    save_json_file(paths.notify_state_file(), state, "notify state")
 
 
 def load_track_state() -> dict:
-    return load_json_file(constants.TRACK_STATE_FILE, dict, "track state")
+    return load_json_file(paths.track_state_file(), dict, "track state")
 
 
 def save_track_state(state: dict) -> None:
-    save_json_file(constants.TRACK_STATE_FILE, state, "track state")
+    save_json_file(paths.track_state_file(), state, "track state")
 
 
 def coerce_config_value(key: str, raw: str):

@@ -8,7 +8,7 @@ import logging
 import math
 from pathlib import Path
 
-from audible_deals import constants
+from audible_deals import constants, paths
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
 from audible_deals.results_cache import load_seen_asins
@@ -20,7 +20,7 @@ _VERSION = 1
 
 
 def _lock_file() -> Path:
-    path = constants.REFRESH_ELIGIBILITY_FILE
+    path = paths.refresh_eligibility_file()
     return path.with_name(f".{path.name}.lock")
 
 
@@ -76,9 +76,9 @@ def _wire(entries: dict[str, dict[str, str]]) -> dict:
 def _migrate_seen_histories() -> dict[str, dict[str, str]]:
     seen = load_seen_asins()
     migrated: dict[str, dict[str, str]] = {}
-    if not seen or not constants.HISTORY_DIR.exists():
+    if not seen or not paths.history_dir().exists():
         return migrated
-    for history_file in sorted(constants.HISTORY_DIR.glob("*.json")):
+    for history_file in sorted(paths.history_dir().glob("*.json")):
         asin = history_file.stem
         if asin not in seen or not constants._ASIN_RE.fullmatch(asin):
             continue
@@ -108,7 +108,7 @@ def _migrate_seen_histories() -> dict[str, dict[str, str]]:
 
 
 def _load_locked() -> tuple[dict[str, dict[str, str]], bool]:
-    path = constants.REFRESH_ELIGIBILITY_FILE
+    path = paths.refresh_eligibility_file()
     if path.exists():
         try:
             return _decode_store(json.loads(path.read_text())), True
@@ -155,6 +155,6 @@ def mark_refresh_eligible(
                 changed = True
         if changed:
             _atomic_write(
-                constants.REFRESH_ELIGIBILITY_FILE,
+                paths.refresh_eligibility_file(),
                 json.dumps(_wire(entries), indent=2, allow_nan=False),
             )

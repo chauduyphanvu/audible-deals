@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import click
 from rich.table import Table
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli.helpers import (
     _CL,
@@ -332,16 +332,18 @@ _Row = tuple[str, str, str]  # (check, status token PASS/WARN/FAIL, detail)
 def _auth_checks() -> tuple[list[_Row], bool]:
     """Check config dir, auth file presence/parseability, and token expiry."""
     rows: list[_Row] = []
-    if constants.CONFIG_DIR.exists():
-        rows.append(("Config directory", "PASS", str(constants.CONFIG_DIR)))
+    directory, why = paths.data_dir_with_reason()
+    if directory.exists():
+        rows.append(("Config directory", "PASS", str(directory)))
     else:
         rows.append(
             (
                 "Config directory",
                 "WARN",
-                f"Not found — will be created at {constants.CONFIG_DIR}",
+                f"Not found — will be created at {directory}",
             )
         )
+    rows.append(("Data location", "PASS", why))
 
     inspection = inspect_auth_file()
     auth_ok = inspection.is_usable
@@ -350,7 +352,7 @@ def _auth_checks() -> tuple[list[_Row], bool]:
             ("Auth file present", "FAIL", "Run 'deals login' or 'deals import-auth'")
         )
     else:
-        rows.append(("Auth file present", "PASS", str(constants.AUTH_FILE)))
+        rows.append(("Auth file present", "PASS", str(paths.auth_file())))
 
     if inspection.status == "malformed":
         rows.append(("Auth file parseable", "FAIL", inspection.error))
@@ -397,9 +399,9 @@ def _connectivity_check(ctx, auth_ok: bool) -> _Row:
 def _config_checks() -> list[_Row]:
     """Validate the config file schema and profile option keys."""
     rows: list[_Row] = []
-    if constants.CONFIG_FILE.exists():
+    if paths.config_file().exists():
         try:
-            cfg = json_mod.loads(constants.CONFIG_FILE.read_text())
+            cfg = json_mod.loads(paths.config_file().read_text())
             if not isinstance(cfg, dict):
                 rows.append(
                     (
@@ -446,9 +448,9 @@ def _config_checks() -> list[_Row]:
     else:
         rows.append(("Config file valid", "PASS", "No config file (using defaults)"))
 
-    if constants.PROFILES_FILE.exists():
+    if paths.profiles_file().exists():
         try:
-            profiles = _load_raw_json(constants.PROFILES_FILE, dict)
+            profiles = _load_raw_json(paths.profiles_file(), dict)
             valid_profile_keys = set(CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
             bad_profiles: dict[str, list[str]] = {}
             invalid_profiles: dict[str, str] = {}
@@ -488,8 +490,8 @@ def _store_checks() -> list[_Row]:
     rows: list[_Row] = []
     try:
         ns = (
-            _load_raw_json(constants.NOTIFY_STATE_FILE, dict)
-            if constants.NOTIFY_STATE_FILE.exists()
+            _load_raw_json(paths.notify_state_file(), dict)
+            if paths.notify_state_file().exists()
             else {}
         )
         today = datetime.date.today()
@@ -525,11 +527,11 @@ def _store_checks() -> list[_Row]:
     except Exception as e:
         rows.append(("Notify-state health", "WARN", str(e)))
 
-    if not constants.WISHLIST_FILE.exists():
+    if not paths.wishlist_file().exists():
         rows.append(("Wishlist health", "PASS", "No entries"))
     else:
         try:
-            raw_wishlist = json_mod.loads(constants.WISHLIST_FILE.read_text())
+            raw_wishlist = json_mod.loads(paths.wishlist_file().read_text())
         except Exception as e:
             rows.append(("Wishlist health", "FAIL", str(e)))
         else:
@@ -557,11 +559,11 @@ def _store_checks() -> list[_Row]:
                     count = len(inspection.asin_items) + len(inspection.author_items)
                     rows.append(("Wishlist health", "PASS", f"{count} entries"))
 
-    if not constants.DISMISSED_ASINS_FILE.exists():
+    if not paths.dismissed_asins_file().exists():
         rows.append(("Dismissed-ASINs state", "PASS", "No entries"))
     else:
         try:
-            dismissed = json_mod.loads(constants.DISMISSED_ASINS_FILE.read_text())
+            dismissed = json_mod.loads(paths.dismissed_asins_file().read_text())
         except Exception as exc:
             rows.append(("Dismissed-ASINs state", "FAIL", str(exc)))
         else:
@@ -591,9 +593,9 @@ def _store_checks() -> list[_Row]:
                 )
 
     for check, path, expected_type in (
-        ("Profiles parseable", constants.PROFILES_FILE, dict),
-        ("Monitors parseable", constants.MONITORS_FILE, dict),
-        ("Seen-ASINs parseable", constants.SEEN_ASINS_FILE, list),
+        ("Profiles parseable", paths.profiles_file(), dict),
+        ("Monitors parseable", paths.monitors_file(), dict),
+        ("Seen-ASINs parseable", paths.seen_asins_file(), list),
     ):
         if not path.exists():
             rows.append((check, "PASS", "No entries"))
@@ -601,11 +603,11 @@ def _store_checks() -> list[_Row]:
         try:
             data = _load_raw_json(path, expected_type)
             malformed_entries: list[str]
-            if path == constants.PROFILES_FILE:
+            if path == paths.profiles_file():
                 malformed_entries = [
                     name for name, value in data.items() if not isinstance(value, dict)
                 ]
-            elif path == constants.MONITORS_FILE:
+            elif path == paths.monitors_file():
                 malformed_entries = []
                 for name, value in data.items():
                     try:
@@ -627,8 +629,8 @@ def _store_checks() -> list[_Row]:
         except Exception as e:
             rows.append((check, "FAIL", str(e)))
 
-    if constants.HISTORY_DIR.exists():
-        count = sum(1 for _ in constants.HISTORY_DIR.glob("*.json"))
+    if paths.history_dir().exists():
+        count = sum(1 for _ in paths.history_dir().glob("*.json"))
         rows.append(("Price history directory", "PASS", f"{count} ASIN(s) tracked"))
     else:
         rows.append(("Price history directory", "PASS", "Not yet created (optional)"))
@@ -640,9 +642,9 @@ def _track_checks() -> list[_Row]:
     """Check background-tracking schedule health."""
     from audible_deals.cli.track import _run_history
 
-    if constants.TRACK_STATE_FILE.exists():
+    if paths.track_state_file().exists():
         try:
-            state = _load_raw_json(constants.TRACK_STATE_FILE, dict)
+            state = _load_raw_json(paths.track_state_file(), dict)
         except Exception as exc:
             return [("Background tracking state", "FAIL", str(exc))]
     else:

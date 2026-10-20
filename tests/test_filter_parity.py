@@ -13,7 +13,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from audible_deals import constants, monitor_service
+from audible_deals import monitor_service, paths
 from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli import cli
 from audible_deals.config_store import load_monitors, load_profiles, save_profiles
@@ -67,7 +67,7 @@ def _products():
 
 @pytest.fixture
 def credit_config(tmp_config):
-    constants.CONFIG_FILE.write_text(json.dumps({"credit_price": 6.0}))
+    paths.config_file().write_text(json.dumps({"credit_price": 6.0}))
     return tmp_config
 
 
@@ -188,7 +188,7 @@ def test_profile_inverted_release_window_is_a_usage_error(tmp_config):
 
 def test_profile_exclude_seen_applies_and_can_be_switched_off(mock_client, tmp_config):
     save_profiles({"fresh": {"exclude_seen": True}})
-    constants.SEEN_ASINS_FILE.write_text(json.dumps(["NEWCHEAP"]))
+    paths.seen_asins_file().write_text(json.dumps(["NEWCHEAP"]))
     _catalog(mock_client, *_products())
     seen_hidden = _find("--profile", "fresh", "--json", "-n", "0")
     assert "NEWCHEAP" not in _asins(seen_hidden)
@@ -253,8 +253,7 @@ def test_release_dates_have_no_global_default(tmp_config):
 
 
 @pytest.fixture
-def monitor_env(tmp_config, monkeypatch):
-    monkeypatch.setattr(constants, "LOCK_FILE", tmp_config / "monitor.lock")
+def monitor_env(tmp_config):
     return tmp_config
 
 
@@ -442,7 +441,7 @@ def test_doctor_flags_an_invalid_stored_release_date(tmp_config, mock_client):
 def test_monitor_test_uses_the_configured_credit_price(monitor_env, monkeypatch):
     import audible_deals.cli.monitor as monitor_module
 
-    constants.CONFIG_FILE.write_text(json.dumps({"credit_price": 3.0}))
+    paths.config_file().write_text(json.dumps({"credit_price": 3.0}))
     added = CliRunner().invoke(
         cli,
         ["monitor", "add", "m", "--query", "x", "--max-effective-price", "4"],

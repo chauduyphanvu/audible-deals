@@ -8,6 +8,8 @@ import os
 import sys
 import time
 
+from audible_deals import paths
+
 _LEGACY_PARTIAL_STALE_SECONDS = 600
 
 
@@ -140,9 +142,8 @@ def run_lock():
     catalog run may take longer than any fixed stale threshold.
     """
     # Resolve LOCK_FILE at call time so test fixtures can patch constants.
-    from audible_deals import constants
 
-    lock_file = constants.LOCK_FILE
+    lock_file = paths.lock_file()
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
