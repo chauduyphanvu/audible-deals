@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import textwrap
+
 import click
 
 from audible_deals.cli.helpers import _CL
 from audible_deals.cli.options import _complete_profile_names
 from audible_deals.config_store import (
+    CONFIG_SCHEMA,
     coerce_config_value,
     config_transaction,
     load_config,
@@ -15,6 +18,7 @@ from audible_deals.config_store import (
     validate_config_key,
 )
 from audible_deals.constants import ALL_SORT_OPTIONS
+from audible_deals.filter_specs import config_key_aliases
 from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.settings import profile_validation_error, resolve_plus_flags
 from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
@@ -28,23 +32,31 @@ def config_cmd(ctx):
         ctx.invoke(config_list)
 
 
-@config_cmd.command("set")
+def _config_set_help() -> str:
+    """Help text for ``config set`` with the valid keys taken from the schema."""
+    spelled = {key: key.replace("_", "-") for key in CONFIG_SCHEMA}
+    for alias, key in config_key_aliases().items():
+        spelled[key] = f"{spelled[key]} (or {alias.replace('_', '-')})"
+    keys = textwrap.fill(
+        ", ".join(sorted(spelled.values())),
+        width=62,
+        initial_indent="Valid keys: ",
+        subsequent_indent=" " * 12,
+        break_on_hyphens=False,
+    )
+    return (
+        "Set a global default. KEY uses hyphens or underscores.\n\n"
+        f"\b\n{keys}\n"
+        "Example:\n"
+        "    deals config set max-price 5\n"
+        "    deals config set skip-owned true"
+    )
+
+
+@config_cmd.command("set", help=_config_set_help())
 @click.argument("key")
 @click.argument("value")
 def config_set(key, value):
-    """Set a global default. KEY uses hyphens or underscores.
-
-    \b
-    Valid keys: skip-owned, max-price, max-pph (or max-price-per-hour), min-rating,
-                min-ratings, min-hours, min-discount, language, locale, sort,
-                pages, on-sale, deep, first-in-series, all-languages,
-                interactive, limit, narrator, author, series, publisher,
-                skip-plus, only-plus, credit-price, webhook, webhook-format,
-                webhook-headers
-    Example:
-        deals config set max-price 5
-        deals config set skip-owned true
-    """
     norm_key = validate_config_key(key)
     coerced = coerce_config_value(norm_key, value)
     removed_key = None

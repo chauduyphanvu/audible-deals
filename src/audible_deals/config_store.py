@@ -9,11 +9,12 @@ import math
 import click
 
 from audible_deals import constants
-from audible_deals.constants import (
-    _CONFIG_SCHEMA,
-    ALL_SORT_OPTIONS,
-    LOCALE_DOMAIN,
-    WEBHOOK_FORMATS,
+from audible_deals.constants import LOCALE_DOMAIN, WEBHOOK_FORMATS
+from audible_deals.filter_specs import (
+    CONFIG_FILTER_SCHEMA,
+    SPEC_BY_KEY,
+    config_bounds,
+    config_key_aliases,
 )
 from audible_deals.locking import advisory_lock
 from audible_deals.storage import ensure_updatable, load_json_file, save_json_file
@@ -21,18 +22,22 @@ from audible_deals.validation import validate_finite_number
 
 logger = logging.getLogger(__name__)
 
+# Config keys that are not search filters. The filter keys (and their types)
+# come from the filter registry so the CLI flags and the config cannot drift.
+_EXTRA_CONFIG_SCHEMA: dict[str, type] = {
+    "locale": str,
+    "credit_price": float,
+    "webhook": str,
+    "webhook_format": str,
+    "webhook_headers": list,
+}
+CONFIG_SCHEMA: dict[str, type] = {**CONFIG_FILTER_SCHEMA, **_EXTRA_CONFIG_SCHEMA}
+
 # Mirror the ranges the equivalent CLI options enforce so config set and the
 # flags agree. (lo, hi); None means unbounded on that side.
 _NUMERIC_BOUNDS: dict[str, tuple[float | None, float | None]] = {
-    "pages": (1, None),
-    "min_discount": (0, 100),
-    "limit": (0, None),
-    "max_price": (0, None),
-    "max_pph": (0, None),
+    **config_bounds(),
     "credit_price": (0, None),
-    "min_rating": (0, 5),
-    "min_ratings": (0, None),
-    "min_hours": (0, None),
 }
 
 
@@ -99,7 +104,7 @@ def config_numeric_errors(config: dict) -> list[str]:
                 value,
                 minimum,
                 maximum,
-                integer=_CONFIG_SCHEMA[key] is int,
+                integer=CONFIG_SCHEMA[key] is int,
             )
         except ValueError as exc:
             errors.append(str(exc))
@@ -155,8 +160,8 @@ def save_track_state(state: dict) -> None:
 
 
 def coerce_config_value(key: str, raw: str):
-    """Coerce a raw string value to the type declared in _CONFIG_SCHEMA."""
-    typ = _CONFIG_SCHEMA[key]
+    """Coerce a raw string value to the type declared in CONFIG_SCHEMA."""
+    typ = CONFIG_SCHEMA[key]
     if typ is bool:
         if raw.lower() in ("true", "1", "yes"):
             return True
@@ -165,10 +170,11 @@ def coerce_config_value(key: str, raw: str):
         raise click.ClickException(
             f"Invalid boolean value for '{key}': {raw!r}. Use true/false."
         )
-    if key == "sort":
-        if raw not in ALL_SORT_OPTIONS:
+    spec = SPEC_BY_KEY.get(key)
+    if spec is not None and spec.valid is not None:
+        if raw not in spec.valid:
             raise click.ClickException(
-                f"Invalid sort value '{raw}'. Valid: {', '.join(sorted(ALL_SORT_OPTIONS))}"
+                f"Invalid {key} value '{raw}'. Valid: {', '.join(sorted(spec.valid))}"
             )
         return raw
     if key == "locale":
@@ -226,9 +232,8 @@ def coerce_config_value(key: str, raw: str):
 def validate_config_key(key: str) -> str:
     """Normalize and validate a config key. Returns the snake_case key or raises."""
     norm = key.replace("-", "_")
-    if norm == "max_price_per_hour":
-        return "max_pph"
-    if norm not in _CONFIG_SCHEMA:
-        valid = ", ".join(sorted(k.replace("_", "-") for k in _CONFIG_SCHEMA))
+    norm = config_key_aliases().get(norm, norm)
+    if norm not in CONFIG_SCHEMA:
+        valid = ", ".join(sorted(k.replace("_", "-") for k in CONFIG_SCHEMA))
         raise click.ClickException(f"Unknown config key '{key}'. Valid keys: {valid}")
     return norm

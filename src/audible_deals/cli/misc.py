@@ -20,11 +20,12 @@ from audible_deals.cli.helpers import (
     _resolve_cli_selectors,
 )
 from audible_deals.config_store import (
+    CONFIG_SCHEMA,
     config_numeric_errors,
     load_monitor_state,
     load_monitors,
 )
-from audible_deals.constants import _CONFIG_SCHEMA, product_url
+from audible_deals.constants import product_url
 from audible_deals.monitor_service import (
     MonitorServiceError,
     validated_monitor_definition,
@@ -412,9 +413,9 @@ def _config_checks() -> list[_Row]:
                 )
             else:
                 errors = [
-                    f"{k}: expected {_CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
+                    f"{k}: expected {CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
                     for k, v in cfg.items()
-                    if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
+                    if k in CONFIG_SCHEMA and not isinstance(v, CONFIG_SCHEMA[k])
                 ]
                 errors.extend(config_numeric_errors(cfg))
                 if all(
@@ -432,7 +433,7 @@ def _config_checks() -> list[_Row]:
                     rows.append(("Config file valid", "FAIL", "; ".join(errors)))
                 else:
                     rows.append(("Config file valid", "PASS", ""))
-                unknown = sorted(k for k in cfg if k not in _CONFIG_SCHEMA)
+                unknown = sorted(k for k in cfg if k not in CONFIG_SCHEMA)
                 if unknown:
                     rows.append(("Unknown config keys", "WARN", ", ".join(unknown)))
                 else:
@@ -448,7 +449,7 @@ def _config_checks() -> list[_Row]:
     if constants.PROFILES_FILE.exists():
         try:
             profiles = _load_raw_json(constants.PROFILES_FILE, dict)
-            valid_profile_keys = set(_CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
+            valid_profile_keys = set(CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
             bad_profiles: dict[str, list[str]] = {}
             invalid_profiles: dict[str, str] = {}
             for pname, popts in profiles.items():

@@ -181,38 +181,4 @@ GENRE_ALIASES: dict[str, str] = {
 
 _ASIN_RE = re.compile(r"^[A-Za-z0-9]{2,14}$")
 
-# ---------------------------------------------------------------------------
-# Config schema
-# ---------------------------------------------------------------------------
-
-_CONFIG_SCHEMA: dict[str, type] = {
-    "skip_owned": bool,
-    "max_price": float,
-    "max_pph": float,
-    "min_rating": float,
-    "min_ratings": int,
-    "min_hours": float,
-    "min_discount": int,
-    "language": str,
-    "locale": str,
-    "sort": str,
-    "pages": int,
-    "on_sale": bool,
-    "deep": bool,
-    "first_in_series": bool,
-    "all_languages": bool,
-    "interactive": bool,
-    "limit": int,
-    "narrator": str,
-    "author": str,
-    "series": str,
-    "publisher": str,
-    "skip_plus": bool,
-    "only_plus": bool,
-    "credit_price": float,
-    "webhook": str,
-    "webhook_format": str,
-    "webhook_headers": list,
-}
-
 WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "ntfy")

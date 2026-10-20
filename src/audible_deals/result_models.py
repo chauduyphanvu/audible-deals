@@ -11,6 +11,7 @@ from types import MappingProxyType
 from typing import Any
 
 from audible_deals import constants
+from audible_deals.filter_specs import Kind, recipe_fields, recipe_specs
 from audible_deals.product import Product
 from audible_deals.settings import resolve_plus_flags
 
@@ -115,42 +116,17 @@ class CatalogScanProgress:
     items: int
 
 
-_RECIPE_TUPLE_FIELDS = {
-    "exclude_authors",
-    "exclude_narrators",
-    "exclude_keywords",
-    "exclude_genres",
-}
-_RECIPE_BOOL_FIELDS = {
-    "on_sale",
-    "first_in_series",
-    "skip_plus",
-    "only_plus",
-    "require_history",
-    "skip_owned",
-    "exclude_seen",
-}
-_RECIPE_TEXT_FIELDS = {
-    "narrator",
-    "author",
-    "series",
-    "publisher",
-    "language",
-    "sort",
-    "released_after",
-    "released_before",
-}
-_RECIPE_NUMBER_FIELDS = {
-    "max_price",
-    "max_pph",
-    "max_effective_price",
-    "min_rating",
-    "min_ratings",
-    "min_hours",
-    "min_discount",
-    "limit",
-    "hist_below",
-    "min_price_drop",
+# Recipe field groups come from the filter registry (see filter_specs); the
+# ResultRecipe / RecipePatch dataclasses below stay explicit, and
+# tests/test_filter_specs.py fails when they drift apart.
+_RECIPE_TUPLE_FIELDS = recipe_fields({Kind.MULTI_TEXT})
+_RECIPE_BOOL_FIELDS = recipe_fields({Kind.BOOL_PAIR, Kind.FLAG})
+_RECIPE_TEXT_FIELDS = recipe_fields({Kind.TEXT, Kind.DATE})
+_RECIPE_NUMBER_FIELDS = recipe_fields({Kind.FLOAT, Kind.INT, Kind.PERCENT, Kind.RATING})
+_RECIPE_BOUNDS = {
+    spec.recipe_name: (spec.lower_bound, spec.upper_bound, spec.integer)
+    for spec in recipe_specs()
+    if spec.is_numeric
 }
 
 
@@ -205,22 +181,10 @@ def _validate_recipe(recipe: dict[str, Any], field: str) -> None:
             )
         if value is None:
             continue
-        bounds = {
-            "max_price": (0, None, False),
-            "max_pph": (0, None, False),
-            "max_effective_price": (0, None, False),
-            "min_rating": (0, 5, False),
-            "min_ratings": (0, None, True),
-            "min_hours": (0, None, False),
-            "min_discount": (0, 100, True),
-            "limit": (0, None, True),
-            "hist_below": (0, 100, True),
-            "min_price_drop": (0, None, False),
-        }
-        minimum, maximum, integer = bounds[key]
+        minimum, maximum, integer = _RECIPE_BOUNDS[key]
         if (
             (integer and not isinstance(value, int))
-            or value < minimum
+            or (minimum is not None and value < minimum)
             or (maximum is not None and value > maximum)
         ):
             raise ResultSessionValidationError(

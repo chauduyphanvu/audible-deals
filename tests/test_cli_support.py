@@ -1453,7 +1453,7 @@ class TestDoctorUnknownKeys:
         monkeypatch.setattr(constants_mod, "CONFIG_DIR", tmp_config)
 
     def test_unknown_config_key_warns(self, tmp_config, mock_client, monkeypatch):
-        """A config.json key absent from _CONFIG_SCHEMA triggers a WARN row."""
+        """A config.json key absent from the config schema triggers a WARN row."""
 
         self._patch_auth(monkeypatch, tmp_config)
         constants_mod.CONFIG_FILE.write_text(

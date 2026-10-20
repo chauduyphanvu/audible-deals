@@ -10,11 +10,14 @@ from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, fields
 from typing import Any
 
-from audible_deals.constants import (
-    _CONFIG_SCHEMA,
-    ALL_SORT_OPTIONS,
-    DEFAULT_LIMIT,
-    DEFAULT_SORT,
+from audible_deals.constants import DEFAULT_LIMIT, DEFAULT_SORT
+from audible_deals.filter_specs import (
+    CONFIG_FILTER_SCHEMA,
+    FILTERS,
+    Kind,
+    Scope,
+    specs_for,
+    validate_date_text,
 )
 from audible_deals.validation import validate_finite_number
 
@@ -42,47 +45,19 @@ def resolve_plus_flags(
     return skip_plus, only_plus
 
 
-# Keys covered by config-file defaults. locale is resolved once in the CLI
-# group callback, not per-scan.
-_CONFIG_KEYS: tuple[str, ...] = tuple(k for k in _CONFIG_SCHEMA if k != "locale")
+# Keys covered by config-file defaults (locale is resolved once in the CLI
+# group callback, not per-scan, and is not a filter).
+_CONFIG_KEYS: tuple[str, ...] = tuple(CONFIG_FILTER_SCHEMA)
 
-# Additional keys that only profiles supply (not in config schema)
-_PROFILE_EXTRA_KEYS: tuple[str, ...] = (
-    "genre",
-    "exclude_genre",
-    "exclude_authors",
-    "exclude_narrators",
-    "keywords",
-    "exclude_keywords",
+# Additional keys that only profiles supply (not in the config schema).
+_PROFILE_EXTRA_KEYS: tuple[str, ...] = tuple(
+    spec.key
+    for spec in specs_for(Scope.PROFILE)
+    if spec.key not in CONFIG_FILTER_SCHEMA
 )
 
-_TEXT_FIELDS = frozenset(
-    {
-        "sort",
-        "language",
-        "narrator",
-        "author",
-        "series",
-        "publisher",
-        "genre",
-        "keywords",
-    }
-)
-_TUPLE_FIELDS = frozenset(
-    {"exclude_genre", "exclude_authors", "exclude_narrators", "exclude_keywords"}
-)
-_BOOL_FIELDS = frozenset(
-    {
-        "on_sale",
-        "deep",
-        "first_in_series",
-        "all_languages",
-        "skip_owned",
-        "interactive",
-        "skip_plus",
-        "only_plus",
-    }
-)
+# How a stored profile value must look, by registry kind.
+_PROFILE_SPECS = specs_for(Scope.PROFILE)
 
 
 @dataclass(frozen=True)
@@ -117,22 +92,37 @@ class Settings:
     skip_plus: bool = False
     only_plus: bool = False
     exclude_keywords: tuple[str, ...] = ()
+    max_effective_price: float | None = None
+    exclude_seen: bool = False
+    hist_below: int | None = None
+    min_price_drop: float = 0.0
+    require_history: bool = False
+    released_after: str = ""
+    released_before: str = ""
 
     def __post_init__(self) -> None:
         resolve_plus_flags(self.skip_plus, self.only_plus)
-        for name, minimum, maximum, integer in (
-            ("max_price", 0, None, False),
-            ("min_rating", 0, 5, False),
-            ("min_ratings", 0, None, True),
-            ("min_hours", 0, None, False),
-            ("min_discount", 0, 100, True),
-            ("max_pph", 0, None, False),
-            ("pages", 1, None, True),
-            ("limit", 0, None, True),
-        ):
-            value = getattr(self, name)
-            if value is not None:
-                validate_finite_number(name, value, minimum, maximum, integer=integer)
+        for spec in FILTERS:
+            value = getattr(self, spec.key)
+            if spec.is_numeric:
+                if value is not None:
+                    validate_finite_number(
+                        spec.key,
+                        value,
+                        spec.lower_bound,
+                        spec.upper_bound,
+                        integer=spec.integer,
+                    )
+            elif spec.kind is Kind.DATE and value:
+                try:
+                    canonical = validate_date_text(value)
+                except (TypeError, ValueError):
+                    canonical = None
+                if canonical != value:
+                    raise ValueError(
+                        f"Invalid stored setting '{spec.key}': expected a "
+                        "YYYY-MM-DD date"
+                    )
 
 
 @dataclass(frozen=True)
@@ -147,25 +137,52 @@ class SettingsResolutionRequest:
         object.__setattr__(self, "explicit_options", frozenset(self.explicit_options))
 
 
+def filter_combination_error(settings: Settings) -> str | None:
+    """Cross-field problems of a fully resolved Settings, or ``None``.
+
+    Individual values are validated by ``Settings`` itself; these rules only
+    make sense once CLI flags, profile and config have been merged.
+    """
+    if (
+        settings.require_history
+        and settings.hist_below is None
+        and not settings.min_price_drop
+    ):
+        return "--require-history requires --hist-below or --min-price-drop"
+    if (
+        settings.released_after
+        and settings.released_before
+        and settings.released_after > settings.released_before
+    ):
+        return "--released-after cannot be later than --released-before"
+    return None
+
+
 def profile_validation_error(profile: object) -> str | None:
     if not isinstance(profile, dict):
         return "expected an object"
-    for key in _TEXT_FIELDS:
-        if key in profile and not isinstance(profile[key], str):
-            return f"{key} must be text"
-    for key in _BOOL_FIELDS:
-        if key in profile and type(profile[key]) is not bool:
-            return f"{key} must be boolean"
-    if profile.get("sort") and profile["sort"] not in ALL_SORT_OPTIONS:
-        return f"sort must be one of {', '.join(sorted(ALL_SORT_OPTIONS))}"
-    for key in _TUPLE_FIELDS:
-        if key not in profile:
+    for spec in _PROFILE_SPECS:
+        if (
+            spec.kind in (Kind.TEXT, Kind.DATE)
+            and spec.key in profile
+            and not isinstance(profile[spec.key], str)
+        ):
+            return f"{spec.key} must be text"
+    for spec in _PROFILE_SPECS:
+        if spec.is_bool and spec.key in profile and type(profile[spec.key]) is not bool:
+            return f"{spec.key} must be boolean"
+    for spec in _PROFILE_SPECS:
+        if spec.valid is not None and profile.get(spec.key):
+            if profile[spec.key] not in spec.valid:
+                return f"{spec.key} must be one of {', '.join(sorted(spec.valid))}"
+    for spec in _PROFILE_SPECS:
+        if spec.key not in profile or not spec.is_multi:
             continue
-        value = profile[key]
+        value = profile[spec.key]
         if not isinstance(value, (list, tuple)) or not all(
             isinstance(item, str) for item in value
         ):
-            return f"{key} must be a list of text values"
+            return f"{spec.key} must be a list of text values"
     known = {item.name for item in fields(Settings)}
     try:
         Settings(**{key: value for key, value in profile.items() if key in known})
