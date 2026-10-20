@@ -18,7 +18,7 @@ from audible_deals.cli import cli
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, put_raw_session
 
 
 def _routes_run(runner, args, **kwargs):
@@ -28,12 +28,12 @@ def _routes_run(runner, args, **kwargs):
 
 
 def _routes_seed_last_results(tmp_config, products):
-    """Write a last_results.json cache file."""
+    """Store a legacy-shaped last-results session."""
     data = {
         "title": "Test Results",
         "results": [_serialize_product(p) for p in products],
     }
-    (tmp_config / "last_results.json").write_text(json.dumps(data))
+    put_raw_session(json.dumps(data))
 
 
 class TestWishlistCommands:
@@ -331,7 +331,7 @@ class TestWishlistRemoveLast:
             "title": "Search: test",
             "results": [_serialize_product(p) for p in products],
         }
-        paths.last_results_file().write_text(json.dumps(cache_obj))
+        put_raw_session(json.dumps(cache_obj))
 
     def test_remove_last_resolves_from_cache(self, tmp_config):
         """wishlist remove --last N resolves the ASIN from the last results cache."""
@@ -391,7 +391,7 @@ class TestWishlistUpdateCommand:
             "title": "Search: test",
             "results": [_serialize_product(p) for p in products],
         }
-        paths.last_results_file().write_text(json.dumps(cache_obj))
+        put_raw_session(json.dumps(cache_obj))
 
     def test_set_target_price(self, tmp_config):
         """--max-price updates max_price for the matching entry."""
@@ -590,7 +590,7 @@ class TestWishlistAddAuthor:
         from audible_deals.serialization import serialize_product
 
         cache_obj = {"title": "Test", "results": [serialize_product(p)]}
-        paths.last_results_file().write_text(json.dumps(cache_obj))
+        put_raw_session(json.dumps(cache_obj))
         runner = CliRunner()
         result = runner.invoke(
             cli,

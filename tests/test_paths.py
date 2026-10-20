@@ -113,18 +113,28 @@ def test_every_file_lives_in_the_data_directory(tmp_path):
     assert paths.wishlist_file() == root / "wishlist.json"
     assert paths.monitors_file() == root / "monitors.json"
     assert paths.auth_file() == root / "auth.json"
+    assert paths.state_db_file() == root / "state.db"
+    assert paths.cache_db_file() == root / "cache.db"
     assert paths.lock_file() == root / ".deals.lock"
+    assert paths.migration_lock_file() == root / ".migrate.lock"
     assert paths.track_log_file() == root / "track.log"
-    assert paths.history_dir() == root / "history"
-    assert paths.seen_asins_file() == root / "seen_asins.json"
-    assert paths.dismissed_asins_file() == root / "dismissed_asins.json"
-    assert paths.refresh_eligibility_file() == root / "refresh_eligibility.json"
-    assert paths.monitor_state_file() == root / "monitor_state.json"
-    assert paths.last_results_file() == root / "last_results.json"
-    assert paths.notify_state_file() == root / "notify_state.json"
-    assert paths.track_state_file() == root / "track_state.json"
-    assert paths.taste_cache_file() == root / "taste_cache.json"
-    assert paths.categories_cache_file("uk") == root / "categories_cache.uk.json"
+    assert paths.legacy_history_dir() == root / "history"
+
+
+def test_legacy_category_caches_are_found_per_marketplace(tmp_path):
+    (tmp_path / "categories_cache.us.json").write_text("{}")
+    (tmp_path / "categories_cache.uk.json").write_text("{}")
+    (tmp_path / "categories_cache.us.json.migrated").write_text("{}")
+
+    assert [p.name for p in paths.legacy_category_cache_files()] == [
+        "categories_cache.uk.json",
+        "categories_cache.us.json",
+    ]
+
+
+def test_no_legacy_category_caches_without_a_directory(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEALS_HOME", str(tmp_path / "missing"))
+    assert paths.legacy_category_cache_files() == []
 
 
 def test_the_paths_module_imports_nothing_from_the_package():

@@ -5,17 +5,18 @@ from __future__ import annotations
 import datetime
 import json
 import logging
+import sqlite3
 import threading
-from pathlib import Path
 
 import click
 import pytest
 from click.testing import CliRunner
 
 import audible_deals.price_history as price_history
+import audible_deals.results_cache as results_cache_mod
 import audible_deals.selectors as selectors_mod
 import audible_deals.wishlist as wishlist_mod
-from audible_deals import paths
+from audible_deals import db, paths
 from audible_deals.cli import cli
 from audible_deals.price_history import (
     find_all_atl_hits,
@@ -34,6 +35,7 @@ from audible_deals.results_cache import (
     load_dismissed_asins,
     load_seen_asins,
     save_dismissed_asins,
+    save_last_results,
     save_seen_asins,
 )
 from audible_deals.selectors import (
@@ -41,30 +43,17 @@ from audible_deals.selectors import (
     resolve_last_references,
     resolve_selectors,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, seed_history, seed_prices
 
 
 def _write_history(tmp_config, asin: str, prices: list[float]) -> None:
-
-    paths.history_dir().mkdir(parents=True, exist_ok=True)
-    entries = [
-        {"date": f"2024-01-{i + 1:02d}", "price": p, "title": "T"}
-        for i, p in enumerate(prices)
-    ]
-    (paths.history_dir() / f"{asin}.json").write_text(
-        json.dumps({"marketplaces": {"us": entries}})
-    )
+    seed_prices(asin, prices)
 
 
 def _write_history_with_dates(
     tmp_config, asin: str, dates: list[str], price: float = 5.0
 ) -> None:
-
-    paths.history_dir().mkdir(parents=True, exist_ok=True)
-    entries = [{"date": d, "price": price, "title": "T"} for d in dates]
-    (paths.history_dir() / f"{asin}.json").write_text(
-        json.dumps({"marketplaces": {"us": entries}})
-    )
+    seed_history(asin, [(d, price) for d in dates])
 
 
 def _make_hist(asin: str, dated_prices: list[tuple[str, float | None]]) -> dict:
@@ -76,27 +65,17 @@ def _make_hist(asin: str, dated_prices: list[tuple[str, float | None]]) -> dict:
 
 
 class TestLoadSeenAsins:
-    def test_loads_from_seen_file(self, tmp_config):
+    def test_loads_what_was_saved(self, tmp_config):
+        save_seen_asins({"A1", "A2"})
+        assert load_seen_asins() == {"A1", "A2"}
 
-        paths.seen_asins_file().write_text(json.dumps(["A1", "A2"]))
-        seen = load_seen_asins()
-        assert seen == {"A1", "A2"}
+    def test_empty_when_nothing_saved(self, tmp_config):
+        assert load_seen_asins() == set()
 
-    def test_empty_when_no_file(self, tmp_config):
-        seen = load_seen_asins()
-        assert seen == set()
-
-    def test_returns_set_from_list(self, tmp_config):
-
-        paths.seen_asins_file().write_text(json.dumps(["B1", "B2", "B1"]))
-        seen = load_seen_asins()
-        assert seen == {"B1", "B2"}
-
-    def test_empty_on_corrupt_file(self, tmp_config):
-
-        paths.seen_asins_file().write_text("not valid json")
-        seen = load_seen_asins()
-        assert seen == set()
+    def test_set_semantics(self, tmp_config):
+        save_seen_asins({"B1", "B2"})
+        save_seen_asins({"B1"})
+        assert load_seen_asins() == {"B1", "B2"}
 
 
 class TestCumulativeSeenAsins:
@@ -110,63 +89,43 @@ class TestCumulativeSeenAsins:
         assert load_seen_asins() == {"A1", "A2", "A3", "A4"}
 
     def test_no_duplicates(self, tmp_config):
-
         save_seen_asins({"A1", "A2"})
         save_seen_asins({"A2", "A3"})
-        seen = load_seen_asins()
-        assert seen == {"A1", "A2", "A3"}
-        data = json.loads(paths.seen_asins_file().read_text())
-        assert data == sorted(data)
+        assert load_seen_asins() == {"A1", "A2", "A3"}
+        rows = db.state().execute("SELECT asin FROM seen ORDER BY asin").fetchall()
+        assert [row[0] for row in rows] == ["A1", "A2", "A3"]
 
     def test_empty_when_no_file(self, tmp_config):
         assert load_seen_asins() == set()
 
+    def test_failure_to_record_only_warns(self, tmp_config, monkeypatch, caplog):
+        def broken(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(results_cache_mod.db, "transaction", broken)
+        with caplog.at_level(logging.WARNING):
+            save_seen_asins({"A1"})
+        assert "failed to record seen ASINs" in caplog.text
+
 
 class TestDismissedAsins:
-    def test_dismissed_load_is_tolerant(self, tmp_config):
-        paths.dismissed_asins_file().write_text("not json")
-        assert load_dismissed_asins() == set()
-        paths.dismissed_asins_file().write_text(json.dumps({"asin": "A1"}))
-        assert load_dismissed_asins() == set()
-        paths.dismissed_asins_file().write_text(json.dumps(["A1", 2, {}]))
-        assert load_dismissed_asins() == {"A1"}
-
-    def test_dismissed_save_is_cumulative_sorted_and_atomic(
-        self, tmp_config, monkeypatch
-    ):
-        import audible_deals.results_cache as results_cache_mod
-
-        writes = []
-        real_atomic_write = results_cache_mod._atomic_write
-
-        def capture(path, content):
-            writes.append((path, content))
-            real_atomic_write(path, content)
-
-        monkeypatch.setattr(results_cache_mod, "_atomic_write", capture)
+    def test_dismissed_save_is_cumulative(self, tmp_config):
         save_dismissed_asins({"B2", "A1"})
         save_dismissed_asins({"C3", "B2"})
 
         assert load_dismissed_asins() == {"A1", "B2", "C3"}
-        assert json.loads(paths.dismissed_asins_file().read_text()) == [
-            "A1",
-            "B2",
-            "C3",
-        ]
-        assert len(writes) == 2
+        rows = db.state().execute("SELECT asin FROM dismissed ORDER BY asin")
+        assert [row[0] for row in rows] == ["A1", "B2", "C3"]
 
     def test_dismissed_write_failure_propagates(self, tmp_config, monkeypatch):
-        import audible_deals.results_cache as results_cache_mod
+        def broken(*args, **kwargs):
+            raise OSError("read only")
 
-        monkeypatch.setattr(
-            results_cache_mod,
-            "_atomic_write",
-            lambda *args: (_ for _ in ()).throw(OSError("read only")),
-        )
+        monkeypatch.setattr(results_cache_mod.db, "transaction", broken)
         with pytest.raises(OSError, match="read only"):
             save_dismissed_asins({"A1"})
 
-    def test_clear_dismissed_removes_only_dismissed_file(self, tmp_config):
+    def test_clear_dismissed_removes_only_dismissed(self, tmp_config):
         save_dismissed_asins({"A1"})
         save_seen_asins({"S1"})
 
@@ -223,10 +182,8 @@ class TestExpandRefString:
 
 class TestResolveLastReferencesRangeSyntax:
     def _write_cache(self, tmp_config):
-
         data = [{"asin": f"B00TESTA{i:02d}", "title": f"Book {i}"} for i in range(1, 8)]
-        cache = {"title": "Test results", "results": data}
-        paths.last_results_file().write_text(json.dumps(cache))
+        save_last_results("Test results", data)
 
     def test_range_string(self, tmp_config):
         self._write_cache(tmp_config)
@@ -260,9 +217,7 @@ class TestResolveSelectorsSessionReuse:
             {"asin": f"B00CACHE{i}", "title": f"Book {i}", "locale": "us"}
             for i in range(1, 4)
         ]
-        paths.last_results_file().write_text(
-            json.dumps({"title": "Test results", "results": data})
-        )
+        save_last_results("Test results", data)
 
     def test_at_and_last_references_share_one_session_load(
         self, tmp_config, monkeypatch
@@ -326,20 +281,10 @@ class TestResolveSelectorsSessionReuse:
 
 class TestFindWishlistAtlHits:
     def _write_wishlist(self, tmp_config, items):
-
         paths.wishlist_file().write_text(json.dumps(items))
 
     def _write_history(self, tmp_config, asin, prices):
-
-        hist_dir = paths.history_dir()
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        entries = [
-            {"date": f"2024-01-{i + 1:02d}", "price": p, "title": f"Book {asin}"}
-            for i, p in enumerate(prices)
-        ]
-        (hist_dir / f"{asin}.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_prices(asin, prices, title=f"Book {asin}")
 
     def test_returns_atl_hit(self, tmp_config):
         self._write_wishlist(
@@ -373,36 +318,20 @@ class TestFindWishlistAtlHits:
         hits = find_wishlist_atl_hits()
         assert hits == []
 
-    def test_one_numeric_price_returns_empty(self, tmp_config):
-
-        self._write_wishlist(
-            tmp_config, [{"asin": "B00ATL0004", "title": "T", "max_price": 5.0}]
-        )
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
+    def test_one_numeric_price_returns_empty(self):
         entries = [
             {"date": "2024-01-01", "price": None, "title": "T"},
             {"date": "2024-01-02", "price": 3.99, "title": "T"},
         ]
-        (paths.history_dir() / "B00ATL0004.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
-        assert find_wishlist_atl_hits() == []
+        assert price_history._atl_latest(entries) is None
 
-    def test_latest_non_numeric_returns_empty(self, tmp_config):
-
-        self._write_wishlist(
-            tmp_config, [{"asin": "B00ATL0005", "title": "T", "max_price": 5.0}]
-        )
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
+    def test_latest_non_numeric_returns_empty(self):
         entries = [
             {"date": "2024-01-01", "price": 4.99, "title": "T"},
             {"date": "2024-01-02", "price": 3.99, "title": "T"},
             {"date": "2024-01-03", "price": None, "title": "T"},
         ]
-        (paths.history_dir() / "B00ATL0005.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
-        assert find_wishlist_atl_hits() == []
+        assert price_history._atl_latest(entries) is None
 
 
 class TestHistPercentiles:
@@ -451,22 +380,19 @@ class TestHistPercentiles:
         result = hist_percentiles([p])
         assert "HP06" not in result
 
-    def test_non_numeric_history_entries_skipped(self, tmp_config):
-
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        entries = [
-            {"date": "2024-01-01", "price": None, "title": "T"},
-            {"date": "2024-01-02", "price": 2.0, "title": "T"},
-            {"date": "2024-01-03", "price": 3.0, "title": "T"},
-            {"date": "2024-01-04", "price": 4.0, "title": "T"},
-            {"date": "2024-01-05", "price": 5.0, "title": "T"},
-        ]
-        (paths.history_dir() / "HP07.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+    def test_non_numeric_history_entries_skipped(self):
+        histories = {
+            "us:HP07": [
+                {"date": "2024-01-01", "price": None, "title": "T"},
+                {"date": "2024-01-02", "price": 2.0, "title": "T"},
+                {"date": "2024-01-03", "price": 3.0, "title": "T"},
+                {"date": "2024-01-04", "price": 4.0, "title": "T"},
+                {"date": "2024-01-05", "price": 5.0, "title": "T"},
+            ]
+        }
         # 4 numeric entries — fewer than 5, should be excluded
         p = make_product(asin="HP07", price=3.0)
-        result = hist_percentiles([p])
+        result = hist_percentiles([p], histories)
         assert "HP07" not in result
 
 
@@ -518,17 +444,9 @@ class TestPriceDropPcts:
 
     def test_same_day_rerun_skips_today_entry(self, tmp_config):
         """Same-day re-run: today's entry is skipped; reference is yesterday's price."""
-
         today = datetime.date.today().isoformat()
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        entries = [
-            {"date": yesterday, "price": 10.0, "title": "T"},
-            {"date": today, "price": 8.0, "title": "T"},
-        ]
-        (paths.history_dir() / "PD08.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_history("PD08", [(yesterday, 10.0), (today, 8.0)])
         p = make_product(asin="PD08", price=8.0)
         result = price_drop_pcts([p])
         # reference is yesterday's 10.0; drop from 10.0 to 8.0 = 20%
@@ -536,24 +454,19 @@ class TestPriceDropPcts:
 
     def test_all_entries_today_excluded(self, tmp_config):
         """When all history entries are from today, ASIN is omitted (no reference price)."""
-
         today = datetime.date.today().isoformat()
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        entries = [{"date": today, "price": 10.0, "title": "T"}]
-        (paths.history_dir() / "PD09.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_history("PD09", [(today, 10.0)])
         p = make_product(asin="PD09", price=8.0)
         result = price_drop_pcts([p])
         assert "PD09" not in result
 
 
 class TestLoadAllPriceHistories:
-    def test_returns_empty_when_dir_missing(self, tmp_config):
+    def test_returns_empty_when_nothing_recorded(self, tmp_config):
         result = load_all_price_histories()
         assert result == {}
 
-    def test_returns_all_valid_histories(self, tmp_config):
+    def test_returns_all_histories(self, tmp_config):
         _write_history(tmp_config, "LA01", [1.0, 2.0])
         _write_history(tmp_config, "LA02", [3.0])
         result = load_all_price_histories()
@@ -561,53 +474,57 @@ class TestLoadAllPriceHistories:
         assert len(result["LA01"]) == 2
         assert len(result["LA02"]) == 1
 
-    def test_skips_corrupt_files(self, tmp_config):
+    def test_is_scoped_to_the_marketplace(self, tmp_config):
+        seed_history("LA03", [("2024-01-01", 4.0)], locale="uk")
+        _write_history(tmp_config, "LA04", [5.0])
+        assert set(load_all_price_histories("us")) == {"LA04"}
+        assert set(load_all_price_histories("uk")) == {"LA03"}
 
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        (paths.history_dir() / "CORRUPT.json").write_text("not json")
-        _write_history(tmp_config, "GOOD01", [5.0])
-        result = load_all_price_histories()
-        assert "CORRUPT" not in result
-        assert "GOOD01" in result
-
-    def test_skips_empty_history(self, tmp_config):
-
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        (paths.history_dir() / "EMPTY01.json").write_text(
-            '{"marketplaces": {"us": []}}'
+    def test_entries_are_oldest_first(self, tmp_config):
+        seed_history(
+            "LA05", [("2024-03-01", 3.0), ("2024-01-01", 1.0), ("2024-02-01", 2.0)]
         )
-        _write_history(tmp_config, "VALID01", [4.0])
-        result = load_all_price_histories()
-        assert "EMPTY01" not in result
-        assert "VALID01" in result
+        assert [e["price"] for e in load_all_price_histories()["LA05"]] == [
+            1.0,
+            2.0,
+            3.0,
+        ]
 
 
 class TestPurgeStaleHistory:
-    def test_returns_zero_when_dir_missing(self, tmp_config):
+    def test_returns_zero_when_nothing_recorded(self, tmp_config):
         count, affected = purge_stale_history(90)
         assert count == 0
         assert affected == []
 
-    def test_stale_file_is_deleted(self, tmp_config):
-
+    def test_stale_history_is_deleted(self, tmp_config):
         old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
         _write_history_with_dates(tmp_config, "STALE01", [old_date])
         count, affected = purge_stale_history(90)
         assert count == 1
         assert "STALE01" in affected
-        assert not (paths.history_dir() / "STALE01.json").exists()
+        assert load_price_history("STALE01") == []
 
-    def test_fresh_file_is_kept(self, tmp_config):
+    def test_purge_also_drops_the_product_index_row(self, tmp_config):
+        old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
+        _write_history_with_dates(tmp_config, "STALE02", [old_date])
+        purge_stale_history(90)
+        remaining = (
+            db.state()
+            .execute("SELECT COUNT(*) FROM products WHERE asin = 'STALE02'")
+            .fetchone()[0]
+        )
+        assert remaining == 0
 
+    def test_fresh_history_is_kept(self, tmp_config):
         fresh_date = datetime.date.today().isoformat()
         _write_history_with_dates(tmp_config, "FRESH01", [fresh_date])
         count, affected = purge_stale_history(90)
         assert count == 0
         assert "FRESH01" not in affected
-        assert (paths.history_dir() / "FRESH01.json").exists()
+        assert load_price_history("FRESH01")
 
     def test_mixed_stale_and_fresh(self, tmp_config):
-
         old_date = (datetime.date.today() - datetime.timedelta(days=100)).isoformat()
         fresh_date = datetime.date.today().isoformat()
         _write_history_with_dates(tmp_config, "OLD01", [old_date])
@@ -615,38 +532,29 @@ class TestPurgeStaleHistory:
         count, affected = purge_stale_history(90)
         assert count == 1
         assert "OLD01" in affected
-        assert not (paths.history_dir() / "OLD01.json").exists()
-        assert (paths.history_dir() / "NEW01.json").exists()
+        assert load_price_history("OLD01") == []
+        assert load_price_history("NEW01")
 
     def test_dry_run_deletes_nothing(self, tmp_config):
-
         old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
         _write_history_with_dates(tmp_config, "DRY01", [old_date])
         count, affected = purge_stale_history(90, dry_run=True)
         assert count == 1
         assert "DRY01" in affected
-        assert (paths.history_dir() / "DRY01.json").exists()
+        assert load_price_history("DRY01")
 
-    def test_rechecks_fresh_history_under_lock_before_deleting(
-        self, tmp_config, monkeypatch
-    ):
-        import audible_deals.price_history as history_mod
-
+    def test_rechecks_staleness_when_deleting_the_chosen_asins(self, tmp_config):
+        """The CLI previews, asks, then purges the previewed ASINs: a price
+        recorded in between must save the history from deletion."""
         old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
         _write_history_with_dates(tmp_config, "RACE01", [old_date])
-        real_purge = history_mod._purge_stale_history_file
+        _, previewed = purge_stale_history(90, dry_run=True)
+        assert previewed == ["RACE01"]
 
-        def _record_before_locked_recheck(hist_file, cutoff, locale):
-            record_prices(
-                [make_product(asin="RACE01", locale="us", price=4.0, title="Fresh")]
-            )
-            return real_purge(hist_file, cutoff, locale)
-
-        monkeypatch.setattr(
-            history_mod, "_purge_stale_history_file", _record_before_locked_recheck
+        record_prices(
+            [make_product(asin="RACE01", locale="us", price=4.0, title="Fresh")]
         )
-
-        count, affected = purge_stale_history(90)
+        count, affected = purge_stale_history(90, asins=previewed)
 
         assert count == 0
         assert affected == []
@@ -656,20 +564,10 @@ class TestPurgeStaleHistory:
         )
 
     def test_purge_only_removes_requested_marketplace(self, tmp_config):
-
         old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
         fresh_date = datetime.date.today().isoformat()
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        (paths.history_dir() / "MARKETS01.json").write_text(
-            json.dumps(
-                {
-                    "marketplaces": {
-                        "us": [{"date": old_date, "price": 5.0, "title": "US"}],
-                        "uk": [{"date": fresh_date, "price": 4.0, "title": "UK"}],
-                    }
-                }
-            )
-        )
+        seed_history("MARKETS01", [(old_date, 5.0)], locale="us")
+        seed_history("MARKETS01", [(fresh_date, 4.0)], locale="uk")
 
         count, affected = purge_stale_history(90, locale="us")
 
@@ -678,48 +576,30 @@ class TestPurgeStaleHistory:
         assert load_price_history("MARKETS01", "us") == []
         assert load_price_history("MARKETS01", "uk")[0]["price"] == 4.0
 
-    def test_corrupt_file_is_skipped(self, tmp_config):
+    def test_only_listed_asins_are_purged(self, tmp_config):
+        old_date = (datetime.date.today() - datetime.timedelta(days=200)).isoformat()
+        _write_history_with_dates(tmp_config, "ONLY01", [old_date])
+        _write_history_with_dates(tmp_config, "ONLY02", [old_date])
 
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        (paths.history_dir() / "CORRUPT2.json").write_text("not json")
-        count, affected = purge_stale_history(90)
-        assert "CORRUPT2" not in affected
-        assert (paths.history_dir() / "CORRUPT2.json").exists()
+        count, affected = purge_stale_history(90, asins=["ONLY01"])
 
-    def test_file_with_no_date_is_skipped(self, tmp_config):
-
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        entries = [{"price": 5.0, "title": "T"}]
-        (paths.history_dir() / "NODATE01.json").write_text(json.dumps(entries))
-        count, affected = purge_stale_history(90)
-        assert "NODATE01" not in affected
-        assert (paths.history_dir() / "NODATE01.json").exists()
+        assert (count, affected) == (1, ["ONLY01"])
+        assert load_price_history("ONLY02")
 
     def test_boundary_date_is_kept(self, tmp_config):
-        # A file whose last entry is exactly `days` ago (not older) is kept
-
+        # History whose last entry is exactly `days` ago (not older) is kept
         cutoff_date = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
         _write_history_with_dates(tmp_config, "BOUND01", [cutoff_date])
         count, affected = purge_stale_history(90)
         assert count == 0
-        assert (paths.history_dir() / "BOUND01.json").exists()
+        assert load_price_history("BOUND01")
 
 
 class TestFindAllAtlHits:
     def _write_history(self, tmp_config, asin, prices):
-
-        hist_dir = paths.history_dir()
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        entries = [
-            {"date": f"2024-01-{i + 1:02d}", "price": p, "title": f"Book {asin}"}
-            for i, p in enumerate(prices)
-        ]
-        (hist_dir / f"{asin}.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_prices(asin, prices, title=f"Book {asin}")
 
     def _write_wishlist(self, tmp_config, items):
-
         paths.wishlist_file().write_text(json.dumps(items))
 
     def test_atl_non_wishlist_asin_found(self, tmp_config):
@@ -729,6 +609,7 @@ class TestFindAllAtlHits:
         assert hits[0]["asin"] == "B00ALL0001"
         assert hits[0]["price"] == pytest.approx(6.99)
         assert hits[0]["target"] is None
+        assert hits[0]["title"] == "Book B00ALL0001"
 
     def test_non_atl_excluded(self, tmp_config):
         # Latest price is above the previous minimum — not ATL
@@ -736,13 +617,8 @@ class TestFindAllAtlHits:
         hits = find_all_atl_hits()
         assert hits == []
 
-    def test_fewer_than_two_numeric_prices_excluded(self, tmp_config):
-
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        entries = [{"date": "2024-01-01", "price": 5.99, "title": "T"}]
-        (paths.history_dir() / "B00ALL0003.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+    def test_fewer_than_two_prices_excluded(self, tmp_config):
+        seed_history("B00ALL0003", [("2024-01-01", 5.99)])
         hits = find_all_atl_hits()
         assert hits == []
 
@@ -777,20 +653,43 @@ class TestFindAllAtlHits:
         hits = find_all_atl_hits(limit=3)
         assert len(hits) == 3
 
-    def test_latest_non_numeric_excluded(self, tmp_config):
-
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        entries = [
-            {"date": "2024-01-01", "price": 9.99, "title": "T"},
-            {"date": "2024-01-02", "price": None, "title": "T"},
+    def test_equal_drops_are_ordered_by_asin(self, tmp_config):
+        for asin in ("B00TIE0003", "B00TIE0001", "B00TIE0002"):
+            self._write_history(tmp_config, asin, [10.0, 5.0])
+        assert [h["asin"] for h in find_all_atl_hits()] == [
+            "B00TIE0001",
+            "B00TIE0002",
+            "B00TIE0003",
         ]
-        (paths.history_dir() / "B00ALL0008.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
-        hits = find_all_atl_hits()
-        assert hits == []
 
-    def test_empty_history_dir_returns_empty(self, tmp_config):
+    def test_latest_above_previous_minimum_excluded_even_if_lower_than_first(
+        self, tmp_config
+    ):
+        self._write_history(tmp_config, "B00ALL0008", [9.99, 3.0, 5.0])
+        assert find_all_atl_hits() == []
+
+    def test_is_scoped_to_the_marketplace(self, tmp_config):
+        seed_history(
+            "B00ALL0009", [("2024-01-01", 9.0), ("2024-01-02", 4.0)], locale="uk"
+        )
+        assert find_all_atl_hits() == []
+        assert [h["asin"] for h in find_all_atl_hits(locale="uk")] == ["B00ALL0009"]
+
+    def test_preloaded_histories_use_the_same_rule(self, tmp_config):
+        histories = {
+            "B00ALL0010": [
+                {"date": "2024-01-01", "price": 9.99, "title": "T"},
+                {"date": "2024-01-02", "price": None, "title": "T"},
+            ],
+            "B00ALL0011": [
+                {"date": "2024-01-01", "price": 9.99, "title": "Pre"},
+                {"date": "2024-01-02", "price": 4.0, "title": "Pre"},
+            ],
+        }
+        hits = find_all_atl_hits(histories=histories)
+        assert [h["asin"] for h in hits] == ["B00ALL0011"]
+
+    def test_nothing_recorded_returns_empty(self, tmp_config):
         hits = find_all_atl_hits()
         assert hits == []
 
@@ -858,11 +757,7 @@ class TestScanPriceChanges:
 
 class TestPriceHistoryContext:
     def _write_history(self, tmp_config, asin, entries):
-
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        (paths.history_dir() / f"{asin}.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_history(asin, entries)
 
     def test_single_entry_today_not_atl(self, tmp_config):
         today = datetime.date.today().isoformat()
@@ -917,104 +812,155 @@ class TestPriceHistoryContext:
         assert "PHC04" not in atl_asins
 
 
-class TestRecordPricesCorruptBackup:
-    def test_corrupt_file_backed_up(self, tmp_config):
-
-        hist_dir = paths.history_dir()
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        asin = "B00CORRUPT1"
-        hist_file = hist_dir / f"{asin}.json"
-        corrupt_text = "this is not valid json!!!"
-        hist_file.write_text(corrupt_text)
-
-        p = make_product(asin=asin, price=9.99)
-        record_prices([p])
-
-        bak_file = hist_dir / f"{asin}.json.bak"
-        assert bak_file.exists(), ".bak file should exist after corrupt-file reset"
-        assert bak_file.read_text() == corrupt_text
-
-        data = json.loads(hist_file.read_text())
-        assert len(data["marketplaces"]["us"]) == 1
-        assert data["marketplaces"]["us"][0]["price"] == pytest.approx(9.99)
-
-
-class TestRecordPricesMarketplaceLocking:
-    def test_concurrent_marketplace_updates_preserve_both_locales(
-        self, tmp_config, monkeypatch
-    ):
-        import audible_deals.price_history as history_mod
-
+class TestRecordPricesConcurrency:
+    def test_concurrent_marketplace_updates_preserve_both_locales(self, tmp_config):
         asin = "B00LOCKED1"
-        first_write_started = threading.Event()
-        allow_first_write = threading.Event()
-        real_atomic_write = history_mod._atomic_write
-        writes = 0
-
-        def _paused_first_write(path, content):
-            nonlocal writes
-            writes += 1
-            if writes == 1:
-                first_write_started.set()
-                assert allow_first_write.wait(timeout=2)
-            real_atomic_write(path, content)
-
-        monkeypatch.setattr(history_mod, "_atomic_write", _paused_first_write)
+        start = threading.Barrier(2)
         failures = []
 
         def _record(locale, price):
             try:
+                start.wait(timeout=2)
                 record_prices(
                     [make_product(asin=asin, locale=locale, price=price, title=locale)]
                 )
             except Exception as exc:
                 failures.append(exc)
 
-        us = threading.Thread(target=_record, args=("us", 10.0))
-        uk = threading.Thread(target=_record, args=("uk", 5.0))
-        us.start()
-        assert first_write_started.wait(timeout=2)
-        uk.start()
-        allow_first_write.set()
-        us.join(timeout=2)
-        uk.join(timeout=2)
+        threads = [
+            threading.Thread(target=_record, args=("us", 10.0)),
+            threading.Thread(target=_record, args=("uk", 5.0)),
+        ]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(timeout=5)
 
-        assert not us.is_alive()
-        assert not uk.is_alive()
+        assert not any(thread.is_alive() for thread in threads)
         assert not failures
         assert load_price_history(asin, "us")[0]["price"] == 10.0
         assert load_price_history(asin, "uk")[0]["price"] == 5.0
 
+    def test_a_failed_batch_records_nothing(self, tmp_config):
+        """One bad row rolls the whole batch back instead of half-recording it."""
+        products = [
+            make_product(asin="B00BATCH01", price=1.0),
+            make_product(asin="B00BATCH02", price=2.0, locale=["unbindable"]),
+        ]
+        with pytest.raises((sqlite3.InterfaceError, sqlite3.ProgrammingError)):
+            record_prices(products)
+
+        assert load_price_history("B00BATCH01") == []
+        assert load_price_history("B00BATCH02") == []
+
+
+class TestRecordPricesRules:
+    def test_first_price_of_the_day_wins(self, tmp_config):
+        record_prices([make_product(asin="B00RULES01", price=9.99)])
+        record_prices([make_product(asin="B00RULES01", price=1.99)])
+        entries = load_price_history("B00RULES01")
+        assert [e["price"] for e in entries] == [9.99]
+
+    def test_price_is_rounded_to_cents(self, tmp_config):
+        record_prices([make_product(asin="B00RULES02", price=4.999)])
+        assert load_price_history("B00RULES02")[0]["price"] == 5.0
+
+    def test_keeps_the_newest_365_entries(self, tmp_config):
+        start = datetime.date(2023, 1, 1)
+        for i in range(370):
+            day = (start + datetime.timedelta(days=i)).isoformat()
+            record_prices(
+                [make_product(asin="B00RULES03", price=1.0 + i)],
+                observation_date=day,
+            )
+        entries = load_price_history("B00RULES03")
+        assert len(entries) == 365
+        assert entries[0]["date"] == (start + datetime.timedelta(days=5)).isoformat()
+        assert entries[-1]["date"] == (start + datetime.timedelta(days=369)).isoformat()
+
+    def test_cap_applies_per_marketplace(self, tmp_config):
+        start = datetime.date(2023, 1, 1)
+        for i in range(366):
+            day = (start + datetime.timedelta(days=i)).isoformat()
+            record_prices(
+                [make_product(asin="B00RULES04", price=2.0, locale="us")],
+                observation_date=day,
+            )
+        record_prices([make_product(asin="B00RULES04", price=3.0, locale="uk")])
+        assert len(load_price_history("B00RULES04", "us")) == 365
+        assert len(load_price_history("B00RULES04", "uk")) == 1
+
+    def test_back_dated_observation_is_sorted_into_place(self, tmp_config):
+        record_prices(
+            [make_product(asin="B00RULES05", price=5.0)], observation_date="2024-03-01"
+        )
+        record_prices(
+            [make_product(asin="B00RULES05", price=4.0)], observation_date="2024-01-01"
+        )
+        assert [e["date"] for e in load_price_history("B00RULES05")] == [
+            "2024-01-01",
+            "2024-03-01",
+        ]
+
+    def test_unpriced_and_invalid_asins_are_skipped(self, tmp_config):
+        record_prices(
+            [
+                make_product(asin="B00RULES06", price=None),
+                make_product(asin="not a valid asin!", price=3.0),
+            ]
+        )
+        assert load_all_price_histories() == {}
+
+    def test_observation_date_must_be_a_date(self, tmp_config):
+        with pytest.raises(TypeError):
+            record_prices([make_product(price=1.0)], observation_date=5)  # type: ignore[arg-type]
+        with pytest.raises(ValueError):
+            record_prices([make_product(price=1.0)], observation_date="yesterday")
+
+    def test_title_is_kept_per_entry_and_indexed(self, tmp_config):
+        record_prices(
+            [make_product(asin="B00RULES07", price=3.0, title="First")],
+            observation_date="2024-01-01",
+        )
+        record_prices(
+            [make_product(asin="B00RULES07", price=2.0, title="Renamed")],
+            observation_date="2024-01-02",
+        )
+        assert [e["title"] for e in load_price_history("B00RULES07")] == [
+            "First",
+            "Renamed",
+        ]
+        row = (
+            db.state()
+            .execute(
+                "SELECT title, last_price, last_seen FROM products WHERE asin = 'B00RULES07'"
+            )
+            .fetchone()
+        )
+        assert row == ("Renamed", 2.0, "2024-01-02")
+
+    def test_product_index_keeps_the_newest_sighting(self, tmp_config):
+        record_prices(
+            [make_product(asin="B00RULES08", price=3.0, title="Newer")],
+            observation_date="2024-02-01",
+        )
+        record_prices(
+            [make_product(asin="B00RULES08", price=9.0, title="Older")],
+            observation_date="2024-01-01",
+        )
+        row = (
+            db.state()
+            .execute(
+                "SELECT title, last_price, last_seen FROM products WHERE asin = 'B00RULES08'"
+            )
+            .fetchone()
+        )
+        assert row == ("Newer", 3.0, "2024-02-01")
+
 
 class TestBugfixPriceHistoryValidationFindWishlistHitsNumericGuard:
     def _write_history(self, asin: str, entries: list[dict]) -> None:
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
-        (paths.history_dir() / f"{asin}.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
-
-    def test_null_latest_price_is_skipped(self, tmp_config):
-        wishlist_mod.save_wishlist(
-            [{"asin": "B00NULL001", "title": "T", "max_price": 10.0, "added": ""}]
-        )
-        self._write_history(
-            "B00NULL001",
-            [
-                {"date": "2024-01-01", "price": 12.0, "title": "T"},
-                {"date": "2024-01-02", "price": None, "title": "T"},
-            ],
-        )
-        assert price_history.find_wishlist_hits() == []
-
-    def test_missing_price_key_is_skipped(self, tmp_config):
-        wishlist_mod.save_wishlist(
-            [{"asin": "B00MISS001", "title": "T", "max_price": 10.0, "added": ""}]
-        )
-        self._write_history(
-            "B00MISS001",
-            [{"date": "2024-01-02", "title": "T"}],
-        )
-        assert price_history.find_wishlist_hits() == []
+        seed_history(asin, [e for e in entries if isinstance(e.get("price"), float)])
 
     def test_string_max_price_is_skipped(self, tmp_config):
         wishlist_mod.save_wishlist(
@@ -1035,6 +981,38 @@ class TestBugfixPriceHistoryValidationFindWishlistHitsNumericGuard:
         )
         assert price_history.find_wishlist_hits() == [item]
 
+    def test_latest_price_above_target_is_not_a_hit(self, tmp_config):
+        wishlist_mod.save_wishlist(
+            [{"asin": "B00ABOVE01", "title": "T", "max_price": 5.0, "added": ""}]
+        )
+        self._write_history(
+            "B00ABOVE01",
+            [
+                {"date": "2024-01-01", "price": 4.0, "title": "T"},
+                {"date": "2024-01-02", "price": 7.5, "title": "T"},
+            ],
+        )
+        assert price_history.find_wishlist_hits() == []
+
+    def test_wishlist_item_without_history_is_not_a_hit(self, tmp_config):
+        wishlist_mod.save_wishlist(
+            [{"asin": "B00NOHIST1", "title": "T", "max_price": 5.0, "added": ""}]
+        )
+        assert price_history.find_wishlist_hits() == []
+
+    def test_item_locale_selects_the_marketplace_history(self, tmp_config):
+        item = {
+            "asin": "B00LOCALE1",
+            "title": "T",
+            "max_price": 6.0,
+            "added": "",
+            "locale": "uk",
+        }
+        wishlist_mod.save_wishlist([item])
+        seed_history("B00LOCALE1", [("2024-01-02", 9.0)], locale="us")
+        seed_history("B00LOCALE1", [("2024-01-02", 4.0)], locale="uk")
+        assert price_history.find_wishlist_hits() == [item]
+
 
 class TestBugfixPriceHistoryValidationMarketplaceScopedHistory:
     def test_identical_asins_never_share_marketplace_prices(self, tmp_config):
@@ -1049,118 +1027,62 @@ class TestBugfixPriceHistoryValidationMarketplaceScopedHistory:
         assert price_history.load_price_history(asin, "us")[0]["price"] == 10.0
         assert price_history.load_price_history(asin, "uk")[0]["price"] == 5.0
 
-    def test_legacy_history_is_not_assigned_to_a_marketplace(self, tmp_config):
-        asin = "B00LEGACY1"
-        paths.history_dir().mkdir(parents=True)
-        (paths.history_dir() / f"{asin}.json").write_text(
-            json.dumps([{"date": "2024-01-01", "price": 10.0}])
+
+class TestQueriesMatchTheInMemoryRules:
+    """The SQL fast paths must give exactly the answers the plain rules give on
+    the same data (the rules still run when callers pass preloaded histories)."""
+
+    @staticmethod
+    def _random_catalog(seed: int, size: int = 120):
+        import random
+
+        rng = random.Random(seed)
+        today = datetime.date.today()
+        for i in range(size):
+            asin = f"B00RND{i:04d}"
+            locale = rng.choice(["us", "us", "us", "uk"])
+            days = sorted(rng.sample(range(0, 40), rng.randint(1, 9)), reverse=True)
+            entries = [
+                {
+                    "date": (today - datetime.timedelta(days=d)).isoformat(),
+                    "price": round(
+                        rng.choice([2.0, 3.0, 4.5, 6.0, 8.0, 12.0]) + rng.random(), 2
+                    )
+                    if rng.random() < 0.7
+                    else rng.choice([2.0, 3.0, 6.0]),
+                    "title": rng.choice(["", f"Book {i}", f"Book {i} v2"]),
+                }
+                for d in days
+            ]
+            seed_history(asin, entries, locale=locale)
+
+    @pytest.mark.parametrize("seed", [1, 2, 3, 4, 5])
+    @pytest.mark.parametrize("days", [1, 3, 7, 14, 30])
+    def test_scan_price_changes(self, tmp_config, seed, days):
+        self._random_catalog(seed)
+        expected_drops, expected_new = scan_price_changes(
+            days, histories=load_all_price_histories("us")
         )
 
-        assert price_history.load_price_history(asin, "us") == []
+        drops, new_items = scan_price_changes(days)
 
+        assert sorted(drops) == sorted(expected_drops)
+        assert sorted(new_items) == sorted(expected_new)
+        assert drops or new_items  # the generator produces some
 
-class TestBugfixPriceHistoryValidationLegacyHistoryMigration:
-    def test_bulk_load_archives_once_with_collision_and_preserves_bytes(
-        self, tmp_config, caplog
-    ):
-        paths.history_dir().mkdir(parents=True)
-        first = paths.history_dir() / "B00LEGACY1.json"
-        second = paths.history_dir() / "B00LEGACY2.json"
-        current = paths.history_dir() / "B00CURRENT1.json"
-        first_bytes = b'[ {"date": "2024-01-01", "price": 10.0} ]\n'
-        second_bytes = b'[{"date":"2024-02-02","price":7.5}]'
-        first.write_bytes(first_bytes)
-        second.write_bytes(second_bytes)
-        (paths.history_dir() / "B00LEGACY1.json.legacy").write_bytes(b"older")
-        current.write_text(
-            json.dumps({"marketplaces": {"us": [{"date": "2026-01-01", "price": 3.0}]}})
-        )
+    @pytest.mark.parametrize("seed", [1, 2, 3])
+    def test_find_all_atl_hits(self, tmp_config, seed):
+        self._random_catalog(seed)
+        histories = load_all_price_histories("us")
 
-        with caplog.at_level(logging.WARNING):
-            loaded = price_history.load_all_price_histories("us")
+        from_sql = find_all_atl_hits(limit=1000)
+        from_memory = find_all_atl_hits(limit=1000, histories=histories)
 
-        assert loaded == {"B00CURRENT1": [{"date": "2026-01-01", "price": 3.0}]}
-        assert not first.exists()
-        assert not second.exists()
-        assert (
-            paths.history_dir() / "B00LEGACY1.json.legacy.1"
-        ).read_bytes() == first_bytes
-        assert (
-            paths.history_dir() / "B00LEGACY2.json.legacy"
-        ).read_bytes() == second_bytes
-        messages = [
-            r.message for r in caplog.records if "Legacy history migration" in r.message
-        ]
-        assert len(messages) == 1
-        assert "archived 2" in messages[0]
-        assert (paths.history_dir() / ".legacy-migration.lock").exists()
-        assert (paths.history_dir() / ".B00LEGACY1.json.lock").exists()
+        key = lambda hit: (hit["asin"], hit["price"], hit["title"], hit["target"])  # noqa: E731
+        assert sorted(map(key, from_sql)) == sorted(map(key, from_memory))
+        assert from_sql  # the generator produces some
 
-        caplog.clear()
-        assert price_history.load_all_price_histories("us") == loaded
-        assert not [
-            r for r in caplog.records if "Legacy history migration" in r.message
-        ]
-
-    def test_failed_rename_is_untouched_and_retried(
-        self, tmp_config, monkeypatch, caplog
-    ):
-        paths.history_dir().mkdir(parents=True)
-        legacy = paths.history_dir() / "B00LEGACY3.json"
-        original_bytes = b'[{"date":"2024-01-01","price":4}]'
-        legacy.write_bytes(original_bytes)
-        original_link = price_history.os.link
-
-        def fail_legacy(source, target):
-            if Path(source) == legacy:
-                raise OSError("read-only filesystem")
-            return original_link(source, target)
-
-        monkeypatch.setattr(price_history.os, "link", fail_legacy)
-        with caplog.at_level(logging.WARNING):
-            assert price_history.load_all_price_histories() == {}
-        assert legacy.read_bytes() == original_bytes
-        assert "1 failed" in caplog.text
-
-        monkeypatch.setattr(price_history.os, "link", original_link)
-        caplog.clear()
-        assert price_history.load_all_price_histories() == {}
-        assert not legacy.exists()
-        assert legacy.with_name(f"{legacy.name}.legacy").read_bytes() == original_bytes
-        assert "archived 1" in caplog.text
-
-    def test_archive_retries_when_backup_appears_during_move(
-        self, tmp_config, monkeypatch
-    ):
-        paths.history_dir().mkdir(parents=True)
-        legacy = paths.history_dir() / "B00LEGACY5.json"
-        original_bytes = b'[{"date":"2024-01-01","price":4}]\n'
-        legacy.write_bytes(original_bytes)
-        first_archive = legacy.with_name(f"{legacy.name}.legacy")
-        original_link = price_history.os.link
-        collision_created = False
-
-        def link_with_collision(source, target):
-            nonlocal collision_created
-            if not collision_created and Path(target) == first_archive:
-                first_archive.write_bytes(b"created concurrently")
-                collision_created = True
-            return original_link(source, target)
-
-        monkeypatch.setattr(price_history.os, "link", link_with_collision)
-
-        assert price_history.load_all_price_histories() == {}
-        assert collision_created
-        assert not legacy.exists()
-        assert first_archive.read_bytes() == b"created concurrently"
-        assert (
-            legacy.with_name(f"{legacy.name}.legacy.1").read_bytes() == original_bytes
-        )
-
-    def test_history_all_keeps_json_stdout_clean(self, tmp_config):
-        paths.history_dir().mkdir(parents=True)
-        (paths.history_dir() / "B00LEGACY4.json").write_text("[]")
-        result = CliRunner().invoke(cli, ["history", "--all", "--json"])
-        assert result.exit_code == 0, result.output
-        assert json.loads(result.stdout) == {}
-        assert "Legacy history migration" in result.stderr
+    def test_has_price_history_is_per_marketplace(self, tmp_config):
+        seed_history("B00HAS0001", [("2026-01-01", 1.0)], locale="uk")
+        assert price_history.has_price_history("uk")
+        assert not price_history.has_price_history("us")

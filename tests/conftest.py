@@ -68,6 +68,64 @@ def make_series_products_batch(
     )
 
 
+def seed_history(asin, entries, locale="us"):
+    """Record dated prices through the real write path.
+
+    *entries* are ``(date, price)`` pairs or ``{"date", "price", "title"}`` dicts.
+    """
+    from audible_deals.price_history import record_prices
+
+    for entry in entries:
+        if isinstance(entry, dict):
+            date, price, title = entry["date"], entry["price"], entry.get("title", "")
+        else:
+            (date, price), title = entry, "T"
+        record_prices(
+            [make_product(asin=asin, locale=locale, price=price, title=title)],
+            observation_date=date,
+        )
+
+
+def seed_prices(asin, prices, locale="us", title="T"):
+    """Record *prices* on consecutive days starting 2024-01-01."""
+    seed_history(
+        asin,
+        [
+            {"date": f"2024-01-{i + 1:02d}", "price": price, "title": title}
+            for i, price in enumerate(prices)
+        ],
+        locale=locale,
+    )
+
+
+def raw_session() -> str | None:
+    """The stored last-results JSON text, or None when there is no session."""
+    from audible_deals import db
+
+    row = (
+        db.state().execute("SELECT body FROM result_sessions WHERE slot = 1").fetchone()
+    )
+    return None if row is None else row[0]
+
+
+def put_raw_session(text: str) -> None:
+    """Store *text* as the last-results session without validating it."""
+    from audible_deals import db
+
+    with db.transaction(db.state()) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO result_sessions (slot, body, saved_at) "
+            "VALUES (1, ?, '2026-01-01T00:00:00+00:00')",
+            (text,),
+        )
+
+
+def count_rows(table: str) -> int:
+    from audible_deals import db
+
+    return db.state().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+
+
 @pytest.fixture
 def sample_product():
     return make_product()
@@ -196,14 +254,18 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     """Point every test at its own data directory (never the real one).
 
     ``DEALS_HOME`` is read at call time, so one environment variable redirects
-    config, auth, the lock file and every other stored file.
+    config, auth, the lock file and both SQLite databases.
     """
+    from audible_deals import db
+
     monkeypatch.setenv("DEALS_HOME", str(tmp_path))
     monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
     # Anything that still asks for the user's home (scheduler unit files, the
     # legacy data directory) lands in the sandbox, never in the real one.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    yield
+    db.close_all()
 
 
 @pytest.fixture

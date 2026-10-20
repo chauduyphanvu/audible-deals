@@ -1,59 +1,32 @@
-"""Per-marketplace, per-ASIN price history and analysis."""
+"""Per-marketplace, per-ASIN price history and analysis, stored in ``state.db``."""
 
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import math
-import os
 import statistics
-from collections.abc import Mapping, Sequence
-from pathlib import Path
+from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from audible_deals import paths, wishlist
+from audible_deals import db, wishlist
 from audible_deals.constants import _ASIN_RE
-from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
-from audible_deals.storage import _atomic_write, load_json_file
 
 logger = logging.getLogger(__name__)
 
 # Price entries as consumed by analysis code: read-only, so both the mutable
-# lists loaded from disk and the frozen copies stored on result objects fit.
+# lists loaded from the database and the frozen copies stored on result objects
+# fit.
 HistoryEntries = Sequence[Mapping[str, Any]]
 HistoryMap = Mapping[str, HistoryEntries]
 
 _MAX_HISTORY_ENTRIES = 365
-_MARKETPLACES_KEY = "marketplaces"
 
 
 def history_key(asin: str, locale: str) -> str:
     """Return the in-memory key for a marketplace-specific ASIN history."""
     return f"{locale}:{asin}"
-
-
-def _marketplace_entries(raw: object, asin: str, locale: str) -> list[dict]:
-    if not isinstance(raw, dict):
-        return []
-    markets = raw.get(_MARKETPLACES_KEY)
-    if not isinstance(markets, dict):
-        return []
-    entries = markets.get(locale)
-    if not isinstance(entries, list):
-        return []
-    result = []
-    for entry in entries:
-        if not isinstance(entry, dict):
-            continue
-        price = entry.get("price")
-        if isinstance(price, bool) or (
-            isinstance(price, (int, float)) and not math.isfinite(float(price))
-        ):
-            continue
-        result.append(entry)
-    return result
 
 
 def _as_float(value) -> float | None:
@@ -64,212 +37,152 @@ def _as_float(value) -> float | None:
     return result if math.isfinite(result) else None
 
 
-def _entry_date(entry: dict) -> str:
-    """Sort key: the entry's ISO date, or '' when missing or not text."""
-    date = entry.get("date")
-    return date if isinstance(date, str) else ""
+def _entry(date: str, price: float, title: str) -> dict:
+    return {"date": date, "price": price, "title": title}
 
 
-def _history_update_lock(hist_file: Path):
-    return advisory_lock(hist_file.with_name(f".{hist_file.name}.lock"), wait=True)
+def _observation_day(observation_date: datetime.date | str | None) -> str:
+    if observation_date is None:
+        return datetime.date.today().isoformat()
+    if isinstance(observation_date, datetime.datetime):
+        return observation_date.date().isoformat()
+    if isinstance(observation_date, datetime.date):
+        return observation_date.isoformat()
+    if isinstance(observation_date, str):
+        return datetime.date.fromisoformat(observation_date).isoformat()
+    raise TypeError("observation_date must be a date or ISO date string")
 
 
-def _legacy_archive_path(hist_file: Path, suffix: int) -> Path:
-    base = hist_file.with_name(f"{hist_file.name}.legacy")
-    return base if suffix == 0 else hist_file.with_name(f"{base.name}.{suffix}")
+_TRIM = """
+DELETE FROM price_history
+ WHERE asin = :asin AND locale = :locale
+   AND date < (SELECT date FROM price_history
+                WHERE asin = :asin AND locale = :locale
+                ORDER BY date DESC LIMIT 1 OFFSET :keep)
+"""
 
-
-def _archive_legacy_history(hist_file: Path) -> bool:
-    """Move a legacy history to a collision-free backup without clobbering one."""
-    suffix = 0
-    while True:
-        archive = _legacy_archive_path(hist_file, suffix)
-        try:
-            # link() exclusively creates the destination, unlike rename() which
-            # can replace a backup created after an existence check.
-            os.link(hist_file, archive)
-        except FileExistsError:
-            suffix += 1
-            continue
-
-        try:
-            hist_file.unlink()
-        except OSError:
-            try:
-                archive.unlink()
-            except OSError:
-                pass
-            raise
-        return True
-
-
-def _log_legacy_migration(archived: int, failed: int) -> None:
-    if archived or failed:
-        logger.warning(
-            "Legacy history migration: archived %d file(s), %d failed; "
-            "unscoped prices were not assigned to a marketplace",
-            archived,
-            failed,
-        )
-
-
-def migrate_legacy_histories() -> tuple[int, int]:
-    """Archive legacy top-level history lists without rewriting their bytes."""
-    if not paths.history_dir().exists():
-        return 0, 0
-    archived = 0
-    failed = 0
-    migration_lock = paths.history_dir() / ".legacy-migration.lock"
-    with advisory_lock(migration_lock, wait=True):
-        for hist_file in sorted(paths.history_dir().glob("*.json")):
-            with _history_update_lock(hist_file):
-                try:
-                    raw = json.loads(hist_file.read_bytes())
-                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
-                    continue
-                if not isinstance(raw, list):
-                    continue
-                try:
-                    _archive_legacy_history(hist_file)
-                except OSError:
-                    failed += 1
-                else:
-                    archived += 1
-    _log_legacy_migration(archived, failed)
-    return archived, failed
+_UPSERT_PRODUCT = """
+INSERT INTO products (asin, locale, title, last_price, last_seen)
+VALUES (?, ?, ?, ?, ?)
+ON CONFLICT (asin, locale) DO UPDATE SET
+    title = CASE
+        WHEN excluded.title <> ''
+         AND (products.title = '' OR excluded.last_seen >= products.last_seen)
+        THEN excluded.title ELSE products.title END,
+    last_price = CASE
+        WHEN excluded.last_seen >= products.last_seen
+        THEN excluded.last_price ELSE products.last_price END,
+    last_seen = MAX(products.last_seen, excluded.last_seen)
+"""
 
 
 def record_prices(
     products: list[Product], observation_date: datetime.date | str | None = None
 ) -> None:
-    """Append observed prices to per-ASIN history files.
+    """Append observed prices to the history (one entry per ASIN, marketplace and day).
 
-    Batches writes: reads all existing files, updates in-memory,
-    then writes only changed files.
+    The first price seen on a day wins; later sightings the same day are
+    ignored. Each ASIN keeps its newest 365 entries per marketplace.
     """
-    if observation_date is None:
-        observed_on = datetime.date.today().isoformat()
-    elif isinstance(observation_date, datetime.datetime):
-        observed_on = observation_date.date().isoformat()
-    elif isinstance(observation_date, datetime.date):
-        observed_on = observation_date.isoformat()
-    elif isinstance(observation_date, str):
-        observed_on = datetime.date.fromisoformat(observation_date).isoformat()
-    else:
-        raise TypeError("observation_date must be a date or ISO date string")
+    observed_on = _observation_day(observation_date)
     priced = [(p, price) for p in products if (price := _as_float(p.price)) is not None]
     if not priced:
         logger.debug("record_prices: no priced products (input=%d)", len(products))
         return
-    paths.history_dir().mkdir(parents=True, exist_ok=True)
 
-    written: set[Path] = set()
-    skipped_today = 0
+    rows = []
     bad_asin = 0
-    corrupt = 0
-    legacy_archived = 0
-    legacy_failed = 0
-
     for p, price in priced:
         if not _ASIN_RE.fullmatch(p.asin):
             bad_asin += 1
             continue
-        hist_file = paths.history_dir() / f"{p.asin}.json"
-        with _history_update_lock(hist_file):
-            raw: object | None = None
-            if hist_file.exists():
-                try:
-                    raw = json.loads(hist_file.read_text())
-                except json.JSONDecodeError:
-                    bak = hist_file.with_name(hist_file.name + ".bak")
-                    try:
-                        hist_file.replace(bak)
-                    except OSError:
-                        logger.warning(
-                            "history at %s is corrupt, resetting (could not back up)",
-                            hist_file,
-                        )
-                    else:
-                        logger.warning(
-                            "history at %s is corrupt, resetting (backed up to %s)",
-                            hist_file,
-                            bak,
-                        )
-                    corrupt += 1
-                    raw = {_MARKETPLACES_KEY: {}}
-            if raw is None:
-                raw = {_MARKETPLACES_KEY: {}}
-            if isinstance(raw, list):
-                try:
-                    _archive_legacy_history(hist_file)
-                except OSError:
-                    legacy_failed += 1
-                    continue
-                legacy_archived += 1
-                raw = {_MARKETPLACES_KEY: {}}
-            if not isinstance(raw, dict):
-                logger.warning(
-                    "history at %s has invalid structure, resetting", hist_file
-                )
-                raw = {_MARKETPLACES_KEY: {}}
-            stored_markets: object = raw.get(_MARKETPLACES_KEY)
-            if isinstance(stored_markets, dict):
-                markets: dict[str, Any] = stored_markets
-            else:
-                markets = {}
-                raw = {_MARKETPLACES_KEY: markets}
-            entries = _marketplace_entries(raw, p.asin, p.locale)
-            if any(entry.get("date") == observed_on for entry in entries):
-                skipped_today += 1
-                continue
-            entries.append(
-                {
-                    "date": observed_on,
-                    "price": round(price, 2),
-                    "title": p.title,
-                }
-            )
-            entries.sort(key=_entry_date)
-            markets[p.locale] = entries[-_MAX_HISTORY_ENTRIES:]
-            for market_locale, market_entries in list(markets.items()):
-                if isinstance(market_entries, list):
-                    markets[market_locale] = _marketplace_entries(
-                        raw, p.asin, market_locale
-                    )
-            _atomic_write(hist_file, json.dumps(raw, allow_nan=False))
-            written.add(hist_file)
+        rows.append((p.asin, p.locale, observed_on, round(price, 2), p.title or ""))
 
-    _log_legacy_migration(legacy_archived, legacy_failed)
+    written = 0
+    with db.transaction(db.state()) as conn:
+        for asin, locale, date, price, title in rows:
+            cursor = conn.execute(
+                "INSERT OR IGNORE INTO price_history (asin, locale, date, price, title) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (asin, locale, date, price, title),
+            )
+            if not cursor.rowcount:
+                continue  # already recorded for this day
+            written += 1
+            conn.execute(
+                _TRIM,
+                {"asin": asin, "locale": locale, "keep": _MAX_HISTORY_ENTRIES - 1},
+            )
+            conn.execute(_UPSERT_PRODUCT, (asin, locale, title, price, date))
 
     logger.debug(
-        "record_prices: priced=%d wrote=%d skipped_today=%d bad_asin=%d corrupt=%d",
+        "record_prices: priced=%d wrote=%d skipped_today=%d bad_asin=%d",
         len(priced),
-        len(written),
-        skipped_today,
+        written,
+        len(rows) - written,
         bad_asin,
-        corrupt,
     )
 
 
 def has_price_history(locale: str = "us") -> bool:
-    """Return whether *locale* has at least one marketplace-specific history."""
-    return bool(load_all_price_histories(locale))
+    """Return whether *locale* has at least one recorded price."""
+    row = (
+        db.state()
+        .execute(
+            "SELECT EXISTS (SELECT 1 FROM price_history WHERE locale = ?)", (locale,)
+        )
+        .fetchone()
+    )
+    return bool(row[0])
 
 
 def load_price_history(asin: str, locale: str = "us") -> list[dict]:
-    """Load price history entries for a single ASIN.
+    """Load the price history entries (oldest first) for one ASIN and marketplace."""
+    rows = db.state().execute(
+        "SELECT date, price, title FROM price_history "
+        "WHERE asin = ? AND locale = ? ORDER BY date",
+        (asin, locale),
+    )
+    return [_entry(*row) for row in rows]
 
-    Returns an empty list if the file doesn't exist or is corrupt.
+
+def load_price_histories(
+    keys: Iterable[tuple[str, str]],
+) -> dict[str, list[dict]]:
+    """Load many histories in a few queries.
+
+    *keys* are ``(asin, locale)`` pairs. The result maps :func:`history_key` to
+    the entries, with an empty list for pairs that have no history.
     """
-    hist_file = paths.history_dir() / f"{asin}.json"
-    if not hist_file.exists():
-        return []
-    try:
-        raw = json.loads(hist_file.read_text())
-    except (json.JSONDecodeError, OSError):
-        logger.warning("price history %s at %s is corrupt, ignoring", asin, hist_file)
-        return []
-    return _marketplace_entries(raw, asin, locale)
+    wanted: dict[str, set[str]] = {}
+    for asin, locale in keys:
+        wanted.setdefault(locale, set()).add(asin)
+    result: dict[str, list[dict]] = {
+        history_key(asin, locale): []
+        for locale, asins in wanted.items()
+        for asin in asins
+    }
+    conn = db.state()
+    for locale, asins in wanted.items():
+        for batch in db.chunked(sorted(asins), 500):
+            marks = ",".join("?" * len(batch))
+            rows = conn.execute(
+                "SELECT asin, date, price, title FROM price_history "  # noqa: S608
+                f"WHERE locale = ? AND asin IN ({marks}) ORDER BY asin, date",
+                (locale, *batch),
+            )
+            for asin, date, price, title in rows:
+                result[history_key(asin, locale)].append(_entry(date, price, title))
+    return result
+
+
+def load_product_histories(products: Iterable[Product]) -> dict[str, list[dict]]:
+    """Histories for the priced *products*, keyed by :func:`history_key`."""
+    return load_price_histories(
+        (product.asin, product.locale)
+        for product in products
+        if product.price is not None
+    )
 
 
 def _numeric_prices(entries: HistoryEntries) -> list[float]:
@@ -386,26 +299,16 @@ def price_drop_pcts(
     return result
 
 
-def scan_price_changes(
-    days: int,
-    histories: dict[str, list[dict]] | None = None,
+def _scan_changes(
+    histories: Mapping[str, HistoryEntries],
+    cutoff: str,
+    titles: Mapping[str, str] | None = None,
 ) -> tuple[list[tuple[str, str, float, float]], list[tuple[str, str, float]]]:
-    """Scan history files for price drops and newly tracked items.
-
-    Accepts preloaded histories to avoid re-reading the directory.
-    Returns (drops, new_items) where:
-      drops = [(asin, title, old_price, new_price), ...]
-      new_items = [(asin, title, current_price), ...]
-    """
-    if histories is None:
-        histories = load_all_price_histories()
-
-    cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
     drops: list[tuple[str, str, float, float]] = []
     new_items: list[tuple[str, str, float]] = []
 
     for asin, entries in histories.items():
-        title = _latest_title(entries)
+        title = (titles or {}).get(asin) or _latest_title(entries)
         recent = [
             e for e in entries if isinstance(e.get("date"), str) and e["date"] >= cutoff
         ]
@@ -448,7 +351,98 @@ def scan_price_changes(
                 and new_price < old_price
             ):
                 drops.append((asin, title, old_price, new_price))
+    return drops, new_items
 
+
+# What `_scan_changes` needs from each ASIN that has an entry inside the window:
+# how many entries there are, the first and last of them, and the newest entry
+# before the window (if any). One row per ASIN instead of every entry.
+_WINDOW_SUMMARY = """
+WITH bounds AS (
+    SELECT asin, COUNT(*) AS n, MIN(date) AS first_date, MAX(date) AS last_date
+      FROM price_history WHERE locale = :locale AND date >= :cutoff GROUP BY asin
+)
+SELECT b.asin, b.n, b.first_date,
+       (SELECT price FROM price_history
+         WHERE locale = :locale AND asin = b.asin AND date = b.first_date),
+       b.last_date,
+       (SELECT price FROM price_history
+         WHERE locale = :locale AND asin = b.asin AND date = b.last_date),
+       prior.date,
+       (SELECT price FROM price_history
+         WHERE locale = :locale AND asin = b.asin AND date = prior.date)
+  FROM bounds b
+  LEFT JOIN (SELECT asin, MAX(date) AS date FROM price_history
+              WHERE locale = :locale AND date < :cutoff GROUP BY asin) prior
+    ON prior.asin = b.asin
+"""
+
+
+def _window_entries(
+    rows: Iterable[tuple],
+) -> dict[str, list[dict]]:
+    """Stand-in histories that give `_scan_changes` the same answers as the full ones.
+
+    The comparison only looks at the newest entry before the window, or else at
+    the first and last entries inside it, so those are all that is rebuilt.
+    """
+    windowed: dict[str, list[dict]] = {}
+    for (
+        asin,
+        count,
+        first_date,
+        first_price,
+        last_date,
+        last_price,
+        prior_date,
+        prior_price,
+    ) in rows:
+        if prior_date is not None:
+            entries = [
+                _entry(prior_date, prior_price, ""),
+                _entry(last_date, last_price, ""),
+            ]
+        elif count >= 2:
+            entries = [
+                _entry(first_date, first_price, ""),
+                _entry(last_date, last_price, ""),
+            ]
+        else:
+            entries = [_entry(first_date, first_price, "")]
+        windowed[asin] = entries
+    return windowed
+
+
+def scan_price_changes(
+    days: int,
+    histories: Mapping[str, HistoryEntries] | None = None,
+    locale: str = "us",
+) -> tuple[list[tuple[str, str, float, float]], list[tuple[str, str, float]]]:
+    """Scan price history for drops and newly tracked items within *days*.
+
+    Without *histories* the database is queried for just the window plus each
+    ASIN's last price before it, which is all the comparison needs. Passing
+    preloaded *histories* runs the same comparison over them.
+    Returns (drops, new_items) where:
+      drops = [(asin, title, old_price, new_price), ...]
+      new_items = [(asin, title, current_price), ...]
+    """
+    cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+    if histories is not None:
+        drops, new_items = _scan_changes(histories, cutoff)
+    else:
+        conn = db.state()
+        with db.transaction(conn, write=False):
+            summary = conn.execute(
+                _WINDOW_SUMMARY, {"locale": locale, "cutoff": cutoff}
+            ).fetchall()
+            titles = dict(
+                conn.execute(
+                    "SELECT asin, title FROM products WHERE locale = ?", (locale,)
+                )
+            )
+        windowed = _window_entries(summary)
+        drops, new_items = _scan_changes(windowed, cutoff, titles)
     logger.debug(
         "scan_price_changes days=%d drops=%d new=%d",
         days,
@@ -459,70 +453,15 @@ def scan_price_changes(
 
 
 def load_all_price_histories(locale: str = "us") -> dict[str, list[dict]]:
-    """Load price history for every ASIN in the history directory.
-
-    Returns a dict keyed by ASIN; empty ASINs (corrupt or no entries) are skipped.
-    Returns {} when the directory doesn't exist.
-    """
-    if not paths.history_dir().exists():
-        return {}
-    migrate_legacy_histories()
+    """Load the price history of every ASIN tracked in *locale*, keyed by ASIN."""
     result: dict[str, list[dict]] = {}
-    for hist_file in paths.history_dir().glob("*.json"):
-        entries = load_price_history(hist_file.stem, locale)
-        if entries:
-            result[hist_file.stem] = entries
+    for asin, date, price, title in db.state().execute(
+        "SELECT asin, date, price, title FROM price_history "
+        "WHERE locale = ? ORDER BY asin, date",
+        (locale,),
+    ):
+        result.setdefault(asin, []).append(_entry(date, price, title))
     return result
-
-
-def _delete_marketplace_history(hist_file: Path, raw: dict, locale: str) -> bool:
-    markets = raw.get(_MARKETPLACES_KEY)
-    if not isinstance(markets, dict) or locale not in markets:
-        return False
-    del markets[locale]
-    if markets:
-        for market_locale, market_entries in list(markets.items()):
-            if isinstance(market_entries, list):
-                markets[market_locale] = _marketplace_entries(
-                    raw, hist_file.stem, market_locale
-                )
-        _atomic_write(hist_file, json.dumps(raw, allow_nan=False))
-    else:
-        hist_file.unlink(missing_ok=True)
-    return True
-
-
-def _history_is_stale(
-    entries: list[dict], cutoff: datetime.date, hist_file: Path
-) -> bool:
-    if not entries:
-        logger.warning("history at %s has no entries, skipping purge", hist_file)
-        return False
-    last_date_str = entries[-1].get("date")
-    if not last_date_str:
-        logger.warning("history at %s has no parseable date, skipping purge", hist_file)
-        return False
-    try:
-        last_date = datetime.date.fromisoformat(last_date_str)
-    except ValueError:
-        logger.warning(
-            "history at %s has invalid date %r, skipping purge",
-            hist_file,
-            last_date_str,
-        )
-        return False
-    return last_date < cutoff
-
-
-def _purge_stale_history_file(
-    hist_file: Path, cutoff: datetime.date, locale: str
-) -> bool:
-    with _history_update_lock(hist_file):
-        raw = load_json_file(hist_file, dict, f"price history {hist_file.stem}")
-        entries = _marketplace_entries(raw, hist_file.stem, locale)
-        if not _history_is_stale(entries, cutoff, hist_file):
-            return False
-        return _delete_marketplace_history(hist_file, raw, locale)
 
 
 def purge_stale_history(
@@ -531,43 +470,46 @@ def purge_stale_history(
     locale: str = "us",
     asins: list[str] | None = None,
 ) -> tuple[int, list[str]]:
-    """Delete history files whose most-recent entry is older than *days* days ago.
+    """Delete the history of ASINs whose most recent entry is older than *days* days.
 
-    Corrupt files and files with no parseable last-entry date are skipped.
-    Returns (count, asins_affected).
+    Only the given marketplace is considered. Returns (count, asins_affected).
     """
-    if not paths.history_dir().exists():
-        return 0, []
-
-    cutoff = datetime.date.today() - datetime.timedelta(days=days)
-    count = 0
-    affected: list[str] = []
-
-    hist_files = (
-        [paths.history_dir() / f"{asin}.json" for asin in asins]
-        if asins is not None
-        else paths.history_dir().glob("*.json")
-    )
-    for hist_file in hist_files:
-        asin = hist_file.stem
-        raw = load_price_history(asin, locale)
-        if not _history_is_stale(raw, cutoff, hist_file):
-            continue
-        if dry_run or _purge_stale_history_file(hist_file, cutoff, locale):
-            count += 1
-            affected.append(asin)
-
+    cutoff = (datetime.date.today() - datetime.timedelta(days=days)).isoformat()
+    conn = db.state()
+    with db.transaction(conn, write=not dry_run):
+        stale = [
+            row[0]
+            for row in conn.execute(
+                "SELECT asin FROM price_history WHERE locale = ? "
+                "GROUP BY asin HAVING MAX(date) < ? ORDER BY asin",
+                (locale, cutoff),
+            )
+        ]
+        if asins is not None:
+            wanted = set(asins)
+            stale = [asin for asin in stale if asin in wanted]
+        if not dry_run:
+            for batch in db.chunked(stale, 500):
+                marks = ",".join("?" * len(batch))
+                for table in ("price_history", "products"):
+                    conn.execute(
+                        f"DELETE FROM {table} WHERE locale = ? AND asin IN ({marks})",  # noqa: S608
+                        (locale, *batch),
+                    )
     logger.debug(
-        "purge_stale_history days=%d dry_run=%s removed=%d", days, dry_run, count
+        "purge_stale_history days=%d dry_run=%s removed=%d", days, dry_run, len(stale)
     )
-    return count, affected
+    return len(stale), stale
 
 
 def _wishlist_with_history(locale: str):
     """Yield (item, price history entries) for wishlist items with valid ASINs."""
     asin_items, _ = wishlist.partition_wishlist(wishlist.load_wishlist())
+    histories = load_price_histories(
+        (item["asin"], item.get("locale", locale)) for item in asin_items
+    )
     for item in asin_items:
-        yield item, load_price_history(item["asin"], item.get("locale", locale))
+        yield item, histories[history_key(item["asin"], item.get("locale", locale))]
 
 
 def find_wishlist_hits(locale: str = "us") -> list[dict]:
@@ -609,35 +551,65 @@ def find_wishlist_atl_hits(locale: str = "us") -> list[dict]:
     return hits
 
 
+_ATL_ROWS = """
+SELECT asin, price, prev_min FROM (
+    SELECT l.asin AS asin, h.price AS price,
+           (SELECT MIN(p.price) FROM price_history p
+             WHERE p.asin = l.asin AND p.locale = :locale AND p.date < l.last_date) AS prev_min
+      FROM (SELECT asin, MAX(date) AS last_date FROM price_history
+             WHERE locale = :locale GROUP BY asin HAVING COUNT(*) >= 2) l
+      JOIN price_history h
+        ON h.asin = l.asin AND h.locale = :locale AND h.date = l.last_date
+)
+WHERE price <= prev_min
+ORDER BY prev_min - price DESC, asin
+"""
+
+
 def find_all_atl_hits(
-    limit: int = 20, histories: dict[str, list[dict]] | None = None, locale: str = "us"
+    limit: int = 20,
+    histories: Mapping[str, HistoryEntries] | None = None,
+    locale: str = "us",
 ) -> list[dict]:
     """Find all tracked ASINs whose latest price is at their all-time low.
 
     Requires ≥2 numeric history entries and the latest entry to have a numeric
     price. Target is filled from the wishlist when the ASIN is present, else None.
-    Accepts preloaded histories to avoid re-reading the directory. Returns up to
-    *limit* dicts sorted by drop magnitude (how far below the previous minimum)
-    descending.
+    Accepts preloaded histories; otherwise the database is asked directly.
+    Returns up to *limit* dicts sorted by drop magnitude (how far below the
+    previous minimum) descending.
     """
     items, _ = wishlist.partition_wishlist(wishlist.load_wishlist())
     wishlist_by_asin = {item["asin"]: item for item in items}
-    if histories is None:
-        histories = load_all_price_histories(locale)
 
     scored: list[tuple[float, dict]] = []
-    for asin, entries in histories.items():
-        atl = _atl_latest(entries)
-        if atl is None:
-            continue
-        latest, prev_min = atl
+    if histories is None:
+        conn = db.state()
+        with db.transaction(conn, write=False):
+            rows = conn.execute(_ATL_ROWS, {"locale": locale}).fetchmany(limit)
+            titles = dict(
+                conn.execute(
+                    "SELECT asin, title FROM products WHERE locale = ?", (locale,)
+                )
+            )
+        candidates = [
+            (asin, latest, prev_min, titles.get(asin, ""))
+            for asin, latest, prev_min in rows
+        ]
+    else:
+        candidates = []
+        for asin, entries in histories.items():
+            atl = _atl_latest(entries)
+            if atl is not None:
+                candidates.append((asin, atl[0], atl[1], _latest_title(entries)))
+    for asin, latest, prev_min, title in candidates:
         wl_item = wishlist_by_asin.get(asin)
         scored.append(
             (
                 prev_min - latest,
                 {
                     "asin": asin,
-                    "title": _latest_title(entries),
+                    "title": title,
                     "price": latest,
                     "target": wl_item.get("max_price") if wl_item else None,
                 },

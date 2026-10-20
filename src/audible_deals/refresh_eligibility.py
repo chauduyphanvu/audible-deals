@@ -1,27 +1,15 @@
-"""Persistence for recently surfaced products eligible for background refresh."""
+"""Recently surfaced products eligible for background refresh, in ``state.db``."""
 
 from __future__ import annotations
 
 import datetime
-import json
 import logging
 import math
-from pathlib import Path
 
-from audible_deals import constants, paths
-from audible_deals.locking import advisory_lock
+from audible_deals import constants, db
 from audible_deals.product import Product
-from audible_deals.results_cache import load_seen_asins
-from audible_deals.storage import _atomic_write
 
 logger = logging.getLogger(__name__)
-
-_VERSION = 1
-
-
-def _lock_file() -> Path:
-    path = paths.refresh_eligibility_file()
-    return path.with_name(f".{path.name}.lock")
 
 
 def _date_string(value: object) -> str:
@@ -42,100 +30,23 @@ def _numeric_price(value: object) -> bool:
     )
 
 
-def _decode_store(raw: object) -> dict[str, dict[str, str]]:
-    if not isinstance(raw, dict) or raw.get("version") != _VERSION:
-        raise ValueError("unsupported version or invalid root")
-    marketplaces = raw.get("marketplaces")
-    if not isinstance(marketplaces, dict):
-        raise ValueError("marketplaces must be an object")
-    decoded: dict[str, dict[str, str]] = {}
-    for locale, entries in marketplaces.items():
-        if locale not in constants.LOCALE_DOMAIN or not isinstance(entries, dict):
-            raise ValueError("invalid marketplace entry")
-        decoded[locale] = {}
-        for asin, observed_on in entries.items():
-            if not isinstance(asin, str) or not constants._ASIN_RE.fullmatch(asin):
-                raise ValueError("invalid ASIN entry")
-            if not isinstance(observed_on, str):
-                raise ValueError("invalid observation date")
-            decoded[locale][asin] = _date_string(observed_on)
-    return decoded
-
-
-def _wire(entries: dict[str, dict[str, str]]) -> dict:
-    return {
-        "version": _VERSION,
-        "marketplaces": {
-            locale: dict(sorted(values.items()))
-            for locale, values in sorted(entries.items())
-            if values
-        },
-    }
-
-
-def _migrate_seen_histories() -> dict[str, dict[str, str]]:
-    seen = load_seen_asins()
-    migrated: dict[str, dict[str, str]] = {}
-    if not seen or not paths.history_dir().exists():
-        return migrated
-    for history_file in sorted(paths.history_dir().glob("*.json")):
-        asin = history_file.stem
-        if asin not in seen or not constants._ASIN_RE.fullmatch(asin):
-            continue
-        try:
-            raw = json.loads(history_file.read_text())
-        except (json.JSONDecodeError, OSError):
-            continue
-        marketplaces = raw.get("marketplaces") if isinstance(raw, dict) else None
-        if not isinstance(marketplaces, dict):
-            continue
-        for locale, history in marketplaces.items():
-            if locale not in constants.LOCALE_DOMAIN or not isinstance(history, list):
-                continue
-            valid_dates = []
-            for entry in history:
-                if not isinstance(entry, dict) or not _numeric_price(
-                    entry.get("price")
-                ):
-                    continue
-                try:
-                    valid_dates.append(_date_string(entry.get("date")))
-                except (TypeError, ValueError):
-                    continue
-            if valid_dates:
-                migrated.setdefault(locale, {})[asin] = max(valid_dates)
-    return migrated
-
-
-def _load_locked() -> tuple[dict[str, dict[str, str]], bool]:
-    path = paths.refresh_eligibility_file()
-    if path.exists():
-        try:
-            return _decode_store(json.loads(path.read_text())), True
-        except (json.JSONDecodeError, OSError, ValueError):
-            logger.warning(
-                "refresh eligibility at %s is corrupt or unsupported, ignoring",
-                path,
-                exc_info=True,
-            )
-            return {}, False
-    entries = _migrate_seen_histories()
-    _atomic_write(path, json.dumps(_wire(entries), indent=2, allow_nan=False))
-    return entries, True
-
-
 def load_refresh_eligibility() -> dict[str, dict[str, str]]:
-    with advisory_lock(_lock_file(), wait=True):
-        entries, _writable = _load_locked()
+    """``{locale: {asin: date it was last surfaced}}``."""
+    entries: dict[str, dict[str, str]] = {}
+    for locale, asin, surfaced_on in db.state().execute(
+        "SELECT locale, asin, surfaced_on FROM refresh_eligibility ORDER BY locale, asin"
+    ):
+        entries.setdefault(locale, {})[asin] = surfaced_on
     return entries
 
 
 def mark_refresh_eligible(
     products: list[Product], observed_on: datetime.date | str | None = None
 ) -> None:
+    """Record that *products* were surfaced today (a later date never moves back)."""
     observed = _date_string(observed_on or datetime.date.today())
     surfaced = [
-        product
+        (product.locale, product.asin, observed)
         for product in products
         if _numeric_price(product.price)
         and product.locale in constants.LOCALE_DOMAIN
@@ -143,18 +54,10 @@ def mark_refresh_eligible(
     ]
     if not surfaced:
         return
-    with advisory_lock(_lock_file(), wait=True):
-        entries, writable = _load_locked()
-        if not writable:
-            return
-        changed = False
-        for product in surfaced:
-            marketplace = entries.setdefault(product.locale, {})
-            if observed > marketplace.get(product.asin, ""):
-                marketplace[product.asin] = observed
-                changed = True
-        if changed:
-            _atomic_write(
-                paths.refresh_eligibility_file(),
-                json.dumps(_wire(entries), indent=2, allow_nan=False),
-            )
+    with db.transaction(db.state()) as conn:
+        conn.executemany(
+            "INSERT INTO refresh_eligibility (locale, asin, surfaced_on) VALUES (?, ?, ?) "
+            "ON CONFLICT (locale, asin) DO UPDATE SET "
+            "surfaced_on = MAX(surfaced_on, excluded.surfaced_on)",
+            surfaced,
+        )

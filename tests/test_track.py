@@ -13,7 +13,13 @@ import audible_deals.config_store as config_store_mod
 import audible_deals.scheduler as scheduler_mod
 import audible_deals.wishlist as wishlist_mod
 from audible_deals import paths
+from audible_deals.automation_models import TrackRunResult
 from audible_deals.cli import cli
+from audible_deals.price_history import load_price_history
+from audible_deals.refresh_eligibility import (
+    load_refresh_eligibility,
+    mark_refresh_eligible,
+)
 from audible_deals.scheduler import (
     CRON_MARKER,
     SchedulerError,
@@ -25,8 +31,23 @@ from audible_deals.scheduler import (
     track_command,
     uninstall,
 )
+from audible_deals.state_store import (
+    RUN_HISTORY_MAX,
+    TrackState,
+    load_install_record,
+    load_track_state,
+    save_install_record,
+    save_track_state,
+)
 from audible_deals.webhooks import format_webhook_message
 from tests.conftest import make_product
+
+
+def _seed_track_state(runs=(), install=None):
+    """Store tracking state: *runs* newest first, plus an optional install record."""
+    save_track_state(TrackState(runs=list(runs)))
+    if install is not None:
+        save_install_record(install)
 
 
 def _bugfixscheduler_fire_minutes(step: int) -> list[int]:
@@ -156,33 +177,18 @@ class TestTrackRun:
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code == 0, result.output
 
-        state = json.loads(paths.track_state_file().read_text())
-        last = state["run_history"][0]
+        last = load_track_state().runs[0]
         assert last["hits"] == 1
         assert last["wishlist_checked"] == 1
         assert last["error"] is None
         assert last["webhook_sent"] is False
-        assert (paths.history_dir() / "B00TRACK01.json").exists()
+        assert load_price_history("B00TRACK01")
 
     def test_refreshes_recent_history_asins(self, mock_client, tmp_config):
         self._seed_wishlist()
-        paths.seen_asins_file().write_text(json.dumps(["B00EXTRA01"]))
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
         surfaced_on = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
-        (paths.history_dir() / "B00EXTRA01.json").write_text(
-            json.dumps(
-                {
-                    "marketplaces": {
-                        "us": [
-                            {
-                                "date": surfaced_on,
-                                "price": 9.99,
-                                "title": "Extra",
-                            }
-                        ]
-                    }
-                }
-            )
+        mark_refresh_eligible(
+            [make_product(asin="B00EXTRA01", price=9.99)], observed_on=surfaced_on
         )
         mock_client.get_products_batch.side_effect = [
             [make_product(asin="B00TRACK01", price=3.99)],
@@ -194,23 +200,14 @@ class TestTrackRun:
 
         second_call_asins = mock_client.get_products_batch.call_args_list[1][0][0]
         assert second_call_asins == ["B00EXTRA01"]
-        state = json.loads(paths.track_state_file().read_text())
-        assert state["run_history"][0]["extra_tracked_checked"] == 1
-        eligibility = json.loads(paths.refresh_eligibility_file().read_text())
-        assert eligibility["marketplaces"]["us"]["B00EXTRA01"] == surfaced_on
+        assert load_track_state().runs[0]["extra_tracked_checked"] == 1
+        assert load_refresh_eligibility()["us"]["B00EXTRA01"] == surfaced_on
 
     def test_skips_stale_history_asins(self, mock_client, tmp_config):
         self._seed_wishlist()
-        paths.history_dir().mkdir(parents=True, exist_ok=True)
         old = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
-        (paths.history_dir() / "B00STALE01.json").write_text(
-            json.dumps(
-                {
-                    "marketplaces": {
-                        "us": [{"date": old, "price": 9.99, "title": "Stale"}]
-                    }
-                }
-            )
+        mark_refresh_eligible(
+            [make_product(asin="B00STALE01", price=9.99)], observed_on=old
         )
         mock_client.get_products_batch.return_value = [
             make_product(asin="B00TRACK01", price=3.99)
@@ -228,7 +225,7 @@ class TestTrackRun:
         with run_lock():
             result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code == 0, result.output
-        assert not paths.track_state_file().exists()
+        assert load_track_state().runs == []
 
     def test_error_recorded_in_state(self, mock_client, tmp_config):
         self._seed_wishlist()
@@ -236,8 +233,7 @@ class TestTrackRun:
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
-        state = json.loads(paths.track_state_file().read_text())
-        assert "auth expired" in state["run_history"][0]["error"]
+        assert "auth expired" in load_track_state().runs[0]["error"]
 
 
 class TestTrackInstall:
@@ -253,9 +249,9 @@ class TestTrackInstall:
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "install", "--every", "2h"])
         assert result.exit_code == 0, result.output
-        state = json.loads(paths.track_state_file().read_text())
-        assert state["install"]["every"] == "2h"
-        assert state["install"]["interval_s"] == 7200
+        install = load_install_record()
+        assert install["every"] == "2h"
+        assert install["interval_s"] == 7200
 
     def test_rejects_tiny_interval(self, tmp_config):
         runner = CliRunner()
@@ -296,17 +292,73 @@ class TestTrackInstall:
         assert cfg["webhook_format"] == "slack"
 
 
+class TestInstallRecordIsIndependentOfRunState:
+    """install/uninstall used to load the whole track state, edit it and write it
+    back without the run lock, so a concurrent run's history could be lost."""
+
+    def _seed(self):
+        save_track_state(
+            TrackState(
+                refresh_cursors={
+                    "us": {"surfaced_on": "2026-01-02", "asin": "B00CURSOR1"}
+                },
+                monitor_cursor=2,
+                runs=[{"at": "2026-01-01T10:00:00", "hits": 1}],
+            )
+        )
+
+    def test_install_leaves_runs_and_cursors_alone(self, tmp_config, monkeypatch):
+        import audible_deals.cli.track as track_mod
+
+        self._seed()
+        monkeypatch.setattr(
+            track_mod.scheduler, "install", lambda interval, log: "fake"
+        )
+
+        result = CliRunner().invoke(cli, ["track", "install", "--every", "2h"])
+
+        assert result.exit_code == 0, result.output
+        state = load_track_state()
+        assert state.monitor_cursor == 2
+        assert state.refresh_cursors["us"]["asin"] == "B00CURSOR1"
+        assert [run["at"] for run in state.runs] == ["2026-01-01T10:00:00"]
+
+    def test_uninstall_leaves_runs_and_cursors_alone(self, tmp_config, monkeypatch):
+        import audible_deals.cli.track as track_mod
+
+        self._seed()
+        save_install_record({"every": "6h"})
+        monkeypatch.setattr(track_mod.scheduler, "uninstall", lambda: True)
+
+        result = CliRunner().invoke(cli, ["track", "uninstall"])
+
+        assert result.exit_code == 0, result.output
+        assert load_install_record() is None
+        assert load_track_state().monitor_cursor == 2
+        assert len(load_track_state().runs) == 1
+
+    def test_a_run_saved_after_install_keeps_the_install_record(
+        self, tmp_config, monkeypatch
+    ):
+        save_install_record({"every": "6h", "method": "cron"})
+
+        state = load_track_state()
+        state.add_run({"at": "2026-01-03T10:00:00", "hits": 0})
+        save_track_state(state)
+
+        assert load_install_record() == {"every": "6h", "method": "cron"}
+
+
 class TestTrackUninstall:
     def test_removes_install_record(self, tmp_config, monkeypatch):
         import audible_deals.cli.track as track_mod
 
         monkeypatch.setattr(track_mod.scheduler, "uninstall", lambda: True)
-        paths.track_state_file().write_text(json.dumps({"install": {"every": "6h"}}))
+        _seed_track_state(install={"every": "6h"})
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "uninstall"])
         assert result.exit_code == 0, result.output
-        state = json.loads(paths.track_state_file().read_text())
-        assert "install" not in state
+        assert load_install_record() is None
 
     def test_nothing_installed(self, tmp_config, monkeypatch):
         import audible_deals.cli.track as track_mod
@@ -334,20 +386,17 @@ class TestTrackStatus:
         import audible_deals.cli.track as track_mod
 
         monkeypatch.setattr(track_mod.scheduler, "installed", lambda: (True, "plist"))
-        paths.track_state_file().write_text(
-            json.dumps(
+        _seed_track_state(
+            install={"every": "6h", "method": "launchd agent"},
+            runs=[
                 {
-                    "install": {"every": "6h", "method": "launchd agent"},
-                    "last_run": {
-                        "at": "2026-06-09T08:00:00",
-                        "duration_s": 4.2,
-                        "wishlist_checked": 3,
-                        "extra_tracked_checked": 7,
-                        "hits": 1,
-                        "error": None,
-                    },
+                    "at": "2026-06-09T08:00:00",
+                    "duration_s": 4.2,
+                    "wishlist_checked": 3,
+                    "extra_tracked_checked": 7,
+                    "hits": 1,
                 }
-            )
+            ],
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "status"])
@@ -360,13 +409,9 @@ class TestTrackStatus:
         import audible_deals.cli.track as track_mod
 
         monkeypatch.setattr(track_mod.scheduler, "installed", lambda: (True, "plist"))
-        paths.track_state_file().write_text(
-            json.dumps(
-                {
-                    "install": {"every": "6h", "method": "launchd agent"},
-                    "last_run": {"at": "2026-06-09T08:00:00", "error": "boom"},
-                }
-            )
+        _seed_track_state(
+            install={"every": "6h", "method": "launchd agent"},
+            runs=[{"at": "2026-06-09T08:00:00", "error": "boom"}],
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "status"])
@@ -406,51 +451,76 @@ class TestWebhookConfigKeys:
         assert config_store_mod.load_config()["webhook_format"] == "ntfy"
 
 
-class TestRunHistoryHelpers:
-    def test_append_inserts_newest_first(self):
-        from audible_deals.track_service import append_run
+class TestRunHistoryState:
+    def test_add_run_inserts_newest_first(self):
+        state = TrackState()
+        state.add_run({"at": "2026-01-01", "error": None})
+        state.add_run({"at": "2026-01-02", "error": None})
+        assert [run["at"] for run in state.runs] == ["2026-01-02", "2026-01-01"]
 
-        state: dict = {}
-        append_run(state, {"at": "2026-01-01", "error": None})
-        append_run(state, {"at": "2026-01-02", "error": None})
-        assert state["run_history"][0]["at"] == "2026-01-02"
-        assert state["run_history"][1]["at"] == "2026-01-01"
-        assert "last_run" not in state
-
-    def test_append_caps_at_max(self):
-        from audible_deals.track_service import RUN_HISTORY_MAX, append_run
-
-        state: dict = {}
+    def test_add_run_caps_at_max(self):
+        state = TrackState()
         for i in range(RUN_HISTORY_MAX + 3):
-            append_run(state, {"at": f"2026-01-{i + 1:02d}", "error": None})
-        assert len(state["run_history"]) == RUN_HISTORY_MAX
+            state.add_run({"at": f"2026-01-{i + 1:02d}", "error": None})
+        assert len(state.runs) == RUN_HISTORY_MAX
+        assert state.runs[0]["at"] == f"2026-01-{RUN_HISTORY_MAX + 3:02d}"
 
-    def test_append_removes_legacy_last_run(self):
-        from audible_deals.track_service import append_run
+    def test_saved_runs_come_back_newest_first_and_capped(self, tmp_config):
+        state = TrackState()
+        for i in range(RUN_HISTORY_MAX + 2):
+            state.add_run({"at": f"2026-01-{i + 1:02d}"})
+        save_track_state(state)
+        loaded = load_track_state().runs
+        assert [run["at"] for run in loaded] == [run["at"] for run in state.runs]
+        assert len(loaded) == RUN_HISTORY_MAX
 
-        state: dict = {"last_run": {"at": "2025-12-31", "error": None}}
-        append_run(state, {"at": "2026-01-01", "error": None})
-        assert "last_run" not in state
-        assert state["run_history"][0]["at"] == "2026-01-01"
+    def test_sparse_failure_records_stay_sparse(self, tmp_config):
+        state = TrackState()
+        state.add_run({"at": "2026-01-01T10:00:00", "duration_s": 0.1, "error": "boom"})
+        save_track_state(state)
+        assert load_track_state().runs == [
+            {"at": "2026-01-01T10:00:00", "duration_s": 0.1, "error": "boom"}
+        ]
 
-    def test_run_history_returns_new_format(self):
-        from audible_deals.cli.track import _run_history
+    def test_full_records_round_trip_their_types(self, tmp_config):
+        record = TrackRunResult(
+            at="2026-01-01T10:00:00",
+            duration_s=1.5,
+            hits=2,
+            webhook_sent=True,
+            monitor_failures=("m: boom",),
+        ).to_dict()
+        state = TrackState()
+        state.add_run(record)
+        save_track_state(state)
+        assert load_track_state().runs == [record]
 
-        state = {"run_history": [{"at": "2026-01-02"}, {"at": "2026-01-01"}]}
-        assert _run_history(state)[0]["at"] == "2026-01-02"
+    def test_cursors_and_flags_round_trip(self, tmp_config):
+        state = TrackState(
+            refresh_cursors={"us": {"surfaced_on": "2026-01-02", "asin": "B00ABC1234"}},
+            monitor_cursor=3,
+            auth_error_notified=True,
+        )
+        save_track_state(state)
+        loaded = load_track_state()
+        assert loaded.refresh_cursors == state.refresh_cursors
+        assert loaded.monitor_cursor == 3
+        assert loaded.auth_error_notified is True
 
-    def test_run_history_falls_back_to_last_run(self):
-        from audible_deals.cli.track import _run_history
+    def test_install_record_is_independent_of_run_state(self, tmp_config):
+        save_install_record({"every": "6h"})
+        save_track_state(TrackState(monitor_cursor=2))
+        assert load_install_record() == {"every": "6h"}
+        save_install_record(None)
+        assert load_track_state().monitor_cursor == 2
+        assert load_install_record() is None
 
-        state = {"last_run": {"at": "2026-01-01", "error": None}}
-        result = _run_history(state)
-        assert len(result) == 1
-        assert result[0]["at"] == "2026-01-01"
-
-    def test_run_history_empty_state(self):
-        from audible_deals.cli.track import _run_history
-
-        assert _run_history({}) == []
+    def test_empty_state(self, tmp_config):
+        loaded = load_track_state()
+        assert loaded.runs == []
+        assert loaded.refresh_cursors == {}
+        assert loaded.monitor_cursor == 0
+        assert loaded.auth_error_notified is False
 
 
 class TestTrackStatusHistory:
@@ -460,29 +530,23 @@ class TestTrackStatusHistory:
         monkeypatch.setattr(
             track_mod.scheduler, "installed", lambda: (False, "nowhere")
         )
-        paths.track_state_file().write_text(
-            json.dumps(
+        _seed_track_state(
+            runs=[
                 {
-                    "run_history": [
-                        {
-                            "at": "2026-06-10T10:00:00",
-                            "duration_s": 3.5,
-                            "wishlist_checked": 2,
-                            "extra_tracked_checked": 5,
-                            "hits": 0,
-                            "error": None,
-                        },
-                        {
-                            "at": "2026-06-10T04:00:00",
-                            "duration_s": 2.1,
-                            "wishlist_checked": 2,
-                            "extra_tracked_checked": 5,
-                            "hits": 1,
-                            "error": None,
-                        },
-                    ]
-                }
-            )
+                    "at": "2026-06-10T10:00:00",
+                    "duration_s": 3.5,
+                    "wishlist_checked": 2,
+                    "extra_tracked_checked": 5,
+                    "hits": 0,
+                },
+                {
+                    "at": "2026-06-10T04:00:00",
+                    "duration_s": 2.1,
+                    "wishlist_checked": 2,
+                    "extra_tracked_checked": 5,
+                    "hits": 1,
+                },
+            ]
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "status", "--history"])
@@ -497,18 +561,8 @@ class TestTrackStatusHistory:
         monkeypatch.setattr(
             track_mod.scheduler, "installed", lambda: (False, "nowhere")
         )
-        paths.track_state_file().write_text(
-            json.dumps(
-                {
-                    "run_history": [
-                        {
-                            "at": "2026-06-10T10:00:00",
-                            "duration_s": 1.0,
-                            "error": "boom",
-                        },
-                    ]
-                }
-            )
+        _seed_track_state(
+            runs=[{"at": "2026-06-10T10:00:00", "duration_s": 1.0, "error": "boom"}]
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["track", "status", "--history"])
@@ -518,13 +572,9 @@ class TestTrackStatusHistory:
 
 class TestDoctorTrackStreak:
     def _write_state_with_runs(self, runs):
-        paths.track_state_file().write_text(
-            json.dumps(
-                {
-                    "install": {"every": "6h", "interval_s": 21600, "method": "fake"},
-                    "run_history": runs,
-                }
-            )
+        _seed_track_state(
+            runs=runs,
+            install={"every": "6h", "interval_s": 21600, "method": "fake"},
         )
 
     def test_single_failure_shows_plain_fail(self, tmp_config, monkeypatch):

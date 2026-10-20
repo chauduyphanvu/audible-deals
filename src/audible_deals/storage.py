@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import locale
 import logging
 import os
 import tempfile
@@ -23,13 +24,30 @@ def _fsync_parent(path: Path) -> None:
         os.close(fd)
 
 
+def read_text(path: Path) -> str:
+    """Read a state file as UTF-8 (a BOM is tolerated).
+
+    Earlier releases wrote the platform's locale encoding, which is not UTF-8
+    on some Windows setups, so a file that is not valid UTF-8 is retried in
+    that encoding before giving up.
+    """
+    raw = path.read_bytes()
+    try:
+        return raw.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        fallback = locale.getpreferredencoding(False)
+        if fallback.lower().replace("-", "").replace("_", "") in {"utf8", "ascii"}:
+            raise
+        return raw.decode(fallback)
+
+
 def _atomic_write(path: Path, content: str, *, durable: bool = False) -> None:
-    """Write content to path atomically via temp file + rename."""
+    """Write content to path atomically via temp file + rename (UTF-8)."""
     path.parent.mkdir(parents=True, exist_ok=True)
     fd, tmp = tempfile.mkstemp(dir=path.parent, prefix=".tmp-")
     replaced = False
     try:
-        with os.fdopen(fd, "w") as f:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(content)
             if durable:
                 f.flush()
@@ -111,7 +129,7 @@ def _parse_json_file(path: Path, expected_type: type) -> Any | None:
     with a short human-readable detail that includes the parse position.
     """
     try:
-        text = path.read_text()
+        text = read_text(path)
     except FileNotFoundError:
         return None
     except UnicodeDecodeError as exc:

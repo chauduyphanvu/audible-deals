@@ -3,25 +3,25 @@
 from __future__ import annotations
 
 import difflib
-import json
 import logging
 import math
 import re
-import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from audible_deals import cache_store as _cache_store
 from audible_deals import constants as _constants
-from audible_deals import paths
+from audible_deals import paths as _paths
 from audible_deals import product as _product
 from audible_deals.audible_transport import AudibleTransport as _AudibleTransport
 from audible_deals.auth_store import AuthStore as _AuthStore
-from audible_deals.storage import _atomic_write
 
 logger = logging.getLogger(__name__)
+
+_CATEGORIES_NAMESPACE = "categories"
 
 
 _CATEGORY_ID_RE = re.compile(r"^[A-Za-z0-9_]{1,30}$")
@@ -83,7 +83,7 @@ class DealsClient:
     """Audible API client for catalog browsing."""
 
     def __init__(self, auth_file: Path | None = None, locale: str = "us"):
-        self.auth_file = paths.auth_file() if auth_file is None else auth_file
+        self.auth_file = _paths.auth_file() if auth_file is None else auth_file
         self.locale = locale
         self._auth_store = _AuthStore(self.auth_file, locale)
         self._transport = _AudibleTransport(self._auth_store)
@@ -553,43 +553,19 @@ class DealsClient:
             return category_id
 
     def _load_categories_cache(self) -> list[dict[str, str]] | None:
-        """Load top-level categories from disk cache if fresh."""
-        cache_file = paths.categories_cache_file(self.locale)
-        if not cache_file.exists():
-            logger.debug("categories cache miss (no file): %s", cache_file)
-            return None
-        try:
-            data = json.loads(cache_file.read_text())
-            if not isinstance(data, dict):
-                raise ValueError("categories cache is not a dict")
-            age = time.time() - data.get("ts", 0)
-            if age < _constants.CATEGORIES_CACHE_TTL:
-                logger.debug(
-                    "categories cache hit (%s, age=%.0fs, %d items)",
-                    cache_file,
-                    age,
-                    len(data.get("categories", [])),
-                )
-                return data["categories"]
-            logger.debug(
-                "categories cache stale (age=%.0fs > %ds)",
-                age,
-                _constants.CATEGORIES_CACHE_TTL,
-            )
-        except (json.JSONDecodeError, KeyError, ValueError):
-            logger.warning("categories cache corrupt: %s", cache_file, exc_info=True)
+        """Top-level categories from the disk cache, when fresh."""
+        cached = _cache_store.get(
+            _CATEGORIES_NAMESPACE,
+            self.locale,
+            max_age_s=_constants.CATEGORIES_CACHE_TTL,
+        )
+        if isinstance(cached, list) and all(isinstance(item, dict) for item in cached):
+            return cached
         return None
 
     def _save_categories_cache(self, categories: list[dict[str, str]]) -> None:
-        """Persist top-level categories to disk."""
-        cache_file = paths.categories_cache_file(self.locale)
-        _atomic_write(
-            cache_file,
-            json.dumps({"ts": time.time(), "categories": categories}, allow_nan=False),
-        )
-        logger.debug(
-            "categories cache saved (%s, %d items)", cache_file, len(categories)
-        )
+        """Persist top-level categories to the disk cache."""
+        _cache_store.put(_CATEGORIES_NAMESPACE, self.locale, categories)
 
     def get_categories(self, root: str = "") -> list[dict[str, str]]:
         """Get category listing. Returns list of {id, name} dicts.

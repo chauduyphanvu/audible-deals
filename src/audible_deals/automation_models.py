@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import copy
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Literal
 
@@ -91,55 +91,12 @@ class MonitorDefinition:
 
 @dataclass(frozen=True)
 class MonitorSnapshot:
+    """What a monitor last saw: the baseline its next run is compared against."""
+
     initialized: bool = False
     products: dict[str, dict] = field(default_factory=dict)
     last_success: str | None = None
     last_error: str | None = None
-    unknown_fields: dict[str, Any] = field(default_factory=dict, repr=False)
-    present_fields: frozenset[str] = field(default_factory=frozenset, repr=False)
-
-    _KNOWN = frozenset({"initialized", "products", "last_success", "last_error"})
-
-    @classmethod
-    def from_dict(cls, data: object) -> MonitorSnapshot:
-        if not isinstance(data, dict):
-            return cls()
-        products = data.get("products", {})
-        if not isinstance(products, dict):
-            return cls()
-        valid_products = {
-            asin: _copy(product)
-            for asin, product in products.items()
-            if isinstance(asin, str) and isinstance(product, dict)
-        }
-        return cls(
-            initialized=bool(data.get("initialized")),
-            products=valid_products,
-            last_success=data.get("last_success")
-            if isinstance(data.get("last_success"), str)
-            else None,
-            last_error=data.get("last_error")
-            if isinstance(data.get("last_error"), str)
-            else None,
-            unknown_fields={
-                key: _copy(value)
-                for key, value in data.items()
-                if key not in cls._KNOWN
-            },
-            present_fields=frozenset(key for key in data if key in cls._KNOWN),
-        )
-
-    def to_dict(self, *, initialized: bool = False) -> dict[str, Any]:
-        values = {
-            "initialized": self.initialized,
-            "products": _copy(self.products),
-            "last_success": self.last_success,
-            "last_error": self.last_error,
-        }
-        present = self._KNOWN if initialized else self.present_fields
-        result = _copy(self.unknown_fields)
-        result.update({key: _copy(values[key]) for key in values if key in present})
-        return result
 
 
 @dataclass(frozen=True)
@@ -235,78 +192,13 @@ class TrackRunResult:
     monitor_failures: tuple[str, ...] = ()
     error: str | None = None
     wishlist_issues: tuple[Any, ...] = field(default_factory=tuple, repr=False)
-    unknown_fields: dict[str, Any] = field(default_factory=dict, repr=False)
-    present_fields: frozenset[str] | None = field(default=None, repr=False)
-
-    _FIELDS = (
-        "at",
-        "duration_s",
-        "wishlist_checked",
-        "author_watches_checked",
-        "extra_tracked_checked",
-        "hits",
-        "suppressed",
-        "webhook_sent",
-        "monitors_checked",
-        "monitors_scheduled",
-        "monitor_events",
-        "monitor_failures",
-        "error",
-    )
-
-    @classmethod
-    def from_dict(cls, data: dict[str, Any]) -> TrackRunResult:
-        failures = data.get("monitor_failures", ())
-        if not isinstance(failures, (list, tuple)):
-            failures = ()
-        return cls(
-            at=data.get("at", ""),
-            duration_s=data.get("duration_s", 0),
-            wishlist_checked=data.get("wishlist_checked", 0),
-            author_watches_checked=data.get("author_watches_checked", 0),
-            extra_tracked_checked=data.get("extra_tracked_checked", 0),
-            hits=data.get("hits", 0),
-            suppressed=data.get("suppressed", 0),
-            webhook_sent=bool(data.get("webhook_sent", False)),
-            monitors_checked=data.get("monitors_checked", 0),
-            monitors_scheduled=data.get("monitors_scheduled", 0),
-            monitor_events=data.get("monitor_events", 0),
-            monitor_failures=tuple(failures),
-            error=data.get("error"),
-            unknown_fields={
-                key: _copy(value)
-                for key, value in data.items()
-                if key not in cls._FIELDS
-            },
-            present_fields=frozenset(key for key in data if key in cls._FIELDS),
-        )
 
     def to_dict(self) -> dict[str, Any]:
-        values = {
-            "at": self.at,
-            "duration_s": self.duration_s,
-            "wishlist_checked": self.wishlist_checked,
-            "author_watches_checked": self.author_watches_checked,
-            "extra_tracked_checked": self.extra_tracked_checked,
-            "hits": self.hits,
-            "suppressed": self.suppressed,
-            "webhook_sent": self.webhook_sent,
-            "monitors_checked": self.monitors_checked,
-            "monitors_scheduled": self.monitors_scheduled,
-            "monitor_events": self.monitor_events,
-            "monitor_failures": list(self.monitor_failures),
-            "error": self.error,
-        }
-        present = (
-            frozenset(self._FIELDS)
-            if self.present_fields is None
-            else self.present_fields
-        )
-        result = _copy(self.unknown_fields)
-        result.update(
-            {key: _copy(values[key]) for key in self._FIELDS if key in present}
-        )
-        return result
+        """The record kept in the run history (everything except the issues)."""
+        record = asdict(self)
+        del record["wishlist_issues"]
+        record["monitor_failures"] = list(self.monitor_failures)
+        return record
 
     def summary(self) -> str:
         text = (

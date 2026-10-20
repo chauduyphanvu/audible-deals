@@ -15,7 +15,6 @@ from audible_deals.price_history import (
     find_wishlist_atl_hits,
     find_wishlist_hits,
     has_price_history,
-    load_all_price_histories,
     scan_price_changes,
 )
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
@@ -105,8 +104,7 @@ def run_recap(
     )
     if json_flag:
         console.file = sys.stderr
-    histories = load_all_price_histories(locale)
-    drops, new_items = scan_price_changes(days, histories=histories)
+    drops, new_items = scan_price_changes(days, locale=locale)
     if not drops and not new_items and not has_price_history(locale):
         if json_flag:
             empty = empty_recap_payload(days, atl or atl_all)
@@ -118,9 +116,7 @@ def run_recap(
         return
     wishlist_hits = find_wishlist_hits(locale)
     if atl_all:
-        atl_hits: list[dict] | None = find_all_atl_hits(
-            histories=histories, locale=locale
-        )
+        atl_hits: list[dict] | None = find_all_atl_hits(locale=locale)
     elif atl:
         atl_hits = find_wishlist_atl_hits(locale)
     else:

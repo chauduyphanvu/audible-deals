@@ -251,6 +251,11 @@ class _HandleAuthErrors(click.Group):
         except Exception as exc:
             if _is_state_file_error(exc):
                 raise click.ClickException(_safe_text(exc)) from exc
+            if _is_database_error(exc):
+                raise click.ClickException(
+                    f"Local database error: {_safe_text(exc)}. "
+                    "Run 'deals doctor' to check it."
+                ) from exc
             if not _is_audible_request_error(exc):
                 raise
             raise click.ClickException(
@@ -294,6 +299,13 @@ def _is_audible_request_error(exc: Exception) -> bool:
     exceptions_module = sys.modules.get("audible.exceptions")
     request_error = getattr(exceptions_module, "RequestError", None)
     return isinstance(request_error, type) and isinstance(exc, request_error)
+
+
+def _is_database_error(exc: Exception) -> bool:
+    """Recognize a SQLite failure without importing sqlite3 during startup."""
+    sqlite_module = sys.modules.get("sqlite3")
+    error_type = getattr(sqlite_module, "Error", None)
+    return isinstance(error_type, type) and isinstance(exc, error_type)
 
 
 def _is_state_file_error(exc: Exception) -> bool:

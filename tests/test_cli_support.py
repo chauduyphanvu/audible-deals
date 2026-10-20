@@ -25,9 +25,10 @@ from audible_deals.settings import (
     resolve_plus_flags,
     resolve_settings,
 )
+from audible_deals.state_store import save_notify_state
 from audible_deals.validation import validate_webhook_url
 from audible_deals.validation import validate_webhook_url as _validate_webhook_url
-from tests.conftest import make_product
+from tests.conftest import make_product, put_raw_session
 
 
 def _resolve_settings(ctx, *, config, profile, cli_flags):
@@ -58,13 +59,13 @@ def _routes_setup_search_mock(mock_client, products):
 
 
 def _routes_seed_last_results(tmp_config, products):
-    """Write a last_results.json cache file."""
+    """Store a legacy-shaped last-results session."""
 
     data = {
         "title": "Test Results",
         "results": [_serialize_product(p) for p in products],
     }
-    (tmp_config / "last_results.json").write_text(json.dumps(data))
+    put_raw_session(json.dumps(data))
 
 
 class TestSupportRegressions:
@@ -1495,25 +1496,24 @@ class TestDoctorUnknownKeys:
     def test_notify_state_malformed_entry_warns(
         self, tmp_config, mock_client, monkeypatch
     ):
-        """A notify_state.json with a non-dict entry triggers WARN."""
+        """A legacy notify_state.json with a non-dict entry: skipped on import, reported."""
+        import datetime as dt
 
-        paths.notify_state_file().write_text(
-            json.dumps(
-                {"B001": "not-a-dict", "B002": {"date": "2025-01-01", "price": 3.99}}
-            )
+        recent = dt.date.today().isoformat()
+        (tmp_config / "notify_state.json").write_text(
+            json.dumps({"B001": "not-a-dict", "B002": {"date": recent, "price": 3.99}})
         )
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
-        assert "Notify-state health" in result.output
-        assert "WARN" in result.output
-        assert "malformed" in result.output
+        output = " ".join(result.output.split())
+        assert "Notify-state health" in output
+        assert "1 suppressed ASIN(s) tracked" in output
+        assert "JSON migration" in output
+        assert "skipped 1 unusable item(s)" in output
 
     def test_notify_state_stale_entry_warns(self, tmp_config, mock_client, monkeypatch):
-        """A notify_state.json entry with a date >365 days old triggers WARN."""
-
-        paths.notify_state_file().write_text(
-            json.dumps({"B003": {"date": "2000-01-01", "price": 1.99}})
-        )
+        """A notify_state entry with a date >365 days old triggers WARN."""
+        save_notify_state({"B003": {"date": "2000-01-01", "price": 1.99}})
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Notify-state health" in result.output
@@ -1525,18 +1525,14 @@ class TestDoctorUnknownKeys:
         import datetime as dt
 
         recent = dt.date.today().isoformat()
-        paths.notify_state_file().write_text(
-            json.dumps({"B004": {"date": recent, "price": 2.99}})
-        )
+        save_notify_state({"B004": {"date": recent, "price": 2.99}})
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Notify-state health" in result.output
         assert "1 suppressed ASIN(s) tracked" in result.output
 
     def test_notify_state_empty_passes(self, tmp_config, mock_client, monkeypatch):
-        """An empty notify_state.json shows PASS with 'No entries'."""
-
-        paths.notify_state_file().write_text(json.dumps({}))
+        """No notify state shows PASS with 'No entries'."""
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         assert "Notify-state health" in result.output

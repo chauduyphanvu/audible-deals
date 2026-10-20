@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import time
 from unittest.mock import MagicMock
 
@@ -110,26 +111,34 @@ def test_doctor_reports_invalid_profile_and_monitor_settings(tmp_config, monkeyp
 @pytest.mark.parametrize(
     ("payload", "detail"),
     [
-        ("not json", "Expecting value"),
-        (json.dumps({"asin": "A1"}), "Expected a list"),
-        (json.dumps(["A1", 2]), "Expected every entry to be a string"),
+        ("not json", "dismissed_asins.json is not valid JSON"),
+        (
+            json.dumps({"asin": "A1"}),
+            "dismissed_asins.json does not hold the expected data",
+        ),
     ],
 )
-def test_doctor_strictly_fails_invalid_dismissed_state(tmp_config, payload, detail):
-    paths.dismissed_asins_file().write_text(payload)
+def test_doctor_reports_an_unusable_legacy_dismissed_file_without_failing(
+    tmp_config, payload, detail
+):
+    (tmp_config / "dismissed_asins.json").write_text(payload)
 
     result = CliRunner().invoke(cli, ["doctor"])
     output = " ".join(result.output.split())
 
-    assert result.exit_code == 1
-    assert "Dismissed-ASINs state" in output
-    assert "FAIL" in output
+    assert "JSON migration" in output
+    assert "WARN" in output
     assert detail in output
+    assert re.search(r"Dismissed-ASINs state\s*│\s*✓ PASS", result.output)
+    # The original is kept, not deleted or overwritten.
+    assert (tmp_config / "dismissed_asins.json.migrated").read_text() == payload
 
 
 def test_doctor_passes_missing_and_valid_dismissed_state(tmp_config):
+    from audible_deals.results_cache import save_dismissed_asins
+
     missing = CliRunner().invoke(cli, ["doctor"])
-    paths.dismissed_asins_file().write_text(json.dumps(["A1", "A2", "A1"]))
+    save_dismissed_asins({"A1", "A2"})
     valid = CliRunner().invoke(cli, ["doctor"])
 
     assert "Dismissed-ASINs state" in missing.output

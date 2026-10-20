@@ -9,7 +9,6 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
-from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.filtering import (
     filter_products as _typed_filter_products,
@@ -30,7 +29,7 @@ from audible_deals.result_models import (
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, put_raw_session
 
 
 def _filter_products(products, **values):
@@ -145,9 +144,7 @@ class TestExcludeAuthorFilter:
                 series_position="",
             ),
         ]
-        paths.last_results_file().write_text(
-            json.dumps([_serialize_product(p) for p in products])
-        )
+        put_raw_session(json.dumps([_serialize_product(p) for p in products]))
         out_file = tmp_config / "last_excl_author.json"
         runner = CliRunner()
         result = runner.invoke(
@@ -326,9 +323,7 @@ class TestAuthorFilter:
                 series_position="",
             ),
         ]
-        paths.last_results_file().write_text(
-            json.dumps([_serialize_product(p) for p in products])
-        )
+        put_raw_session(json.dumps([_serialize_product(p) for p in products]))
         out_file = tmp_config / "last_author.json"
         runner = CliRunner()
         result = runner.invoke(
@@ -475,9 +470,7 @@ class TestExcludeNarratorFilter:
                 series_position="",
             ),
         ]
-        paths.last_results_file().write_text(
-            json.dumps([_serialize_product(p) for p in products])
-        )
+        put_raw_session(json.dumps([_serialize_product(p) for p in products]))
         out_file = tmp_config / "last_excl_narrator.json"
         runner = CliRunner()
         result = runner.invoke(

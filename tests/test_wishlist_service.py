@@ -366,14 +366,14 @@ def test_bugfixwishlist_mutation_loader_refuses_unreadable_wishlist(
     tmp_config, monkeypatch
 ):
     paths.wishlist_file().write_text("[]")
-    original_read_text = Path.read_text
+    original_read_bytes = Path.read_bytes
 
     def fail_read(path, *args, **kwargs):
         if path == paths.wishlist_file():
             raise OSError("permission denied")
-        return original_read_text(path, *args, **kwargs)
+        return original_read_bytes(path, *args, **kwargs)
 
-    monkeypatch.setattr(Path, "read_text", fail_read)
+    monkeypatch.setattr(Path, "read_bytes", fail_read)
 
     with pytest.raises(
         wishlist_mod.WishlistMutationError, match="Cannot modify wishlist"

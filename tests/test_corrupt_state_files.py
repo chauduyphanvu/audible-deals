@@ -230,13 +230,15 @@ def test_valid_files_still_round_trip(tmp_config):
     assert set(load_profiles()) == {"keep", "new"}
 
 
-def test_dismissals_are_not_replaced_when_the_file_is_corrupt(tmp_config):
-    before = _write(paths.dismissed_asins_file(), '["B000000001", ')
+def test_a_corrupt_legacy_dismissals_file_is_kept_byte_for_byte(tmp_config):
+    legacy = paths.data_dir() / "dismissed_asins.json"
+    before = _write(legacy, '["B000000001", ')
 
-    with pytest.raises(StateFileError, match="dismissed ASINs"):
-        save_dismissed_asins({"B000000002"})
+    save_dismissed_asins({"B000000002"})  # the first database use imports the file
 
-    assert paths.dismissed_asins_file().read_bytes() == before
+    assert load_dismissed_asins() == {"B000000002"}
+    assert (paths.data_dir() / "dismissed_asins.json.migrated").read_bytes() == before
+    assert not legacy.exists()
 
 
 def test_ensure_updatable_accepts_matching_documents(tmp_path):
@@ -315,7 +317,7 @@ def test_read_only_monitor_listing_leaves_corrupt_file_alone(tmp_config):
     assert paths.monitors_file().read_bytes() == before
 
 
-def test_dismissed_asins_read_path_is_still_tolerant(tmp_config):
-    _write(paths.dismissed_asins_file(), "[")
+def test_corrupt_legacy_dismissals_read_as_empty(tmp_config):
+    _write(paths.data_dir() / "dismissed_asins.json", "[")
 
     assert load_dismissed_asins() == set()

@@ -113,9 +113,9 @@ Each run:
 - refreshes up to 200 eligible recent-result ASINs for the current marketplace;
 - records history and sends target-price alerts;
 - applies a one-day alert cooldown unless the price falls further; and
-- stores the last 10 run summaries in `track_state.json`.
+- stores the last 10 run summaries in `state.db`.
 
-Finite-price products become refresh-eligible only when presented. Eligibility is marketplace-specific and lasts through 30 days after presentation. On first use, the store migrates only ASINs in both the legacy seen list and valid numeric history, using each marketplace's latest history date.
+Finite-price products become refresh-eligible only when presented. Eligibility is marketplace-specific and lasts through 30 days after presentation. When upgrading from the JSON files of earlier releases, the import derives the store only for ASINs in both the old seen list and valid numeric history, using each marketplace's latest history date (see [Upgrading from JSON files](commands.md#upgrading-from-json-files)).
 
 Extra refreshes exclude wishlist and globally dismissed ASINs. Candidates are ordered by oldest presentation date and ASIN, then selected with a stable, wrapping cursor so changes cannot starve later entries. Wishlist entries remain active even when dismissed or older than 30 days. Background refreshes record history without extending eligibility.
 
@@ -128,7 +128,7 @@ deals monitor list
 deals monitor test sci-fi-steals
 ```
 
-The first successful monitor run is a silent baseline. Later runs alert on new matches and price drops. Monitor definitions and independent snapshots live in `monitors.json` and `monitor_state.json`; enabled monitors rotate through a shared 60 catalog-page-call budget per scheduled run.
+The first successful monitor run is a silent baseline. Later runs alert on new matches and price drops. Monitor definitions live in `monitors.json` and each monitor's independent snapshot in `state.db`; enabled monitors rotate through a shared 60 catalog-page-call budget per scheduled run.
 
 Runs share a cross-process lock with `notify`, so overlapping schedules exit cleanly. Authentication failures are recorded and can trigger a one-time reauthentication alert. `deals doctor` reports three or more consecutive tracking failures.
 

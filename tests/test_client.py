@@ -15,7 +15,6 @@ from unittest import mock
 import click
 import pytest
 
-from audible_deals import paths
 from audible_deals.audible_transport import AudibleTransport
 from audible_deals.auth_store import AuthStore, _captcha_callback
 from audible_deals.client import DealsClient, _validate_category_id
@@ -239,6 +238,18 @@ class TestParseProduct:
         assert p.rating == 0.0
 
 
+def _store_raw_categories(text: str) -> None:
+    """Put arbitrary text where the client keeps its us category list."""
+    from audible_deals import db
+
+    with db.transaction(db.cache()) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO cache_entries (namespace, key, value, stored_at) "
+            "VALUES ('categories', 'us', ?, ?)",
+            (text, time.time()),
+        )
+
+
 class TestCategoryCache:
     def test_save_and_load(self, tmp_config):
         from audible_deals.client import DealsClient
@@ -275,11 +286,33 @@ class TestCategoryCache:
         assert dc._load_categories_cache() is None
 
     def test_corrupt_cache(self, tmp_config):
-        cache_file = paths.categories_cache_file("us")
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text("not json{{{")
+        _store_raw_categories("not json{{{")
 
         dc = DealsClient(locale="us")
+        assert dc._load_categories_cache() is None
+
+    def test_cache_is_per_marketplace(self, tmp_config):
+        us = DealsClient(locale="us")
+        uk = DealsClient(locale="uk")
+        us._save_categories_cache([{"id": "1", "name": "US"}])
+        uk._save_categories_cache([{"id": "2", "name": "UK"}])
+
+        assert us._load_categories_cache() == [{"id": "1", "name": "US"}]
+        assert uk._load_categories_cache() == [{"id": "2", "name": "UK"}]
+
+    def test_cache_survives_a_new_client(self, tmp_config):
+        DealsClient(locale="us")._save_categories_cache([{"id": "1", "name": "A"}])
+        assert DealsClient(locale="us")._load_categories_cache() == [
+            {"id": "1", "name": "A"}
+        ]
+
+    def test_cache_failures_never_break_the_client(self, tmp_config, monkeypatch):
+        def broken():
+            raise RuntimeError("cache unavailable")
+
+        monkeypatch.setattr("audible_deals.cache_store.db.cache", broken)
+        dc = DealsClient(locale="us")
+        dc._save_categories_cache([{"id": "1", "name": "A"}])  # must not raise
         assert dc._load_categories_cache() is None
 
 
@@ -1202,9 +1235,7 @@ def test_client_does_not_reexport_product_or_transport_internals():
 
 class TestBugfixClientNonDictCategoriesCache:
     def _write_cache(self, content: str) -> None:
-        cache_file = paths.categories_cache_file("us")
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(content)
+        _store_raw_categories(content)
 
     def test_list_content_is_cache_miss(self, tmp_config):
         self._write_cache(json.dumps([1, 2, 3]))

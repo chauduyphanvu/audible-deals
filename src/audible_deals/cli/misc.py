@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import click
 from rich.table import Table
 
-from audible_deals import paths
+from audible_deals import db, json_import, paths
 from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli.helpers import (
     _CL,
@@ -22,7 +22,6 @@ from audible_deals.cli.helpers import (
 from audible_deals.config_store import (
     CONFIG_SCHEMA,
     config_numeric_errors,
-    load_monitor_state,
     load_monitors,
 )
 from audible_deals.constants import product_url
@@ -41,6 +40,13 @@ from audible_deals.settings import (
     profile_validation_error,
     resolve_plus_flags,
 )
+from audible_deals.state_store import (
+    load_install_record,
+    load_notify_state,
+    load_track_state,
+    monitor_summaries,
+)
+from audible_deals.storage import read_text
 from audible_deals.wishlist import inspect_wishlist
 
 
@@ -49,7 +55,7 @@ def _reject_json_constant(value: str):
 
 
 def _load_raw_json(path: Path, expected_type: type):
-    data = json_mod.loads(path.read_text(), parse_constant=_reject_json_constant)
+    data = json_mod.loads(read_text(path), parse_constant=_reject_json_constant)
     if not isinstance(data, expected_type):
         json_names: dict[type, str] = {dict: "object", list: "array"}
         expected_name = json_names.get(expected_type, expected_type.__name__)
@@ -143,7 +149,7 @@ def _login_callback(via_file: Path | None, open_browser: bool):
                     click.echo(
                         "Warning: callback file is readable by other users.", err=True
                     )
-                callback_url = via_file.read_text().strip()
+                callback_url = read_text(via_file).strip()
             except OSError as exc:
                 raise click.ClickException(
                     f"Could not read callback file: {exc}"
@@ -401,7 +407,7 @@ def _config_checks() -> list[_Row]:
     rows: list[_Row] = []
     if paths.config_file().exists():
         try:
-            cfg = json_mod.loads(paths.config_file().read_text())
+            cfg = json_mod.loads(read_text(paths.config_file()))
             if not isinstance(cfg, dict):
                 rows.append(
                     (
@@ -485,39 +491,101 @@ def _config_checks() -> list[_Row]:
     return rows
 
 
+def _database_checks() -> list[_Row]:
+    """Health of state.db and cache.db and of the one-time import of the old JSON files."""
+    rows: list[_Row] = []
+    try:
+        conn = db.state()
+    except Exception as exc:
+        return [("State database", "FAIL", str(exc))]
+    try:
+        verdict = db.quick_check(conn)
+    except Exception as exc:
+        verdict = [str(exc)]
+    size = db.file_size(paths.state_db_file())
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if verdict == ["ok"]:
+        rows.append(
+            (
+                "State database",
+                "PASS",
+                f"schema {version}, {size:,} bytes, integrity check ok",
+            )
+        )
+    else:
+        rows.append(
+            (
+                "State database",
+                "FAIL",
+                f"integrity check failed: {verdict[0]} — move {paths.state_db_file()} "
+                "aside and run any command to start fresh (old JSON files are kept as "
+                "*.migrated if you need them)",
+            )
+        )
+    imported = json_import.summary(conn)
+    if imported is None:
+        rows.append(("JSON migration", "WARN", "Not run yet"))
+    elif imported["renames_pending"]:
+        rows.append(
+            (
+                "JSON migration",
+                "WARN",
+                "Data imported, but these old files could not be renamed yet: "
+                + ", ".join(imported["renames_pending"]),
+            )
+        )
+    elif not imported["sources"]:
+        rows.append(("JSON migration", "PASS", "Nothing to migrate"))
+    else:
+        counts = imported["counts"]
+        detail = (
+            f"Imported {imported['at']} "
+            f"({counts.get('history_entries', 0)} price entries for "
+            f"{counts.get('history_asins', 0)} ASIN(s)); originals kept as *.migrated"
+        )
+        skipped = sum(imported["skipped"].values())
+        if skipped or imported["notes"]:
+            rows.append(
+                (
+                    "JSON migration",
+                    "WARN",
+                    f"{detail}; skipped {skipped} unusable item(s)"
+                    + "".join(f"; {note}" for note in imported["notes"]),
+                )
+            )
+        else:
+            rows.append(("JSON migration", "PASS", detail))
+    try:
+        cache_conn = db.cache()
+        cache_version = cache_conn.execute("PRAGMA user_version").fetchone()[0]
+        rows.append(
+            (
+                "Cache database",
+                "PASS",
+                f"schema {cache_version}, {db.file_size(paths.cache_db_file()):,} bytes "
+                "(disposable; 'deals cache clear' empties it)",
+            )
+        )
+    except Exception as exc:
+        rows.append(("Cache database", "WARN", str(exc)))
+    return rows
+
+
 def _store_checks() -> list[_Row]:
     """Check notify-state health and that local state files are parseable."""
     rows: list[_Row] = []
     try:
-        ns = (
-            _load_raw_json(paths.notify_state_file(), dict)
-            if paths.notify_state_file().exists()
-            else {}
-        )
+        ns = load_notify_state()
         today = datetime.date.today()
-        malformed = 0
         stale = 0
         for entry in ns.values():
-            if not isinstance(entry, dict):
-                malformed += 1
-                continue
             try:
-                d = datetime.date.fromisoformat(entry["date"])
-                age = abs((today - d).days)
-                if age > 365:
+                if abs((today - datetime.date.fromisoformat(entry["date"])).days) > 365:
                     stale += 1
             except (KeyError, ValueError, TypeError):
-                malformed += 1
-                continue
-            if not isinstance(entry.get("price"), (int, float)):
-                malformed += 1
-        if malformed or stale:
-            parts = []
-            if malformed:
-                parts.append(f"{malformed} malformed")
-            if stale:
-                parts.append(f"{stale} stale (>365 days)")
-            rows.append(("Notify-state health", "WARN", "; ".join(parts)))
+                stale += 1
+        if stale:
+            rows.append(("Notify-state health", "WARN", f"{stale} stale (>365 days)"))
         elif ns:
             rows.append(
                 ("Notify-state health", "PASS", f"{len(ns)} suppressed ASIN(s) tracked")
@@ -531,7 +599,7 @@ def _store_checks() -> list[_Row]:
         rows.append(("Wishlist health", "PASS", "No entries"))
     else:
         try:
-            raw_wishlist = json_mod.loads(paths.wishlist_file().read_text())
+            raw_wishlist = json_mod.loads(read_text(paths.wishlist_file()))
         except Exception as e:
             rows.append(("Wishlist health", "FAIL", str(e)))
         else:
@@ -559,43 +627,31 @@ def _store_checks() -> list[_Row]:
                     count = len(inspection.asin_items) + len(inspection.author_items)
                     rows.append(("Wishlist health", "PASS", f"{count} entries"))
 
-    if not paths.dismissed_asins_file().exists():
-        rows.append(("Dismissed-ASINs state", "PASS", "No entries"))
+    try:
+        counts = db.table_counts(db.state(), ("dismissed", "seen"))
+    except Exception as exc:
+        rows.append(("Dismissed-ASINs state", "FAIL", str(exc)))
+        rows.append(("Seen-ASINs state", "FAIL", str(exc)))
     else:
-        try:
-            dismissed = json_mod.loads(paths.dismissed_asins_file().read_text())
-        except Exception as exc:
-            rows.append(("Dismissed-ASINs state", "FAIL", str(exc)))
-        else:
-            if not isinstance(dismissed, list):
-                rows.append(
-                    (
-                        "Dismissed-ASINs state",
-                        "FAIL",
-                        f"Expected a list, got {type(dismissed).__name__}",
-                    )
-                )
-            elif not all(isinstance(asin, str) for asin in dismissed):
-                rows.append(
-                    (
-                        "Dismissed-ASINs state",
-                        "FAIL",
-                        "Expected every entry to be a string",
-                    )
-                )
-            else:
-                rows.append(
-                    (
-                        "Dismissed-ASINs state",
-                        "PASS",
-                        f"{len(set(dismissed))} ASIN(s) dismissed",
-                    )
-                )
+        dismissed = counts["dismissed"]
+        rows.append(
+            (
+                "Dismissed-ASINs state",
+                "PASS",
+                f"{dismissed} ASIN(s) dismissed" if dismissed else "No entries",
+            )
+        )
+        rows.append(
+            (
+                "Seen-ASINs state",
+                "PASS",
+                f"{counts['seen']} ASIN(s) seen" if counts["seen"] else "No entries",
+            )
+        )
 
     for check, path, expected_type in (
         ("Profiles parseable", paths.profiles_file(), dict),
         ("Monitors parseable", paths.monitors_file(), dict),
-        ("Seen-ASINs parseable", paths.seen_asins_file(), list),
     ):
         if not path.exists():
             rows.append((check, "PASS", "No entries"))
@@ -607,15 +663,13 @@ def _store_checks() -> list[_Row]:
                 malformed_entries = [
                     name for name, value in data.items() if not isinstance(value, dict)
                 ]
-            elif path == paths.monitors_file():
+            else:
                 malformed_entries = []
                 for name, value in data.items():
                     try:
                         validated_monitor_definition(value)
                     except MonitorServiceError:
                         malformed_entries.append(name)
-            else:
-                malformed_entries = []
             if malformed_entries:
                 rows.append(
                     (
@@ -629,35 +683,35 @@ def _store_checks() -> list[_Row]:
         except Exception as e:
             rows.append((check, "FAIL", str(e)))
 
-    if paths.history_dir().exists():
-        count = sum(1 for _ in paths.history_dir().glob("*.json"))
-        rows.append(("Price history directory", "PASS", f"{count} ASIN(s) tracked"))
-    else:
-        rows.append(("Price history directory", "PASS", "Not yet created (optional)"))
+    try:
+        history = (
+            db.state()
+            .execute("SELECT COUNT(*), COUNT(DISTINCT asin) FROM price_history")
+            .fetchone()
+        )
+        if history[0]:
+            rows.append(
+                (
+                    "Price history",
+                    "PASS",
+                    f"{history[1]} ASIN(s) tracked, {history[0]} price entries",
+                )
+            )
+        else:
+            rows.append(("Price history", "PASS", "Not recorded yet (optional)"))
+    except Exception as exc:
+        rows.append(("Price history", "FAIL", str(exc)))
 
     return rows
 
 
 def _track_checks() -> list[_Row]:
     """Check background-tracking schedule health."""
-    from audible_deals.cli.track import _run_history
-
-    if paths.track_state_file().exists():
-        try:
-            state = _load_raw_json(paths.track_state_file(), dict)
-        except Exception as exc:
-            return [("Background tracking state", "FAIL", str(exc))]
-    else:
-        state = {}
-    install_info = state.get("install")
-    if install_info is not None and not isinstance(install_info, dict):
-        return [
-            (
-                "Background tracking state",
-                "FAIL",
-                "install record must be an object",
-            )
-        ]
+    try:
+        install_info = load_install_record()
+        runs = load_track_state().runs
+    except Exception as exc:
+        return [("Background tracking state", "FAIL", str(exc))]
     if not install_info:
         return [
             (
@@ -691,10 +745,6 @@ def _track_checks() -> list[_Row]:
     except Exception as e:
         rows.append(("Background tracking", "WARN", str(e)))
 
-    history = _run_history(state)
-    runs = (
-        [r for r in history if isinstance(r, dict)] if isinstance(history, list) else []
-    )
     last = runs[0] if runs else None
     if not last:
         rows.append(("Last tracked run", "WARN", "Never ran — check 'deals track log'"))
@@ -743,7 +793,10 @@ def _monitor_checks() -> list[_Row]:
     monitors = load_monitors()
     if not monitors:
         return [("Saved-search monitors", "PASS", "No monitors configured")]
-    state = load_monitor_state().get("monitors", {})
+    try:
+        state = monitor_summaries()
+    except Exception:
+        state = {}  # the "State database" row already reports why
     invalid: dict[str, str] = {}
     for name, definition in monitors.items():
         try:
@@ -760,11 +813,7 @@ def _monitor_checks() -> list[_Row]:
         for name, definition in monitors.items()
         if isinstance(definition, dict) and definition.get("enabled", True)
     ]
-    failed = [
-        name
-        for name in enabled
-        if isinstance(state.get(name), dict) and state[name].get("last_error")
-    ]
+    failed = [name for name in enabled if name in state and state[name].last_error]
     if failed:
         return [
             (
@@ -809,6 +858,7 @@ def doctor(ctx):
     rows, auth_ok = _auth_checks()
     rows.append(_connectivity_check(ctx, auth_ok))
     rows.extend(_config_checks())
+    rows.extend(_database_checks())
     rows.extend(_store_checks())
     rows.extend(_track_checks())
     rows.extend(_monitor_checks())

@@ -9,16 +9,15 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.track_service as track_service
-from audible_deals import paths
 from audible_deals.automation_models import (
     MonitorEvent,
     MonitorRunResult,
     TrackRunRequest,
 )
 from audible_deals.cli import cli
-from audible_deals.config_store import load_track_state
 from audible_deals.locking import run_lock
 from audible_deals.monitor_service import MonitorRuntime
+from audible_deals.state_store import TrackState, load_track_state
 from audible_deals.track_service import (
     TrackRuntime,
     refresh_eligible_asins,
@@ -190,7 +189,7 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
             calls.append(list(asins))
             return []
 
-    state = {}
+    state = TrackState()
 
     track_runtime = replace(
         runtime(RecordingClient(), Webhook(), wishlist=[]),
@@ -208,7 +207,7 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
     assert first == [f"A{index:03d}" for index in range(200)]
     assert second[:50] == [f"A{index:03d}" for index in range(200, 250)]
     assert second[50:] == [f"A{index:03d}" for index in range(150)]
-    assert state["refresh_cursors"]["us"] == {
+    assert state.refresh_cursors["us"] == {
         "surfaced_on": today.isoformat(),
         "asin": "A149",
     }
@@ -249,7 +248,7 @@ def test_partial_monitor_failure_isolated_and_success_saved(tmp_config, monkeypa
     assert result.monitor_events == 1
     assert result.monitor_failures == ("bad: RuntimeError: broken",)
     assert errors == [("bad", "broken")]
-    assert load_track_state()["run_history"][0] == result.to_dict()
+    assert load_track_state().runs[0] == result.to_dict()
 
 
 def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
@@ -277,9 +276,9 @@ def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
         run_track(request("https://example.test"), track_runtime)
 
     state = load_track_state()
-    entry = state["run_history"][0]
+    entry = state.runs[0]
     assert set(entry) == {"at", "duration_s", "error"}
-    assert state["auth_error_notified"] is True
+    assert state.auth_error_notified is True
     assert len(webhook.calls) == 1
     assert len(acquisitions) == 2
 
@@ -293,7 +292,7 @@ def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
         load_wishlist=lambda: [],
     )
     run_track(request("https://example.test"), successful_runtime)
-    assert load_track_state().get("auth_error_notified") is not True
+    assert load_track_state().auth_error_notified is False
 
 
 def test_auth_webhook_failure_does_not_latch_and_is_retried(tmp_config):
@@ -310,7 +309,7 @@ def test_auth_webhook_failure_does_not_latch_and_is_retried(tmp_config):
             run_track(request("https://example.test"), track_runtime)
 
     assert len(webhook.calls) == 2
-    assert load_track_state().get("auth_error_notified") is not True
+    assert load_track_state().auth_error_notified is False
 
 
 def test_wishlist_webhook_failure_does_not_record_run_or_notify_state(tmp_config):
@@ -331,7 +330,7 @@ def test_wishlist_webhook_failure_does_not_record_run_or_notify_state(tmp_config
         run_track(request("https://example.test"), track_runtime)
 
     assert notify_saves == []
-    assert not paths.track_state_file().exists()
+    assert load_track_state().runs == []
 
 
 def test_track_cli_preserves_webhook_error_prefix(tmp_config, monkeypatch):

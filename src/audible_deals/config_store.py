@@ -1,4 +1,4 @@
-"""Persistence for global config, saved search profiles, and notify cooldown state."""
+"""Persistence for the JSON files users own: global config, profiles and monitors."""
 
 from __future__ import annotations
 
@@ -63,30 +63,6 @@ def save_monitors(monitors: dict[str, dict]) -> None:
     save_json_file(paths.monitors_file(), monitors, "monitors")
 
 
-def load_monitor_state() -> dict:
-    state = load_json_file(paths.monitor_state_file(), dict, "monitor state")
-    if not state:
-        return {"version": 1, "monitors": {}}
-    if state.get("version") != 1:
-        logger.warning(
-            "monitor state has unsupported version %r; resetting", state.get("version")
-        )
-        return {"version": 1, "monitors": {}}
-    if "monitors" not in state:
-        logger.warning("monitor state is missing monitors; repairing")
-        state["monitors"] = {}
-    elif not isinstance(state["monitors"], dict):
-        logger.warning("monitor state monitors is malformed; repairing")
-        state["monitors"] = {}
-    return state
-
-
-def save_monitor_state(state: dict) -> None:
-    state["version"] = 1
-    state.setdefault("monitors", {})
-    save_json_file(paths.monitor_state_file(), state, "monitor state")
-
-
 def load_config() -> dict:
     return load_json_file(paths.config_file(), dict, "config")
 
@@ -141,22 +117,6 @@ def profiles_transaction():
         profiles = load_profiles()
         yield profiles
         save_profiles(profiles)
-
-
-def load_notify_state() -> dict:
-    return load_json_file(paths.notify_state_file(), dict, "notify state")
-
-
-def save_notify_state(state: dict) -> None:
-    save_json_file(paths.notify_state_file(), state, "notify state")
-
-
-def load_track_state() -> dict:
-    return load_json_file(paths.track_state_file(), dict, "track state")
-
-
-def save_track_state(state: dict) -> None:
-    save_json_file(paths.track_state_file(), state, "track state")
 
 
 def coerce_config_value(key: str, raw: str):

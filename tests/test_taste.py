@@ -9,7 +9,7 @@ import json
 from click.testing import CliRunner
 
 import audible_deals.wishlist as wishlist_mod
-from audible_deals import paths
+from audible_deals import cache_store, paths
 from audible_deals.cli import cli
 from audible_deals.results_cache import (
     clear_dismissed_asins,
@@ -140,7 +140,7 @@ class TestProfileCache:
         assert load_cached_profile() is None
 
     def test_corrupt_built_at_returns_none(self, tmp_config):
-        paths.taste_cache_file().write_text(json.dumps({"built_at": "soon"}))
+        save_profile({"built_at": "soon"})
         assert load_cached_profile() is None
 
     def test_missing_and_older_versions_return_none(self, tmp_config):
@@ -333,7 +333,7 @@ def _seed_profile_cache():
             }
         ],
     }
-    paths.taste_cache_file().write_text(json.dumps(profile))
+    save_profile(profile)
     return profile
 
 
@@ -591,7 +591,7 @@ class TestForMeCommand:
             {"name": "THE GREAT COURSES", "count": 50},
             {"name": "Great Courses Daily", "count": 4},
         ]
-        paths.taste_cache_file().write_text(json.dumps(profile))
+        save_profile(profile)
 
         result = CliRunner().invoke(cli, ["for-me", "--dry-run", "--json"])
 
@@ -677,7 +677,7 @@ class TestForMeCommand:
         assert result.exit_code == 0, result.output
         assert "Taste profile built from 2 books" in result.stderr
         assert isinstance(json.loads(result.stdout), list)
-        assert paths.taste_cache_file().exists()
+        assert cache_store.get("taste", "profile") is not None
 
     def test_empty_library_errors(self, mock_client, tmp_config):
         mock_client.get_library_pages.return_value = iter([])

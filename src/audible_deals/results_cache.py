@@ -1,44 +1,37 @@
-"""Atomic result-session and cumulative seen-ASIN persistence."""
+"""Result-session and cumulative seen/dismissed-ASIN persistence in ``state.db``."""
 
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 from typing import Any
 
 import click
 
-from audible_deals import paths, result_models
-from audible_deals.storage import _atomic_write, ensure_updatable, load_json_file
+from audible_deals import db, result_models
 
 logger = logging.getLogger(__name__)
 
 
 def load_seen_asins() -> set[str]:
     """Load cumulative seen ASINs for exclusion."""
-    return set(load_json_file(paths.seen_asins_file(), list, "seen ASINs"))
+    return {row[0] for row in db.state().execute("SELECT asin FROM seen")}
 
 
 def save_seen_asins(new_asins: set[str]) -> None:
-    """Append ASINs to the cumulative seen-ASINs file."""
+    """Add ASINs to the cumulative seen set (best effort: a failure only warns)."""
     if not new_asins:
         return
-    existing = load_seen_asins()
-    if new_asins <= existing:
-        logger.debug("save_seen_asins: no new asins (%d already seen)", len(existing))
-        return
-    merged = sorted(existing | new_asins)
     try:
-        _atomic_write(paths.seen_asins_file(), json.dumps(merged, allow_nan=False))
-        logger.debug(
-            "saved seen ASINs (%d total, +%d new)",
-            len(merged),
-            len(merged) - len(existing),
-        )
+        with db.transaction(db.state()) as conn:
+            cursor = conn.executemany(
+                "INSERT OR IGNORE INTO seen (asin) VALUES (?)",
+                [(asin,) for asin in sorted(new_asins)],
+            )
+        logger.debug("saved seen ASINs (+%d new)", cursor.rowcount)
     except Exception:
-        logger.warning(
-            "failed to write seen-asins at %s", paths.seen_asins_file(), exc_info=True
-        )
+        logger.warning("failed to record seen ASINs", exc_info=True)
 
 
 def merge_seen_asins(
@@ -53,64 +46,55 @@ def merge_seen_asins(
     return skip_asins | seen
 
 
+def _clear(table: str) -> bool:
+    with db.transaction(db.state()) as conn:
+        removed = conn.execute(f"DELETE FROM {table}").rowcount  # noqa: S608
+    return removed > 0
+
+
 def clear_seen_asins() -> bool:
-    """Delete the cumulative seen-ASINs file. Returns True if deleted."""
-    try:
-        paths.seen_asins_file().unlink()
-        logger.debug("cleared seen-asins: %s", paths.seen_asins_file())
-        return True
-    except FileNotFoundError:
-        return False
+    """Forget every seen ASIN. Returns True if there was anything to forget."""
+    cleared = _clear("seen")
+    logger.debug("cleared seen ASINs: %s", cleared)
+    return cleared
 
 
 def load_dismissed_asins() -> set[str]:
     """Load globally dismissed ASINs for exclusion."""
-    return {
-        asin
-        for asin in load_json_file(
-            paths.dismissed_asins_file(), list, "dismissed ASINs"
-        )
-        if isinstance(asin, str)
-    }
+    return {row[0] for row in db.state().execute("SELECT asin FROM dismissed")}
 
 
 def save_dismissed_asins(new_asins: set[str]) -> None:
-    """Append ASINs to the cumulative dismissed-ASINs file."""
+    """Add ASINs to the cumulative dismissed set."""
     if not new_asins:
         return
-    # Dismissals are the user's own decisions: never replace a corrupt file.
-    ensure_updatable(paths.dismissed_asins_file(), list, "dismissed ASINs")
-    existing = load_dismissed_asins()
-    if new_asins <= existing:
-        return
-    merged = sorted(existing | new_asins)
-    _atomic_write(paths.dismissed_asins_file(), json.dumps(merged, allow_nan=False))
-    logger.debug(
-        "saved dismissed ASINs (%d total, +%d new)",
-        len(merged),
-        len(merged) - len(existing),
-    )
+    with db.transaction(db.state()) as conn:
+        cursor = conn.executemany(
+            "INSERT OR IGNORE INTO dismissed (asin) VALUES (?)",
+            [(asin,) for asin in sorted(new_asins)],
+        )
+    logger.debug("saved dismissed ASINs (+%d new)", cursor.rowcount)
 
 
 def clear_dismissed_asins() -> bool:
-    """Delete the cumulative dismissed-ASINs file. Returns True if deleted."""
-    try:
-        paths.dismissed_asins_file().unlink()
-        logger.debug("cleared dismissed ASINs: %s", paths.dismissed_asins_file())
-        return True
-    except FileNotFoundError:
-        return False
+    """Forget every dismissed ASIN. Returns True if there was anything to forget."""
+    cleared = _clear("dismissed")
+    logger.debug("cleared dismissed ASINs: %s", cleared)
+    return cleared
 
 
 def _read_cache_data() -> Any:
-    if not paths.last_results_file().exists():
+    row = (
+        db.state().execute("SELECT body FROM result_sessions WHERE slot = 1").fetchone()
+    )
+    if row is None:
         raise click.ClickException(
             "No cached results found. Run 'deals find', 'deals search', "
             "'deals for-me', or 'deals series' first."
         )
     try:
-        return json.loads(paths.last_results_file().read_text(encoding="utf-8"))
-    except (json.JSONDecodeError, OSError) as exc:
+        return json.loads(row[0])
+    except json.JSONDecodeError as exc:
         raise click.ClickException(f"Could not read last results cache: {exc}") from exc
 
 
@@ -122,12 +106,19 @@ def load_result_session() -> result_models.ResultSession:
         raise click.ClickException(str(exc)) from None
 
 
+def _store_session(body: str) -> None:
+    saved_at = datetime.datetime.now(datetime.UTC).isoformat(timespec="seconds")
+    with db.transaction(db.state()) as conn:
+        conn.execute(
+            "INSERT INTO result_sessions (slot, body, saved_at) VALUES (1, ?, ?) "
+            "ON CONFLICT (slot) DO UPDATE SET body = excluded.body, saved_at = excluded.saved_at",
+            (body, saved_at),
+        )
+
+
 def save_result_session(session: result_models.ResultSession) -> None:
     """Atomically persist a complete result session."""
-    _atomic_write(
-        paths.last_results_file(),
-        json.dumps(session.to_dict(), ensure_ascii=False, allow_nan=False),
-    )
+    _store_session(json.dumps(session.to_dict(), ensure_ascii=False, allow_nan=False))
     logger.debug(
         "saved result session producer=%s candidates=%d visible=%d",
         session.producer,
@@ -144,29 +135,27 @@ def load_last_results() -> tuple[str, list[dict]]:
 
 def save_last_results(title: str, serialized: list[dict]) -> None:
     """Compatibility writer for callers that only have a limited legacy result list."""
-    cache_obj = {"title": title, "results": serialized}
-    _atomic_write(
-        paths.last_results_file(),
-        json.dumps(cache_obj, ensure_ascii=False, allow_nan=False),
+    _store_session(
+        json.dumps(
+            {"title": title, "results": serialized}, ensure_ascii=False, allow_nan=False
+        )
     )
 
 
 def update_session_view(ordered_asins: list[str], *, sort: str | None = None) -> None:
     """Persist the visible selector order and an optional interactive sort key."""
-    session = load_result_session()
-    session.visible_asins = list(ordered_asins)
-    if sort is not None:
-        session.current_recipe = result_models.RecipePatch(sort=sort).merge(
-            session.current_recipe
-        )
-    save_result_session(session)
+    with db.transaction(db.state()):
+        session = load_result_session()
+        session.visible_asins = list(ordered_asins)
+        if sort is not None:
+            session.current_recipe = result_models.RecipePatch(sort=sort).merge(
+                session.current_recipe
+            )
+        save_result_session(session)
 
 
 def clear_last_results() -> bool:
-    """Delete the last-results cache. Returns True if deleted."""
-    try:
-        paths.last_results_file().unlink()
-        logger.debug("cleared last results cache: %s", paths.last_results_file())
-        return True
-    except FileNotFoundError:
-        return False
+    """Delete the last-results cache. Returns True if there was one."""
+    cleared = _clear("result_sessions")
+    logger.debug("cleared last results cache: %s", cleared)
+    return cleared

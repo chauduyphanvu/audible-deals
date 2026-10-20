@@ -15,12 +15,12 @@ from audible_deals.automation_models import (
     NotificationRunResult,
 )
 from audible_deals.client import DealsClient
-from audible_deals.config_store import load_notify_state, save_notify_state
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.filtering import filter_products
 from audible_deals.metrics import buy_verdict, effective_price
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
+from audible_deals.state_store import load_notify_state, save_notify_state
 from audible_deals.webhook_client import WebhookClient
 from audible_deals.webhooks import (
     format_monitor_webhook_payload,

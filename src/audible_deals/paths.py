@@ -83,55 +83,40 @@ def auth_file() -> Path:
     return data_dir() / "auth.json"
 
 
-# -- operational files ------------------------------------------------------
+# -- databases and operational files ------------------------------------------
+
+
+def state_db_file() -> Path:
+    """Records: price history, seen/dismissed, result session, tracking state."""
+    return data_dir() / "state.db"
+
+
+def cache_db_file() -> Path:
+    """Disposable caches (categories, taste profile); safe to delete."""
+    return data_dir() / "cache.db"
 
 
 def lock_file() -> Path:
     return data_dir() / ".deals.lock"
 
 
+def migration_lock_file() -> Path:
+    return data_dir() / ".migrate.lock"
+
+
 def track_log_file() -> Path:
     return data_dir() / "track.log"
 
 
-# -- JSON state files that later moved into SQLite ---------------------------
+# -- retired JSON stores, read only by the one-time migration -----------------
 
 
-def history_dir() -> Path:
+def legacy_history_dir() -> Path:
     return data_dir() / "history"
 
 
-def seen_asins_file() -> Path:
-    return data_dir() / "seen_asins.json"
-
-
-def dismissed_asins_file() -> Path:
-    return data_dir() / "dismissed_asins.json"
-
-
-def refresh_eligibility_file() -> Path:
-    return data_dir() / "refresh_eligibility.json"
-
-
-def monitor_state_file() -> Path:
-    return data_dir() / "monitor_state.json"
-
-
-def last_results_file() -> Path:
-    return data_dir() / "last_results.json"
-
-
-def notify_state_file() -> Path:
-    return data_dir() / "notify_state.json"
-
-
-def track_state_file() -> Path:
-    return data_dir() / "track_state.json"
-
-
-def taste_cache_file() -> Path:
-    return data_dir() / "taste_cache.json"
-
-
-def categories_cache_file(locale: str) -> Path:
-    return data_dir() / f"categories_cache.{locale}.json"
+def legacy_category_cache_files() -> list[Path]:
+    directory = data_dir()
+    if not directory.is_dir():
+        return []
+    return sorted(directory.glob("categories_cache*.json"))

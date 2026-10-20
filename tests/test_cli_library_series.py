@@ -7,7 +7,7 @@ import json
 
 from click.testing import CliRunner
 
-from audible_deals import paths
+from audible_deals import cache_store, paths
 from audible_deals.cli import cli
 from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from audible_deals.series_identity import (
@@ -15,7 +15,7 @@ from audible_deals.series_identity import (
     series_book_identity,
     series_identity,
 )
-from tests.conftest import make_product, make_series_products_batch
+from tests.conftest import make_product, make_series_products_batch, raw_session
 
 
 def _mock_library_pages(mock_client, products):
@@ -55,7 +55,7 @@ def _seed_profile_cache():
             }
         ],
     }
-    paths.taste_cache_file().write_text(json.dumps(profile))
+    cache_store.put("taste", "profile", profile)
     return profile
 
 
@@ -935,7 +935,7 @@ class TestSeriesCommand:
 
         assert result.exit_code == 0, result.output
         assert [item["asin"] for item in json.loads(result.stdout)] == ["PREORDER"]
-        session = json.loads(paths.last_results_file().read_text())
+        session = json.loads(raw_session())
         assert [item["asin"] for item in session["candidates"]] == ["PREORDER"]
 
     def test_gaps_retains_unavailable_and_counts_unique_identities(
@@ -1226,7 +1226,7 @@ class TestForMeDryRunNoSideEffects:
         assert result.exit_code != 0
         assert "deals for-me" in result.output
         mock_client.get_library_pages.assert_not_called()
-        assert not paths.taste_cache_file().exists()
+        assert cache_store.get("taste", "profile") is None
 
     def test_refresh_dry_run_does_not_fetch_or_overwrite(self, mock_client, tmp_config):
         # --refresh forces profile=None; combined with --dry-run it must still
@@ -1237,7 +1237,7 @@ class TestForMeDryRunNoSideEffects:
         assert result.exit_code != 0
         mock_client.get_library_pages.assert_not_called()
         # The on-disk cache is untouched.
-        assert json.loads(paths.taste_cache_file().read_text()) == seeded
+        assert cache_store.get("taste", "profile") == seeded
 
     def test_dry_run_with_cache_still_prints_plan(self, mock_client, tmp_config):
         _seed_profile_cache()

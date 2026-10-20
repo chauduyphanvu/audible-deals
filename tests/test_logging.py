@@ -117,14 +117,18 @@ class TestStateCorruptionWarnings:
         assert data == {}
         assert any("corrupt" in r.message for r in caplog.records)
 
-    def test_load_seen_asins_warns_on_corrupt(self, tmp_config, caplog):
+    def test_unreadable_state_database_warns_once_and_is_replaced(
+        self, tmp_config, caplog
+    ):
         import audible_deals.results_cache as results_cache_mod
 
-        paths.seen_asins_file().write_text("not json")
-        with caplog.at_level(logging.WARNING, logger="audible_deals.storage"):
+        (tmp_config / "state.db").write_bytes(b"this is not a database" * 100)
+        with caplog.at_level(logging.WARNING, logger="audible_deals.db"):
             data = results_cache_mod.load_seen_asins()
         assert data == set()
-        assert any("corrupt" in r.message for r in caplog.records)
+        warnings = [r.message for r in caplog.records if "unreadable" in r.message]
+        assert len(warnings) == 1
+        assert "state.db.corrupt-" in warnings[0]
 
 
 # ===================================================================

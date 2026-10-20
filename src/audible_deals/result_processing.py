@@ -16,8 +16,7 @@ from audible_deals.filtering import (
 )
 from audible_deals.price_history import (
     hist_percentiles,
-    history_key,
-    load_price_history,
+    load_product_histories,
     price_drop_pcts,
 )
 from audible_deals.product import Product
@@ -102,13 +101,7 @@ def process_discovery(request: DiscoveryProcessingRequest) -> DiscoveryResult:
     if (context.max_hist_percentile is not None and hist_percentile is None) or (
         context.min_price_drop > 0 and price_drops is None
     ):
-        histories = {
-            history_key(product.asin, product.locale): load_price_history(
-                product.asin, product.locale
-            )
-            for product in request.products
-            if product.price is not None
-        }
+        histories = load_product_histories(request.products)
         if context.max_hist_percentile is not None and hist_percentile is None:
             hist_percentile = hist_percentiles(list(request.products), histories)
         if context.min_price_drop > 0 and price_drops is None:

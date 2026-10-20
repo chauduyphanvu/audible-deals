@@ -9,6 +9,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from audible_deals import constants, paths
+from audible_deals.storage import read_text
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,7 @@ def inspect_auth_file(
         return AuthInspection("malformed", str(exc))
 
     try:
-        data = json.loads(auth_file.read_text())
+        data = json.loads(read_text(auth_file))
         if not isinstance(data, dict):
             raise ValueError("auth file is not a JSON object")
     except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:

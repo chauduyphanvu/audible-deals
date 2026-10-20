@@ -22,12 +22,7 @@ from audible_deals.catalog_workflow import (
     build_monitor_scan_plan,
     execute_catalog_scan,
 )
-from audible_deals.config_store import (
-    load_monitor_state,
-    load_monitors_for_update,
-    save_monitor_state,
-    save_monitors,
-)
+from audible_deals.config_store import load_monitors_for_update, save_monitors
 from audible_deals.constants import (
     LOCALE_DOMAIN,
     MAX_CATALOG_CALLS_PER_SCAN,
@@ -40,6 +35,12 @@ from audible_deals.result_processing import (
 )
 from audible_deals.serialization import serialize_product
 from audible_deals.settings import Settings, profile_validation_error
+from audible_deals.state_store import (
+    delete_monitor_state,
+    load_monitor_snapshot,
+    record_monitor_failure,
+    save_monitor_snapshot,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -149,40 +150,8 @@ def estimate_monitor_calls(definition: MonitorDefinition) -> int:
     return plan.total_calls
 
 
-def monitor_snapshot(state: dict, name: str) -> MonitorSnapshot:
-    monitors = state.setdefault("monitors", {})
-    raw = monitors.get(name)
-    if raw is not None and not isinstance(raw, dict):
-        logger.warning(
-            "monitor state for %s is malformed; resetting its baseline", name
-        )
-    elif isinstance(raw, dict) and not isinstance(raw.get("products", {}), dict):
-        logger.warning(
-            "monitor state products for %s is malformed; resetting its baseline", name
-        )
-    snapshot = MonitorSnapshot.from_dict(raw)
-    if isinstance(raw, dict) and isinstance(raw.get("products", {}), dict):
-        if len(snapshot.products) != len(raw.get("products", {})):
-            logger.warning(
-                "monitor state products for %s contains malformed entries", name
-            )
-    return snapshot
-
-
-def _save_snapshot(state: dict, name: str, snapshot: MonitorSnapshot) -> None:
-    state.setdefault("monitors", {})[name] = snapshot.to_dict(initialized=True)
-
-
 def record_monitor_error(name: str, error: Exception) -> None:
-    state = load_monitor_state()
-    snapshot = monitor_snapshot(state, name)
-    snapshot = replace(
-        snapshot,
-        last_error=f"{type(error).__name__}: {error}",
-        present_fields=(snapshot.present_fields or frozenset()) | {"last_error"},
-    )
-    state.setdefault("monitors", {})[name] = snapshot.to_dict()
-    save_monitor_state(state)
+    record_monitor_failure(name, f"{type(error).__name__}: {error}")
 
 
 def scan_monitor(
@@ -255,8 +224,7 @@ def run_monitor(
     deliver: Callable[[tuple[MonitorEvent, ...], MonitorDefinition], None]
     | None = None,
 ) -> MonitorRunResult:
-    state = load_monitor_state()
-    snapshot = monitor_snapshot(state, definition.name)
+    snapshot = load_monitor_snapshot(definition.name)
     current = tuple(
         product
         for product in scan_monitor(definition, runtime)
@@ -269,18 +237,15 @@ def run_monitor(
     )
     if events and deliver:
         deliver(events, definition)
-    _save_snapshot(
-        state,
+    save_monitor_snapshot(
         definition.name,
         MonitorSnapshot(
             initialized=True,
             products={product["asin"]: product for product in current},
             last_success=runtime.now().isoformat(timespec="seconds"),
             last_error=None,
-            unknown_fields=snapshot.unknown_fields,
         ),
     )
-    save_monitor_state(state)
     return MonitorRunResult(events, not snapshot.initialized)
 
 
@@ -346,9 +311,7 @@ def add_monitor(definition: MonitorDefinition) -> None:
             raise MonitorExistsError(f"Monitor '{definition.name}' already exists.")
         monitors[definition.name] = definition.to_dict()
         save_monitors(monitors)
-        state = load_monitor_state()
-        state.setdefault("monitors", {}).pop(definition.name, None)
-        save_monitor_state(state)
+        delete_monitor_state(definition.name)
 
 
 def remove_monitor(name: str) -> None:
@@ -358,9 +321,7 @@ def remove_monitor(name: str) -> None:
             raise MonitorNotFoundError(f"Monitor '{name}' not found.")
         del monitors[name]
         save_monitors(monitors)
-        state = load_monitor_state()
-        state.setdefault("monitors", {}).pop(name, None)
-        save_monitor_state(state)
+        delete_monitor_state(name)
 
 
 def set_monitor_enabled(name: str, enabled: bool) -> bool:

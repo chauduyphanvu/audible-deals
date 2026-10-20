@@ -18,7 +18,7 @@ from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli import cli
 from audible_deals.config_store import load_monitors, load_profiles, save_profiles
 from audible_deals.monitor_service import MonitorRuntime, scan_monitor
-from audible_deals.results_cache import load_result_session
+from audible_deals.results_cache import load_result_session, save_seen_asins
 from tests.conftest import make_product
 
 
@@ -188,7 +188,7 @@ def test_profile_inverted_release_window_is_a_usage_error(tmp_config):
 
 def test_profile_exclude_seen_applies_and_can_be_switched_off(mock_client, tmp_config):
     save_profiles({"fresh": {"exclude_seen": True}})
-    paths.seen_asins_file().write_text(json.dumps(["NEWCHEAP"]))
+    save_seen_asins({"NEWCHEAP"})
     _catalog(mock_client, *_products())
     seen_hidden = _find("--profile", "fresh", "--json", "-n", "0")
     assert "NEWCHEAP" not in _asins(seen_hidden)

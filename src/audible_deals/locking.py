@@ -8,8 +8,6 @@ import os
 import sys
 import time
 
-from audible_deals import paths
-
 _LEGACY_PARTIAL_STALE_SECONDS = 600
 
 
@@ -141,7 +139,7 @@ def run_lock():
     crashes. The lock-file timestamp is deliberately not used: a legitimate
     catalog run may take longer than any fixed stale threshold.
     """
-    # Resolve LOCK_FILE at call time so test fixtures can patch constants.
+    from audible_deals import paths
 
     lock_file = paths.lock_file()
     lock_file.parent.mkdir(parents=True, exist_ok=True)

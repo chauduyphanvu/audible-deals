@@ -23,7 +23,7 @@ from audible_deals.presentation.terminal import safe_text
 from audible_deals.price_history import load_price_history, record_prices
 from audible_deals.product import Product, parse_product
 from audible_deals.serialization import export_products
-from audible_deals.track_service import append_run, run_history
+from audible_deals.state_store import load_track_state
 from tests.conftest import make_product
 
 
@@ -231,9 +231,10 @@ def test_strict_state_writer_rejects_nonfinite_numbers(tmp_config):
         save_config({"max_price": math.nan})
 
 
-def test_nonfinite_history_is_ignored_without_rewriting(tmp_config):
-    paths.history_dir().mkdir()
-    path = paths.history_dir() / "B001.json"
+def test_nonfinite_legacy_history_is_skipped_and_the_original_kept(tmp_config):
+    history_dir = paths.legacy_history_dir()
+    history_dir.mkdir()
+    path = history_dir / "B001.json"
     original = (
         b'{"marketplaces":{"us":['
         b'{"date":"2026-01-01","price":NaN,"title":"Bad"},'
@@ -245,14 +246,16 @@ def test_nonfinite_history_is_ignored_without_rewriting(tmp_config):
     record_prices([make_product(asin="B002", price=math.inf)])
 
     assert entries == [{"date": "2026-01-02", "price": 2.0, "title": "Good"}]
-    assert path.read_bytes() == original
-    assert not (paths.history_dir() / "B002.json").exists()
+    assert (
+        paths.data_dir() / "history.migrated" / "B001.json"
+    ).read_bytes() == original
+    assert load_price_history("B002") == []
 
 
-def test_history_write_discards_poisoned_prices_in_other_marketplaces(tmp_config):
-    paths.history_dir().mkdir()
-    path = paths.history_dir() / "B000TEST01.json"
-    path.write_text(
+def test_poisoned_prices_in_other_marketplaces_do_not_survive_the_import(tmp_config):
+    history_dir = paths.legacy_history_dir()
+    history_dir.mkdir()
+    (history_dir / "B000TEST01.json").write_text(
         '{"marketplaces":{"uk":[{"date":"2026-01-01","price":NaN}],'
         '"us":[{"date":"2026-01-01","price":4.0}]}}'
     )
@@ -262,9 +265,8 @@ def test_history_write_discards_poisoned_prices_in_other_marketplaces(tmp_config
         observation_date="2026-01-02",
     )
 
-    saved = json.loads(path.read_text(), parse_constant=lambda value: 1 / 0)
-    assert saved["marketplaces"]["uk"] == []
-    assert [entry["price"] for entry in saved["marketplaces"]["us"]] == [4.0, 3.0]
+    assert load_price_history("B000TEST01", "uk") == []
+    assert [e["price"] for e in load_price_history("B000TEST01", "us")] == [4.0, 3.0]
 
 
 def test_invalid_stored_locale_allows_recovery_commands(tmp_config):
@@ -330,14 +332,15 @@ def test_malformed_monitor_field_types_are_rejected_cleanly(tmp_config):
     assert "Saved-search monitors" in doctor.output
 
 
-def test_malformed_track_records_warn_instead_of_crashing(caplog):
-    state = {"run_history": ["bad", {"at": "ok"}]}
+def test_malformed_legacy_track_records_are_skipped_not_fatal(tmp_config):
+    (tmp_config / "track_state.json").write_text(
+        json.dumps({"run_history": ["bad", {"at": "ok"}]})
+    )
 
-    assert run_history(state) == [{"at": "ok"}]
-    append_run(state, {"at": "new"})
+    state = load_track_state()
+    state.add_run({"at": "new"})
 
-    assert state["run_history"] == [{"at": "new"}, {"at": "ok"}]
-    assert "malformed" in caplog.text
+    assert [run["at"] for run in state.runs] == ["new", "ok"]
 
 
 def test_doctor_fails_on_raw_profile_and_monitor_corruption(tmp_config, mock_client):

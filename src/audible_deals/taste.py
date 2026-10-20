@@ -1,7 +1,7 @@
 """Taste profile built locally from the user's Audible library.
 
-Pure profile construction and fit scoring; persistence goes through
-storage.py into TASTE_CACHE_FILE. No API calls happen here.
+Pure profile construction and fit scoring; the built profile is cached in
+``cache.db`` (see cache_store.py). No API calls happen here.
 """
 
 from __future__ import annotations
@@ -11,13 +11,15 @@ import datetime
 import logging
 from typing import Any
 
-from audible_deals import paths
+from audible_deals import cache_store
 from audible_deals.metrics import value_score
 from audible_deals.product import Product
 from audible_deals.series_identity import group_series_books
-from audible_deals.storage import load_json_file, save_json_file
 
 logger = logging.getLogger(__name__)
+
+_CACHE_NAMESPACE = "taste"
+_CACHE_KEY = "profile"
 
 PROFILE_MAX_AGE_SECONDS = 86400  # rebuild after a day; library changes slowly
 PROFILE_VERSION = 2
@@ -115,8 +117,8 @@ def load_cached_profile(
     max_age_s: int = PROFILE_MAX_AGE_SECONDS,
 ) -> dict | None:
     """Return the cached profile, or None when missing/stale/corrupt."""
-    data = load_json_file(paths.taste_cache_file(), dict, "taste profile")
-    if not data:
+    data = cache_store.get(_CACHE_NAMESPACE, _CACHE_KEY)
+    if not isinstance(data, dict) or not data:
         return None
     if data.get("version") != PROFILE_VERSION:
         logger.debug("taste profile version mismatch")
@@ -132,7 +134,7 @@ def load_cached_profile(
 
 
 def save_profile(profile: dict) -> None:
-    save_json_file(paths.taste_cache_file(), profile, "taste profile")
+    cache_store.put(_CACHE_NAMESPACE, _CACHE_KEY, profile)
 
 
 def fit_score(

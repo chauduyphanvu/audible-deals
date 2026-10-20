@@ -56,7 +56,13 @@ from audible_deals.results_cache import (
 )
 from audible_deals.selectors import resolve_selectors
 from audible_deals.serialization import serialize_product
-from tests.conftest import make_product
+from tests.conftest import (
+    count_rows,
+    make_product,
+    put_raw_session,
+    raw_session,
+    seed_history,
+)
 
 
 def _session(products, *, visible, recipe=None, locale="us"):
@@ -108,7 +114,7 @@ def test_result_session_keeps_v2_recipe_wire_shape(tmp_config):
     product = make_product(asin="WIRE0001", series_name="")
     recipe = ResultRecipe(exclude_authors=("Author",), limit=None)
     save_result_session(_session([product], visible=[product.asin], recipe=recipe))
-    cached = json.loads(paths.last_results_file().read_text())
+    cached = json.loads(raw_session())
     assert cached["version"] == 2
     assert cached["baseline_recipe"]["exclude_authors"] == ["Author"]
     assert cached["baseline_recipe"]["limit"] is None
@@ -239,7 +245,7 @@ def test_corrupt_session_diagnostics_are_unchanged(tmp_config, field, value, mes
     product = make_product(asin="CORRUPT001", series_name="")
     payload = _session([product], visible=[product.asin]).to_dict()
     payload[field] = value
-    paths.last_results_file().write_text(json.dumps(payload))
+    put_raw_session(json.dumps(payload))
 
     with pytest.raises(click.ClickException) as exc_info:
         load_result_session()
@@ -255,25 +261,19 @@ def test_result_cache_missing_and_malformed_diagnostics(tmp_config):
         "'deals for-me', or 'deals series' first."
     )
 
-    paths.last_results_file().write_text("{")
+    put_raw_session("{")
     with pytest.raises(click.ClickException, match="Could not read last results cache"):
         load_result_session()
 
 
-def test_result_cache_io_errors_stay_at_persistence_boundary(tmp_config, monkeypatch):
-    class BrokenCache:
-        def exists(self):
-            return True
+def test_result_cache_database_errors_are_not_swallowed(tmp_config, monkeypatch):
+    def broken_state():
+        raise OSError("permission denied")
 
-        def read_text(self, **kwargs):
-            raise OSError("permission denied")
+    monkeypatch.setattr("audible_deals.results_cache.db.state", broken_state)
 
-    monkeypatch.setattr(paths, "last_results_file", lambda: BrokenCache())
-
-    with pytest.raises(click.ClickException) as exc_info:
+    with pytest.raises(OSError, match="permission denied"):
         load_result_session()
-
-    assert str(exc_info.value) == "Could not read last results cache: permission denied"
 
 
 def test_apply_recipe_reuses_history_snapshot_and_preserves_ranking(monkeypatch):
@@ -298,7 +298,7 @@ def test_apply_recipe_reuses_history_snapshot_and_preserves_ranking(monkeypatch)
         "match_reasons": {"RANK0002": "best", "RANK0001": "next"},
     }
     monkeypatch.setattr(
-        "audible_deals.result_processing.load_price_history",
+        "audible_deals.result_processing.load_product_histories",
         lambda *args: pytest.fail("loaded history instead of using snapshot"),
     )
 
@@ -489,28 +489,21 @@ def test_publication_snapshots_histories_before_recording_prices(
     tmp_config, monkeypatch
 ):
     product = make_product(asin="SNAPSHOT01", price=10, series_name="")
-    history_file = paths.history_dir() / f"{product.asin}.json"
-    paths.history_dir().mkdir(parents=True, exist_ok=True)
-    history_file.write_text(
-        json.dumps(
+    seed_history(
+        product.asin,
+        [
             {
-                "marketplaces": {
-                    "us": [
-                        {
-                            "date": (
-                                datetime.date.today() - datetime.timedelta(days=day)
-                            ).isoformat(),
-                            "price": 5.0,
-                            "title": product.title,
-                        }
-                        for day in range(5, 0, -1)
-                    ]
-                }
+                "date": (
+                    datetime.date.today() - datetime.timedelta(days=day)
+                ).isoformat(),
+                "price": 5.0,
+                "title": product.title,
             }
-        )
+            for day in range(5, 0, -1)
+        ],
     )
     monkeypatch.setattr(
-        "audible_deals.presentation.result_output.load_price_history",
+        "audible_deals.presentation.result_output.load_product_histories",
         lambda *args: pytest.fail("presentation reloaded the history snapshot"),
     )
 
@@ -650,7 +643,7 @@ def test_publication_continues_surface_effects_when_session_save_fails(
 
     assert json.loads(written[0])[0]["asin"] == product.asin
     assert outcome.session.visible_asins == [product.asin]
-    assert not paths.last_results_file().exists()
+    assert raw_session() is None
     assert load_price_history(product.asin) != []
     assert load_refresh_eligibility() == {
         "us": {product.asin: datetime.date.today().isoformat()}
@@ -695,10 +688,10 @@ def test_failed_discovery_presentation_commits_no_surface_effects(tmp_config, fa
     with pytest.raises((IsADirectoryError, RuntimeError)):
         publish_discovery(request)
 
-    assert not paths.last_results_file().exists()
-    assert not paths.seen_asins_file().exists()
+    assert raw_session() is None
+    assert count_rows("seen") == 0
     assert load_price_history(product.asin) == []
-    assert not paths.refresh_eligibility_file().exists()
+    assert count_rows("refresh_eligibility") == 0
 
 
 @pytest.mark.parametrize(
@@ -800,7 +793,7 @@ def test_legacy_last_count_applies_current_dismissal(tmp_config):
         make_product(asin="LEGDISMISS", series_name=""),
         make_product(asin="LEGKEEP", series_name=""),
     ]
-    paths.last_results_file().write_text(
+    put_raw_session(
         json.dumps(
             {
                 "title": "Legacy",
@@ -951,8 +944,8 @@ def test_last_count_and_unavailable_do_not_record_surface_state(tmp_config):
     assert persisted.visible_asins == [first.asin]
     assert load_price_history(hidden.asin) == []
     assert load_price_history(unavailable.asin) == []
-    assert not paths.refresh_eligibility_file().exists()
-    assert not paths.seen_asins_file().exists()
+    assert count_rows("refresh_eligibility") == 0
+    assert count_rows("seen") == 0
 
 
 def test_legacy_last_does_not_backfill_history(tmp_config):
@@ -985,14 +978,14 @@ def test_failed_last_export_leaves_session_unchanged(tmp_config):
             recipe=result_recipe(limit=1),
         )
     )
-    before = paths.last_results_file().read_text()
+    before = raw_session()
     output = tmp_config / "blocked.json"
     output.mkdir()
     result = CliRunner().invoke(cli, ["last", "-n", "0", "--output", str(output)])
     assert result.exit_code != 0
-    assert paths.last_results_file().read_text() == before
+    assert raw_session() == before
     assert load_price_history(hidden.asin) == []
-    assert not paths.refresh_eligibility_file().exists()
+    assert count_rows("refresh_eligibility") == 0
 
 
 def test_failed_last_json_presentation_commits_no_effects(tmp_config, monkeypatch):
@@ -1005,7 +998,7 @@ def test_failed_last_json_presentation_commits_no_effects(tmp_config, monkeypatc
             recipe=result_recipe(limit=1),
         )
     )
-    before = paths.last_results_file().read_bytes()
+    before = raw_session()
     monkeypatch.setattr(
         "audible_deals.cli.last.click.echo",
         lambda payload: (_ for _ in ()).throw(RuntimeError("json failed")),
@@ -1014,9 +1007,9 @@ def test_failed_last_json_presentation_commits_no_effects(tmp_config, monkeypatc
     result = CliRunner().invoke(cli, ["last", "-n", "0", "--json"])
 
     assert result.exit_code != 0
-    assert paths.last_results_file().read_bytes() == before
+    assert raw_session() == before
     assert load_price_history(hidden.asin) == []
-    assert not paths.refresh_eligibility_file().exists()
+    assert count_rows("refresh_eligibility") == 0
 
 
 def test_conflicting_inferred_locales_error_but_explicit_locale_wins(tmp_config):
@@ -1095,7 +1088,7 @@ def test_candidate_locale_is_validated(tmp_config):
     product = make_product(asin="B00BADLOC1", series_name="")
     session = _session([product], visible=[product.asin])
     session.candidates[0]["locale"] = "invalid"
-    paths.last_results_file().write_text(json.dumps(session.to_dict()))
+    put_raw_session(json.dumps(session.to_dict()))
     with pytest.raises(click.ClickException, match="candidate locale is invalid"):
         load_result_session()
 
@@ -1105,7 +1098,7 @@ def test_legacy_refinement_persists_cumulatively(tmp_config):
         make_product(asin="LEGACY001", price=3, series_name=""),
         make_product(asin="LEGACY002", price=8, series_name=""),
     ]
-    paths.last_results_file().write_text(
+    put_raw_session(
         json.dumps(
             {
                 "title": "Legacy results",
@@ -1145,18 +1138,9 @@ def test_session_history_refinement_uses_scan_snapshot(tmp_config, mock_client):
         language="english",
         series_name="",
     )
-    paths.history_dir().mkdir()
-    paths.history_dir().joinpath(f"{product.asin}.json").write_text(
-        json.dumps(
-            {
-                "marketplaces": {
-                    "us": [
-                        {"date": f"2026-08-{day:02d}", "price": 5.0}
-                        for day in range(1, 6)
-                    ]
-                }
-            }
-        )
+    seed_history(
+        product.asin,
+        [{"date": f"2026-08-{day:02d}", "price": 5.0} for day in range(1, 6)],
     )
     mock_client.search_pages.return_value = iter([([product], 1, 1)])
     initial = CliRunner().invoke(cli, ["find", "--pages", "1", "--all-languages", "-q"])

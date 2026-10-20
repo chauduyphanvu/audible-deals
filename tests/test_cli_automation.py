@@ -21,12 +21,17 @@ import audible_deals.cli.track as track_mod
 import audible_deals.config_store as config_store_mod
 import audible_deals.notification_service as notification_service
 import audible_deals.wishlist as wishlist_mod
-from audible_deals import paths
+from audible_deals import db
 from audible_deals.cli import cli
 from audible_deals.cli.misc import _track_checks
 from audible_deals.parsing import parse_interval as _parse_interval
+from audible_deals.state_store import (
+    load_notify_state,
+    load_track_state,
+    save_notify_state,
+)
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
-from tests.conftest import make_product
+from tests.conftest import make_product, seed_history
 
 
 def _routes_run(runner, args, **kwargs):
@@ -240,12 +245,7 @@ class TestWatchCommand:
 
 class TestRecapWithTitles:
     def _write_history(self, tmp_config, asin: str, entries: list[dict]) -> None:
-
-        hist_dir = paths.history_dir()
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        (hist_dir / f"{asin}.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_history(asin, entries)
 
     def test_recap_shows_title_in_price_drop(self, tmp_config):
         """recap displays the book title alongside the ASIN for price drops."""
@@ -289,13 +289,13 @@ class TestRecapWithTitles:
 
     def test_recap_title_stored_in_record_prices(self, tmp_config):
         """_record_prices stores the title in history entries."""
+        from audible_deals.price_history import load_price_history
         from audible_deals.price_history import record_prices as _record_prices
 
         p = make_product(asin="RC01", price=5.99, title="My Title Book")
         _record_prices([p])
 
-        hist_file = paths.history_dir() / "RC01.json"
-        entries = json.loads(hist_file.read_text())["marketplaces"]["us"]
+        entries = load_price_history("RC01")
         assert len(entries) == 1
         assert entries[0]["title"] == "My Title Book"
 
@@ -624,8 +624,9 @@ class TestPriceHistoryObservationDate:
             }
             for day in range(365)
         ]
-        history_file = paths.history_dir() / f"{product.asin}.json"
-        history_file.write_text(json.dumps({"marketplaces": {"us": seeded}}))
+        with db.transaction(db.state()) as conn:
+            conn.execute("DELETE FROM price_history WHERE asin = ?", (product.asin,))
+        seed_history(product.asin, seeded)
         record_prices([product], datetime.date(2026, 1, 1))
 
         capped = load_price_history(product.asin)
@@ -1157,10 +1158,7 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD01", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"CD01": {"price": 3.99, "date": today}})
-        )
+        save_notify_state({"CD01": {"price": 3.99, "date": today}})
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "3"])
         assert result.exit_code == 0, result.output
@@ -1172,10 +1170,7 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD02", 2.99, 5.0)
         today = _datetime.date.today().isoformat()
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"CD02": {"price": 3.99, "date": today}})
-        )
+        save_notify_state({"CD02": {"price": 3.99, "date": today}})
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
@@ -1189,10 +1184,7 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD03", 3.99, 5.0)
         old_date = (datetime.date.today() - datetime.timedelta(days=10)).isoformat()
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"CD03": {"price": 3.99, "date": old_date}})
-        )
+        save_notify_state({"CD03": {"price": 3.99, "date": old_date}})
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
@@ -1206,7 +1198,7 @@ class TestNotifyCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify"])
         assert result.exit_code == 0, result.output
-        assert not paths.notify_state_file().exists()
+        assert load_notify_state() == {}
 
     def test_all_suppressed_exit_code_exits_0(self, mock_client, tmp_config):
         """Items hit target but all suppressed by cooldown + --exit-code → exit 0.
@@ -1217,10 +1209,7 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD05", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"CD05": {"price": 3.99, "date": today}})
-        )
+        save_notify_state({"CD05": {"price": 3.99, "date": today}})
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "3", "--exit-code"])
         assert result.exit_code == 0, result.output
@@ -1233,8 +1222,8 @@ class TestNotifyCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
-        assert paths.notify_state_file().exists()
-        state = json.loads(paths.notify_state_file().read_text())
+        assert load_notify_state()
+        state = load_notify_state()
         assert "CD06" in state
         assert state["CD06"]["price"] == pytest.approx(3.99)
         assert state["CD06"]["date"] == datetime.date.today().isoformat()
@@ -1244,26 +1233,18 @@ class TestNotifyCooldown:
 
         self._setup_wishlist_and_product(mock_client, "CD07", 3.99, 5.0)
         today = _datetime.date.today().isoformat()
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"OLD1": {"price": 1.0, "date": today}})
-        )
+        save_notify_state({"OLD1": {"price": 1.0, "date": today}})
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
-        state = json.loads(paths.notify_state_file().read_text())
+        state = load_notify_state()
         assert "OLD1" not in state
         assert "CD07" in state
 
 
 class TestRecapJson:
     def _write_history(self, tmp_config, asin, entries):
-
-        hist_dir = paths.history_dir()
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        (hist_dir / f"{asin}.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_history(asin, entries)
 
     def test_recap_json_emits_parseable_json(self, tmp_config):
         """recap --json emits valid JSON with required keys."""
@@ -1409,12 +1390,7 @@ class TestRecapJson:
 
 class TestRecapWebhook:
     def _write_history(self, tmp_config, asin, entries):
-
-        hist_dir = paths.history_dir()
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        (hist_dir / f"{asin}.json").write_text(
-            json.dumps({"marketplaces": {"us": entries}})
-        )
+        seed_history(asin, entries)
 
     def test_recap_webhook_posts(self, tmp_config, monkeypatch):
         """recap --webhook POSTs to the webhook URL."""
@@ -1788,7 +1764,7 @@ class TestNotifyAuthorCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "3"])
         assert result.exit_code == 0, result.output
-        state = json.loads(paths.notify_state_file().read_text())
+        state = load_notify_state()
         assert "B00AUTH010" in state
 
     def test_author_hit_cooldown_suppressed_second_run(self, tmp_config, mock_client):
@@ -1796,10 +1772,7 @@ class TestNotifyAuthorCooldown:
 
         self._save_author_wishlist("Brandon Sanderson", 5.0)
         today = _datetime.date.today().isoformat()
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"B00AUTH011": {"price": 3.99, "date": today}})
-        )
+        save_notify_state({"B00AUTH011": {"price": 3.99, "date": today}})
         author_product = make_product(
             asin="B00AUTH011",
             title="Rhythm of War",
@@ -1831,7 +1804,7 @@ class TestNotifyAuthorCooldown:
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "7"])
         assert result.exit_code == 0, result.output
-        state = json.loads(paths.notify_state_file().read_text())
+        state = load_notify_state()
         # B00AUTH012 is not a wishlist ASIN, but it should be retained (not pruned)
         assert "B00AUTH012" in state
 
@@ -1865,10 +1838,7 @@ class TestNotifyAuthorCooldown:
 
         today = _datetime.date.today().isoformat()
         # Pre-populate: day-1 author hit was recorded
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"B00AUTH020": {"price": 3.99, "date": today}})
-        )
+        save_notify_state({"B00AUTH020": {"price": 3.99, "date": today}})
 
         # Day 2: ASIN hit fires; author hit is suppressed
         asin_product = make_product(asin="B00ASIN001", price=5.0, title="ASIN Book")
@@ -1891,7 +1861,7 @@ class TestNotifyAuthorCooldown:
         assert payload["deals"][0]["asin"] == "B00ASIN001"
 
         # Suppressed author ASIN state must survive
-        state = json.loads(paths.notify_state_file().read_text())
+        state = load_notify_state()
         assert "B00AUTH020" in state, "Suppressed author ASIN was incorrectly pruned"
 
 
@@ -2231,31 +2201,30 @@ class TestRoutesWatchExitCode:
         assert "exit-code" in result.output.lower() or "every" in result.output.lower()
 
 
-class TestTrackChecksMalformedHistory:
+class TestTrackChecksMalformedLegacyHistory:
+    """Odd run_history values in an old track_state.json import without crashing."""
+
+    def _legacy(self, tmp_config, run_history):
+        (tmp_config / "track_state.json").write_text(
+            json.dumps({"install": {"every": "6h"}, "run_history": run_history})
+        )
+
     def test_run_history_string_does_not_crash(self, tmp_config):
         """run_history that is a string (not a list) must not raise."""
-        paths.track_state_file().write_text(
-            json.dumps({"install": {"every": "6h"}, "run_history": "oops"})
-        )
+        self._legacy(tmp_config, "oops")
         rows = _track_checks()
         assert any(r[0] == "Last tracked run" for r in rows)
 
     def test_run_history_non_dict_entry_does_not_crash(self, tmp_config):
         """A list containing non-dict entries must not raise AttributeError."""
-        paths.track_state_file().write_text(
-            json.dumps({"install": {"every": "6h"}, "run_history": ["x", 5, None]})
-        )
+        self._legacy(tmp_config, ["x", 5, None])
         rows = _track_checks()
         # No well-formed run remains, so it reports "never ran".
         last = next(r for r in rows if r[0] == "Last tracked run")
         assert last[1] == "WARN"
 
-    def test_doctor_survives_malformed_run_history(
-        self, tmp_config, mock_client, monkeypatch
-    ):
-        paths.track_state_file().write_text(
-            json.dumps({"install": {"every": "6h"}, "run_history": "oops"})
-        )
+    def test_doctor_survives_malformed_run_history(self, tmp_config, mock_client):
+        self._legacy(tmp_config, "oops")
         result = CliRunner().invoke(cli, ["doctor"])
         assert result.exception is None or isinstance(result.exception, SystemExit)
         assert "Traceback" not in result.output
@@ -2329,10 +2298,7 @@ class TestNotifyExitCodeWithCooldown:
         because an item did hit target, even though nothing was sent."""
         self._wishlist_at_target(mock_client, "EC01", 3.99, 5.0)
         today = datetime.date.today().isoformat()
-        paths.notify_state_file().parent.mkdir(parents=True, exist_ok=True)
-        paths.notify_state_file().write_text(
-            json.dumps({"EC01": {"price": 3.99, "date": today}})
-        )
+        save_notify_state({"EC01": {"price": 3.99, "date": today}})
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--cooldown", "3", "--exit-code"])
         assert result.exit_code == 0, result.output
@@ -2367,12 +2333,12 @@ class TestTrackAuthErrorClassification:
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
 
-        state = json.loads(paths.track_state_file().read_text())
-        assert "connection timed out" in state["run_history"][0]["error"]
+        state = load_track_state()
+        assert "connection timed out" in state.runs[0]["error"]
         # A transient (non-auth) failure must not fire the re-authenticate ping
         assert posts == []
         # ...and must not suppress future genuine auth pings
-        assert state.get("auth_error_notified") is not True
+        assert state.auth_error_notified is not True
 
     def test_genuine_auth_error_pings(self, mock_client, tmp_config, monkeypatch):
         _seed_tracked_wishlist()
@@ -2389,9 +2355,9 @@ class TestTrackAuthErrorClassification:
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
 
-        state = json.loads(paths.track_state_file().read_text())
+        state = load_track_state()
         assert len(posts) == 1
-        assert state.get("auth_error_notified") is True
+        assert state.auth_error_notified is True
 
     def test_transient_then_auth_still_pings(
         self, mock_client, tmp_config, monkeypatch
@@ -2458,9 +2424,9 @@ class TestTrackWebhookFormattingError:
         # The formatting error must surface as itself, not a re-auth ping,
         # and must not latch auth_error_notified.
         assert posts == []
-        state = json.loads(paths.track_state_file().read_text())
-        assert state.get("auth_error_notified") is not True
-        assert "Unknown webhook format" in state["run_history"][0]["error"]
+        state = load_track_state()
+        assert state.auth_error_notified is not True
+        assert "Unknown webhook format" in state.runs[0]["error"]
 
 
 class TestTrackFailurePathLocking:
@@ -2488,8 +2454,7 @@ class TestTrackFailurePathLocking:
         # the failure-path state write.
         assert len(acquisitions) == 2
 
-        state = json.loads(paths.track_state_file().read_text())
-        assert "boom" in state["run_history"][0]["error"]
+        assert "boom" in load_track_state().runs[0]["error"]
 
     def test_failure_state_write_does_not_bypass_held_lock(
         self, mock_client, tmp_config, monkeypatch
@@ -2519,7 +2484,7 @@ class TestTrackFailurePathLocking:
         result = runner.invoke(cli, ["track", "run"])
         assert result.exit_code != 0
         # A held lock must never be bypassed by an unlocked state write.
-        assert not paths.track_state_file().exists()
+        assert load_track_state().runs == []
 
 
 @pytest.mark.parametrize("fmt", ["slack", "discord", "teams"])

@@ -17,7 +17,12 @@ from audible_deals import paths
 from audible_deals.constants import _ASIN_RE, LOCALE_DOMAIN
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
-from audible_deals.storage import _fsync_parent, load_json_file, save_json_file
+from audible_deals.storage import (
+    _fsync_parent,
+    load_json_file,
+    read_text,
+    save_json_file,
+)
 
 
 @dataclass(frozen=True)
@@ -136,7 +141,7 @@ def load_wishlist() -> list[dict]:
 def load_wishlist_for_mutation() -> list[dict]:
     """Load a list-shaped wishlist without replacing malformed saved data."""
     try:
-        contents = paths.wishlist_file().read_text()
+        contents = read_text(paths.wishlist_file())
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError) as exc:

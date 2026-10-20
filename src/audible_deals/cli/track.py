@@ -16,14 +16,7 @@ from audible_deals.cli.helpers import (
     _resolve_categories,
     _resolve_skip_asins,
 )
-from audible_deals.config_store import (
-    config_numeric_errors,
-    load_monitors,
-    load_notify_state,
-    load_track_state,
-    save_notify_state,
-    save_track_state,
-)
+from audible_deals.config_store import config_numeric_errors, load_monitors
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import MonitorRuntime
 from audible_deals.notification_workflow import parse_webhook_headers
@@ -35,11 +28,16 @@ from audible_deals.presentation.terminal import (
     safe_text,
 )
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
-from audible_deals.track_service import (
-    TrackRuntime,
-    run_history,
-    run_track,
+from audible_deals.state_store import (
+    load_install_record,
+    load_notify_state,
+    load_track_state,
+    monitor_summaries,
+    save_install_record,
+    save_notify_state,
+    save_track_state,
 )
+from audible_deals.track_service import TrackRuntime, run_track
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
 from audible_deals.webhooks import (
     parse_webhook_headers as _parse_wh_headers,
@@ -50,10 +48,6 @@ logger = logging.getLogger(__name__)
 
 # Refresh history for ASINs seen within this window, beyond the wishlist
 _MIN_INTERVAL_SECONDS = 600
-
-
-def _run_history(state: dict) -> list[dict]:
-    return run_history(state)
 
 
 def _parse_cfg_webhook_headers(raw_list: list) -> dict[str, str]:
@@ -202,14 +196,14 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
     except scheduler.SchedulerError as e:
         raise click.ClickException(str(e)) from e
 
-    state = load_track_state()
-    state["install"] = {
-        "every": every,
-        "interval_s": interval_s,
-        "method": description,
-        "installed_at": datetime.datetime.now().isoformat(timespec="seconds"),
-    }
-    save_track_state(state)
+    save_install_record(
+        {
+            "every": every,
+            "interval_s": interval_s,
+            "method": description,
+            "installed_at": datetime.datetime.now().isoformat(timespec="seconds"),
+        }
+    )
 
     console.print(f"[green]Installed:[/green] {safe_markup(description)}")
     console.print(f"  Runs 'deals track run' every {safe_markup(every)}")
@@ -225,9 +219,7 @@ def track_uninstall():
         removed = scheduler.uninstall()
     except scheduler.SchedulerError as e:
         raise click.ClickException(str(e)) from e
-    state = load_track_state()
-    state.pop("install", None)
-    save_track_state(state)
+    save_install_record(None)
     if removed:
         console.print("[green]Background tracking schedule removed.[/green]")
     else:
@@ -246,11 +238,7 @@ def track_status(show_history):
     """Show schedule and last-run status for background tracking."""
     from audible_deals.presentation.reports import display_track_history
 
-    state = load_track_state()
-    install_info = state.get("install")
-    if install_info is not None and not isinstance(install_info, dict):
-        logger.warning("track state install record is malformed; ignoring it")
-        install_info = None
+    install_info = load_install_record()
     present, where = scheduler.installed()
 
     if install_info:
@@ -274,22 +262,19 @@ def track_status(show_history):
             "background tracking.[/dim]"
         )
 
-    runs = _run_history(state)
+    runs = load_track_state().runs
     last = runs[0] if runs else None
-    from audible_deals.config_store import load_monitor_state, load_monitors
 
-    monitors = load_monitors()
-    monitor_state = load_monitor_state().get("monitors", {})
+    monitor_state = monitor_summaries()
     enabled = [
         name
-        for name, definition in monitors.items()
+        for name, definition in load_monitors().items()
         if isinstance(definition, dict) and definition.get("enabled", True)
     ]
     failed = [
         name
         for name in enabled
-        if isinstance(monitor_state.get(name), dict)
-        and monitor_state[name].get("last_error")
+        if name in monitor_state and monitor_state[name].last_error
     ]
     if enabled:
         detail = f"  [dim]Monitors:[/dim]  {len(enabled)} enabled"
@@ -328,6 +313,6 @@ def track_log(lines):
     if not log_file.exists():
         console.print(f"[dim]No log yet at {safe_markup(log_file)}[/dim]")
         return
-    content = log_file.read_text(errors="replace").splitlines()
+    content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
     for line in content[-lines:]:
         click.echo(safe_text(line))

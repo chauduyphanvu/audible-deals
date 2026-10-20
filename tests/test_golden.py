@@ -27,7 +27,7 @@ from click.testing import CliRunner
 
 from audible_deals import paths
 from audible_deals.cli import cli
-from tests.conftest import make_raw
+from tests.conftest import make_raw, seed_history
 
 GOLDEN_DIR = Path(__file__).parent / "golden"
 REGENERATE = "UPDATE_GOLDEN"
@@ -152,18 +152,16 @@ def catalog(api):
 
 def _seed_history_and_wishlist():
     today = datetime.date.today()
-    history_dir = paths.history_dir()
-    history_dir.mkdir(parents=True, exist_ok=True)
-    entries = [
-        {
-            "date": (today - datetime.timedelta(days=days)).isoformat(),
-            "price": price,
-            "title": "Golden Wishlist Book",
-        }
-        for days, price in ((6, 12.0), (3, 9.0), (1, 5.0))
-    ]
-    (history_dir / "GOLDWISH01.json").write_text(
-        json.dumps({"marketplaces": {"us": entries}})
+    seed_history(
+        "GOLDWISH01",
+        [
+            {
+                "date": (today - datetime.timedelta(days=days)).isoformat(),
+                "price": price,
+                "title": "Golden Wishlist Book",
+            }
+            for days, price in ((6, 12.0), (3, 9.0), (1, 5.0))
+        ],
     )
     paths.wishlist_file().write_text(
         json.dumps(

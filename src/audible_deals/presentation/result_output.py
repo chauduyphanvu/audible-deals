@@ -12,8 +12,7 @@ from audible_deals.presentation.products import display_products
 from audible_deals.presentation.reports import display_summary
 from audible_deals.presentation.terminal import console
 from audible_deals.price_history import (
-    history_key,
-    load_price_history,
+    load_product_histories,
     price_history_context,
 )
 from audible_deals.product import Product
@@ -45,13 +44,7 @@ def _prior_histories(products: list[Product], histories) -> dict[str, list[dict]
     today_iso = datetime.date.today().isoformat()
     source = histories
     if source is None:
-        source = {
-            history_key(product.asin, product.locale): load_price_history(
-                product.asin, product.locale
-            )
-            for product in products
-            if product.price is not None
-        }
+        source = load_product_histories(products)
     return {
         key: [dict(entry) for entry in entries if entry.get("date") != today_iso]
         for key, entries in source.items()

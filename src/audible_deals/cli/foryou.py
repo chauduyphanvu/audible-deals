@@ -30,8 +30,7 @@ from audible_deals.presentation.terminal import (
     safe_markup,
 )
 from audible_deals.price_history import (
-    history_key,
-    load_price_history,
+    load_product_histories,
     price_history_context,
 )
 from audible_deals.product import Product
@@ -451,11 +450,7 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
 
     credit_price = _credit_price(ctx)
     language = "" if settings.all_languages else settings.language
-    candidate_histories = {
-        history_key(p.asin, p.locale): load_price_history(p.asin, p.locale)
-        for p in candidates
-        if p.price is not None
-    }
+    candidate_histories = load_product_histories(candidates)
     candidate_atl, candidate_hist_context = price_history_context(
         candidates, histories=candidate_histories
     )

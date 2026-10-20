@@ -27,7 +27,7 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals config` | Manage global defaults |
 | `deals login` | Authenticate with Audible |
 | `deals import-auth PATH` | Import audible-cli or Libation credentials |
-| `deals doctor` | Check authentication, configuration, and marketplace access |
+| `deals doctor` | Check authentication, configuration, databases, and marketplace access |
 | `deals completions SHELL` | Generate bash, zsh, or fish completions |
 
 ## Find and search
@@ -135,7 +135,7 @@ deals for-me --dry-run
 
 The recommendation score adds 5 points for the `next in SERIES` continuation and 2 for another `in SERIES` match. Favorite authors, narrators, genres, and favorable price history add further boosts. The `Match` column explains each result.
 
-Owned books are always excluded. Results feed `deals last` and the price-history tracker. The profile is cached in `taste_cache.json` for 24 hours and never leaves your machine.
+Owned books are always excluded. Results feed `deals last` and the price-history tracker. The profile is cached for 24 hours in `cache.db` (see [Local data](#local-data)) and never leaves your machine.
 
 ## Series continuations
 
@@ -354,7 +354,7 @@ Everything is kept in one data directory. It is chosen on every run, in this ord
 
 ### What is stored
 
-The data directory contains:
+Files you can edit by hand stay JSON:
 
 | Path | Contents |
 |------|----------|
@@ -362,18 +362,35 @@ The data directory contains:
 | `config.json` | Global defaults |
 | `wishlist.json` | Local watchlist |
 | `profiles.json` | Saved profiles |
-| `last_results.json` | Versioned candidate session from the latest flat `find`, `search`, `for-me`, or `series` result view |
-| `seen_asins.json` | ASINs returned by earlier result views for `--exclude-seen` |
-| `dismissed_asins.json` | ASINs dismissed globally with interactive `n` |
-| `refresh_eligibility.json` | Versioned per-marketplace dates for recently surfaced products eligible for background refresh |
-| `history/` | Per-ASIN price history |
-| `categories_cache.*.json` | Per-locale category caches |
-| `track_state.json`, `track.log` | Background tracking state and log |
-| `taste_cache.json` | Local taste profile for `for-me` |
+| `monitors.json` | Saved-search monitor definitions |
+| `track.log` | Log written by the scheduled job |
+
+Everything the tool records for you lives in two SQLite databases (standard library `sqlite3`, WAL mode):
+
+| Path | Contents |
+|------|----------|
+| `state.db` | Your records: per-marketplace price history (newest 365 entries per ASIN), the last result session, ASINs already seen for `--exclude-seen`, globally dismissed ASINs, recently surfaced products eligible for background refresh, monitor baselines, alert cooldowns, and background-tracking state and run history |
+| `cache.db` | Rebuildable data: category lists (7 days) and the `for-me` taste profile (24 hours). Safe to delete at any time |
+
+`deals history --purge-older-than DAYS` removes old price history, and `deals last --clear`, `--clear-seen` and `--clear-dismissed` clear the other records.
+
+### Upgrading from JSON files
+
+Earlier releases kept the records above in separate JSON files (`history/`, `seen_asins.json`, `dismissed_asins.json`, `refresh_eligibility.json`, `last_results.json`, `monitor_state.json`, `notify_state.json`, `track_state.json`). The first time `state.db` is opened, they are imported in a single transaction and then renamed, never deleted:
+
+- `history/` becomes `history.migrated/`, and each file becomes `FILE.json.migrated`;
+- the cache files (`taste_cache.json`, `categories_cache.*.json`) are not imported, only renamed; the next run rebuilds them;
+- if a run is interrupted, nothing is half-imported and the files stay where they were, so the next run starts again; if a rename fails after the import, only the rename is retried, never the import;
+- entries that cannot be used (a price that is not a number, a bad date, a corrupt file) are skipped and counted, and `deals doctor` reports them; the originals remain in the `.migrated` files;
+- price history written before marketplaces were tracked (a bare list with no marketplace) is not assigned to one, as before; it stays in `history.migrated/`.
+
+Once you are happy, the `.migrated` files can be deleted. Do not run an older release against the same directory afterwards: it would not see the imported records and would start new JSON files that this release ignores.
 
 ### Damaged data files
 
-`config.json`, `profiles.json`, `monitors.json`, `wishlist.json`, and `dismissed_asins.json` are files you can edit by hand. If one cannot be parsed (for example after a typo), commands that only read it print a one-line warning with the file and parse position and carry on as if it were empty (`-vv` adds the traceback). Commands that would write to it stop with that same location and leave the file untouched, so a typo never costs you your saved data. Fix the file or move it aside, then run the command again.
+`config.json`, `profiles.json`, `monitors.json` and `wishlist.json` are files you can edit by hand. If one cannot be parsed (for example after a typo), commands that only read it print a one-line warning with the file and parse position and carry on as if it were empty (`-vv` adds the traceback). Commands that would write to it stop with that same location and leave the file untouched, so a typo never costs you your saved data. Fix the file or move it aside, then run the command again.
+
+If `state.db` itself cannot be read, it is moved to `state.db.corrupt-<timestamp>` (with a one-line warning) and a fresh database is created, so commands keep working; `cache.db` is simply recreated. `deals doctor` runs SQLite's `PRAGMA quick_check` on `state.db`. A database written by a newer release is refused untouched.
 
 ## Related guides
 

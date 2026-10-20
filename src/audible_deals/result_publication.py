@@ -20,8 +20,7 @@ from audible_deals.presentation.terminal import console, safe_markup, safe_text
 from audible_deals.price_history import (
     HistoryMap,
     hist_percentiles,
-    history_key,
-    load_price_history,
+    load_product_histories,
     price_drop_pcts,
     record_prices,
 )
@@ -148,13 +147,7 @@ def publish_discovery(
 
     histories: HistoryMap | None = request.result.histories
     if histories is None:
-        histories = {
-            history_key(product.asin, product.locale): load_price_history(
-                product.asin, product.locale
-            )
-            for product in request.candidates
-            if product.price is not None
-        }
+        histories = load_product_histories(request.candidates)
     session = _session_for_request(request, visible, histories)
     surfaced = [
         product

@@ -19,7 +19,7 @@ from audible_deals.results_cache import (
     load_result_session,
     save_last_results,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, raw_session
 
 
 def _run_browse(products, user_input, tmp_config):
@@ -399,7 +399,7 @@ class TestInteractiveBrowserDispatcher:
                 {"asin": "IB2", "title": "Second"},
             ],
         )
-        before = paths.last_results_file().read_text()
+        before = raw_session()
         rendered = []
         monkeypatch.setattr(
             interactive_mod,
@@ -415,7 +415,7 @@ class TestInteractiveBrowserDispatcher:
         assert browser.dispatch(interactive_mod.InteractiveCommand("hide", (0,)))
 
         assert [product.asin for product in browser.products] == ["IB1", "IB2"]
-        assert paths.last_results_file().read_text() == before
+        assert raw_session() == before
         assert rendered == []
         assert load_dismissed_asins() == set()
 

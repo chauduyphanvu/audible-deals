@@ -15,7 +15,7 @@ from typing import TYPE_CHECKING
 
 from audible_deals.constants import LOCALE_DOMAIN
 from audible_deals.locking import advisory_lock
-from audible_deals.storage import _atomic_write, _atomic_write_bytes
+from audible_deals.storage import _atomic_write, _atomic_write_bytes, read_text
 
 if TYPE_CHECKING:
     import audible
@@ -190,7 +190,7 @@ class AuthStore:
                     )
                     print()
                     input("Press Enter here once the file is saved...")
-                    url = callback_url_file.read_text().strip()
+                    url = read_text(callback_url_file).strip()
                     if not url:
                         raise RuntimeError(f"File is empty: {callback_url_file}")
                     return url
@@ -221,7 +221,7 @@ class AuthStore:
         with self._state_lock:
             self._prepare_auth_dir()
 
-            raw = source_path.read_text()
+            raw = read_text(source_path)
             if len(raw) > 1_000_000:
                 raise ValueError(
                     f"Auth file too large ({len(raw):,} chars). "

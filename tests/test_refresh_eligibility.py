@@ -14,14 +14,18 @@ from tests.conftest import make_product
 
 
 def _write_history(asin: str, marketplaces: dict) -> None:
-    paths.history_dir().mkdir(parents=True, exist_ok=True)
-    (paths.history_dir() / f"{asin}.json").write_text(
+    """A legacy per-ASIN history file (read by the one-time import)."""
+    history_dir = paths.legacy_history_dir()
+    history_dir.mkdir(parents=True, exist_ok=True)
+    (history_dir / f"{asin}.json").write_text(
         json.dumps({"marketplaces": marketplaces})
     )
 
 
-def test_first_use_migrates_seen_numeric_histories_across_marketplaces(tmp_config):
-    paths.seen_asins_file().write_text(json.dumps(["B00MIGR001", "B00MIGR002"]))
+def test_import_derives_eligibility_from_seen_numeric_histories(tmp_config):
+    (paths.data_dir() / "seen_asins.json").write_text(
+        json.dumps(["B00MIGR001", "B00MIGR002"])
+    )
     _write_history(
         "B00MIGR001",
         {
@@ -46,22 +50,47 @@ def test_first_use_migrates_seen_numeric_histories_across_marketplaces(tmp_confi
         "us": {"B00MIGR001": "2026-01-03"},
         "uk": {"B00MIGR001": "2026-01-02"},
     }
-    persisted = json.loads(paths.refresh_eligibility_file().read_text())
-    assert persisted["version"] == 1
+    # The result is stored in state.db; the sources are kept as *.migrated.
+    assert (paths.data_dir() / "seen_asins.json.migrated").exists()
+    assert (paths.data_dir() / "history.migrated" / "B00MIGR001.json").exists()
 
 
 @pytest.mark.parametrize(
     "content",
     ["not-json", json.dumps({"version": 99, "marketplaces": {}})],
 )
-def test_corrupt_or_unsupported_store_reads_empty_without_rewrite(tmp_config, content):
-    paths.refresh_eligibility_file().write_text(content)
-    before = paths.refresh_eligibility_file().read_bytes()
+def test_corrupt_or_unsupported_legacy_store_imports_nothing(tmp_config, content):
+    legacy = paths.data_dir() / "refresh_eligibility.json"
+    legacy.write_text(content)
+    (paths.data_dir() / "seen_asins.json").write_text(json.dumps(["B00CORRUP1"]))
+    _write_history("B00CORRUP1", {"us": [{"date": "2026-01-01", "price": 5}]})
 
+    # A store that could not be read is not rebuilt from history either.
     assert load_refresh_eligibility() == {}
     mark_refresh_eligible([make_product(asin="B00CORRUP1", price=4)])
 
-    assert paths.refresh_eligibility_file().read_bytes() == before
+    assert load_refresh_eligibility() == {
+        "us": {"B00CORRUP1": datetime.date.today().isoformat()}
+    }
+    assert (
+        paths.data_dir() / "refresh_eligibility.json.migrated"
+    ).read_text() == content
+
+
+def test_valid_entries_survive_an_invalid_neighbour(tmp_config):
+    (paths.data_dir() / "refresh_eligibility.json").write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "marketplaces": {
+                    "us": {"B00GOOD001": "2026-01-02", "B00BADDATE": "yesterday"},
+                    "xx": {"B00BADLOC1": "2026-01-02"},
+                },
+            }
+        )
+    )
+
+    assert load_refresh_eligibility() == {"us": {"B00GOOD001": "2026-01-02"}}
 
 
 def test_mark_keeps_later_date_and_only_numeric_products(tmp_config):

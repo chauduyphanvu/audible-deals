@@ -12,13 +12,7 @@ from typing import Any
 
 from audible_deals import constants
 from audible_deals.automation_models import TrackRunRequest, TrackRunResult
-from audible_deals.config_store import (
-    load_monitors,
-    load_notify_state,
-    load_track_state,
-    save_notify_state,
-    save_track_state,
-)
+from audible_deals.config_store import load_monitors
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import (
     MonitorRuntime,
@@ -37,6 +31,13 @@ from audible_deals.notification_service import (
 from audible_deals.product import Product
 from audible_deals.refresh_eligibility import load_refresh_eligibility
 from audible_deals.results_cache import load_dismissed_asins
+from audible_deals.state_store import (
+    TrackState,
+    load_notify_state,
+    load_track_state,
+    save_notify_state,
+    save_track_state,
+)
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
 from audible_deals.wishlist import inspect_wishlist, load_wishlist
 
@@ -44,7 +45,6 @@ logger = logging.getLogger(__name__)
 
 RECENT_HISTORY_DAYS = 30
 MAX_EXTRA_ASINS = 200
-RUN_HISTORY_MAX = 10
 
 
 @dataclass(frozen=True)
@@ -58,8 +58,8 @@ class TrackRuntime:
         load_refresh_eligibility
     )
     load_dismissed_asins: Callable[[], set[str]] = load_dismissed_asins
-    load_track_state: Callable[[], dict] = load_track_state
-    save_track_state: Callable[[dict], None] = save_track_state
+    load_track_state: Callable[[], TrackState] = load_track_state
+    save_track_state: Callable[[TrackState], None] = save_track_state
     load_monitors: Callable[[], dict[str, dict]] = load_monitors
     load_notify_state: Callable[[], dict] = load_notify_state
     save_notify_state: Callable[[dict], None] = save_notify_state
@@ -67,41 +67,6 @@ class TrackRuntime:
     today: Callable[[], datetime.date] = datetime.date.today
     now: Callable[[], datetime.datetime] = datetime.datetime.now
     monotonic: Callable[[], float] = time.monotonic
-
-
-def append_run(state: dict, entry: dict) -> None:
-    history = state.get("run_history", [])
-    if not isinstance(history, list):
-        logger.warning("track state run_history is malformed; starting a new history")
-        history = []
-    else:
-        malformed = len(history) - sum(isinstance(item, dict) for item in history)
-        if malformed:
-            logger.warning(
-                "track state run_history contains %d malformed record(s); skipping them",
-                malformed,
-            )
-            history = [item for item in history if isinstance(item, dict)]
-    history.insert(0, entry)
-    state["run_history"] = history[:RUN_HISTORY_MAX]
-    state.pop("last_run", None)
-
-
-def run_history(state: dict) -> list[dict]:
-    if "run_history" in state:
-        history = state["run_history"]
-        if not isinstance(history, list):
-            logger.warning("track state run_history is malformed; ignoring it")
-            return []
-        valid = [item for item in history if isinstance(item, dict)]
-        if len(valid) != len(history):
-            logger.warning("track state run_history contains malformed records")
-        return valid
-    last = state.get("last_run")
-    if last and not isinstance(last, dict):
-        logger.warning("track state last_run is malformed; ignoring it")
-        return []
-    return [last] if last else []
 
 
 def refresh_eligible_asins(
@@ -163,12 +128,12 @@ def is_auth_error(exc: Exception) -> bool:
 
 
 def _notify_auth_failure(
-    state: dict,
+    state: TrackState,
     error: str,
     request: TrackRunRequest,
     runtime: TrackRuntime,
 ) -> None:
-    if not request.webhook or state.get("auth_error_notified"):
+    if not request.webhook or state.auth_error_notified:
         return
     try:
         deliver_auth_error(
@@ -181,7 +146,7 @@ def _notify_auth_failure(
     except Exception:
         logger.exception("auth-error webhook ping failed")
     else:
-        state["auth_error_notified"] = True
+        state.auth_error_notified = True
 
 
 def _record_failure(
@@ -191,16 +156,13 @@ def _record_failure(
     runtime: TrackRuntime,
 ) -> None:
     state = runtime.load_track_state()
-    if not isinstance(state, dict):
-        logger.warning("track state is malformed; starting with an empty state")
-        state = {}
-    result = TrackRunResult(
-        at=runtime.now().isoformat(timespec="seconds"),
-        duration_s=round(runtime.monotonic() - started, 1),
-        error=f"{type(exc).__name__}: {exc}",
-        present_fields=frozenset({"at", "duration_s", "error"}),
+    state.add_run(
+        {
+            "at": runtime.now().isoformat(timespec="seconds"),
+            "duration_s": round(runtime.monotonic() - started, 1),
+            "error": f"{type(exc).__name__}: {exc}",
+        }
     )
-    append_run(state, result.to_dict())
     if is_auth_error(exc):
         _notify_auth_failure(state, str(exc), request, runtime)
     runtime.save_track_state(state)
@@ -209,7 +171,7 @@ def _record_failure(
 def _run_locked(
     request: TrackRunRequest,
     runtime: TrackRuntime,
-    state: dict,
+    state: TrackState,
     started: float,
 ) -> TrackRunResult:
     inspection = inspect_wishlist(runtime.load_wishlist())
@@ -229,9 +191,7 @@ def _run_locked(
 
     excluded_asins = wishlist_asins | runtime.load_dismissed_asins()
     eligibility = runtime.load_refresh_eligibility()
-    cursors = state.get("refresh_cursors")
-    if not isinstance(cursors, dict):
-        cursors = {}
+    cursors = state.refresh_cursors
     cursor = cursors.get(request.locale)
     extra_asins, next_cursor = refresh_eligible_asins(
         excluded_asins,
@@ -241,8 +201,8 @@ def _run_locked(
         cursor,
     )
     if extra_asins:
-        cursors[request.locale] = next_cursor
-        state["refresh_cursors"] = cursors
+        if next_cursor is not None:
+            cursors[request.locale] = next_cursor
         with client:
             products = client.get_products_batch(extra_asins)
         runtime.record_products(products)
@@ -289,14 +249,9 @@ def _run_locked(
             runtime.webhook_client,
         )
 
-    try:
-        monitor_cursor = int(state.get("monitor_cursor", 0))
-    except (TypeError, ValueError, OverflowError):
-        logger.warning("track state monitor_cursor is malformed; resetting it")
-        monitor_cursor = 0
-    selection = select_monitors_for_run(runtime.load_monitors(), monitor_cursor)
+    selection = select_monitors_for_run(runtime.load_monitors(), state.monitor_cursor)
     if selection.monitors:
-        state["monitor_cursor"] = selection.cursor
+        state.monitor_cursor = selection.cursor
     for definition in selection.monitors:
         monitor_checked += 1
         try:
@@ -327,8 +282,8 @@ def _run_locked(
         error=None,
         wishlist_issues=tuple(inspection.issues),
     )
-    append_run(state, result.to_dict())
-    state.pop("auth_error_notified", None)
+    state.add_run(result.to_dict())
+    state.auth_error_notified = False
     runtime.save_track_state(state)
     return result
 
@@ -337,11 +292,7 @@ def run_track(request: TrackRunRequest, runtime: TrackRuntime) -> TrackRunResult
     started = runtime.monotonic()
     try:
         with runtime.lock():
-            state = runtime.load_track_state()
-            if not isinstance(state, dict):
-                logger.warning("track state is malformed; starting with an empty state")
-                state = {}
-            return _run_locked(request, runtime, state, started)
+            return _run_locked(request, runtime, runtime.load_track_state(), started)
     except LockHeldError:
         raise
     except WebhookDeliveryError:
