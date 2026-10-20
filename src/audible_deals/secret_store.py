@@ -39,8 +39,8 @@ _CHUNK_BYTES = 2000
 _CHUNKED = "\x00chunked:"
 
 INSTALL_HINT = (
-    "Install the optional keyring support (pip install 'audible-deals[keyring]', "
-    "or uv tool install 'audible-deals[keyring]')"
+    "Install the optional keyring support (uv tool install "
+    "'audible-deals[keyring] @ git+https://github.com/chauduyphanvu/audible-deals')"
 )
 SWITCH_BACK_HINT = "or go back to files with: deals config set secret-storage file"
 
@@ -62,7 +62,8 @@ def _backend():
             raise SecretStoreError(
                 "Secret storage is set to 'keyring', but the pre-built binary does "
                 "not include keyring support. Install deals with "
-                "'uv tool install 'audible-deals[keyring]'' instead, "
+                "uv tool install 'audible-deals[keyring] @ "
+                "git+https://github.com/chauduyphanvu/audible-deals' instead, "
                 f"{SWITCH_BACK_HINT}."
             ) from exc
         raise SecretStoreError(

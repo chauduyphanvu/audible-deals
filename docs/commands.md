@@ -240,7 +240,7 @@ Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last` to browse the r
 When the optional `tui` extra is installed and both stdin and stdout are terminals, `-i` opens a full-screen browser (a table of the results with the same columns as the wide table):
 
 ```bash
-uv tool install 'audible-deals[tui]'        # or: pip install 'audible-deals[tui]'
+uv tool install 'audible-deals[tui] @ git+https://github.com/chauduyphanvu/audible-deals'
 deals find --genre sci-fi --max-price 5 -i
 ```
 

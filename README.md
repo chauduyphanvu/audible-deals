@@ -9,6 +9,8 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - Compare cash prices with the cost of an Audible credit.
 - Track wishlist prices and receive Slack, Discord, Teams, ntfy, or generic webhook alerts.
 - Monitor saved catalog searches for new matches and price drops on the same schedule.
+- Browse results in a full-screen terminal browser with filtering, sorting, a detail pane, wishlist and compare actions (optional `tui` extra; the pre-built binaries include it).
+- Script it: most commands print stable, documented JSON with `--json` and use distinct exit codes.
 - Widen, narrow, sort, and reset recent results locally without another API call.
 - Use the correct currency and Audible store across all nine supported marketplaces.
 
@@ -22,7 +24,7 @@ On macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/chauduyphanvu/audible-deals/main/install.sh | bash
 ```
 
-Or install straight from GitHub with Python 3.11 or newer (audible-deals is not on PyPI yet):
+Or install straight from GitHub with Python 3.11 or newer (3.11 to 3.14 are tested; audible-deals is not on PyPI yet):
 
 ```bash
 uv tool install git+https://github.com/chauduyphanvu/audible-deals
@@ -30,7 +32,7 @@ uv tool install git+https://github.com/chauduyphanvu/audible-deals
 pipx install git+https://github.com/chauduyphanvu/audible-deals
 ```
 
-Windows users should install this way. See the [installation guide](docs/installation.md) for manual downloads, platform notes, and troubleshooting.
+Windows users should install this way (`uv tool install`). See the [installation guide](docs/installation.md) for manual downloads, platform notes, and troubleshooting.
 
 ### Authenticate
 
@@ -58,7 +60,7 @@ deals search "Brandon Sanderson" --sort price
 deals for-me --max-price 5 --on-sale
 ```
 
-Add `-i` to `find` or `search` to browse results interactively. Run `deals --help` or `deals COMMAND --help` for the complete CLI reference.
+Add `-i` to `find` or `search` to browse results interactively: a full-screen browser when the optional `tui` extra is installed (see the [installation guide](docs/installation.md#optional-the-full-screen-results-browser)), otherwise a prompt. Run `deals --help` or `deals COMMAND --help` for the complete CLI reference.
 
 Result rows use shell-safe references such as `@1`. They work anywhere an
 ASIN does, including `deals detail @1`, `deals compare @1 @3`, and
@@ -97,12 +99,12 @@ Preview the documentation site locally with `uv run --extra docs mkdocs serve`. 
 
 ```bash
 uv sync --extra dev
-uv run pytest -q
+uv run pytest -q -n auto                 # tests, in parallel
 uv run ruff check . && uv run ruff format --check .
 uv run mypy
 ```
 
-The tool uses the [audible](https://github.com/mkb79/Audible) Python package to query Audible’s catalog API. Results are filtered and re-sorted locally because the API does not support price sorting. Catalog pages are cached for two hours (`--refresh` for live data), so refining a search costs no API calls. Configuration, wishlists and monitor definitions stay as JSON files, and price history, cached results and monitor snapshots are kept in a local SQLite database, all under `~/.config/audible-deals/` (override with `DEALS_HOME`).
+The tool uses the [audible](https://github.com/mkb79/Audible) Python package to query Audible’s catalog API. Results are filtered and re-sorted locally because the API does not support price sorting. Catalog pages are cached for two hours (`--refresh` for live data), so refining a search costs no API calls. Your records (price history, seen and dismissed titles, the last result session, tracking state) live in a local SQLite database, `state.db`; rebuildable data lives in `cache.db`; configuration, the wishlist, profiles and monitor definitions stay as JSON files you can read and edit. All of it is under `~/.config/audible-deals/` (override with `DEALS_HOME`; `deals cache info` shows where).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 

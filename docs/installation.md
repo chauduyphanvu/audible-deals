@@ -1,6 +1,6 @@
 # Installation and authentication
 
-audible-deals requires an Audible account. Installing from source requires Python 3.11 or newer.
+audible-deals requires an Audible account. Installing from source requires Python 3.11 or newer (3.11 to 3.14 are tested on Linux; 3.13 on macOS and Windows).
 
 ## macOS and Linux
 
@@ -53,17 +53,23 @@ cd audible-deals
 pip install -e .
 ```
 
-Installing from source is recommended on Windows because the pre-built binary may not work on every system. Run `deals` from Command Prompt, PowerShell, or Windows Terminal. Do not double-click the executable; the terminal window will close as soon as the command finishes.
+On Windows, `uv tool install` as above is the recommended way: the one-line installer is for macOS and Linux, and the pre-built binary may not work on every system. Run `deals` from Command Prompt, PowerShell, or Windows Terminal. Do not double-click the executable; the terminal window will close as soon as the command finishes.
 
 ## Optional: the full-screen results browser
 
 `deals find -i` (and `search`, `for-me`, `series`, `last`) can open a full-screen browser instead of a line-by-line prompt. It needs the `tui` extra:
 
 ```bash
-uv tool install 'audible-deals[tui]'     # or: pip install 'audible-deals[tui]'
+uv tool install 'audible-deals[tui] @ git+https://github.com/chauduyphanvu/audible-deals'
+# or
+pipx install 'audible-deals[tui] @ git+https://github.com/chauduyphanvu/audible-deals'
 ```
 
 Without it, or when output is piped, `-i` uses the prompt browser. The pre-built binaries include the full-screen browser. See [Interactive mode](commands.md#interactive-mode).
+
+## Upgrading
+
+Run the one-line installer again, download the newer archive, or reinstall from source (`uv tool install --reinstall git+https://github.com/chauduyphanvu/audible-deals`, or `pipx install --force` with the same address). Your data directory is kept. The first run of a new release imports records that older releases kept in separate JSON files into `state.db` and renames the originals to `*.migrated`; read [Upgrading from JSON files](commands.md#upgrading-from-json-files) before you move back to an older release, and the [changelog](https://github.com/chauduyphanvu/audible-deals/blob/main/CHANGELOG.md) for behavior that changed.
 
 ## Authenticate
 
@@ -93,7 +99,7 @@ deals doctor
 By default your login (`auth.json`) and any webhook URLs and headers are files in the data directory, readable only by you (mode 600). If you would rather have them in the operating system's keychain (macOS Keychain, Windows Credential Manager, the Secret Service on Linux), install the optional extra and switch:
 
 ```bash
-uv tool install 'audible-deals[keyring]'     # or: pip install 'audible-deals[keyring]'
+uv tool install 'audible-deals[keyring] @ git+https://github.com/chauduyphanvu/audible-deals'
 deals config set secret-storage keyring      # shows what moves and asks first (-y to skip)
 ```
 
