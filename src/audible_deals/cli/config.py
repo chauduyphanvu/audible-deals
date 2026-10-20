@@ -6,8 +6,13 @@ import textwrap
 
 import click
 
+from audible_deals import json_output
 from audible_deals.cli.helpers import _CL
-from audible_deals.cli.options import _complete_profile_names, filter_options
+from audible_deals.cli.options import (
+    _complete_profile_names,
+    filter_options,
+    json_option,
+)
 from audible_deals.config_store import (
     CONFIG_SCHEMA,
     coerce_config_value,
@@ -96,10 +101,23 @@ def config_set(key, value):
 @click.option(
     "--show-secrets", is_flag=True, help="Show webhook URLs and header values."
 )
-def config_get(key, show_secrets):
+@json_option("Output the key and its value as JSON")
+def config_get(key, show_secrets, json_flag):
     """Get a global default value."""
     norm_key = validate_config_key(key)
     cfg = load_config()
+    if json_flag:
+        shown = cfg if show_secrets else json_output.redact_config(cfg)
+        click.echo(
+            json_output.dumps(
+                json_output.with_schema(
+                    key=norm_key,
+                    set=norm_key in cfg,
+                    value=shown.get(norm_key),
+                )
+            )
+        )
+        return
     if norm_key not in cfg:
         console.print(f"[dim]{norm_key} is not set[/dim]")
     else:
@@ -113,9 +131,18 @@ def config_get(key, show_secrets):
 @click.option(
     "--show-secrets", is_flag=True, help="Show webhook URLs and header values."
 )
-def config_list(show_secrets=False):
+@json_option("Output the global defaults as JSON")
+def config_list(show_secrets=False, json_flag=False):
     """List all set global defaults."""
     cfg = load_config()
+    if json_flag:
+        shown = cfg if show_secrets else json_output.redact_config(cfg)
+        click.echo(
+            json_output.dumps(
+                json_output.with_schema(config=dict(sorted(shown.items())))
+            )
+        )
+        return
     if not cfg:
         console.print(
             "[dim]No global defaults set. Use 'deals config set KEY VALUE' to set one.[/dim]"
@@ -146,10 +173,11 @@ def _config_value(key: str, value, show_secrets: bool) -> str:
 
 @config_cmd.command("reset")
 @click.argument("key", required=False, default=None)
-def config_reset(key):
+@click.option("--yes", "-y", is_flag=True, help="Do not ask before clearing everything")
+def config_reset(key, yes):
     """Remove a key from global defaults, or clear all if no key given."""
     if key is None:
-        if not click.confirm("Remove all global defaults?"):
+        if not yes and not click.confirm("Remove all global defaults?"):
             console.print("[dim]Cancelled.[/dim]")
             return
         with config_transaction() as cfg:
@@ -225,9 +253,13 @@ def profile_save(ctx, name, **kwargs):
 
 
 @profile.command("list")
-def profile_list():
+@json_option("Output the saved profiles as JSON")
+def profile_list(json_flag):
     """List saved profiles."""
     profiles = load_profiles()
+    if json_flag:
+        click.echo(json_output.dumps(_profiles_payload(profiles)))
+        return
     if not profiles:
         console.print(
             "[dim]No profiles saved. Use 'deals profile save NAME --flags...' to create one.[/dim]"
@@ -276,9 +308,24 @@ def _opts_to_flag_parts(opts: dict) -> list[str]:
     return parts
 
 
+def _profiles_payload(profiles: dict) -> dict:
+    entries = []
+    for name, opts in profiles.items():
+        error = profile_validation_error(opts)
+        entry: dict = {"name": name, "valid": error is None}
+        if error is None:
+            entry["options"] = dict(sorted(opts.items()))
+        else:
+            entry["options"] = None
+            entry["error"] = error
+        entries.append(entry)
+    return json_output.with_schema(profiles=entries)
+
+
 @profile.command("show")
 @click.argument("name", shell_complete=_complete_profile_names)
-def profile_show(name):
+@json_option("Output the profile as JSON")
+def profile_show(name, json_flag):
     """Show the saved flags for a named profile."""
     profiles = load_profiles()
     if name not in profiles:
@@ -288,6 +335,15 @@ def profile_show(name):
         raise click.ClickException(
             f"Profile '{name}' is malformed: {error}; save it again."
         )
+    if json_flag:
+        click.echo(
+            json_output.dumps(
+                json_output.with_schema(
+                    profile={"name": name, "options": dict(sorted(opts.items()))}
+                )
+            )
+        )
+        return
     console.print(f"\n[bold]Profile: {safe_markup(name)}[/bold]\n")
     for part in _opts_to_flag_parts(dict(sorted(opts.items()))):
         console.print(f"  {safe_markup(part)}")

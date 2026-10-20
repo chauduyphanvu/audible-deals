@@ -131,6 +131,12 @@ def _json_output(result) -> Any:
     return json.loads(result.output)
 
 
+def _stdout_json(result) -> Any:
+    """The JSON on stdout alone (the command may also print notes on stderr)."""
+    assert result.exit_code == 0, result.output
+    return json.loads(result.stdout)
+
+
 @pytest.fixture
 def catalog(api):
     """A small deterministic catalog served through the mocked HTTP boundary."""
@@ -260,3 +266,297 @@ def test_recap_json_structure(tmp_config):
 
     assert payload["drops"]
     check_golden("json/recap.json", structure([payload]))
+
+
+# ---------------------------------------------------------------------------
+# JSON key structure: outputs that predate schema versions (all schema v1)
+# ---------------------------------------------------------------------------
+
+
+def test_library_json_structure(mock_client, tmp_config):
+    from tests.conftest import make_product
+
+    mock_client.get_library_pages.return_value = iter(
+        [([make_product(asin="LIBGOLD001"), make_product(asin="LIBGOLD002")], 1)]
+    )
+
+    products = _stdout_json(CliRunner().invoke(cli, ["library", "--json"]))
+
+    assert len(products) == 2
+    check_golden("json/library.json", structure([products]))
+
+
+def test_library_stats_json_structure(mock_client, tmp_config):
+    from tests.conftest import make_product
+
+    mock_client.get_library_pages.return_value = iter(
+        [([make_product(asin="LIBGOLD001")], 1)]
+    )
+
+    payload = _stdout_json(CliRunner().invoke(cli, ["library", "--stats", "--json"]))
+
+    check_golden("json/library_stats.json", structure([payload]))
+
+
+def test_series_json_structure(mock_client, tmp_config):
+    from tests.conftest import make_product, make_series_products_batch
+
+    owned = [
+        make_product(
+            asin=f"SERGOLD00{n}",
+            series_name="Golden Series",
+            series_position=str(n),
+            series_asin="SER_GOLD",
+        )
+        for n in (1, 2)
+    ]
+    next_book = make_product(
+        asin="SERGOLD003",
+        series_name="Golden Series",
+        series_position="3",
+        series_asin="SER_GOLD",
+    )
+    mock_client.get_library.return_value = owned
+    mock_client.get_series_products_many.return_value = make_series_products_batch(
+        {"SER_GOLD": [*owned, next_book]}
+    )
+
+    products = _stdout_json(CliRunner().invoke(cli, ["series", "--json"]))
+
+    assert products
+    check_golden("json/series.json", structure([products]))
+
+
+def test_series_gaps_json_structure(mock_client, tmp_config):
+    from tests.conftest import make_product, make_series_products_batch
+
+    owned = [
+        make_product(
+            asin=f"GAPGOLD00{n}",
+            series_name="Gap Series",
+            series_position=str(n),
+            series_asin="SER_GAP",
+        )
+        for n in (1, 2)
+    ]
+    missing = make_product(
+        asin="GAPGOLD003",
+        series_name="Gap Series",
+        series_position="3",
+        series_asin="SER_GAP",
+    )
+    mock_client.get_library.return_value = owned
+    mock_client.get_series_products_many.return_value = make_series_products_batch(
+        {"SER_GAP": [*owned, missing]}
+    )
+
+    gaps = _stdout_json(CliRunner().invoke(cli, ["series", "--gaps", "--json"]))
+
+    assert gaps and gaps[0]["missing"]
+    check_golden("json/series_gaps.json", structure([gaps]))
+
+
+def test_notify_json_structure(mock_client, tmp_config):
+    from audible_deals import wishlist as wishlist_mod
+    from tests.conftest import make_product
+
+    wishlist_mod.save_wishlist(
+        [{"asin": "NOTIGOLD01", "title": "T", "max_price": 5.0, "added": ""}]
+    )
+    mock_client.get_products_batch.return_value = [
+        make_product(asin="NOTIGOLD01", price=3.0)
+    ]
+
+    payload = _stdout_json(CliRunner().invoke(cli, ["notify"]))
+
+    assert payload["count"] == 1
+    check_golden("json/notify.json", structure([payload]))
+
+
+# ---------------------------------------------------------------------------
+# JSON key structure: outputs with "schema_version": 1
+# ---------------------------------------------------------------------------
+
+
+def test_doctor_json_structure(mock_client, tmp_config):
+    payload = json.loads(CliRunner().invoke(cli, ["doctor", "--json"]).stdout)
+
+    check_golden("json/doctor.json", structure([payload]))
+
+
+def test_watch_json_structure(mock_client, tmp_config):
+    from audible_deals import wishlist as wishlist_mod
+    from tests.conftest import make_product
+
+    wishlist_mod.save_wishlist(
+        [
+            {"asin": "WATCHGOLD1", "title": "T", "max_price": 5.0, "added": ""},
+            {"asin": "WATCHGOLD2", "title": "T", "max_price": 5.0, "added": ""},
+            {"asin": "WATCHGOLD3", "title": "Gone", "max_price": 5.0, "added": ""},
+            {"type": "author", "author": "A", "max_price": 4.0, "added": ""},
+        ]
+    )
+    paths.config_file().write_text(json.dumps({"credit_price": 10}))
+    mock_client.get_products_batch.return_value = [
+        make_product(asin="WATCHGOLD1", price=3.0),
+        make_product(asin="WATCHGOLD2", price=None, list_price=None),
+    ]
+
+    payload = _stdout_json(CliRunner().invoke(cli, ["watch", "--json"]))
+
+    assert payload["missing"] == ["WATCHGOLD3"]
+    check_golden("json/watch.json", structure([payload]))
+
+
+def test_track_status_json_structure(tmp_config, monkeypatch):
+    import audible_deals.cli.track as track_module
+    from audible_deals.state_store import (
+        TrackState,
+        save_install_record,
+        save_track_state,
+    )
+
+    monkeypatch.setattr(track_module.scheduler, "installed", lambda: (True, "plist"))
+    save_install_record(
+        {"every": "6h", "method": "launchd agent", "installed_at": "2026-06-01T09:00"}
+    )
+    run = {
+        "at": "2026-06-09T08:00:00",
+        "duration_s": 4.2,
+        "wishlist_checked": 3,
+        "extra_tracked_checked": 7,
+        "hits": 1,
+        "monitors_checked": 0,
+        "monitor_events": 0,
+    }
+    save_track_state(TrackState(runs=[run]))
+
+    payload = _stdout_json(
+        CliRunner().invoke(cli, ["track", "status", "--history", "--json"])
+    )
+
+    assert payload["history"]
+    check_golden("json/track_status.json", structure([payload]))
+
+
+def _seed_monitor_and_profile():
+    from audible_deals.automation_models import MonitorSnapshot
+    from audible_deals.config_store import save_monitors, save_profiles
+    from audible_deals.state_store import save_monitor_snapshot
+
+    save_monitors(
+        {
+            "golden": {
+                "version": 1,
+                "name": "golden",
+                "enabled": True,
+                "locale": "us",
+                "mode": "search",
+                "query": "sanderson",
+                "profile": "scifi",
+                "settings": {"pages": 2, "limit": None, "sort": "price"},
+                "webhook": "https://hooks.example.test/x",
+            }
+        }
+    )
+    save_monitor_snapshot("golden", MonitorSnapshot(initialized=True))
+    save_profiles({"scifi": {"genre": "sci-fi", "max_price": 5.0}})
+
+
+def test_monitor_list_json_structure(tmp_config):
+    _seed_monitor_and_profile()
+
+    payload = _stdout_json(CliRunner().invoke(cli, ["monitor", "list", "--json"]))
+
+    assert payload["monitors"]
+    check_golden("json/monitor_list.json", structure([payload]))
+
+
+def test_monitor_show_json_structure(tmp_config):
+    _seed_monitor_and_profile()
+
+    payload = _stdout_json(
+        CliRunner().invoke(cli, ["monitor", "show", "golden", "--json"])
+    )
+
+    check_golden("json/monitor_show.json", structure([payload]))
+
+
+def test_config_json_structures(tmp_config):
+    paths.config_file().write_text(
+        json.dumps({"max_price": 5.0, "webhook": "https://hooks.example.test/x"})
+    )
+    runner = CliRunner()
+
+    listing = _stdout_json(runner.invoke(cli, ["config", "list", "--json"]))
+    one = _stdout_json(runner.invoke(cli, ["config", "get", "max-price", "--json"]))
+
+    check_golden("json/config_list.json", structure([listing]))
+    check_golden("json/config_get.json", structure([one]))
+
+
+def test_profile_json_structures(tmp_config):
+    _seed_monitor_and_profile()
+    runner = CliRunner()
+
+    listing = _stdout_json(runner.invoke(cli, ["profile", "list", "--json"]))
+    one = _stdout_json(runner.invoke(cli, ["profile", "show", "scifi", "--json"]))
+
+    check_golden("json/profile_list.json", structure([listing]))
+    check_golden("json/profile_show.json", structure([one]))
+
+
+def test_categories_json_structure(mock_client, tmp_config):
+    mock_client.get_categories.return_value = [{"id": "1", "name": "Mystery"}]
+
+    payload = _stdout_json(CliRunner().invoke(cli, ["categories", "--json"]))
+
+    check_golden("json/categories.json", structure([payload]))
+
+
+def test_detail_json_structure(mock_client, tmp_config):
+    from tests.conftest import make_product
+
+    paths.config_file().write_text(json.dumps({"credit_price": 10}))
+    mock_client.get_product.return_value = make_product(asin="DETAILGOLD")
+
+    payload = _stdout_json(CliRunner().invoke(cli, ["detail", "DETAILGOLD", "--json"]))
+
+    check_golden("json/detail.json", structure([payload]))
+
+
+def test_compare_json_structure(mock_client, tmp_config):
+    from tests.conftest import make_product
+
+    paths.config_file().write_text(json.dumps({"credit_price": 10}))
+    mock_client.get_products_batch.return_value = [
+        make_product(asin="COMPAREGD1"),
+        make_product(asin="COMPAREGD2"),
+    ]
+
+    payload = _stdout_json(
+        CliRunner().invoke(cli, ["compare", "COMPAREGD1", "COMPAREGD2", "--json"])
+    )
+
+    check_golden("json/compare.json", structure([payload]))
+
+
+def test_every_new_json_payload_declares_its_schema_version():
+    # The older outputs keep their (list or unversioned) shapes and are schema
+    # version 1 by definition; everything added since carries the number.
+    for name in (
+        "doctor",
+        "watch",
+        "track_status",
+        "monitor_list",
+        "monitor_show",
+        "config_list",
+        "config_get",
+        "profile_list",
+        "profile_show",
+        "categories",
+        "detail",
+        "compare",
+    ):
+        shape = json.loads((GOLDEN_DIR / "json" / f"{name}.json").read_text())
+        assert shape["schema_version"] == "int", name

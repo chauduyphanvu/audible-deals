@@ -1,0 +1,6 @@
+{
+  "key": "str",
+  "schema_version": "int",
+  "set": "bool",
+  "value": "float"
+}

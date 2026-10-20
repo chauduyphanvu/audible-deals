@@ -1,0 +1,13 @@
+{
+  "profiles": [
+    {
+      "name": "str",
+      "options": {
+        "genre": "str",
+        "max_price": "float"
+      },
+      "valid": "bool"
+    }
+  ],
+  "schema_version": "int"
+}

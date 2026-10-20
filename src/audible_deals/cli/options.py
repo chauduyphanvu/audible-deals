@@ -118,6 +118,17 @@ _OUTPUT_HELP = {
 }
 
 
+def json_option(help: str | None = None) -> Callable:
+    """``--json``: machine-readable output on stdout, everything else on stderr."""
+    return click.option(
+        "--json",
+        "json_flag",
+        is_flag=True,
+        default=False,
+        help=help or _OUTPUT_HELP["json"],
+    )
+
+
 def output_options(
     *names: str, validate_output_early: bool = False
 ) -> Callable[[Callable], Callable]:
@@ -140,13 +151,7 @@ def output_options(
             callback=_validate_output_path if validate_output_early else None,
             help=_OUTPUT_HELP["output"],
         ),
-        "json": lambda: click.option(
-            "--json",
-            "json_flag",
-            is_flag=True,
-            default=False,
-            help=_OUTPUT_HELP["json"],
-        ),
+        "json": json_option,
         "quiet": lambda: click.option(
             "--quiet",
             "-q",

@@ -1,0 +1,37 @@
+{
+  "history": [
+    {
+      "at": "str",
+      "duration_s": "float",
+      "error": "null",
+      "extra_tracked_checked": "int",
+      "hits": "int",
+      "monitor_events": "int",
+      "monitors_checked": "int",
+      "wishlist_checked": "int"
+    }
+  ],
+  "installed": "bool",
+  "last_run": {
+    "at": "str",
+    "duration_s": "float",
+    "error": "null",
+    "extra_tracked_checked": "int",
+    "hits": "int",
+    "monitor_events": "int",
+    "monitors_checked": "int",
+    "wishlist_checked": "int"
+  },
+  "monitors": {
+    "enabled": "int",
+    "with_errors": []
+  },
+  "schedule": {
+    "every": "str",
+    "installed_at": "str",
+    "method": "str",
+    "present": "bool",
+    "where": "str"
+  },
+  "schema_version": "int"
+}

@@ -38,6 +38,7 @@ nav:
   - Command guide: commands.md
   - Price tracking and automation: automation.md
   - Advanced recipes: recipes.md
+  - JSON output: json.md
 
 plugins:
   - search

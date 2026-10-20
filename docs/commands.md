@@ -1,6 +1,6 @@
 # Command guide
 
-Run `deals --help` to see every command or `deals COMMAND --help` for authoritative option details.
+Run `deals --help` to see every command or `deals COMMAND --help` for authoritative option details. Commands that report something take `--json` for scripts; the shapes are in [JSON output](json.md).
 
 ## Command overview
 
@@ -370,7 +370,7 @@ Every command uses the same statuses, so scripts and cron jobs can tell outcomes
 
 `--exit-code` is available on `find`, `search`, `last`, `watch` and `notify`: the command exits 10 instead of 0 when nothing matched (no result, or no wishlist item at its target). `deals doctor` exits 1 when a check fails. A background run that finds the run lock busy (`track run`, `notify`, `recap`) exits 0 with a one-line note, so a cron job is not reported as failed.
 
-An error is one line on stderr, `Error: ...`, with the fix when there is one; the traceback appears only with `-vv`. With `--json` the same error is written to stderr as one JSON object and stdout stays empty (an interrupted `find`/`search` still prints what it gathered, then the error object with code 130):
+An error is one line on stderr, `Error: ...`, with the fix when there is one; the traceback appears only with `-vv`. With `--json` the same error is written to stderr as one JSON object and stdout stays empty (an interrupted `find`/`search` still prints what it gathered, then the error object with code 130). Every `--json` output is described in [JSON output](json.md):
 
 ```json
 {"error": {"code": 3, "message": "Not authenticated. Run 'deals login' first."}}
@@ -465,3 +465,4 @@ If `state.db` itself cannot be read, it is moved to `state.db.corrupt-<timestamp
 - [Installation and authentication](installation.md)
 - [Price tracking and automation](automation.md)
 - [Advanced recipes](recipes.md)
+- [JSON output](json.md)

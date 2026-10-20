@@ -27,6 +27,7 @@
   ],
   "deals categories": [
     "--color",
+    "--json",
     "--locale",
     "--parent",
     "--verbose",
@@ -34,6 +35,7 @@
   ],
   "deals compare": [
     "--color",
+    "--json",
     "--last",
     "--locale",
     "--verbose",
@@ -53,6 +55,7 @@
   ],
   "deals config get": [
     "--color",
+    "--json",
     "--locale",
     "--show-secrets",
     "--verbose",
@@ -60,6 +63,7 @@
   ],
   "deals config list": [
     "--color",
+    "--json",
     "--locale",
     "--show-secrets",
     "--verbose",
@@ -69,7 +73,9 @@
     "--color",
     "--locale",
     "--verbose",
-    "-v"
+    "--yes",
+    "-v",
+    "-y"
   ],
   "deals config set": [
     "--color",
@@ -79,6 +85,7 @@
   ],
   "deals detail": [
     "--color",
+    "--json",
     "--last",
     "--locale",
     "--verbose",
@@ -86,6 +93,7 @@
   ],
   "deals doctor": [
     "--color",
+    "--json",
     "--locale",
     "--verbose",
     "-v"
@@ -404,6 +412,7 @@
   ],
   "deals monitor list": [
     "--color",
+    "--json",
     "--locale",
     "--verbose",
     "-v"
@@ -419,7 +428,8 @@
     "--locale",
     "--verbose",
     "--yes",
-    "-v"
+    "-v",
+    "-y"
   ],
   "deals monitor resume": [
     "--color",
@@ -429,6 +439,7 @@
   ],
   "deals monitor show": [
     "--color",
+    "--json",
     "--locale",
     "--verbose",
     "-v"
@@ -443,6 +454,7 @@
     "--color",
     "--cooldown",
     "--exit-code",
+    "--json",
     "--locale",
     "--verbose",
     "--webhook",
@@ -472,6 +484,7 @@
   ],
   "deals profile list": [
     "--color",
+    "--json",
     "--locale",
     "--verbose",
     "-v"
@@ -531,6 +544,7 @@
   ],
   "deals profile show": [
     "--color",
+    "--json",
     "--locale",
     "--verbose",
     "-v"
@@ -674,6 +688,7 @@
   "deals track status": [
     "--color",
     "--history",
+    "--json",
     "--locale",
     "--verbose",
     "-v"
@@ -689,6 +704,7 @@
     "--color",
     "--every",
     "--exit-code",
+    "--json",
     "--locale",
     "--show-url",
     "--sort",

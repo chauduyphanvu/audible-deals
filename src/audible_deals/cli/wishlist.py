@@ -6,24 +6,32 @@ import csv
 import json as json_mod
 import logging
 import math
-import sys
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import click
 
+from audible_deals import json_output
 from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
     _resolve_cli_selectors,
 )
+from audible_deals.cli.options import json_option
 from audible_deals.exit_codes import ExitCode
 from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
 from audible_deals.presentation.common import price_str
 from audible_deals.presentation.reports import display_watch_table, display_wishlist
-from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.presentation.terminal import (
+    console,
+    route_console_to_stderr,
+    safe_markup,
+    safe_text,
+)
+from audible_deals.product import Product
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
 from audible_deals.serialization import sanitize_csv_cell, validate_export_path
 from audible_deals.validation import NONNEGATIVE_FLOAT
@@ -352,7 +360,7 @@ def wishlist_list(ctx, output, json_flag):
         total = _export_wishlist(asin_items, author_items, output)
 
     if json_flag:
-        console.file = sys.stderr
+        route_console_to_stderr(ctx)
         payload = {"items": asin_items, "author_watches": author_items}
         click.echo(
             json_mod.dumps(payload, indent=2, ensure_ascii=False, allow_nan=False)
@@ -563,66 +571,102 @@ def wishlist_purge(ctx, owned, dry_run, yes):
     )
 
 
-def _watch_once(
-    ctx: click.Context,
-    buy_only: bool = False,
-    sort_by: str | None = None,
-    show_url: bool = False,
-) -> int:
-    """Run a single wishlist price check. Returns the number of BUY hits."""
+@dataclass
+class _WatchSnapshot:
+    """What one wishlist price check found, before anything is shown."""
+
+    products: list[Product] = field(default_factory=list)
+    targets: dict[str, float | None] = field(default_factory=dict)
+    missing: list[dict] = field(default_factory=list)
+    asin_watches: int = 0
+    author_watches: int = 0
+
+
+def _collect_watch(ctx: click.Context, sort_by: str | None) -> _WatchSnapshot:
+    """Fetch current prices for the wishlist's titles (no output)."""
     items = load_wishlist()
     asin_items, author_items = partition_wishlist(items)
-    if not asin_items and not author_items:
-        console.print(
-            "[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]"
-        )
-        return 0
-
-    if author_items and not asin_items:
-        console.print(
-            "[dim]Author watches are checked by 'deals notify'. Use 'deals notify' to see author hits.[/dim]"
-        )
-    elif author_items:
-        console.print("[dim]Author watches are checked by 'deals notify' only.[/dim]")
-
+    snapshot = _WatchSnapshot(
+        asin_watches=len(asin_items), author_watches=len(author_items)
+    )
     if not asin_items:
-        return 0
+        return snapshot
 
-    targets: dict[str, float | None] = {
-        item["asin"]: item.get("max_price") for item in asin_items
-    }
+    snapshot.targets = {item["asin"]: item.get("max_price") for item in asin_items}
     by_locale: dict[str, list[dict]] = {}
     for item in asin_items:
         item_locale = item.get("locale", ctx.obj["locale"])
         by_locale.setdefault(item_locale, []).append(item)
 
-    products = []
     for item_locale, locale_items in by_locale.items():
         dc = _get_client(item_locale)
         with dc:
-            products.extend(
+            snapshot.products.extend(
                 dc.get_products_batch([item["asin"] for item in locale_items])
             )
 
-    _safe_record_prices(products)
-    found_asins = {p.asin for p in products}
-    for item in asin_items:
-        if item["asin"] not in found_asins:
-            console.print(
-                f"[red]Not found: {safe_markup(item['asin'])} "
-                f"({safe_markup(item.get('title', ''))})[/red]"
-            )
+    _safe_record_prices(snapshot.products)
+    found_asins = {p.asin for p in snapshot.products}
+    snapshot.missing = [item for item in asin_items if item["asin"] not in found_asins]
+    if sort_by:
+        snapshot.products = sort_local(snapshot.products, sort_by)
+    return snapshot
 
-    if not products:
+
+def _watch_once(
+    ctx: click.Context,
+    buy_only: bool = False,
+    sort_by: str | None = None,
+    show_url: bool = False,
+    as_json: bool = False,
+) -> int:
+    """Run a single wishlist price check. Returns the number of BUY hits."""
+    snapshot = _collect_watch(ctx, sort_by)
+    if not snapshot.asin_watches and not snapshot.author_watches:
+        console.print(
+            "[dim]Wishlist is empty. Use 'deals wishlist add ASIN' to add items.[/dim]"
+        )
+    elif snapshot.author_watches and not snapshot.asin_watches:
+        console.print(
+            "[dim]Author watches are checked by 'deals notify'. Use 'deals notify' to see author hits.[/dim]"
+        )
+    elif snapshot.author_watches:
+        console.print("[dim]Author watches are checked by 'deals notify' only.[/dim]")
+
+    for item in snapshot.missing:
+        console.print(
+            f"[red]Not found: {safe_markup(item['asin'])} "
+            f"({safe_markup(item.get('title', ''))})[/red]"
+        )
+    if as_json:
+        return _emit_watch_json(ctx, snapshot, buy_only)
+    if not snapshot.products:
         return 0
 
-    if sort_by:
-        products = sort_local(products, sort_by)
-
-    cur = _currency(ctx)
     return display_watch_table(
-        products, targets, cur, buy_only, show_url, credit_price=_credit_price(ctx)
+        snapshot.products,
+        snapshot.targets,
+        _currency(ctx),
+        buy_only,
+        show_url,
+        credit_price=_credit_price(ctx),
     )
+
+
+def _emit_watch_json(
+    ctx: click.Context, snapshot: _WatchSnapshot, buy_only: bool
+) -> int:
+    payload = json_output.watch_payload(
+        snapshot.products,
+        snapshot.targets,
+        buy_only=buy_only,
+        missing=[item["asin"] for item in snapshot.missing],
+        author_watches=snapshot.author_watches,
+        credit_price=_credit_price(ctx),
+    )
+    click.echo(json_output.dumps(payload))
+    hits = payload["hits"]
+    return hits if isinstance(hits, int) else 0
 
 
 @click.command()
@@ -655,8 +699,9 @@ def _watch_once(
     default=False,
     help="Exit 0 if any items hit target, 10 if none",
 )
+@json_option("Output the price check as JSON (one check; not with --every)")
 @click.pass_context
-def watch(ctx, every, buy_only, sort_by, show_url, exit_code):
+def watch(ctx, every, buy_only, sort_by, show_url, exit_code, json_flag):
     """Check wishlist prices and highlight deals.
 
     Fetches current prices for all wishlist items and shows which ones
@@ -677,8 +722,18 @@ def watch(ctx, every, buy_only, sort_by, show_url, exit_code):
     logger.info("watch every=%s buy_only=%s sort_by=%s", every, buy_only, sort_by)
     if exit_code and every:
         raise click.UsageError("--exit-code requires a single check; drop --every")
+    if json_flag and every:
+        raise click.UsageError("--json requires a single check; drop --every")
+    if json_flag:
+        route_console_to_stderr(ctx)
     if not every:
-        hits = _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
+        hits = _watch_once(
+            ctx,
+            buy_only=buy_only,
+            sort_by=sort_by,
+            show_url=show_url,
+            as_json=json_flag,
+        )
         if exit_code and hits == 0:
             ctx.exit(ExitCode.NO_MATCH)
         return

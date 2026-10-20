@@ -165,9 +165,14 @@ deals notify --exit-code
 
 # Suppress repeat alerts for seven days unless the price falls again
 deals notify --cooldown 7
+
+# Send to a webhook and also print the JSON
+deals notify --webhook https://ntfy.sh/mytopic --json
 ```
 
-It prints `{"deals": [...], "count": N}`. An empty result still prints a valid payload with a count of zero, allowing automation to distinguish “no deals” from a failure.
+It prints `{"deals": [...], "count": N}` (see [JSON output](json.md#notify)). Standard output is always valid JSON, even for an empty wishlist or a busy run lock, where it prints a count of zero and the explanation goes to standard error, so automation can tell “no deals” from a failure by the exit status.
+
+`--cooldown` differs on purpose between the two automation commands. `deals notify` is a check you run yourself, so it reports every deal at target unless you pass `--cooldown N` (0 means no cooldown, the default). `deals track run` runs unattended every few hours and would repeat the same alert, so it defaults to a one-day cooldown (`--cooldown 0` turns it off). Both suppress an alert for N days unless the price falls further.
 
 ### Webhook formats
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import sys
 from typing import TYPE_CHECKING
 
 import click
@@ -18,7 +17,12 @@ from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.genres import match_genre
 from audible_deals.notices import note, warn
 from audible_deals.presentation.common import age_str
-from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.presentation.terminal import (
+    console,
+    route_console_to_stderr,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.product import Product
 from audible_deals.result_models import CatalogScanPlan
 from audible_deals.results_cache import (
@@ -302,7 +306,7 @@ def _resolve_output_quiet(ctx: click.Context, output, json_flag, quiet) -> bool:
     if output and ctx.get_parameter_source("quiet") != _CL:
         quiet = True
     if json_flag:
-        console.file = sys.stderr
+        route_console_to_stderr(ctx)
     return quiet
 
 

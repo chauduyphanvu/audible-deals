@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import click
 from rich.table import Table
 
-from audible_deals import db, json_import, paths
+from audible_deals import db, json_import, json_output, paths
 from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli.helpers import (
     _CL,
@@ -19,6 +19,7 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_cli_selectors,
 )
+from audible_deals.cli.options import json_option
 from audible_deals.config_store import (
     CONFIG_SCHEMA,
     config_numeric_errors,
@@ -35,7 +36,12 @@ from audible_deals.presentation.products import (
     display_product_detail,
 )
 from audible_deals.presentation.reports import display_categories
-from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.presentation.terminal import (
+    console,
+    route_console_to_stderr,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.settings import (
     _PROFILE_EXTRA_KEYS,
     profile_validation_error,
@@ -212,9 +218,12 @@ def import_auth(ctx, path: Path):
 
 @click.command()
 @click.option("--parent", default="", help="Parent category ID (omit for top-level)")
+@json_option("Output the category list as JSON")
 @click.pass_context
-def categories(ctx, parent):
+def categories(ctx, parent, json_flag):
     """List Audible categories. Use --parent to drill into subcategories."""
+    if json_flag:
+        route_console_to_stderr(ctx)
     dc = _get_client(ctx.obj["locale"])
     with dc:
         try:
@@ -222,6 +231,15 @@ def categories(ctx, parent):
         except ValueError as e:
             raise click.ClickException(str(e)) from e
 
+    if json_flag:
+        click.echo(
+            json_output.dumps(
+                json_output.categories_payload(
+                    cats, parent=parent, locale=ctx.obj["locale"]
+                )
+            )
+        )
+        return
     title = "Subcategories" if parent else "Top-Level Categories"
     display_categories(cats, title=title)
     console.print(
@@ -239,11 +257,14 @@ def categories(ctx, parent):
     default=None,
     help="Use result #N from the last result session",
 )
+@json_option("Output the product as JSON")
 @click.pass_context
-def detail(ctx, asin, last_ref):
+def detail(ctx, asin, last_ref, json_flag):
     """Show product details using an ASIN, Audible URL, or @N selector."""
     if not asin and last_ref is None:
         raise click.UsageError("Provide an ASIN, Audible URL, @N, or use --last N.")
+    if json_flag:
+        route_console_to_stderr(ctx)
     resolved, locale = _resolve_cli_selectors(
         ctx,
         (asin,) if asin else (),
@@ -258,6 +279,11 @@ def detail(ctx, asin, last_ref):
         except ValueError as e:
             raise click.ClickException(str(e)) from e
 
+    if json_flag:
+        click.echo(
+            json_output.dumps(json_output.product_payload(product, _credit_price(ctx)))
+        )
+        return
     display_product_detail(product, credit_price=_credit_price(ctx))
 
 
@@ -296,8 +322,9 @@ def open_cmd(ctx, asin, last_ref):
     multiple=True,
     help="Use result #N from the last result session (repeatable)",
 )
+@json_option("Output the products as JSON")
 @click.pass_context
-def compare(ctx, asins, last_refs):
+def compare(ctx, asins, last_refs, json_flag):
     """Compare multiple products side-by-side.
 
     \b
@@ -308,6 +335,8 @@ def compare(ctx, asins, last_refs):
     """
     if len(asins) == 1 and not last_refs and not asins[0].startswith("@"):
         raise click.UsageError("Provide at least 2 ASINs to compare.")
+    if json_flag:
+        route_console_to_stderr(ctx)
     resolved, locale = _resolve_cli_selectors(ctx, asins, last_refs)
     all_asins = [item.asin for item in resolved]
 
@@ -319,9 +348,9 @@ def compare(ctx, asins, last_refs):
         products = dc.get_products_batch(all_asins)
 
     found_asins = {p.asin for p in products}
-    for asin in all_asins:
-        if asin not in found_asins:
-            console.print(f"[red]Not found: {safe_markup(asin)}[/red]")
+    missing = [asin for asin in all_asins if asin not in found_asins]
+    for asin in missing:
+        console.print(f"[red]Not found: {safe_markup(asin)}[/red]")
 
     if len(products) < 2:
         raise click.ClickException("Need at least 2 valid products to compare.")
@@ -330,6 +359,13 @@ def compare(ctx, asins, last_refs):
     asin_order = {asin: i for i, asin in enumerate(all_asins)}
     products.sort(key=lambda p: asin_order.get(p.asin, 999))
 
+    if json_flag:
+        click.echo(
+            json_output.dumps(
+                json_output.compare_payload(products, missing, _credit_price(ctx))
+            )
+        )
+        return
     display_comparison(products, credit_price=_credit_price(ctx))
 
 
@@ -853,9 +889,12 @@ def _render_doctor_rows(rows: list[_Row]) -> int:
 
 
 @click.command()
+@json_option("Output the checks as JSON (exit status 1 when a check fails)")
 @click.pass_context
-def doctor(ctx):
+def doctor(ctx, json_flag):
     """Diagnostic checks for auth, config, and marketplace reachability."""
+    if json_flag:
+        route_console_to_stderr(ctx)
     rows, auth_ok = _auth_checks()
     rows.append(_connectivity_check(ctx, auth_ok))
     rows.extend(_config_checks())
@@ -863,6 +902,12 @@ def doctor(ctx):
     rows.extend(_store_checks())
     rows.extend(_track_checks())
     rows.extend(_monitor_checks())
+    if json_flag:
+        payload = json_output.doctor_payload(rows)
+        click.echo(json_output.dumps(payload))
+        if not payload["ok"]:
+            ctx.exit(ExitCode.ERROR)
+        return
     if _render_doctor_rows(rows):
         ctx.exit(ExitCode.ERROR)
 

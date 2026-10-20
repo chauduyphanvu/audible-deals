@@ -4,12 +4,11 @@ from __future__ import annotations
 
 import json as json_mod
 import logging
-import sys
 
 import click
 
 from audible_deals.presentation.reports import display_recap
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, route_console_to_stderr
 from audible_deals.price_history import (
     find_all_atl_hits,
     find_wishlist_atl_hits,
@@ -103,7 +102,7 @@ def run_recap(
         "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
     )
     if json_flag:
-        console.file = sys.stderr
+        route_console_to_stderr(click.get_current_context(silent=True))
     drops, new_items = scan_price_changes(days, locale=locale)
     if not drops and not new_items and not has_price_history(locale):
         if json_flag:

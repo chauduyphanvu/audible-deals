@@ -1,0 +1,12 @@
+{
+  "count": "int",
+  "deals": [
+    {
+      "asin": "str",
+      "price": "float",
+      "target": "float",
+      "title": "str",
+      "url": "str"
+    }
+  ]
+}

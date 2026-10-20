@@ -7,7 +7,7 @@ import logging
 
 import click
 
-from audible_deals import constants, paths, scheduler
+from audible_deals import constants, json_output, paths, scheduler
 from audible_deals.automation_models import TrackRunRequest
 from audible_deals.cli.helpers import (
     _credit_price,
@@ -16,6 +16,7 @@ from audible_deals.cli.helpers import (
     _resolve_categories,
     _resolve_skip_asins,
 )
+from audible_deals.cli.options import json_option
 from audible_deals.config_store import config_numeric_errors, load_monitors
 from audible_deals.exit_codes import exit_code_for
 from audible_deals.locking import LockHeldError, run_lock
@@ -82,7 +83,7 @@ def track(ctx):
     "--cooldown",
     type=click.IntRange(min=0),
     default=1,
-    help="Suppress repeat webhook alerts for N days unless the price drops further (default: 1)",
+    help="Suppress repeat webhook alerts for N days unless the price drops further (default: 1, 0 turns it off)",
 )
 @click.pass_context
 def track_run(ctx, cooldown):
@@ -238,12 +239,38 @@ def track_uninstall():
     default=False,
     help="Print full run history table",
 )
-def track_status(show_history):
+@json_option("Output the schedule and last run as JSON")
+def track_status(show_history, json_flag):
     """Show schedule and last-run status for background tracking."""
     from audible_deals.presentation.reports import display_track_history
 
     install_info = load_install_record()
     present, where = scheduler.installed()
+    runs = load_track_state().runs
+    monitor_state = monitor_summaries()
+    enabled = [
+        name
+        for name, definition in load_monitors().items()
+        if isinstance(definition, dict) and definition.get("enabled", True)
+    ]
+    failed = [
+        name
+        for name in enabled
+        if name in monitor_state and monitor_state[name].last_error
+    ]
+
+    if json_flag:
+        payload = json_output.track_status_payload(
+            install=install_info or None,
+            present=present,
+            where=where,
+            enabled_monitors=enabled,
+            failed_monitors=failed,
+            runs=runs,
+            include_history=show_history,
+        )
+        click.echo(json_output.dumps(json_output.plain(payload)))
+        return
 
     if install_info:
         console.print(
@@ -266,20 +293,8 @@ def track_status(show_history):
             "background tracking.[/dim]"
         )
 
-    runs = load_track_state().runs
     last = runs[0] if runs else None
 
-    monitor_state = monitor_summaries()
-    enabled = [
-        name
-        for name, definition in load_monitors().items()
-        if isinstance(definition, dict) and definition.get("enabled", True)
-    ]
-    failed = [
-        name
-        for name in enabled
-        if name in monitor_state and monitor_state[name].last_error
-    ]
     if enabled:
         detail = f"  [dim]Monitors:[/dim]  {len(enabled)} enabled"
         if failed:

@@ -9,7 +9,7 @@ from typing import Any
 
 import click
 
-from audible_deals import constants
+from audible_deals import constants, json_output
 from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli.helpers import (
     _CL,
@@ -19,7 +19,11 @@ from audible_deals.cli.helpers import (
     _resolve_categories,
     _resolve_skip_asins,
 )
-from audible_deals.cli.options import _complete_profile_names, filter_options
+from audible_deals.cli.options import (
+    _complete_profile_names,
+    filter_options,
+    json_option,
+)
 from audible_deals.config_store import load_monitors
 from audible_deals.constants import LOCALE_LANGUAGES, WEBHOOK_FORMATS
 from audible_deals.filter_specs import Scope, scope_defaults, specs_for
@@ -270,11 +274,51 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
     )
 
 
+def _estimate_or_none(definition: dict) -> int | None:
+    try:
+        return estimate_monitor_calls(definition)
+    except (KeyError, TypeError, click.ClickException):
+        return None
+
+
+def _monitor_json(
+    name: str, definition: dict, health: MonitorSummary, *, include_settings: bool
+) -> dict[str, Any]:
+    problem = None
+    try:
+        validated_monitor_definition(definition)
+    except MonitorServiceError as exc:
+        problem = str(exc)
+    return json_output.monitor_entry(
+        name,
+        definition if isinstance(definition, dict) else {},
+        matches=health.product_count,
+        last_success=health.last_success,
+        last_error=health.last_error,
+        estimated_calls=None if problem else _estimate_or_none(definition),
+        problem=problem,
+        include_settings=include_settings and problem is None,
+    )
+
+
 @monitor.command("list")
-def list_monitors():
+@json_option("Output the monitors as JSON")
+def list_monitors(json_flag):
     """List monitors and their persisted status without exposing webhook secrets."""
     monitors = load_monitors()
     state = monitor_summaries()
+    if json_flag:
+        entries = [
+            _monitor_json(
+                name,
+                definition,
+                state.get(name, _NO_STATE),
+                include_settings=False,
+            )
+            for name, definition in sorted(monitors.items())
+        ]
+        click.echo(json_output.dumps(json_output.with_schema(monitors=entries)))
+        return
     if not monitors:
         console.print("[dim]No monitors. Use 'deals monitor add --profile NAME'.[/dim]")
         return
@@ -310,7 +354,8 @@ def list_monitors():
 
 @monitor.command("show")
 @click.argument("name", shell_complete=_complete_monitor_names)
-def show(name):
+@json_option("Output the monitor as JSON")
+def show(name, json_flag):
     """Show frozen settings and latest health for one monitor."""
     definition = load_monitors().get(name)
     if definition is None:
@@ -319,12 +364,17 @@ def show(name):
         validated_monitor_definition(definition)
     except MonitorServiceError as exc:
         raise click.ClickException(f"Monitor '{name}' is malformed: {exc}") from exc
-    _print_monitor(name, definition, monitor_summaries().get(name, _NO_STATE))
+    health = monitor_summaries().get(name, _NO_STATE)
+    if json_flag:
+        entry = _monitor_json(name, definition, health, include_settings=True)
+        click.echo(json_output.dumps(json_output.with_schema(monitor=entry)))
+        return
+    _print_monitor(name, definition, health)
 
 
 @monitor.command("remove")
 @click.argument("name", shell_complete=_complete_monitor_names)
-@click.option("--yes", is_flag=True, help="Do not ask for confirmation")
+@click.option("--yes", "-y", is_flag=True, help="Do not ask for confirmation")
 def remove(name, yes):
     """Remove a monitor and its baseline."""
     if not yes and not click.confirm(f"Remove monitor '{safe_text(name)}'?"):

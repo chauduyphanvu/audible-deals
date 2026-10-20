@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import contextlib
 import os
+import sys
 from collections.abc import Callable, Iterator
 from typing import TYPE_CHECKING
 
+import click
 from rich.console import Console
 from rich.markup import escape
 from rich.progress import (
@@ -44,6 +46,22 @@ _BIDI_CONTROLS = frozenset(
 
 
 COLOR_MODES = ("auto", "always", "never")
+
+
+def route_console_to_stderr(ctx: click.Context | None = None) -> None:
+    """Send the shared console's human text to stderr (``--json``: stdout is data).
+
+    The console is restored when *ctx* closes, so in-process callers (tests, a
+    future long-lived host) that run several commands do not inherit it.
+    """
+    console.file = sys.stderr
+    if ctx is not None:
+        ctx.call_on_close(restore_console)
+
+
+def restore_console() -> None:
+    """Point the shared console back at stdout."""
+    console.file = None  # type: ignore[assignment]  # None = "whatever stdout is now"
 
 
 def set_color_mode(mode: str) -> None:
