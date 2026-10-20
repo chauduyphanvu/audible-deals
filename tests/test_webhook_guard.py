@@ -214,8 +214,41 @@ def _redirect_to(port):
 
 
 class TestThroughAProxy:
-    def test_the_target_is_checked_before_the_proxy_is_used(self, server):
-        resolver = lambda host, port: ["10.0.0.5"]  # noqa: E731
+    @pytest.fixture(autouse=True)
+    def _no_proxy_environment(self, monkeypatch):
+        """Which hosts bypass the proxy comes from the environment (this machine
+        may set NO_PROXY=localhost,...); the tests pass ``proxies=`` themselves."""
+        for name in (
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+        ):
+            monkeypatch.delenv(name, raising=False)
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "http://10.0.0.5/hook",
+            "http://169.254.169.254/latest",
+            "http://[::1]/hook",
+            "http://localhost/hook",
+            "http://hooks.localhost/hook",
+        ],
+    )
+    def test_a_target_that_is_private_by_its_name_is_refused_before_the_proxy(
+        self, server, url
+    ):
+        calls = []
+
+        def resolver(host, port):
+            calls.append(host)
+            return [PUBLIC]
+
         client = WebhookClient(
             resolver=resolver,
             proxies={"http": f"http://127.0.0.1:{server.port}"},
@@ -223,6 +256,56 @@ class TestThroughAProxy:
         )
 
         with pytest.raises(WebhookDeliveryError, match="refused"):
+            post(client, url)
+
+        assert server.requests == []
+        assert calls == []  # decided from the name alone, no lookup
+
+    def test_a_proxied_host_is_left_for_the_proxy_to_resolve(self, server):
+        """Behind a proxy the proxy does the lookup, often the only one that can."""
+        import socket
+
+        calls = []
+
+        def resolver(host, port):
+            calls.append(host)
+            raise socket.gaierror(-2, "Name or service not known")
+
+        client = WebhookClient(
+            resolver=resolver,
+            proxies={"http": f"http://127.0.0.1:{server.port}"},
+            sleep=lambda seconds: None,
+        )
+
+        post(client, "http://only-the-proxy-can-resolve.example/hook")
+
+        assert calls == []
+        assert [r["path"] for r in server.requests] == [
+            "http://only-the-proxy-can-resolve.example/hook"
+        ]
+
+    def test_private_literals_pass_the_proxy_when_the_setting_is_on(self, server):
+        client = WebhookClient(
+            allow_private=True,
+            proxies={"http": f"http://127.0.0.1:{server.port}"},
+        )
+
+        post(client, "http://192.168.1.20/ntfy")
+
+        assert [r["path"] for r in server.requests] == ["http://192.168.1.20/ntfy"]
+
+    def test_hosts_in_no_proxy_are_still_resolved_and_checked_here(
+        self, server, monkeypatch
+    ):
+        monkeypatch.setenv("no_proxy", "internal.example")
+        monkeypatch.setenv("NO_PROXY", "internal.example")
+        client = WebhookClient(
+            resolver=lambda host, port: ["10.0.0.5"],
+            proxies={"http": f"http://127.0.0.1:{server.port}"},
+            sleep=lambda seconds: None,
+        )
+
+        with pytest.raises(WebhookDeliveryError, match="non-public address 10.0.0.5"):
             post(client, "http://internal.example/hook")
 
         assert server.requests == []
@@ -301,6 +384,31 @@ class TestDefaultsFromTheConfig:
         assert sent.exit_code == 0, sent.output
         body = json.loads(server.requests[0]["body"])
         assert body["count"] == 1 and body["deals"][0]["asin"] == "W0HOOK0001"
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://example.com:99999/x",
+            "https://example.com:abc/x",
+            "https://example.com:0/x",
+            "https://example.com:-1/x",
+        ],
+    )
+    def test_a_bad_port_is_a_usage_error_not_an_unexpected_one(
+        self, tmp_config, mock_client, url
+    ):
+        with pytest.raises(click.BadParameter, match="invalid port"):
+            validate_webhook_url(url)
+
+        runner = CliRunner()
+        notify = runner.invoke(cli, ["notify", "--webhook", url])
+        config = runner.invoke(cli, ["config", "set", "webhook", url])
+
+        for result in (notify, config):
+            assert result.exit_code == 2, result.output
+            assert "invalid port" in result.stderr
+            assert "Unexpected" not in result.stderr
+            assert "ValueError" not in result.stderr
 
     def test_the_default_is_off(self, tmp_config):
         with pytest.raises(click.BadParameter, match="non-public"):

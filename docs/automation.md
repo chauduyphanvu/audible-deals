@@ -258,7 +258,7 @@ deals notify --webhook http://192.168.1.20:8080/deals --webhook-format ntfy
 
 With the setting on, any address is allowed for every webhook, including the monitor webhooks you configure, so only use URLs you trust. Turn it off again with `deals config reset webhook-allow-private`.
 
-If an HTTP proxy is configured (`HTTPS_PROXY` and friends, honoring `NO_PROXY`), the proxy opens the connection, so `deals` cannot pin it: it checks the target's addresses right before handing the request to the proxy, but a name that changes between that check and the proxy's own lookup cannot be excluded.
+If an HTTP proxy is configured for the URL (`HTTPS_PROXY` and friends), the proxy looks the name up and opens the connection, so `deals` can neither resolve the name nor pin the address. What it can still do is read the URL: a webhook that names a private place outright (an address such as `10.0.0.5` or `[::1]`, `localhost` or `*.localhost`) is refused before the request reaches the proxy, unless `webhook-allow-private` is on. **A public-looking name that the proxy resolves to a private address is not caught by `deals`**; the proxy's own policy decides. Hosts that `NO_PROXY` exempts are connected to directly and get the full resolve-and-pin check above. Entering a URL (`--webhook`, `deals config set webhook`) still resolves the name on this machine, so a host that only the proxy can resolve cannot be saved as a webhook.
 
 ### Custom templates
 

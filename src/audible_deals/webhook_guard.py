@@ -71,6 +71,33 @@ class AddressGuard:
                     )
         return addresses
 
+    def check_name(self, host: str) -> None:
+        """Refuse a host that is non-public by its *name*, without any lookup.
+
+        This is the check for a webhook that goes through an HTTP proxy: the proxy
+        resolves the name (often the only resolver that can), so only what can be
+        told from the text is checked here, an address literal or a ``localhost``
+        name. Anything else is the proxy's to resolve and judge.
+        """
+        if self.allow_private:
+            return
+        name = host.strip("[]").rstrip(".").lower()
+        try:
+            literal = ipaddress.ip_address(name.partition("%")[0])
+        except ValueError:
+            literal = None
+        if literal is not None:
+            if not is_public_address(str(literal)):
+                raise BlockedAddressError(
+                    f"Webhook URL points at non-public address {literal}. "
+                    f"{ALLOW_PRIVATE_HINT}"
+                )
+        elif name == "localhost" or name.endswith(".localhost"):
+            raise BlockedAddressError(
+                f"Webhook URL points at {name}, which is not on the public internet. "
+                f"{ALLOW_PRIVATE_HINT}"
+            )
+
     def create_connection(
         self,
         address: tuple[str, int],

@@ -87,11 +87,12 @@ class WebhookClient:
     turns the check off for servers on your own network. Pass ``opener`` to
     replace the transport entirely (tests do).
 
-    When an HTTP proxy is configured for the URL (``HTTPS_PROXY`` and friends)
-    the proxy makes the connection, so the client cannot pin it; it then checks
-    the target's addresses itself immediately before handing the request to the
-    proxy. A name that changes between that check and the proxy's own lookup
-    cannot be excluded in that setup.
+    When an HTTP proxy is configured for the URL (``HTTPS_PROXY`` and friends,
+    minus ``NO_PROXY`` hosts) the proxy resolves the name and makes the
+    connection, so the client can neither resolve nor pin it; it only refuses a
+    target whose text already says it is private (an address literal,
+    ``localhost``) and hands the rest to the proxy. Hosts ``NO_PROXY`` exempts
+    are connected to directly and checked in full.
     """
 
     def __init__(
@@ -127,8 +128,9 @@ class WebhookClient:
         proxy = self._proxies.get(parsed.scheme)
         if not proxy or urllib.request.proxy_bypass(parsed.hostname or ""):
             return self._opener
-        port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        self._guard.addresses(parsed.hostname or "", port)  # raises if blocked
+        # The proxy resolves the name, so no lookup here: only what the text of
+        # the URL gives away (an address literal, localhost) is checked.
+        self._guard.check_name(parsed.hostname or "")  # raises if blocked
         if self._proxied_opener is None:
             self._proxied_opener = urllib.request.build_opener(
                 urllib.request.ProxyHandler(self._proxies), _NoRedirectHandler()

@@ -122,12 +122,21 @@ def validate_webhook_url(
             "Webhook URL must include a host",
             param_hint="'--webhook'",
         )
+    try:
+        port = parsed.port  # ValueError for ":abc" and for numbers above 65535
+    except ValueError:
+        port = -1
+    if port is not None and not 1 <= port <= 65535:
+        raise click.BadParameter(
+            "Webhook URL has an invalid port (use a number from 1 to 65535)",
+            param_hint="'--webhook'",
+        )
     if allow_private is None:
         allow_private = _config_allows_private_webhooks()
     try:
         AddressGuard(
             allow_private=allow_private, resolver=resolver or system_resolver
-        ).addresses(hostname, parsed.port or (443 if parsed.scheme == "https" else 80))
+        ).addresses(hostname, port or (443 if parsed.scheme == "https" else 80))
     except socket.gaierror as e:
         raise click.BadParameter(
             f"Cannot resolve webhook host {hostname!r}: {e}",
