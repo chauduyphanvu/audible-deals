@@ -54,7 +54,7 @@ docs = [
 
 [package.metadata]
 requires-dist = [
-    { name = "audible", specifier = ">=0.8.0" },
+    { name = "audible", specifier = ">=0.9.0" },
     { name = "click", specifier = ">=8.1" },
     { name = "mkdocs-material", marker = "extra == 'docs'", specifier = ">=9.7,<10" },
     { name = "pre-commit", marker = "extra == 'dev'", specifier = ">=4.0" },

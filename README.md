@@ -10,7 +10,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - Track wishlist prices and receive Slack, Discord, Teams, ntfy, or generic webhook alerts.
 - Monitor saved catalog searches for new matches and price drops on the same schedule.
 - Widen, narrow, sort, and reset recent results locally without another API call.
-- Use the correct currency and Audible store across all nine supported marketplaces.
+- Use the correct currency and Audible store across all ten supported marketplaces.
 
 ## Quick start
 

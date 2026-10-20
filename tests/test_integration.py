@@ -721,6 +721,33 @@ class TestCLIPipelineIntegration:
         langs = {item["language"] for item in data}
         assert langs == {"english"}
 
+    def test_br_locale_defaults_to_portuguese(self, mock_client, tmp_config):
+        products = [
+            make_product(asin="PT1", price=3.0, language="portuguese", series_name=""),
+            make_product(asin="EN1", price=3.0, language="english", series_name=""),
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 2)])
+
+        out_file = tmp_config / "brlang.json"
+        result = CliRunner().invoke(
+            cli,
+            [
+                "--locale",
+                "br",
+                "find",
+                "--pages",
+                "1",
+                "--max-price",
+                "20",
+                "-q",
+                "--output",
+                str(out_file),
+            ],
+        )
+        assert result.exit_code == 0, result.output
+        data = json.loads(out_file.read_text())
+        assert [item["asin"] for item in data] == ["PT1"]
+
     def test_categories_root(self, mock_client, tmp_config):
         """categories command displays top-level list."""
         mock_client.get_categories.return_value = [

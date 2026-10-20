@@ -355,6 +355,16 @@ class TestDisplayComparison:
         out = _capture(display_comparison, [p1, p2])
         assert "£/hr" in out
 
+    def test_locale_aware_pph_row_br(self):
+        p1 = make_product(
+            asin="A1", title="Book A", price=5.0, length_minutes=600, locale="br"
+        )
+        p2 = make_product(
+            asin="A2", title="Book B", price=10.0, length_minutes=600, locale="br"
+        )
+        out = _capture(display_comparison, [p1, p2])
+        assert "R$/hr" in out
+
 
 class TestDisplayProductsShowUrl:
     def test_show_url_adds_column(self):
