@@ -6,6 +6,17 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-20
+
+### Added
+- Brazil marketplace (`--locale br`): R$ prices, www.audible.com.br links, and Portuguese as the default language filter. Thanks @thiagoeh.
+
+### Changed
+- Requires `audible` 0.9.0 or later, the first SDK release with the Brazil locale.
+- Library fetches load up to four pages at a time after the first, so large libraries sync faster.
+- Standalone binaries are smaller, and the macOS and Linux archives are now `.tar.xz` instead of `.tar.gz`. `install.sh` downloads the new format.
+- A CAPTCHA during `deals login --credentials` now prints the image URL and opens it in the browser.
+
 ## [0.11.1] - 2026-08-31
 
 ### Fixed
@@ -128,6 +139,7 @@ A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.12.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.12.0
 [0.11.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.1
 [0.11.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.0
 [0.10.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.10.0
