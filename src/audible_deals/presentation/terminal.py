@@ -127,8 +127,21 @@ def safe_markup(value: object) -> str:
     return escape(safe_text(value))
 
 
+class _ScanProgress(Progress):
+    """A progress bar that is taken off the screen when the work fails.
+
+    A finished bar stays where it is, as the record of what ran; a half-finished
+    one above the error that is about to print only looks like a hang.
+    """
+
+    def __exit__(self, exc_type, exc_value, traceback) -> None:
+        if exc_type is not None:
+            self.live.transient = True
+        super().__exit__(exc_type, exc_value, traceback)
+
+
 def create_scan_progress(*, disable: bool = False) -> Progress:
-    return Progress(
+    return _ScanProgress(
         SpinnerColumn(),
         TextColumn("[bold]{task.description}"),
         BarColumn(),
@@ -186,13 +199,7 @@ def catalog_scan_progress(
         task = progress.add_task(
             safe_markup(description), total=plan.total_calls, items=0
         )
-        try:
-            yield _progress_updater(progress, task, description)
-        except BaseException:
-            # The scan failed: take the half-finished bar off the screen rather
-            # than leave it above the error message that is about to print.
-            progress.live.transient = True
-            raise
+        yield _progress_updater(progress, task, description)
 
 
 @contextlib.contextmanager

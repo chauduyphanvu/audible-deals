@@ -278,6 +278,61 @@ class TestFailedScanClearsTheBar:
         assert written.endswith(self.ERASE_PREVIOUS_LINE)
 
 
+class TestEveryProgressBarClearsOnFailure:
+    """`library`, `series` and `for-me` draw their own bar with create_scan_progress."""
+
+    def test_the_shared_bar_is_erased_when_the_block_raises(self, monkeypatch):
+        console, stream = interactive_console()
+        monkeypatch.setattr(terminal, "console", console)
+
+        with pytest.raises(RuntimeError):
+            with terminal.create_scan_progress() as progress:
+                progress.add_task("Fetching", total=3, items=0)
+                progress.update(progress.task_ids[0], completed=1)
+                raise RuntimeError("the fetch failed")
+
+        assert "Fetching" in stream.getvalue()
+        assert stream.getvalue().endswith("\x1b[1A\x1b[2K")
+
+    def test_it_is_left_alone_when_the_block_finishes(self, monkeypatch):
+        console, stream = interactive_console()
+        monkeypatch.setattr(terminal, "console", console)
+
+        with terminal.create_scan_progress() as progress:
+            progress.add_task("Fetching", total=3, items=0)
+
+        assert not stream.getvalue().endswith("\x1b[1A\x1b[2K")
+
+    @pytest.mark.parametrize(
+        ("command", "draws_a_bar"),
+        [(["library"], True), (["for-me"], True), (["series"], False)],
+    )
+    def test_a_failed_library_fetch_leaves_no_bar_before_the_error(
+        self, api, monkeypatch, command, draws_a_bar
+    ):
+        import httpx
+
+        console, stream = interactive_console()
+        monkeypatch.setattr(terminal, "console", console)
+        monkeypatch.setattr("audible_deals.audible_transport._RETRY_DELAYS", (0.0, 0.0))
+        for module in (
+            "audible_deals.cli.library",
+            "audible_deals.cli.series",
+            "audible_deals.cli.foryou",
+        ):
+            monkeypatch.setattr(f"{module}.console", console, raising=False)
+        api.get_mock.side_effect = httpx.ConnectError("refused")
+
+        result = CliRunner().invoke(cli, command)
+
+        assert result.exit_code == 4, result.output
+        assert "Audible request failed (could not connect)" in result.stderr
+        written = stream.getvalue()
+        assert ("items fetched" in written) is draws_a_bar
+        if draws_a_bar:
+            assert written.endswith("\x1b[1A\x1b[2K")  # erased, not left behind
+
+
 class TestWhenToStream:
     SETTINGS = Settings(max_price=5.0)
 
