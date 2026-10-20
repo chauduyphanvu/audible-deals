@@ -122,9 +122,13 @@ def test_doctor_reports_an_unusable_legacy_dismissed_file_without_failing(
     tmp_config, payload, detail
 ):
     (tmp_config / "dismissed_asins.json").write_text(payload)
+    from audible_deals import db
+
+    db.state()  # the first use imports the old files; doctor reports the outcome
 
     result = CliRunner().invoke(cli, ["doctor"])
-    output = " ".join(result.output.split())
+    # a long detail wraps inside the table: read it without the cell borders
+    output = " ".join(re.sub(r"[│┃]", " ", result.output).split())
 
     assert "JSON migration" in output
     assert "WARN" in output

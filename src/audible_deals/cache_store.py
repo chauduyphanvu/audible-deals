@@ -127,6 +127,23 @@ def clear(namespace: str | None = None) -> int:
         ).rowcount
 
 
+def compact() -> None:
+    """Give the file's free pages back to the disk.
+
+    Deleting rows leaves their pages inside ``cache.db`` (SQLite reuses them
+    but does not shrink the file), and the write-ahead log can hold a second
+    copy, so after a clear the file would stay as large as it was. Best effort:
+    the cache is disposable, and a failure only means the file keeps its size.
+    """
+    try:
+        with db.exclusive():
+            conn = db.cache()
+            conn.execute("VACUUM")
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+    except Exception:
+        logger.debug("cache compaction failed", exc_info=True)
+
+
 def summary() -> dict[str, tuple[int, float]]:
     """``{namespace: (entries, newest stored_at)}`` for ``deals cache info``."""
     with db.exclusive():

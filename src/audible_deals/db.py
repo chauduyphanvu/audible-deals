@@ -223,6 +223,10 @@ class _Slot:
 
 _slots: dict[Kind, _Slot] = {}
 _guard = threading.RLock()
+#: While set, a database that does not exist is an empty in-memory copy and the
+#: disk is not touched (see :func:`without_creating`).
+_no_create = False
+_throwaway: set[Kind] = set()
 
 
 def _path_for(kind: Kind) -> Path:
@@ -389,9 +393,22 @@ def _quarantine(path: Path, kind: Kind, reason: Exception) -> None:
             target.with_name(target.name + suffix).unlink()
 
 
+def _open_in_memory(kind: Kind) -> sqlite3.Connection:
+    """An empty database with the current schema that lives and dies in memory."""
+    import sqlite3
+
+    conn = sqlite3.connect(":memory:", isolation_level=None, check_same_thread=False)
+    conn.execute("PRAGMA foreign_keys = ON")
+    _apply_schema(conn, kind)
+    return conn
+
+
 def _open(kind: Kind, path: Path) -> sqlite3.Connection:
     import sqlite3
 
+    if _no_create and not path.exists():
+        _throwaway.add(kind)
+        return _open_in_memory(kind)
     last: Exception | None = None
     for _attempt in range(3):
         conn: sqlite3.Connection | None = None
@@ -439,6 +456,33 @@ def _get(kind: Kind) -> sqlite3.Connection:
         conn = _open(kind, path)
         _slots[kind] = _Slot(path, conn)
         return conn
+
+
+@contextlib.contextmanager
+def without_creating() -> Iterator[None]:
+    """Look at the databases without making any.
+
+    Inside the block a database whose file does not exist is an empty in-memory
+    one (so every query works and finds nothing, and a write goes nowhere),
+    nothing is created on disk and nothing is imported. A file that does exist
+    is opened as usual. The in-memory copies are dropped on the way out, so the
+    first real use afterwards creates the real database. ``deals doctor`` runs
+    inside this: a health check that makes the thing it checks is not one.
+    """
+    global _no_create
+    with _guard:
+        previous, _no_create = _no_create, True
+    try:
+        yield
+    finally:
+        with _guard:
+            _no_create = previous
+            for kind in tuple(_throwaway):
+                slot = _slots.pop(kind, None)
+                if slot is not None:
+                    with contextlib.suppress(Exception):
+                        slot.conn.close()
+            _throwaway.clear()
 
 
 def state() -> sqlite3.Connection:

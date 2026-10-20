@@ -431,6 +431,11 @@ def _discover() -> list[Path]:
     return found
 
 
+def pending_source_names() -> list[str]:
+    """The old JSON files (and ``history/``) that the first use of state.db imports."""
+    return [source.name for source in _discover()]
+
+
 def parse_sources() -> tuple[Imported, list[Path]]:
     """Read every legacy source (no database access)."""
     sources = _discover()

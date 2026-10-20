@@ -1503,6 +1503,9 @@ class TestDoctorUnknownKeys:
         (tmp_config / "notify_state.json").write_text(
             json.dumps({"B001": "not-a-dict", "B002": {"date": recent, "price": 3.99}})
         )
+        from audible_deals import db
+
+        db.state()  # the first use imports the old files; doctor reports the outcome
         runner = CliRunner()
         result = runner.invoke(cli, ["doctor"])
         output = " ".join(result.output.split())

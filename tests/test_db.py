@@ -640,6 +640,8 @@ class TestDoctor:
         assert "Saved-search monitors" in output
 
     def test_doctor_reports_a_healthy_database(self, tmp_config):
+        db.state()  # doctor looks at a database; it does not create one
+        db.cache()
         result = CliRunner().invoke(cli, ["doctor"])
         output = " ".join(result.output.split())
 

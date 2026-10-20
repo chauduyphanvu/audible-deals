@@ -140,3 +140,72 @@ def test_no_legacy_category_caches_without_a_directory(tmp_path, monkeypatch):
 def test_the_paths_module_imports_nothing_from_the_package():
     source = Path(paths.__file__).read_text()
     assert "audible_deals" not in source.replace("audible-deals", "")
+
+
+def test_a_legacy_directory_that_is_also_the_default_is_just_the_default(home):
+    """On a fresh install the directory exists after the first run; nothing was
+    "kept" for anyone: it is where the default would put it anyway."""
+    legacy = home / ".config" / "audible-deals"
+    legacy.mkdir(parents=True)
+
+    directory, why = paths.data_dir_with_reason()
+
+    assert directory == legacy
+    assert why == "default ~/.config/audible-deals"
+
+
+def test_a_legacy_directory_is_kept_only_when_the_platform_default_differs(
+    home, monkeypatch
+):
+    legacy = home / ".config" / "audible-deals"
+    legacy.mkdir(parents=True)
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "xdg"))
+
+    directory, why = paths.data_dir_with_reason()
+
+    assert directory == legacy
+    assert why == "existing ~/.config/audible-deals, kept so your data does not move"
+
+
+def test_windows_keeps_a_legacy_directory_with_the_kept_wording(home, monkeypatch):
+    monkeypatch.setattr(sys, "platform", "win32")
+    monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+    (home / ".config" / "audible-deals").mkdir(parents=True)
+
+    _directory, why = paths.data_dir_with_reason()
+
+    assert "kept so your data does not move" in why
+
+
+def test_xdg_pointing_at_the_legacy_place_is_xdg_not_kept(home, monkeypatch):
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(home / ".config"))
+    (home / ".config" / "audible-deals").mkdir(parents=True)
+
+    _directory, why = paths.data_dir_with_reason()
+
+    assert why == "XDG_CONFIG_HOME is set"
+
+
+@pytest.mark.parametrize(
+    "setup",
+    ["override", "legacy_kept", "legacy_default", "xdg", "appdata", "plain"],
+)
+def test_no_reason_contains_parentheses(home, monkeypatch, setup):
+    """The reason is printed inside parentheses: it must not need its own."""
+    legacy = home / ".config" / "audible-deals"
+    if setup == "override":
+        monkeypatch.setenv("DEALS_HOME", str(home / "elsewhere"))
+    elif setup == "legacy_kept":
+        legacy.mkdir(parents=True)
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "xdg"))
+    elif setup == "legacy_default":
+        legacy.mkdir(parents=True)
+    elif setup == "xdg":
+        monkeypatch.setenv("XDG_CONFIG_HOME", str(home / "xdg"))
+    elif setup == "appdata":
+        monkeypatch.setattr(sys, "platform", "win32")
+        monkeypatch.setenv("APPDATA", str(home / "AppData" / "Roaming"))
+
+    _directory, why = paths.data_dir_with_reason()
+
+    assert "(" not in why and ")" not in why

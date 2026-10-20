@@ -529,9 +529,48 @@ def _config_checks() -> list[_Row]:
     return rows
 
 
+def _databases_not_created_yet() -> list[_Row]:
+    """A machine that has not saved anything yet: report that, create nothing."""
+    pending = json_import.pending_source_names()
+    state = "not created yet (the first command that saves something creates it)"
+    if pending:
+        state += "; it will import these old files then: " + ", ".join(sorted(pending))
+    rows: list[_Row] = [
+        ("State database", "PASS", state),
+        (
+            "JSON migration",
+            "PASS",
+            "Pending until then" if pending else "Nothing to migrate",
+        ),
+    ]
+    if paths.cache_db_file().exists():
+        rows.append(_cache_database_row())
+    else:
+        rows.append(
+            ("Cache database", "PASS", "not created yet (made when a scan is cached)")
+        )
+    return rows
+
+
+def _cache_database_row() -> _Row:
+    try:
+        cache_conn = db.cache()
+        cache_version = cache_conn.execute("PRAGMA user_version").fetchone()[0]
+        return (
+            "Cache database",
+            "PASS",
+            f"schema {cache_version}, {db.file_size(paths.cache_db_file()):,} bytes "
+            "(disposable; 'deals cache clear' empties it)",
+        )
+    except Exception as exc:
+        return ("Cache database", "WARN", str(exc))
+
+
 def _database_checks() -> list[_Row]:
     """Health of state.db and cache.db and of the one-time import of the old JSON files."""
     rows: list[_Row] = []
+    if not paths.state_db_file().exists():
+        return _databases_not_created_yet()
     try:
         conn = db.state()
     except Exception as exc:
@@ -593,19 +632,12 @@ def _database_checks() -> list[_Row]:
             )
         else:
             rows.append(("JSON migration", "PASS", detail))
-    try:
-        cache_conn = db.cache()
-        cache_version = cache_conn.execute("PRAGMA user_version").fetchone()[0]
+    if paths.cache_db_file().exists():
+        rows.append(_cache_database_row())
+    else:
         rows.append(
-            (
-                "Cache database",
-                "PASS",
-                f"schema {cache_version}, {db.file_size(paths.cache_db_file()):,} bytes "
-                "(disposable; 'deals cache clear' empties it)",
-            )
+            ("Cache database", "PASS", "not created yet (made when a scan is cached)")
         )
-    except Exception as exc:
-        rows.append(("Cache database", "WARN", str(exc)))
     return rows
 
 
@@ -964,14 +996,15 @@ def doctor(ctx, json_flag):
     """Diagnostic checks for auth, config, and marketplace reachability."""
     if json_flag:
         route_console_to_stderr(ctx)
-    rows, auth_ok = _auth_checks()
-    rows.append(_connectivity_check(ctx, auth_ok))
-    rows.extend(_config_checks())
-    rows.extend(_secret_checks())
-    rows.extend(_database_checks())
-    rows.extend(_store_checks())
-    rows.extend(_track_checks())
-    rows.extend(_monitor_checks())
+    with db.without_creating():  # a health check must not make what it checks
+        rows, auth_ok = _auth_checks()
+        rows.append(_connectivity_check(ctx, auth_ok))
+        rows.extend(_config_checks())
+        rows.extend(_secret_checks())
+        rows.extend(_database_checks())
+        rows.extend(_store_checks())
+        rows.extend(_track_checks())
+        rows.extend(_monitor_checks())
     if json_flag:
         payload = json_output.doctor_payload(rows)
         click.echo(json_output.dumps(payload))

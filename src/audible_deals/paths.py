@@ -35,25 +35,36 @@ def _env_path(name: str) -> Path | None:
     return Path(value).expanduser() if value else None
 
 
-def data_dir_with_reason() -> tuple[Path, str]:
-    """Return ``(directory, why)`` for the active data directory."""
-    override = _env_path(ENV_HOME)
-    if override is not None:
-        return override, f"{ENV_HOME} is set"
-    legacy = _legacy_dir()
-    if legacy.is_dir():
-        return (
-            legacy,
-            "existing ~/.config/audible-deals (kept so your data does not move)",
-        )
+def _platform_default(legacy: Path) -> tuple[Path, str]:
+    """Where a machine with no data yet would put it, and why."""
     xdg = _env_path("XDG_CONFIG_HOME")
     if xdg is not None:
         return xdg / APP_DIRNAME, "XDG_CONFIG_HOME is set"
     if sys.platform == "win32":
         appdata = _env_path("APPDATA")
         if appdata is not None:
-            return appdata / APP_DIRNAME, "%APPDATA% (Windows default)"
+            return appdata / APP_DIRNAME, "the Windows default, %APPDATA%"
     return legacy, "default ~/.config/audible-deals"
+
+
+def data_dir_with_reason() -> tuple[Path, str]:
+    """Return ``(directory, why)`` for the active data directory.
+
+    The reason is printed inside parentheses, so it contains none of its own.
+    """
+    override = _env_path(ENV_HOME)
+    if override is not None:
+        return override, f"{ENV_HOME} is set"
+    legacy = _legacy_dir()
+    default, why = _platform_default(legacy)
+    if legacy.is_dir() and default != legacy:
+        # Only here did the existing directory change the answer: an earlier
+        # release put the data there and it stays put.
+        return (
+            legacy,
+            "existing ~/.config/audible-deals, kept so your data does not move",
+        )
+    return default, why
 
 
 def data_dir() -> Path:

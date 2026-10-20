@@ -111,8 +111,15 @@ def cache_info(json_flag):
 @cache.command("clear")
 def cache_clear():
     """Empty cache.db (category lists, taste profile). Your records are untouched."""
+    cache_file = paths.cache_db_file()
+    before = db.file_size(cache_file)
     removed = cache_store.clear()
+    cache_store.compact()
+    freed = max(0, before - db.file_size(cache_file))
+    detail = f", freed {freed:,} bytes" if freed else ""
     if removed:
-        console.print(f"[green]Cleared {removed} cached item(s).[/green]")
+        console.print(f"[green]Cleared {removed} cached item(s){detail}.[/green]")
+    elif freed:
+        console.print(f"[dim]The cache was already empty; freed {freed:,} bytes.[/dim]")
     else:
         console.print("[dim]The cache was already empty.[/dim]")

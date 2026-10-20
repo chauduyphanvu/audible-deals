@@ -456,7 +456,7 @@ Everything is kept in one data directory. It is chosen on every run, in this ord
 3. `$XDG_CONFIG_HOME/audible-deals/` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/audible-deals/` (macOS uses `~/.config` too);
 4. on Windows, `%APPDATA%\audible-deals\` when the directory in step 2 does not exist.
 
-`deals doctor` and `deals cache info` show the directory in use and which rule chose it. `DEALS_HOME` is also how to run against a scratch copy of your data, for example `DEALS_HOME=/tmp/try deals find`. `deals track install` writes the directory it is using into the scheduled job (launchd plist, systemd unit, crontab line, or Windows task), because those do not inherit your shell's environment.
+`deals doctor` and `deals cache info` show the directory in use and which rule chose it (`deals doctor` only looks: on a machine that has not saved anything yet it reports the databases as "not created yet" and creates nothing, not even the directory, and it does not import old JSON files; the next command that saves something does). `DEALS_HOME` is also how to run against a scratch copy of your data, for example `DEALS_HOME=/tmp/try deals find`. `deals track install` writes the directory it is using into the scheduled job (launchd plist, systemd unit, crontab line, or Windows task), because those do not inherit your shell's environment.
 
 ### What is stored
 
@@ -481,7 +481,7 @@ Everything the tool records for you lives in two SQLite databases (standard libr
 ```bash
 deals cache info          # where data lives and how much is in each database
 deals cache info --json
-deals cache clear         # empties cache.db only; records are never touched
+deals cache clear         # empties cache.db and gives its disk space back; records are never touched
 ```
 
 `deals history --purge-older-than DAYS` removes old price history, and `deals last --clear`, `--clear-seen` and `--clear-dismissed` clear the other records.

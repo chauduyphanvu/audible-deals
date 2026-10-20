@@ -7,7 +7,7 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from audible_deals import cache_store, paths
+from audible_deals import cache_store, db, paths
 from audible_deals.cli import cli
 from audible_deals.price_history import load_price_history
 from audible_deals.results_cache import save_dismissed_asins, save_seen_asins
@@ -96,6 +96,46 @@ def test_clear_empties_only_the_cache(tmp_config):
     assert load_seen_asins() == {"A1"}
 
 
+def test_clear_gives_the_disk_space_back_and_says_how_much(tmp_config):
+    for number in range(40):
+        cache_store.put("catalog:us", f"page-{number}", ["x" * 20_000] * 3)
+    before = db.file_size(paths.cache_db_file())
+    assert before > 1_000_000
+
+    result = run("clear")
+
+    after = db.file_size(paths.cache_db_file())
+    assert result.exit_code == 0, result.output
+    assert after < before // 10
+    assert f"Cleared 40 cached item(s), freed {before - after:,} bytes" in result.output
+
+
+def test_clear_on_an_already_empty_but_large_file_still_compacts_it(tmp_config):
+    for number in range(40):
+        cache_store.put("catalog:us", f"page-{number}", ["x" * 20_000] * 3)
+    cache_store.clear()  # emptied, but the file keeps its size
+    before = db.file_size(paths.cache_db_file())
+    assert before > 1_000_000
+
+    result = run("clear")
+
+    assert result.exit_code == 0, result.output
+    assert "already empty" in result.output
+    assert f"freed {before - db.file_size(paths.cache_db_file()):,} bytes" in (
+        result.output
+    )
+    assert db.file_size(paths.cache_db_file()) < before // 10
+
+
+def test_clearing_a_small_cache_does_not_claim_to_free_nothing(tmp_config):
+    cache_store.put("taste", "profile", {"x": 1})
+
+    result = run("clear")
+
+    assert "Cleared 1 cached item(s)" in result.output
+    assert "freed 0 bytes" not in result.output
+
+
 def test_clearing_an_empty_cache_says_so(tmp_config):
     assert "already empty" in run("clear").output
 
@@ -124,3 +164,18 @@ def test_record_prices_still_work_after_a_clear(tmp_config):
     run("clear")
     record_prices([make_product(asin="B00AFTER01", price=2.0)])
     assert load_price_history("B00AFTER01")
+
+
+def test_the_data_directory_line_has_one_pair_of_parentheses(tmp_config, monkeypatch):
+    legacy = tmp_config / "legacy-home" / ".config" / "audible-deals"
+    legacy.mkdir(parents=True)
+    monkeypatch.delenv("DEALS_HOME")
+    monkeypatch.setenv("HOME", str(tmp_config / "legacy-home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_config / "legacy-home"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(tmp_config / "xdg"))
+
+    first = run("info").output.splitlines()[0]
+
+    assert first.startswith("Data directory ")
+    assert first.count("(") == 1 and first.count(")") == 1
+    assert "kept so your data does not move" in first
