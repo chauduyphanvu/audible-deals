@@ -24,6 +24,7 @@ from audible_deals.cli.helpers import (
     _currency,
     _estimated_cached_calls,
     _get_client,
+    _live_results,
     _load_profile,
     _report_cache_use,
     _report_interruption,
@@ -274,7 +275,18 @@ def search(
             if len(queries) == 1
             else f"Searching {len(queries)} queries"
         )
-        with catalog_scan_progress(plan, description, disable=json_flag) as progress:
+        live = _live_results(
+            s,
+            currency=_currency(ctx),
+            credit_price=credit_price,
+            skip_asins=skip_asins,
+            exclude_category_ids=exclude_category_ids,
+            json_flag=json_flag,
+            quiet=quiet,
+        )
+        with catalog_scan_progress(
+            plan, description, disable=json_flag, live=live
+        ) as progress:
             all_products = execute_catalog_scan(
                 dc,
                 plan,
@@ -518,7 +530,18 @@ def find(
                 allow_large_scan,
                 cached_calls=estimate_cached_calls(plan, ctx.obj["locale"], cache),
             )
-        with catalog_scan_progress(plan, description, disable=json_flag) as progress:
+        live = _live_results(
+            s,
+            currency=_currency(ctx),
+            credit_price=credit_price,
+            skip_asins=skip_asins,
+            exclude_category_ids=exclude_category_ids,
+            json_flag=json_flag,
+            quiet=quiet,
+        )
+        with catalog_scan_progress(
+            plan, description, disable=json_flag, live=live
+        ) as progress:
             all_products = execute_catalog_scan(
                 dc,
                 plan,

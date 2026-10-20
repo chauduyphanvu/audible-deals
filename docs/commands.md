@@ -54,6 +54,12 @@ deals search --genre romance --max-price 3
 
 Use `--deep` to scan three catalog sort orders for broader coverage. It makes roughly three times as many API calls. Use `--dry-run` to preview the work without fetching anything.
 
+### Watching a scan, and stopping it
+
+On an interactive terminal, `find` and `search` show the best results found so far under the progress bar and keep it up to date as pages arrive and are filtered; the finished table replaces it. Nothing changes when the output is redirected or piped, or with `--json`, `-q`/`-o` or `-i`.
+
+Press Ctrl-C during a scan to stop it without losing the work: the pages already fetched are filtered and shown ("Scan interrupted after 5/30 pages; showing what was gathered so far."), the session is saved so `@N` selectors and `deals last` work, prices are recorded in your history, and the command exits with status 130. Pages that finished are also cached, so running the command again continues where it stopped.
+
 ### Cached results
 
 `find`, `search`, `for-me` and `series` keep the catalog pages they fetch in `cache.db` for two hours, so repeating or tweaking a search (a different `--max-price`, `--sort` or filter over the same scan) costs no API calls. When a run used cached pages it says so and how old they are:

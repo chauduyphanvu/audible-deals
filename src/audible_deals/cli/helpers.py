@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sys
+from typing import TYPE_CHECKING
 
 import click
 
@@ -17,6 +18,7 @@ from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.genres import match_genre
 from audible_deals.presentation.common import age_str
 from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.product import Product
 from audible_deals.result_models import CatalogScanPlan
 from audible_deals.results_cache import (
     load_dismissed_asins,
@@ -25,8 +27,11 @@ from audible_deals.results_cache import (
 )
 from audible_deals.scan_cache import ScanCache
 from audible_deals.selectors import resolve_selectors
-from audible_deals.settings import profile_validation_error
+from audible_deals.settings import Settings, profile_validation_error
 from audible_deals.validation import validate_finite_number
+
+if TYPE_CHECKING:
+    from audible_deals.presentation.live import LiveResults
 
 _CL = click.core.ParameterSource.COMMANDLINE
 
@@ -129,6 +134,55 @@ def _estimated_cached_calls(
     )
 
 
+def _live_results(
+    settings: Settings,
+    *,
+    currency: str,
+    credit_price: float | None,
+    skip_asins: set[str] | None,
+    exclude_category_ids: set[str],
+    json_flag: bool,
+    quiet: bool,
+) -> LiveResults | None:
+    """A "best so far" table for the scan, only on a real terminal.
+
+    Not for ``--json``, ``--quiet`` (which ``-o`` implies), ``-i`` or output
+    that is redirected: those get the plain progress bar and one final table.
+    """
+    if json_flag or quiet or settings.interactive or not console.is_interactive:
+        return None
+    from audible_deals.presentation.live import LiveResults
+    from audible_deals.presentation.products import ProductDisplayOptions
+    from audible_deals.result_processing import (
+        SettingsFilterRequest,
+        process_settings_discovery,
+    )
+
+    def rank(products: list[Product]) -> list[Product]:
+        return list(
+            process_settings_discovery(
+                SettingsFilterRequest(
+                    products=tuple(products),
+                    settings=settings,
+                    skip_asins=skip_asins,
+                    exclude_category_ids=exclude_category_ids,
+                    credit_price=credit_price,
+                )
+            ).products
+        )
+
+    limit = settings.limit if settings.limit and settings.limit > 0 else 10
+    rows = max(3, min(limit, 10, ((console.height or 24) - 8) // 5))
+    return LiveResults(
+        rank,
+        ProductDisplayOptions(
+            max_price=settings.max_price, currency=currency, credit_price=credit_price
+        ),
+        rows=rows,
+        width=lambda: console.width or 80,
+    )
+
+
 def _announce(message: str, *, json_flag: bool, style: str = "dim") -> None:
     """A status line that stays out of JSON on stdout."""
     if json_flag:
@@ -146,8 +200,11 @@ def _report_cache_use(cache: ScanCache | None, *, json_flag: bool, quiet: bool) 
         return
     parts = []
     if use.pages_cached and use.oldest_age_s is not None:
+        age = age_str(use.oldest_age_s)
+        # "under a minute" reads as an upper bound already.
+        bound = "" if age.startswith("under") else "up to "
         parts.append(
-            f"prices up to {age_str(use.oldest_age_s)} old "
+            f"prices {bound}{age} old "
             f"({use.pages_cached} of {use.pages_cached + use.pages_live} pages)"
         )
     if use.library_age_s is not None:

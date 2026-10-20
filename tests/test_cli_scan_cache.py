@@ -80,6 +80,7 @@ class TestRerun:
         assert second.exit_code == 0, second.output
         assert fake_api.calls() == PAGES  # nothing new
         assert "Using cached results" in second.output
+        assert "prices under a minute old" in flat(second.output)
         assert f"{PAGES} of {PAGES} pages" in flat(second.output)
         assert "--refresh" in flat(second.output)
         assert "B0P0000000" in second.output  # the results are still shown
@@ -153,6 +154,36 @@ class TestRerun:
         run(*FIND)
 
         assert fake_api.calls() == 2 * PAGES
+
+
+class TestAgeWording:
+    @pytest.mark.parametrize(
+        ("seconds", "text"),
+        [
+            (0, "under a minute"),
+            (59, "under a minute"),
+            (60, "1 min"),
+            (14 * 60 + 20, "14 min"),
+            (119 * 60, "119 min"),
+            (3 * 3600, "3 h"),
+            (47 * 3600, "47 h"),
+            (3 * 86400, "3 days"),
+            (-5, "under a minute"),
+        ],
+    )
+    def test_age_str(self, seconds, text):
+        from audible_deals.presentation.common import age_str
+
+        assert age_str(seconds) == text
+
+    def test_the_note_reports_a_minute_scale_age_as_an_upper_bound(self, fake_api):
+        run(*FIND)
+        with db.transaction(db.cache()) as conn:
+            conn.execute("UPDATE cache_entries SET stored_at = stored_at - 840")
+
+        second = run(*FIND)
+
+        assert "prices up to 14 min old" in flat(second.output)
 
 
 class TestPriceHistory:
