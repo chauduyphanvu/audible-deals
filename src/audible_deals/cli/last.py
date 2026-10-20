@@ -10,6 +10,7 @@ import click
 from audible_deals.cli.helpers import _credit_price, _currency, _resolve_output_quiet
 from audible_deals.cli.options import filter_options, output_options
 from audible_deals.constants import LOCALE_CURRENCY
+from audible_deals.exit_codes import ExitCode
 from audible_deals.filter_specs import Refine, Scope, recipe_specs, specs_for
 from audible_deals.presentation.result_output import (
     ResultPresentationRequest,
@@ -71,7 +72,7 @@ def _option_given(ctx: click.Context, name: str) -> bool:
     help="Clear one inherited filter (repeatable)",
 )
 @click.option("--reset", is_flag=True, help="Restore the producer's original recipe")
-@output_options("output", "json", "quiet", "show_url", "interactive")
+@output_options("output", "json", "quiet", "show_url", "interactive", "exit_code")
 @click.option("--clear", is_flag=True, default=False)
 @click.option("--clear-seen", is_flag=True, default=False)
 @click.option("--clear-dismissed", is_flag=True, default=False)
@@ -99,6 +100,7 @@ def last_cmd(
     quiet,
     show_url,
     interactive,
+    exit_code,
     clear,
     clear_seen,
     clear_dismissed,
@@ -192,6 +194,8 @@ def last_cmd(
         raise click.UsageError(str(exc)) from None
     if outcome.legacy_raw_count:
         click.echo(outcome.total_count)
+        if exit_code and not outcome.total_count:
+            ctx.exit(ExitCode.NO_MATCH)
         return
     if session.legacy and not json_flag and not quiet and not count_only:
         console.print(
@@ -211,6 +215,8 @@ def last_cmd(
         if outcome.persist:
             save_result_session(outcome.session)
         click.echo(outcome.total_count)
+        if exit_code and not outcome.total_count:
+            ctx.exit(ExitCode.NO_MATCH)
         return
 
     newly_visible = [
@@ -252,3 +258,5 @@ def last_cmd(
             on_presented=commit_presentation,
         )
     )
+    if exit_code and not visible:
+        ctx.exit(ExitCode.NO_MATCH)

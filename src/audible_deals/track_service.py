@@ -13,6 +13,7 @@ from typing import Any
 from audible_deals import constants
 from audible_deals.automation_models import TrackRunRequest, TrackRunResult
 from audible_deals.config_store import load_monitors
+from audible_deals.exit_codes import is_auth_failure
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import (
     MonitorRuntime,
@@ -118,13 +119,8 @@ def refresh_eligible_asins(
 
 
 def is_auth_error(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None) or getattr(
-        getattr(exc, "response", None), "status_code", None
-    )
-    if status in (401, 403):
-        return True
-    message = str(exc).lower()
-    return "not authenticated" in message or "deals login" in message
+    """A missing or rejected login (typed error, SDK Unauthorized, HTTP 401/403)."""
+    return is_auth_failure(exc)
 
 
 def _notify_auth_failure(

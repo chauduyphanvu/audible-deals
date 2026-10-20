@@ -217,13 +217,20 @@ def _report_cache_use(cache: ScanCache | None, *, json_flag: bool, quiet: bool) 
 
 
 def _report_interruption(report: ScanReport, *, json_flag: bool) -> None:
-    if report.interrupted:
-        _announce(
-            f"Scan interrupted after {report.pages_done}/{report.pages_total} "
-            "pages; showing what was gathered so far.",
-            json_flag=json_flag,
-            style="yellow",
-        )
+    """Say a scan was cut short (a JSON error object on stderr under ``--json``)."""
+    if not report.interrupted:
+        return
+    message = (
+        f"Scan interrupted after {report.pages_done}/{report.pages_total} "
+        "pages; showing what was gathered so far."
+    )
+    if json_flag:
+        from audible_deals.cli.errors import CliError
+        from audible_deals.exit_codes import ExitCode
+
+        CliError(message, ExitCode.INTERRUPTED, json_mode=True).show()
+    else:
+        _announce(message, json_flag=False, style="yellow")
 
 
 def _resolve_cli_selectors(

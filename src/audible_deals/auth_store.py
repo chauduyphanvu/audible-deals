@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from audible_deals.constants import LOCALE_DOMAIN
+from audible_deals.exit_codes import AuthRequiredError
 from audible_deals.locking import advisory_lock
 from audible_deals.storage import _atomic_write, _atomic_write_bytes, read_text
 
@@ -262,10 +263,12 @@ class AuthStore:
             if self._authenticator is not None:
                 return self._authenticator
             if not self.auth_file.exists():
-                raise RuntimeError("Not authenticated. Run 'deals login' first.")
+                raise AuthRequiredError("Not authenticated. Run 'deals login' first.")
             with self._auth_file_lock():
                 if not self.auth_file.exists():
-                    raise RuntimeError("Not authenticated. Run 'deals login' first.")
+                    raise AuthRequiredError(
+                        "Not authenticated. Run 'deals login' first."
+                    )
                 auth_contents = self.auth_file.read_bytes()
                 auth = audible.Authenticator.from_file(self.auth_file)
             self._authenticator = auth

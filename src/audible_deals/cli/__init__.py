@@ -31,6 +31,9 @@ except ImportError:
 
 import click
 
+#: ``ctx.meta`` key holding the arguments the root group was invoked with.
+RAW_ARGS_KEY = "deals.raw_args"
+
 _COMMAND_SPECS = {
     "login": (
         "audible_deals.cli.misc",
@@ -248,33 +251,39 @@ class _HandleAuthErrors(click.Group):
     def list_commands(self, ctx):
         return sorted({*super().list_commands(ctx), *_COMMAND_SPECS})
 
+    def parse_args(self, ctx, args):
+        # Remember what was typed: a usage error raised while a subcommand's
+        # arguments are still being parsed must still honor --json.
+        ctx.meta[RAW_ARGS_KEY] = tuple(args)
+        return super().parse_args(ctx, args)
+
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
-        except click.ClickException as exc:
-            exc.message = _safe_text(exc.message)
+        except (click.exceptions.Exit, click.Abort):
             raise
-        except RuntimeError as e:
-            if "Not authenticated" in str(e):
-                raise click.ClickException(_safe_text(e)) from e
-            raise
-        except BrokenPipeError:
-            raise
-        except OSError as e:
-            raise click.ClickException(f"Filesystem error: {_safe_text(e)}") from e
+        except KeyboardInterrupt:
+            from audible_deals.cli import errors
+            from audible_deals.exit_codes import ExitCode
+
+            if errors.wants_json(ctx):
+                errors.CliError(
+                    "Interrupted", ExitCode.INTERRUPTED, json_mode=True
+                ).show()
+            else:
+                click.echo("\nAborted!", err=True)
+            raise click.exceptions.Exit(ExitCode.INTERRUPTED) from None
         except Exception as exc:
-            if _is_state_file_error(exc):
-                raise click.ClickException(_safe_text(exc)) from exc
-            if _is_database_error(exc):
-                raise click.ClickException(
-                    f"Local database error: {_safe_text(exc)}. "
-                    "Run 'deals doctor' to check it."
-                ) from exc
-            if not _is_audible_request_error(exc):
+            from audible_deals.cli import errors
+
+            converted = errors.convert(exc, ctx)
+            if converted is not None:
+                raise converted from exc
+            if isinstance(exc, (click.ClickException, BrokenPipeError)):
                 raise
-            raise click.ClickException(
-                "Audible request failed. Check your network connection and authentication, then try again."
-            ) from exc
+            if ctx.obj and ctx.obj.get("verbose", 0) >= 2:
+                raise  # -vv: the traceback is wanted
+            raise errors.unexpected(exc, ctx) from exc
 
     def format_commands(self, ctx, formatter):
         """Render command help in workflows rather than one long alphabetic list."""
@@ -300,33 +309,6 @@ class _HandleAuthErrors(click.Group):
             if rows:
                 with formatter.section(heading):
                     formatter.write_dl(rows)
-
-
-def _safe_text(value: object) -> str:
-    from audible_deals.presentation.terminal import safe_text
-
-    return safe_text(value)
-
-
-def _is_audible_request_error(exc: Exception) -> bool:
-    """Recognize SDK request errors without importing Audible during startup."""
-    exceptions_module = sys.modules.get("audible.exceptions")
-    request_error = getattr(exceptions_module, "RequestError", None)
-    return isinstance(request_error, type) and isinstance(exc, request_error)
-
-
-def _is_database_error(exc: Exception) -> bool:
-    """Recognize a SQLite failure without importing sqlite3 during startup."""
-    sqlite_module = sys.modules.get("sqlite3")
-    error_type = getattr(sqlite_module, "Error", None)
-    return isinstance(error_type, type) and isinstance(exc, error_type)
-
-
-def _is_state_file_error(exc: Exception) -> bool:
-    """Recognize a refused write to a corrupt data file without importing storage."""
-    storage_module = sys.modules.get("audible_deals.storage")
-    error_type = getattr(storage_module, "StateFileError", None)
-    return isinstance(error_type, type) and isinstance(exc, error_type)
 
 
 def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:

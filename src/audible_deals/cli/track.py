@@ -17,6 +17,7 @@ from audible_deals.cli.helpers import (
     _resolve_skip_asins,
 )
 from audible_deals.config_store import config_numeric_errors, load_monitors
+from audible_deals.exit_codes import exit_code_for
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import MonitorRuntime
 from audible_deals.notification_workflow import parse_webhook_headers
@@ -123,13 +124,16 @@ def track_run(ctx, cooldown):
     try:
         result = run_track(request, runtime)
     except LockHeldError as e:
-        console.print(
-            f"[dim]Another run is in progress, skipping: {safe_markup(e)}[/dim]"
+        # Not a failure: the scheduler's next run picks up (exit 0, like notify).
+        click.echo(
+            f"Note: another run is in progress, skipping: {safe_text(e)}", err=True
         )
         return
     except WebhookDeliveryError as exc:
         raise click.ClickException(str(exc)) from exc
     except Exception as e:
+        if exit_code_for(e) is not None:
+            raise  # authentication / request failures keep their own exit status
         raise click.ClickException(f"track run failed: {e}") from e
     warn_wishlist_issues(result.wishlist_issues)
     console.print(f"[dim]{safe_markup(result.summary())}[/dim]")

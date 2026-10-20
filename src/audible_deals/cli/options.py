@@ -113,6 +113,7 @@ _OUTPUT_HELP = {
     "dry_run": "Show what would be scanned without making API calls",
     "interactive": "Browse results interactively",
     "refresh": "Ignore cached catalog pages and fetch live prices",
+    "exit_code": "Exit with status 10 when nothing matched (0 when something did)",
     "profile": "Load a saved search profile (overrides defaults, CLI flags take precedence)",
 }
 
@@ -123,7 +124,7 @@ def output_options(
     """Decorator adding the output/run options that are not filters.
 
     *names* picks from ``output``, ``json``, ``quiet``, ``show_url``,
-    ``dry_run``, ``refresh``, ``interactive`` (the plain ``-i`` flag of
+    ``dry_run``, ``refresh``, ``exit_code``, ``interactive`` (the plain ``-i`` flag of
     commands without a persisted preference) and ``profile``. ``validate_output_early`` checks the
     ``-o`` path while parsing instead of in the command body.
     """
@@ -164,6 +165,13 @@ def output_options(
             is_flag=True,
             default=False,
             help=_OUTPUT_HELP["dry_run"],
+        ),
+        "exit_code": lambda: click.option(
+            "--exit-code",
+            "exit_code",
+            is_flag=True,
+            default=False,
+            help=_OUTPUT_HELP["exit_code"],
         ),
         "refresh": lambda: click.option(
             "--refresh",

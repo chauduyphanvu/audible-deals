@@ -350,6 +350,28 @@ deals detail B00R6S1RCY --locale de
 | `jp` | ¥ | www.audible.co.jp |
 | `es` | € | www.audible.es |
 
+## Exit codes and errors
+
+Every command uses the same statuses, so scripts and cron jobs can tell outcomes apart:
+
+| Status | Meaning |
+|--------|---------|
+| 0 | Success |
+| 1 | Error: a failed command, unusable data, or an unexpected problem |
+| 2 | Usage error: a bad option or argument |
+| 3 | Authentication required or rejected: run `deals login` |
+| 4 | The Audible request failed (network, server, rate limit) |
+| 10 | Nothing matched, for commands run with `--exit-code` |
+| 130 | Interrupted with Ctrl-C |
+
+`--exit-code` is available on `find`, `search`, `last`, `watch` and `notify`: the command exits 10 instead of 0 when nothing matched (no result, or no wishlist item at its target). `deals doctor` exits 1 when a check fails. A background run that finds the run lock busy (`track run`, `notify`, `recap`) exits 0 with a one-line note, so a cron job is not reported as failed.
+
+An error is one line on stderr, `Error: ...`, with the fix when there is one; the traceback appears only with `-vv`. With `--json` the same error is written to stderr as one JSON object and stdout stays empty (an interrupted `find`/`search` still prints what it gathered, then the error object with code 130):
+
+```json
+{"error": {"code": 3, "message": "Not authenticated. Run 'deals login' first."}}
+```
+
 ## Shell completions
 
 ```bash

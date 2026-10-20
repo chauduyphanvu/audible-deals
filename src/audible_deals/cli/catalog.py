@@ -45,6 +45,7 @@ from audible_deals.constants import (
     MAX_CATALOG_CALLS_PER_SCAN,
     MAX_PAGE_SIZE,
 )
+from audible_deals.exit_codes import ExitCode
 from audible_deals.filter_specs import (
     FILTERS,
     Scope,
@@ -290,6 +291,7 @@ def _search_title(queries: list[str], category_name: str) -> str:
     "profile",
     "dry_run",
     "refresh",
+    "exit_code",
     validate_output_early=True,
 )
 @click.pass_context
@@ -305,6 +307,7 @@ def search(
     profile_name,
     dry_run,
     refresh,
+    exit_code,
     **flags,
 ):
     """Search the Audible catalog by keyword."""
@@ -468,7 +471,9 @@ def search(
                 "for exact author filtering.[/dim]"
             )
     if scan_report.interrupted:
-        ctx.exit(130)
+        ctx.exit(ExitCode.INTERRUPTED)
+    if exit_code and not result.products:
+        ctx.exit(ExitCode.NO_MATCH)
 
 
 @click.command()
@@ -502,6 +507,7 @@ def search(
     "profile",
     "dry_run",
     "refresh",
+    "exit_code",
     validate_output_early=True,
 )
 @click.pass_context
@@ -518,6 +524,7 @@ def find(
     profile_name,
     dry_run,
     refresh,
+    exit_code,
     **flags,
 ):
     """Find deals: browse the catalog filtered by price and genre.
@@ -771,4 +778,6 @@ def find(
         )
     )
     if scan_report.interrupted:
-        ctx.exit(130)
+        ctx.exit(ExitCode.INTERRUPTED)
+    if exit_code and not result.products:
+        ctx.exit(ExitCode.NO_MATCH)

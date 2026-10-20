@@ -62,7 +62,7 @@ deals watch --every 1h30m
 # Show only target hits, sorted by price, with Audible links
 deals watch --buy-only --sort price --show-url
 
-# Return exit code 0 for a hit and 1 for no hits
+# Exit 0 for a hit and 10 for no hit (see "Exit codes and errors" in the command guide)
 deals watch --exit-code
 ```
 
@@ -160,7 +160,7 @@ Without a webhook, `notify` writes JSON to standard output:
 ```bash
 deals notify
 
-# Return exit code 0 for a hit and 1 for no hits
+# Exit 0 for a hit and 10 for no hit; a busy run lock exits 0 with a note
 deals notify --exit-code
 
 # Suppress repeat alerts for seven days unless the price falls again

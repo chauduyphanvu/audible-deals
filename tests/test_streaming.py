@@ -389,8 +389,8 @@ class TestInterruptedCommands:
     def test_other_commands_still_abort_on_ctrl_c(self, api):
         api.get_mock.side_effect = KeyboardInterrupt
 
-        result = CliRunner().invoke(cli, ["library", "--json"])
+        result = CliRunner().invoke(cli, ["library"])
 
         # Only find/search turn Ctrl-C into partial results; the rest abort.
-        assert result.exit_code == 1
+        assert result.exit_code == 130
         assert "Aborted" in result.output

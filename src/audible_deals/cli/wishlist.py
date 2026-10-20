@@ -18,6 +18,7 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_cli_selectors,
 )
+from audible_deals.exit_codes import ExitCode
 from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
 from audible_deals.presentation.common import price_str
@@ -652,7 +653,7 @@ def _watch_once(
     "--exit-code",
     is_flag=True,
     default=False,
-    help="Exit 0 if any items hit target, 1 if none",
+    help="Exit 0 if any items hit target, 10 if none",
 )
 @click.pass_context
 def watch(ctx, every, buy_only, sort_by, show_url, exit_code):
@@ -679,7 +680,7 @@ def watch(ctx, every, buy_only, sort_by, show_url, exit_code):
     if not every:
         hits = _watch_once(ctx, buy_only=buy_only, sort_by=sort_by, show_url=show_url)
         if exit_code and hits == 0:
-            ctx.exit(1)
+            ctx.exit(ExitCode.NO_MATCH)
         return
 
     interval = parse_interval(every)

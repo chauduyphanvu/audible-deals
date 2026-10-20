@@ -15,6 +15,7 @@ from audible_deals.automation_models import (
     TrackRunRequest,
 )
 from audible_deals.cli import cli
+from audible_deals.exit_codes import AuthRequiredError
 from audible_deals.locking import run_lock
 from audible_deals.monitor_service import MonitorRuntime
 from audible_deals.state_store import TrackState, load_track_state
@@ -264,7 +265,7 @@ def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
             acquisitions.append(1)
             yield
 
-    auth_error = RuntimeError("Not authenticated. Run 'deals login' first.")
+    auth_error = AuthRequiredError("Not authenticated. Run 'deals login' first.")
     track_runtime = runtime(
         Client(auth_error),
         webhook,
@@ -297,7 +298,7 @@ def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
 
 def test_auth_webhook_failure_does_not_latch_and_is_retried(tmp_config):
     webhook = Webhook(error=RuntimeError("webhook down"))
-    auth_error = RuntimeError("Not authenticated")
+    auth_error = AuthRequiredError("Not authenticated")
     track_runtime = runtime(
         Client(auth_error),
         webhook,

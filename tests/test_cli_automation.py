@@ -24,6 +24,7 @@ import audible_deals.wishlist as wishlist_mod
 from audible_deals import db
 from audible_deals.cli import cli
 from audible_deals.cli.misc import _track_checks
+from audible_deals.exit_codes import AuthRequiredError
 from audible_deals.parsing import parse_interval as _parse_interval
 from audible_deals.state_store import (
     load_notify_state,
@@ -1118,14 +1119,18 @@ class TestNotifyLockCLI:
         assert result.exit_code == 0
         assert "in progress" in result.output
 
-    def test_held_lock_with_exit_code_exits_one(self, tmp_config, mock_client):
-        """notify --exit-code under a held lock must not signal 'deals found'."""
+    def test_held_lock_with_exit_code_is_a_cron_friendly_zero(
+        self, tmp_config, mock_client
+    ):
+        """A busy lock is neither "found" nor "nothing matched": exit 0 with a
+        note, exactly like `track run` (the next scheduled run picks up)."""
         runner = CliRunner()
         from audible_deals.locking import run_lock
 
         with run_lock():
             result = runner.invoke(cli, ["notify", "--exit-code"])
-        assert result.exit_code == 1
+        assert result.exit_code == 0
+        assert "Note: another deals notify/recap run is in progress" in result.output
 
     def test_held_lock_recap_json_emits_empty_json(self, tmp_config, mock_client):
         """recap --json lock-held emits empty JSON with the recap shape."""
@@ -2148,14 +2153,14 @@ class TestRoutesNotifyCommand:
 
 
 class TestRoutesNotifyExitCode:
-    def test_no_hits_with_flag_exits_1(self, tmp_config, mock_client):
+    def test_no_hits_with_flag_exits_10(self, tmp_config, mock_client):
         wl = [{"asin": "EC01", "title": "Book", "max_price": 2.0, "added": ""}]
         (tmp_config / "wishlist.json").write_text(json.dumps(wl))
         mock_client.get_products_batch.return_value = [
             make_product(asin="EC01", price=9.99),
         ]
         result = CliRunner().invoke(cli, ["notify", "--exit-code"])
-        assert result.exit_code == 1
+        assert result.exit_code == 10
 
     def test_with_hit_and_flag_exits_0(self, tmp_config, mock_client):
         wl = [{"asin": "EC02", "title": "Book", "max_price": 5.0, "added": ""}]
@@ -2177,14 +2182,14 @@ class TestRoutesNotifyExitCode:
 
 
 class TestRoutesWatchExitCode:
-    def test_no_hits_with_flag_exits_1(self, tmp_config, mock_client):
+    def test_no_hits_with_flag_exits_10(self, tmp_config, mock_client):
         wl = [{"asin": "WEC1", "title": "Book", "max_price": 2.0, "added": ""}]
         (tmp_config / "wishlist.json").write_text(json.dumps(wl))
         mock_client.get_products_batch.return_value = [
             make_product(asin="WEC1", price=9.99),
         ]
         result = CliRunner().invoke(cli, ["watch", "--exit-code"])
-        assert result.exit_code == 1
+        assert result.exit_code == 10
 
     def test_with_hit_and_flag_exits_0(self, tmp_config, mock_client):
         wl = [{"asin": "WEC2", "title": "Book", "max_price": 5.0, "added": ""}]
@@ -2303,16 +2308,16 @@ class TestNotifyExitCodeWithCooldown:
         result = runner.invoke(cli, ["notify", "--cooldown", "3", "--exit-code"])
         assert result.exit_code == 0, result.output
 
-    def test_exit_1_when_no_item_hits_target(self, mock_client, tmp_config):
-        """Nothing at target at all: --exit-code is 1."""
+    def test_exit_10_when_no_item_hits_target(self, mock_client, tmp_config):
+        """Nothing at target at all: --exit-code is 10 ("nothing matched")."""
         self._wishlist_at_target(mock_client, "EC02", 9.99, 5.0)
         runner = CliRunner()
         result = runner.invoke(cli, ["notify", "--exit-code"])
-        assert result.exit_code == 1, result.output
+        assert result.exit_code == 10, result.output
 
-    def test_exit_1_when_wishlist_is_empty(self, mock_client, tmp_config):
+    def test_exit_10_when_wishlist_is_empty(self, mock_client, tmp_config):
         result = CliRunner().invoke(cli, ["notify", "--exit-code"])
-        assert result.exit_code == 1, result.output
+        assert result.exit_code == 10, result.output
 
 
 class TestTrackAuthErrorClassification:
@@ -2343,7 +2348,7 @@ class TestTrackAuthErrorClassification:
     def test_genuine_auth_error_pings(self, mock_client, tmp_config, monkeypatch):
         _seed_tracked_wishlist()
         _save_webhook_config()
-        mock_client.get_products_batch.side_effect = RuntimeError(
+        mock_client.get_products_batch.side_effect = AuthRequiredError(
             "Not authenticated. Run 'deals login' first."
         )
         posts = []
@@ -2374,7 +2379,7 @@ class TestTrackAuthErrorClassification:
         runner.invoke(cli, ["track", "run"])
         assert posts == []  # transient: no ping, no latch
 
-        mock_client.get_products_batch.side_effect = RuntimeError(
+        mock_client.get_products_batch.side_effect = AuthRequiredError(
             "Not authenticated. Run 'deals login' first."
         )
         runner.invoke(cli, ["track", "run"])

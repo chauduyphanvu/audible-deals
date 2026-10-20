@@ -25,6 +25,7 @@ from audible_deals.config_store import (
     load_monitors,
 )
 from audible_deals.constants import product_url
+from audible_deals.exit_codes import ExitCode
 from audible_deals.monitor_service import (
     MonitorServiceError,
     validated_monitor_definition,
@@ -863,7 +864,7 @@ def doctor(ctx):
     rows.extend(_track_checks())
     rows.extend(_monitor_checks())
     if _render_doctor_rows(rows):
-        ctx.exit(1)
+        ctx.exit(ExitCode.ERROR)
 
 
 @click.command("completions")

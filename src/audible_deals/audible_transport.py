@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from audible_deals.auth_store import AuthStore
+from audible_deals.exit_codes import AuthRequiredError
 
 if TYPE_CHECKING:
     import audible
@@ -108,9 +109,7 @@ class AudibleTransport:
                 except Exception as exc:
                     if isinstance(exc, click.ClickException):
                         raise
-                    if isinstance(exc, RuntimeError) and "Not authenticated" in str(
-                        exc
-                    ):
+                    if isinstance(exc, AuthRequiredError):
                         raise
                     status = _retryable_status(exc)
                     if status is not None and 400 <= status < 500 and status != 429:

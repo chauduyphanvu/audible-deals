@@ -13,6 +13,7 @@ from audible_deals.cli.helpers import (
     _currency,
     _get_client,
 )
+from audible_deals.exit_codes import ExitCode
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.notification_service import (
     NotificationRuntime,
@@ -45,7 +46,7 @@ from audible_deals.wishlist import warn_wishlist_issues
     "--exit-code",
     is_flag=True,
     default=False,
-    help="Exit 0 if any items hit target, 1 if none",
+    help="Exit 0 if any items hit target, 10 if none",
 )
 @click.option(
     "--cooldown",
@@ -138,14 +139,16 @@ def notify(
                 )
             commit_notification_state(result, runtime)
             if exit_code:
-                ctx.exit(0 if result.had_hits else 1)
+                ctx.exit(ExitCode.OK if result.had_hits else ExitCode.NO_MATCH)
     except LockHeldError:
-        click.echo("Another deals notify/recap run is in progress — exiting.", err=True)
+        # Like `track run`: a busy lock is not a failure and not "no deals",
+        # so a cron job exits 0 and the next run picks up.
+        click.echo(
+            "Note: another deals notify/recap run is in progress; exiting.", err=True
+        )
         if not webhook:
             click.echo(
                 json_mod.dumps({"deals": [], "count": 0}, indent=2, allow_nan=False)
             )
-        if exit_code:
-            ctx.exit(1)
     except (ValueError, WebhookDeliveryError) as exc:
         raise click.ClickException(str(exc)) from exc
