@@ -145,6 +145,50 @@ def test_views_and_progress_share_terminal_console():
     assert terminal.create_scan_progress().console is terminal.console
 
 
+def _render_table(table, width):
+    console = Console(file=StringIO(), width=width, force_terminal=False)
+    console.print(table)
+    return console.file.getvalue()
+
+
+@pytest.mark.parametrize("width", [80, 120, 160, 220])
+def test_columns_truncate_with_an_ellipsis_unless_they_say_otherwise(width):
+    """The column default was Rich's "ellipsis" in 0.11.1; the shared column list
+    must not turn it into "fold" (which breaks long words across lines)."""
+    from audible_deals.presentation.products import _build_product_table
+
+    product = make_product(asin="B0ELLIPSIS", title="T" * 90, series_name="")
+    options = ProductDisplayOptions(
+        show_url=True,
+        credit_price=11.25,
+        hist_context={product.asin: -20},
+        match_context={product.asin: "m" * 60},
+    )
+    layout = calculate_product_layout([product], options, width)
+    table = _build_product_table([product], options, layout)
+
+    overflows = {str(column.header): column.overflow for column in table.columns}
+
+    for title, overflow in overflows.items():
+        assert overflow == ("ignore" if title == "URL" else "ellipsis"), title
+
+
+def test_a_long_unbroken_match_reason_is_cut_with_an_ellipsis_not_folded():
+    from audible_deals.presentation.products import _build_product_table
+
+    product = make_product(asin="B0MATCH001", series_name="")
+    reason = "x" * 80
+    options = ProductDisplayOptions(match_context={product.asin: reason})
+    layout = calculate_product_layout([product], options, 160)
+    assert layout.show_match_column
+
+    text = _render_table(_build_product_table([product], options, layout), 160)
+
+    assert "…" in text
+    assert reason[: layout.match_width + 1] not in text  # not folded onto a next line
+    assert text.count("x") <= layout.match_width
+
+
 def test_product_layout_is_pure_and_preserves_width_boundaries():
     product = make_product(
         asin="B00BOUND01",

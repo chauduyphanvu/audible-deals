@@ -542,6 +542,78 @@ class TestWishlist:
         assert seen["mark_cell"] == "●"
         assert seen["after"] == {"B0TUI00001"}
 
+    def test_marking_updates_one_cell_instead_of_rebuilding_the_table(self, products):
+        app = ResultsApp(TestFilterDebounce.big(products, 200))
+        seen = {}
+
+        async def scenario(pilot):
+            rebuilds = []
+            real = app._rebuild
+            app._rebuild = lambda *a, **k: (rebuilds.append(1), real(*a, **k))[1]
+            await pilot.press("space", "space", "down", "space")
+            seen["rebuilds"] = len(rebuilds)
+            seen["cells"] = [str(app.table.get_row_at(r)[0]) for r in range(5)]
+            seen["cursor"] = app.table.cursor_row
+            seen["title"] = app.sub_title
+
+        drive(app, scenario)
+
+        assert seen["rebuilds"] == 0
+        assert seen["cells"] == ["●", "●", " ", "●", " "]
+        assert seen["cursor"] == 4
+        assert "3 marked" in seen["title"]
+
+    def test_marks_stay_right_under_a_filter_and_after_sorting(self, products):
+        app = ResultsApp(products)
+        seen = {}
+
+        async def scenario(pilot):
+            await pilot.press("space")  # Alpha Dragon
+            await pilot.press("slash", "a", "m", "y", "enter")  # Bravo, Echo (Amy)
+            await settle(pilot, app)
+            await pilot.press("space")  # Bravo Mystery, marked under the filter
+            seen["filtered"] = {
+                p.asin: str(app.table.get_row_at(r)[0])
+                for r, (_pos, p) in enumerate(app._visible)
+            }
+            await pilot.press("escape")  # the filter goes; both marks must show
+            await settle(pilot, app)
+            seen["cleared"] = {
+                p.asin: str(app.table.get_row_at(r)[0])
+                for r, (_pos, p) in enumerate(app._visible)
+            }
+            await pilot.press("s")  # sort: the dots follow the titles
+            seen["sorted"] = {
+                p.asin: str(app.table.get_row_at(r)[0])
+                for r, (_pos, p) in enumerate(app._visible)
+            }
+            seen["marked"] = set(app.marked)
+
+        drive(app, scenario)
+
+        assert seen["marked"] == {"B0TUI00001", "B0TUI00002"}
+        assert seen["filtered"] == {"B0TUI00002": "●", "B0TUI00005": " "}
+        expected = {asin: " " for asin in (row[0] for row in CATALOG)}
+        expected.update({"B0TUI00001": "●", "B0TUI00002": "●"})
+        assert seen["cleared"] == expected
+        assert seen["sorted"] == expected
+
+    def test_a_title_listed_twice_shows_its_mark_on_both_rows(self, products):
+        twice = [products[0], products[1], products[0]]
+        app = ResultsApp(twice)
+        seen = {}
+
+        async def scenario(pilot):
+            await pilot.press("space")  # row 0: the same ASIN as row 2
+            seen["cells"] = [str(app.table.get_row_at(r)[0]) for r in range(3)]
+            await pilot.press("up", "space")  # unmark it again
+            seen["after"] = [str(app.table.get_row_at(r)[0]) for r in range(3)]
+
+        drive(app, scenario)
+
+        assert seen["cells"] == ["●", " ", "●"]
+        assert seen["after"] == [" ", " ", " "]
+
     def test_w_asks_for_a_target_defaulting_to_the_current_price(self, products):
         app = ResultsApp(products)
         seen = {}

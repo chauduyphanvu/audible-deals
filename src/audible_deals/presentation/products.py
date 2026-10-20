@@ -529,7 +529,7 @@ def _build_product_table(
             min_width=column.min_width,
             max_width=column.max_width,
             no_wrap=column.no_wrap,
-            overflow=column.overflow or "fold",
+            overflow=column.overflow or "ellipsis",  # Rich's own default, as in 0.11.1
             style=column.style or "",
         )
     for index, product in enumerate(products, 1):

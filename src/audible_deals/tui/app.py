@@ -334,7 +334,7 @@ class ResultsApp(App[None]):
             )
             seen.add(key)
             table.add_row(
-                Text("●" if product.asin in self.marked else " ", style="bold magenta"),
+                self._mark_cell(product),
                 *(
                     Text.from_markup(cell, justify=column.justify)
                     for cell, column in zip(cells, columns, strict=True)
@@ -349,6 +349,9 @@ class ResultsApp(App[None]):
                     break
         self._refresh_chrome()
         self._refresh_side()
+
+    def _mark_cell(self, product: Product) -> Text:
+        return Text("●" if product.asin in self.marked else " ", style="bold magenta")
 
     def _refresh_chrome(self) -> None:
         shown, total = len(self._visible), len(self.products)
@@ -469,7 +472,15 @@ class ResultsApp(App[None]):
             return
         self.marked.symmetric_difference_update({product.asin})
         row = self.table.cursor_row
-        self._rebuild()
+        # Only the dot changes: redrawing every row for one key press makes
+        # marking a run of titles crawl on a long list. A title listed twice
+        # shows its mark on both rows; hidden rows read self.marked when the
+        # table is next rebuilt (filter, sort).
+        mark = self._mark_cell(product)
+        for index, (_position, shown) in enumerate(self._visible):
+            if shown.asin == product.asin:
+                self.table.update_cell(self.table.ordered_rows[index].key, "mark", mark)
+        self._refresh_chrome()
         if row + 1 < len(self._visible):
             self.table.move_cursor(row=row + 1, animate=False)
 
