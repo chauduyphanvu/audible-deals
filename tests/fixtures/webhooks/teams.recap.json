@@ -1,0 +1,72 @@
+{
+  "captured_with": "deals recap --atl --webhook URL --webhook-format FORMAT (price history seeded for the same titles); the fake Audible API, a local HTTP server as the webhook",
+  "format": "teams",
+  "kind": "recap",
+  "request": {
+    "body": {
+      "attachments": [
+        {
+          "content": {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "body": [
+              {
+                "size": "Medium",
+                "text": "Audible Recap (last 7 days)",
+                "type": "TextBlock",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "• Tom & Jerry \\<Live\\> \\| A \\*Bold\\* \\_Move\\_ \\~Strike\\~ \\`code\\` @everyone — $12.00 -> $4.48 (-63%)",
+                "type": "TextBlock",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "• Why \\[Brackets\\]\\(Matter\\) — and Ünïcode — $9.50 -> $8.98 (-5%)",
+                "type": "TextBlock",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "Wishlist at target: 3",
+                "type": "TextBlock",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "At all-time low:",
+                "type": "TextBlock",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "• Tom & Jerry \\<Live\\> \\| A \\*Bold\\* \\_Move\\_ \\~Strike\\~ \\`code\\` @everyone — $4.48",
+                "type": "TextBlock",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "• Why \\[Brackets\\]\\(Matter\\) — and Ünïcode — $8.98",
+                "type": "TextBlock",
+                "wrap": true
+              }
+            ],
+            "msteams": {
+              "width": "Full"
+            },
+            "type": "AdaptiveCard",
+            "version": "1.2"
+          },
+          "contentType": "application/vnd.microsoft.card.adaptive",
+          "contentUrl": null
+        }
+      ],
+      "type": "message"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

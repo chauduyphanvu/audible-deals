@@ -4,21 +4,20 @@ from __future__ import annotations
 
 import contextlib
 import json
-import stat
 
 import click
 import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
-import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
 import audible_deals.wishlist_service as wishlist_service_mod
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from tests.conftest import make_product
+from tests.conftest import assert_mode, make_product, put_raw_session
 
 
 def _routes_run(runner, args, **kwargs):
@@ -28,12 +27,12 @@ def _routes_run(runner, args, **kwargs):
 
 
 def _routes_seed_last_results(tmp_config, products):
-    """Write a last_results.json cache file."""
+    """Store a legacy-shaped last-results session."""
     data = {
         "title": "Test Results",
         "results": [_serialize_product(p) for p in products],
     }
-    (tmp_config / "last_results.json").write_text(json.dumps(data))
+    put_raw_session(json.dumps(data))
 
 
 class TestWishlistCommands:
@@ -83,7 +82,7 @@ class TestWishlistCommands:
             {"title": "Orphan Entry", "max_price": 5.0},
             {"asin": "W2", "title": "Valid Book", "max_price": 3.0},
         ]
-        constants_mod.WISHLIST_FILE.write_text(json.dumps(items))
+        paths.wishlist_file().write_text(json.dumps(items))
         runner = CliRunner()
         result = runner.invoke(cli, ["wishlist", "list"])
         assert result.exit_code == 0, result.output
@@ -307,13 +306,13 @@ class TestLoadWishlistTypeValidation:
     def test_dict_returns_empty_list(self, tmp_config):
         """A wishlist.json containing {} instead of [] returns empty list."""
 
-        constants_mod.WISHLIST_FILE.write_text("{}")
+        paths.wishlist_file().write_text("{}")
         assert wishlist_mod.load_wishlist() == []
 
     def test_load_profiles_list_returns_empty_dict(self, tmp_config):
         """A profiles.json containing [] instead of {} returns empty dict."""
 
-        constants_mod.PROFILES_FILE.write_text("[]")
+        paths.profiles_file().write_text("[]")
         assert config_store_mod.load_profiles() == {}
 
     def test_load_config_array_returns_empty_dict(self, tmp_config):
@@ -331,7 +330,7 @@ class TestWishlistRemoveLast:
             "title": "Search: test",
             "results": [_serialize_product(p) for p in products],
         }
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        put_raw_session(json.dumps(cache_obj))
 
     def test_remove_last_resolves_from_cache(self, tmp_config):
         """wishlist remove --last N resolves the ASIN from the last results cache."""
@@ -391,7 +390,7 @@ class TestWishlistUpdateCommand:
             "title": "Search: test",
             "results": [_serialize_product(p) for p in products],
         }
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        put_raw_session(json.dumps(cache_obj))
 
     def test_set_target_price(self, tmp_config):
         """--max-price updates max_price for the matching entry."""
@@ -590,7 +589,7 @@ class TestWishlistAddAuthor:
         from audible_deals.serialization import serialize_product
 
         cache_obj = {"title": "Test", "results": [serialize_product(p)]}
-        constants_mod.LAST_RESULTS_FILE.write_text(json.dumps(cache_obj))
+        put_raw_session(json.dumps(cache_obj))
         runner = CliRunner()
         result = runner.invoke(
             cli,
@@ -841,8 +840,8 @@ class TestWishlistPurge:
         """Owned ASINs are removed; unowned and author watches survive."""
 
         mock_client.get_library_asins.return_value = {"OWN1", "OWN2"}
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.WISHLIST_FILE.write_text(
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().write_text(
             json.dumps(
                 [
                     {
@@ -889,11 +888,11 @@ class TestWishlistPurge:
         """--dry-run lists candidates but does not write."""
 
         mock_client.get_library_asins.return_value = {"DRY1"}
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
         original = [
             {"asin": "DRY1", "title": "Dry Book", "max_price": None, "added": ""},
         ]
-        constants_mod.WISHLIST_FILE.write_text(json.dumps(original))
+        paths.wishlist_file().write_text(json.dumps(original))
         runner = CliRunner()
         result = runner.invoke(cli, ["wishlist", "purge", "--owned", "--dry-run"])
         assert result.exit_code == 0, result.output
@@ -911,8 +910,8 @@ class TestWishlistPurge:
         """Prints a dim 'Nothing to purge' note when no owned items exist."""
 
         mock_client.get_library_asins.return_value = {"NOT_ON_LIST"}
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.WISHLIST_FILE.write_text(
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().write_text(
             json.dumps(
                 [{"asin": "KEEP", "title": "Unowned", "max_price": None, "added": ""}]
             )
@@ -926,8 +925,8 @@ class TestWishlistPurge:
         """Author-watch entries are never removed even if their author matches nothing."""
 
         mock_client.get_library_asins.return_value = set()
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.WISHLIST_FILE.write_text(
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().write_text(
             json.dumps(
                 [
                     {
@@ -1162,13 +1161,13 @@ def test_bugfixwishlist_purge_does_not_hold_wishlist_lock_during_api_or_prompt(
 def test_bugfixwishlist_wishlist_mutations_preserve_invalid_root(
     args, contents, mock_client, tmp_config
 ):
-    constants_mod.WISHLIST_FILE.write_bytes(contents)
+    paths.wishlist_file().write_bytes(contents)
 
     result = CliRunner().invoke(cli, args)
 
     assert result.exit_code != 0
     assert "Cannot modify wishlist" in result.output
-    assert constants_mod.WISHLIST_FILE.read_bytes() == contents
+    assert paths.wishlist_file().read_bytes() == contents
 
 
 @pytest.mark.parametrize("value", ["nan", "inf"])
@@ -1185,7 +1184,7 @@ def test_bugfixwishlist_cli_max_price_rejects_nonfinite_values(args, value, tmp_
 
     assert result.exit_code != 0
     assert "finite" in result.output
-    assert not constants_mod.WISHLIST_FILE.exists()
+    assert not paths.wishlist_file().exists()
 
 
 @pytest.mark.parametrize("value", ["nan", "inf", "-inf"])
@@ -1206,7 +1205,7 @@ def test_bugfixwishlist_interactive_preserves_invalid_wishlist_root(tmp_config):
     from audible_deals.cli.interactive import _interactive_browse
 
     contents = b'{"notes":"keep"}\n'
-    constants_mod.WISHLIST_FILE.write_bytes(contents)
+    paths.wishlist_file().write_bytes(contents)
 
     @click.command()
     def command():
@@ -1216,7 +1215,7 @@ def test_bugfixwishlist_interactive_preserves_invalid_wishlist_root(tmp_config):
 
     assert result.exit_code != 0
     assert "Cannot modify wishlist" in result.output
-    assert constants_mod.WISHLIST_FILE.read_bytes() == contents
+    assert paths.wishlist_file().read_bytes() == contents
 
 
 def test_bugfixwishlist_watch_not_found_entry_without_title_does_not_crash(
@@ -1260,37 +1259,37 @@ def test_bugfixwishlist_repair_healthy_wishlist_does_not_write_or_create_backup(
     tmp_config,
 ):
     original = b'[{"asin":"GOOD1","max_price":null}]\n'
-    constants_mod.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     result = CliRunner().invoke(cli, ["wishlist", "repair", "--yes"])
 
     assert result.exit_code == 0, result.output
     assert "no invalid entries" in result.output
-    assert constants_mod.WISHLIST_FILE.read_bytes() == original
+    assert paths.wishlist_file().read_bytes() == original
     assert not (tmp_config / "wishlist.json.bak").exists()
 
 
 def test_bugfixwishlist_repair_dry_run_reports_indexes_without_writing(tmp_config):
     original = b'[{"asin":"GOOD1","max_price":null},{"asin":"BAD","max_price":-1}]'
-    constants_mod.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     result = CliRunner().invoke(cli, ["wishlist", "repair", "--dry-run"])
 
     assert result.exit_code == 0, result.output
     assert "[1] max_price must be null or a finite non-negative number" in result.output
     assert "No files changed" in result.output
-    assert constants_mod.WISHLIST_FILE.read_bytes() == original
+    assert paths.wishlist_file().read_bytes() == original
     assert not (tmp_config / "wishlist.json.bak").exists()
 
 
 def test_bugfixwishlist_repair_cancellation_leaves_source_untouched(tmp_config):
     original = b'[{"asin":"GOOD1"},{"asin":"BAD","max_price":-1}]'
-    constants_mod.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     result = CliRunner().invoke(cli, ["wishlist", "repair"], input="n\n")
 
     assert result.exit_code == 1
-    assert constants_mod.WISHLIST_FILE.read_bytes() == original
+    assert paths.wishlist_file().read_bytes() == original
     assert not (tmp_config / "wishlist.json.bak").exists()
 
 
@@ -1313,7 +1312,7 @@ def test_bugfixwishlist_confirmed_repair_preserves_valid_data_order_and_exact_ba
     original = json.dumps(
         original_data, ensure_ascii=False, separators=(",", ":")
     ).encode()
-    constants_mod.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     result = CliRunner().invoke(cli, ["wishlist", "repair", "--yes"])
 
@@ -1321,12 +1320,12 @@ def test_bugfixwishlist_confirmed_repair_preserves_valid_data_order_and_exact_ba
     assert wishlist_mod.load_wishlist() == [valid_book, valid_author]
     backup = tmp_config / "wishlist.json.bak"
     assert backup.read_bytes() == original
-    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert_mode(backup, 0o600)
 
 
 def test_bugfixwishlist_repair_uses_next_available_backup_name(tmp_config):
     original = b'[{"asin":"GOOD1"},{"asin":"BAD","max_price":-1}]'
-    constants_mod.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
     first_backup = tmp_config / "wishlist.json.bak"
     first_backup.write_bytes(b"existing backup")
 
@@ -1351,13 +1350,13 @@ def test_bugfixwishlist_repair_uses_next_available_backup_name(tmp_config):
 def test_bugfixwishlist_repair_refuses_malformed_or_non_list_roots(
     tmp_config, contents
 ):
-    constants_mod.WISHLIST_FILE.write_bytes(contents)
+    paths.wishlist_file().write_bytes(contents)
 
     result = CliRunner().invoke(cli, ["wishlist", "repair", "--yes"])
 
     assert result.exit_code != 0
     assert "Cannot repair wishlist" in result.output
-    assert constants_mod.WISHLIST_FILE.read_bytes() == contents
+    assert paths.wishlist_file().read_bytes() == contents
     assert not (tmp_config / "wishlist.json.bak").exists()
 
 
@@ -1366,10 +1365,10 @@ def test_bugfixwishlist_repair_aborts_if_wishlist_changes_during_confirmation(
 ):
     original = b'[{"asin":"GOOD1"},{"asin":"BAD","max_price":-1}]'
     replacement = b'[{"asin":"GOOD1"},{"asin":"NEW1"},{"asin":"BAD","max_price":-1}]'
-    constants_mod.WISHLIST_FILE.write_bytes(original)
+    paths.wishlist_file().write_bytes(original)
 
     def concurrent_update(*args, **kwargs):
-        constants_mod.WISHLIST_FILE.write_bytes(replacement)
+        paths.wishlist_file().write_bytes(replacement)
         return True
 
     monkeypatch.setattr(click, "confirm", concurrent_update)
@@ -1378,5 +1377,5 @@ def test_bugfixwishlist_repair_aborts_if_wishlist_changes_during_confirmation(
 
     assert result.exit_code != 0
     assert "changed while awaiting confirmation" in result.output
-    assert constants_mod.WISHLIST_FILE.read_bytes() == replacement
+    assert paths.wishlist_file().read_bytes() == replacement
     assert not (tmp_config / "wishlist.json.bak").exists()

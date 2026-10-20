@@ -5,8 +5,11 @@ from __future__ import annotations
 import collections
 import datetime
 import math
+from collections.abc import Mapping
 
+from rich.console import Group, RenderableType
 from rich.table import Table
+from rich.text import Text
 
 from audible_deals.presentation import terminal
 from audible_deals.presentation.common import _buy_cell, price_str
@@ -38,7 +41,7 @@ def display_categories(
 
 def display_summary(
     shown: int,
-    filtered_out: dict[str, int],
+    filtered_out: Mapping[str, int],
     max_price: float | None = None,
     editions_removed: int = 0,
     series_collapsed: int = 0,
@@ -96,7 +99,10 @@ def _sparkline(prices: list[float]) -> str:
     )
 
 
-def display_price_history(entries: list[dict], asin: str, currency: str = "$") -> None:
+def price_history_renderable(
+    entries: list[dict], asin: str, currency: str = "$"
+) -> Group:
+    """The price history table with its low/high summary and sparkline."""
     today = datetime.date.today()
     table = Table(
         title=f"Price History: {safe_markup(asin)}",
@@ -136,19 +142,26 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
         previous_price = price
         prices.append(price)
 
-    terminal.console.print(table)
+    parts: list[RenderableType] = [table]
     if not prices:
-        terminal.console.print("\n  [dim]No numeric prices in history.[/dim]")
-        return
+        parts.append(Text.from_markup("\n  [dim]No numeric prices in history.[/dim]"))
+        return Group(*parts)
     low, high = min(prices), max(prices)
     current = prices[-1]
-    terminal.console.print(
-        f"\n  Low: [green]{currency}{low:.2f}[/green]  "
-        f"High: [red]{currency}{high:.2f}[/red]  "
-        f"Current: {currency}{current:.2f}"
+    parts.append(
+        Text.from_markup(
+            f"\n  Low: [green]{currency}{low:.2f}[/green]  "
+            f"High: [red]{currency}{high:.2f}[/red]  "
+            f"Current: {currency}{current:.2f}"
+        )
     )
     if len(prices) > 1:
-        terminal.console.print(f"  [dim]{_sparkline(prices)}[/dim]")
+        parts.append(Text.from_markup(f"  [dim]{_sparkline(prices)}[/dim]"))
+    return Group(*parts)
+
+
+def display_price_history(entries: list[dict], asin: str, currency: str = "$") -> None:
+    terminal.console.print(price_history_renderable(entries, asin, currency))
 
 
 def display_recap(

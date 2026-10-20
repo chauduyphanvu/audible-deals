@@ -1,15 +1,13 @@
 """Monitor service diff, persistence, and scheduling tests."""
 
 import datetime
-import json
 from contextlib import contextmanager
 
 import pytest
 
-from audible_deals import constants
-from audible_deals.automation_models import MonitorDefinition
+from audible_deals import db
+from audible_deals.automation_models import MonitorDefinition, MonitorSnapshot
 from audible_deals.cli.helpers import _resolve_skip_asins
-from audible_deals.config_store import load_monitor_state, save_monitor_state
 from audible_deals.monitor_service import (
     MonitorRuntime,
     MonitorServiceError,
@@ -22,6 +20,11 @@ from audible_deals.monitor_service import (
 )
 from audible_deals.product import Product
 from audible_deals.results_cache import save_dismissed_asins
+from audible_deals.state_store import (
+    load_monitor_snapshot,
+    monitor_summaries,
+    save_monitor_snapshot,
+)
 
 
 def definition(name, pages):
@@ -128,25 +131,32 @@ def test_budget_selection_repairs_cursor_and_skips_malformed_or_oversized():
     assert selection.cursor == 3
 
 
-def test_record_error_preserves_sparse_snapshot_and_unknown_fields(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setattr(constants, "MONITOR_STATE_FILE", tmp_path / "state.json")
-    constants.MONITOR_STATE_FILE.write_text(
-        json.dumps(
-            {
-                "version": 1,
-                "monitors": {"cheap": {"future": {"keep": True}}},
-            }
-        )
+def test_record_error_keeps_the_baseline_it_did_not_change(tmp_config):
+    save_monitor_snapshot(
+        "cheap",
+        MonitorSnapshot(
+            initialized=True,
+            products={"A1": product("A1", 3)},
+            last_success="2026-08-21T12:00:00",
+        ),
     )
 
     record_monitor_error("cheap", RuntimeError("down"))
 
-    assert load_monitor_state()["monitors"]["cheap"] == {
-        "future": {"keep": True},
-        "last_error": "RuntimeError: down",
-    }
+    snapshot = load_monitor_snapshot("cheap")
+    assert snapshot.last_error == "RuntimeError: down"
+    assert snapshot.initialized is True
+    assert snapshot.products == {"A1": product("A1", 3)}
+    assert snapshot.last_success == "2026-08-21T12:00:00"
+
+
+def test_record_error_for_a_new_monitor_leaves_it_uninitialized(tmp_config):
+    record_monitor_error("fresh", RuntimeError("down"))
+
+    snapshot = load_monitor_snapshot("fresh")
+    assert snapshot.initialized is False
+    assert snapshot.products == {}
+    assert snapshot.last_error == "RuntimeError: down"
 
 
 def test_loaded_definition_unknown_fields_survive_model_boundary():
@@ -154,25 +164,13 @@ def test_loaded_definition_unknown_fields_survive_model_boundary():
     assert MonitorDefinition.from_dict(raw).to_dict() == raw
 
 
-def test_success_preserves_unknown_slot_fields_and_valid_siblings(
+def test_success_saves_the_baseline_and_leaves_sibling_monitors_alone(
     tmp_config, monkeypatch
 ):
-    monkeypatch.setattr(constants, "MONITOR_STATE_FILE", tmp_config / "monitors.json")
-    save_monitor_state(
-        {
-            "version": 1,
-            "monitors": {
-                "one": {
-                    "initialized": False,
-                    "products": {},
-                    "future": {"keep": True},
-                },
-                "sibling": {
-                    "initialized": True,
-                    "products": {"S1": product("S1", 4)},
-                },
-            },
-        }
+    save_monitor_snapshot("one", MonitorSnapshot(last_error="RuntimeError: old"))
+    save_monitor_snapshot(
+        "sibling",
+        MonitorSnapshot(initialized=True, products={"S1": product("S1", 4)}),
     )
     monkeypatch.setattr(
         "audible_deals.monitor_service.scan_monitor",
@@ -186,17 +184,62 @@ def test_success_preserves_unknown_slot_fields_and_valid_siblings(
         now=lambda: datetime.datetime(2026, 8, 21, 12, 0),
     )
 
-    run_monitor(MonitorDefinition.from_dict(definition("one", 1)), runtime)
+    result = run_monitor(MonitorDefinition.from_dict(definition("one", 1)), runtime)
 
-    state = load_monitor_state()["monitors"]
-    assert state["one"] == {
-        "future": {"keep": True},
-        "initialized": True,
-        "products": {"A1": product("A1", 2)},
-        "last_success": "2026-08-21T12:00:00",
-        "last_error": None,
-    }
-    assert state["sibling"] == {
-        "initialized": True,
-        "products": {"S1": product("S1", 4)},
-    }
+    assert result.baseline is True
+    assert load_monitor_snapshot("one") == MonitorSnapshot(
+        initialized=True,
+        products={"A1": product("A1", 2)},
+        last_success="2026-08-21T12:00:00",
+        last_error=None,
+    )
+    assert load_monitor_snapshot("sibling") == MonitorSnapshot(
+        initialized=True, products={"S1": product("S1", 4)}
+    )
+    assert set(monitor_summaries()) == {"one", "sibling"}
+
+
+def test_a_monitor_with_a_baseline_reports_changes_on_the_next_run(
+    tmp_config, monkeypatch
+):
+    runtime = MonitorRuntime(
+        get_client=lambda locale: None,
+        resolve_categories=lambda *args: ("", "", set()),
+        resolve_skip_asins=lambda *args: set(),
+        progress=lambda *args: None,
+        now=lambda: datetime.datetime(2026, 8, 21, 12, 0),
+    )
+    scans = iter([(product("A1", 5),), (product("A1", 3), product("A2", 4))])
+    monkeypatch.setattr(
+        "audible_deals.monitor_service.scan_monitor",
+        lambda definition, runtime: next(scans),
+    )
+    delivered = []
+    monitor = MonitorDefinition.from_dict(definition("one", 1))
+
+    first = run_monitor(monitor, runtime, deliver=lambda e, m: delivered.append(e))
+    second = run_monitor(monitor, runtime, deliver=lambda e, m: delivered.append(e))
+
+    assert (first.baseline, first.events) == (True, ())
+    assert second.baseline is False
+    assert [(e.event, e.asin) for e in second.events] == [
+        ("price_drop", "A1"),
+        ("new", "A2"),
+    ]
+    assert len(delivered) == 1
+
+
+def test_product_prices_are_stored_for_diffing(tmp_config):
+    save_monitor_snapshot(
+        "one",
+        MonitorSnapshot(
+            initialized=True,
+            products={"A1": product("A1", 3), "A2": product("A2", None)},
+        ),
+    )
+    rows = dict(
+        db.state().execute(
+            "SELECT asin, price FROM monitor_products WHERE monitor = 'one'"
+        )
+    )
+    assert rows == {"A1": 3.0, "A2": None}

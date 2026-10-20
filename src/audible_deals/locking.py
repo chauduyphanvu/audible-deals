@@ -5,8 +5,8 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import sys
 import time
-
 
 _LEGACY_PARTIAL_STALE_SECONDS = 600
 
@@ -17,7 +17,7 @@ class LockHeldError(Exception):
 
 def _acquire(fd: int) -> None:
     """Acquire a non-blocking exclusive advisory lock for *fd*."""
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         os.lseek(fd, 0, os.SEEK_SET)
@@ -36,7 +36,7 @@ def _acquire(fd: int) -> None:
 
 
 def _release(fd: int) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         os.lseek(fd, 0, os.SEEK_SET)
@@ -139,10 +139,9 @@ def run_lock():
     crashes. The lock-file timestamp is deliberately not used: a legitimate
     catalog run may take longer than any fixed stale threshold.
     """
-    # Resolve LOCK_FILE at call time so test fixtures can patch constants.
-    from audible_deals import constants
+    from audible_deals import paths
 
-    lock_file = constants.LOCK_FILE
+    lock_file = paths.lock_file()
     lock_file.parent.mkdir(parents=True, exist_ok=True)
     try:
         fd = os.open(str(lock_file), os.O_CREAT | os.O_EXCL | os.O_RDWR, 0o600)
@@ -154,7 +153,9 @@ def run_lock():
             except FileExistsError:
                 fd = _acquire_existing_lock(lock_file)
                 if fd is None:
-                    raise LockHeldError("lock file disappeared while acquiring")
+                    raise LockHeldError(
+                        "lock file disappeared while acquiring"
+                    ) from None
             else:
                 try:
                     _acquire(fd)

@@ -15,12 +15,12 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
-from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.cli import cli
-from audible_deals.serialization import export_products as _export_products
+from audible_deals.client import CatalogSearchRequest, DealsClient
+from audible_deals.price_history import load_price_history
 from audible_deals.price_history import record_prices as _record_prices
-from tests.conftest import make_product, make_raw
-
+from audible_deals.serialization import export_products as _export_products
+from tests.conftest import make_product, make_raw, seed_history
 
 # ===================================================================
 # A. Client-level integration (mock audible.Client.get)
@@ -852,44 +852,36 @@ class TestEdgeCases:
 
     def test_record_prices_365_cap(self, tmp_config):
         """History is truncated to 365 entries."""
-        hist_dir = tmp_config / "history"
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        hist_file = hist_dir / "CAP1.json"
-
-        # Pre-write 365 entries with dates going back
+        # 365 entries with dates going back
+        first_day = datetime.date.today() - datetime.timedelta(days=400)
         old_entries = [
             {
-                "date": f"2025-{(i // 28) + 1:02d}-{(i % 28) + 1:02d}",
-                "price": 10.0 + i * 0.01,
+                "date": (first_day + datetime.timedelta(days=i)).isoformat(),
+                "price": round(10.0 + i * 0.01, 2),
+                "title": "T",
             }
             for i in range(365)
         ]
-        hist_file.write_text(json.dumps({"marketplaces": {"us": old_entries}}))
+        seed_history("CAP1", old_entries)
 
         # Record a new price (today, which is different from all old dates)
         products = [make_product(asin="CAP1", price=1.99)]
         _record_prices(products)
 
-        entries = json.loads(hist_file.read_text())["marketplaces"]["us"]
+        entries = load_price_history("CAP1")
         assert len(entries) == 365
         assert entries[-1]["price"] == 1.99  # newest entry
         assert entries[0] != old_entries[0]  # oldest was dropped
 
     def test_record_prices_cross_day(self, tmp_config):
         """Recording on a new day appends a new entry."""
-        hist_dir = tmp_config / "history"
-        hist_dir.mkdir(parents=True, exist_ok=True)
-        hist_file = hist_dir / "DAY1.json"
-
         yesterday = (datetime.date.today() - datetime.timedelta(days=1)).isoformat()
-        hist_file.write_text(
-            json.dumps({"marketplaces": {"us": [{"date": yesterday, "price": 9.99}]}})
-        )
+        seed_history("DAY1", [(yesterday, 9.99)])
 
         products = [make_product(asin="DAY1", price=5.99)]
         _record_prices(products)
 
-        entries = json.loads(hist_file.read_text())["marketplaces"]["us"]
+        entries = load_price_history("DAY1")
         assert len(entries) == 2
         assert entries[0]["date"] == yesterday
         assert entries[1]["date"] == datetime.date.today().isoformat()

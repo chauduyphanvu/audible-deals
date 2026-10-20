@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
-import ipaddress
+import datetime
 import math
 import socket
 import urllib.parse
+from typing import TYPE_CHECKING
 
 import click
 
 from audible_deals.constants import _ASIN_RE
+
+if TYPE_CHECKING:
+    from audible_deals.webhook_guard import Resolver
 
 
 class FiniteFloatRange(click.FloatRange):
@@ -28,6 +32,23 @@ class FiniteFloatRange(click.FloatRange):
         if not math.isfinite(result):
             self.fail(f"{value!r} must be a finite number", param, ctx)
         return super().convert(result, param, ctx)
+
+
+class IsoDate(click.ParamType):
+    """A ``YYYY-MM-DD`` date, normalized to canonical form; empty means unset."""
+
+    name = "date"
+
+    def get_metavar(self, param, ctx=None):
+        return "YYYY-MM-DD"
+
+    def convert(self, value, param, ctx):
+        if value is None or value == "":
+            return value
+        try:
+            return datetime.date.fromisoformat(str(value)).isoformat()
+        except ValueError:
+            self.fail(f"invalid date {value!r} (expected YYYY-MM-DD)", param, ctx)
 
 
 NONNEGATIVE_FLOAT = FiniteFloatRange(0)
@@ -64,8 +85,32 @@ def validate_asin(asin: str) -> None:
         raise click.BadParameter(f"Invalid ASIN format: {asin!r}")
 
 
-def validate_webhook_url(url: str) -> None:
-    """Validate webhook URL: must be http(s) and must not resolve to private IPs."""
+def _config_allows_private_webhooks() -> bool:
+    ctx = click.get_current_context(silent=True)
+    config = ctx.obj.get("config") if ctx is not None and ctx.obj else None
+    return isinstance(config, dict) and config.get("webhook_allow_private") is True
+
+
+def validate_webhook_url(
+    url: str,
+    *,
+    allow_private: bool | None = None,
+    resolver: Resolver | None = None,
+) -> None:
+    """Validate a webhook URL: http(s), with a host that resolves to public addresses.
+
+    *allow_private* lets targets on your own network through; left as ``None`` it
+    follows the ``webhook-allow-private`` config setting of the running command.
+    The same check runs again, on the address actually connected to, when the
+    webhook is sent (see :mod:`audible_deals.webhook_guard`).
+    """
+    from audible_deals.webhook_guard import (
+        AddressGuard,
+        BlockedAddressError,
+        system_resolver,
+        uses_proxy,
+    )
+
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in ("http", "https"):
         raise click.BadParameter(
@@ -79,16 +124,31 @@ def validate_webhook_url(url: str) -> None:
             param_hint="'--webhook'",
         )
     try:
-        addrinfos = socket.getaddrinfo(hostname, None)
+        port = parsed.port  # ValueError for ":abc" and for numbers above 65535
+    except ValueError:
+        port = -1
+    if port is not None and not 1 <= port <= 65535:
+        raise click.BadParameter(
+            "Webhook URL has an invalid port (use a number from 1 to 65535)",
+            param_hint="'--webhook'",
+        )
+    if allow_private is None:
+        allow_private = _config_allows_private_webhooks()
+    guard = AddressGuard(
+        allow_private=allow_private, resolver=resolver or system_resolver
+    )
+    try:
+        if uses_proxy(parsed.scheme, hostname):
+            # As when sending: the proxy resolves the name (it may be the only
+            # resolver that knows it), so only what the URL's text gives away
+            # is checked here.
+            guard.check_name(hostname)
+        else:
+            guard.addresses(hostname, port or (443 if parsed.scheme == "https" else 80))
     except socket.gaierror as e:
         raise click.BadParameter(
             f"Cannot resolve webhook host {hostname!r}: {e}",
             param_hint="'--webhook'",
-        )
-    for _family, _type, _proto, _canonname, sockaddr in addrinfos:
-        ip = ipaddress.ip_address(sockaddr[0])
-        if not ip.is_global:
-            raise click.BadParameter(
-                f"Webhook URL resolves to non-public address {ip}",
-                param_hint="'--webhook'",
-            )
+        ) from e
+    except BlockedAddressError as e:
+        raise click.BadParameter(str(e), param_hint="'--webhook'") from e

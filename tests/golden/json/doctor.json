@@ -1,0 +1,13 @@
+{
+  "checks": [
+    {
+      "detail": "str",
+      "name": "str",
+      "status": "str"
+    }
+  ],
+  "failures": "int",
+  "ok": "bool",
+  "schema_version": "int",
+  "warnings": "int"
+}

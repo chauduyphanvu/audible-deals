@@ -10,7 +10,7 @@ from audible_deals.cli import cli
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from tests.conftest import make_product, make_series_products_batch
+from tests.conftest import make_product, make_series_products_batch, put_raw_session
 
 
 def _routes_run(runner, args, **kwargs):
@@ -30,13 +30,13 @@ def _routes_setup_library_mock(mock_client, products):
 
 
 def _routes_seed_last_results(tmp_config, products):
-    """Write a last_results.json cache file."""
+    """Store a legacy-shaped last-results session."""
 
     data = {
         "title": "Test Results",
         "results": [_serialize_product(p) for p in products],
     }
-    (tmp_config / "last_results.json").write_text(json.dumps(data))
+    put_raw_session(json.dumps(data))
 
 
 class TestRoutesCategoriesCommand:

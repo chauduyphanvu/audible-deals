@@ -7,6 +7,8 @@ import json as json_mod
 import click
 
 from audible_deals.cli.helpers import _currency
+from audible_deals.config_store import webhook_allow_private
+from audible_deals.constants import WEBHOOK_FORMATS
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.notification_workflow import (
     empty_recap_payload,
@@ -52,7 +54,7 @@ from audible_deals.validation import validate_webhook_url
 @click.option("--webhook", default=None, help="Webhook URL to POST results to")
 @click.option(
     "--webhook-format",
-    type=click.Choice(["generic", "slack", "discord", "teams", "ntfy"]),
+    type=click.Choice(WEBHOOK_FORMATS),
     default="generic",
     help="Webhook payload format",
 )
@@ -100,6 +102,7 @@ def recap(
                 _currency(ctx),
                 extra_headers,
                 ctx.obj["locale"],
+                allow_private=webhook_allow_private(ctx.obj.get("config")),
             )
     except LockHeldError:
         click.echo("Another deals notify/recap run is in progress — exiting.", err=True)

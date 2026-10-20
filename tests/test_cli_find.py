@@ -9,25 +9,29 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
-import audible_deals.constants as constants_mod
+from audible_deals import db
 from audible_deals.cli import cli
 from audible_deals.results_cache import load_result_session, save_dismissed_asins
-from tests.conftest import make_product
+from tests.conftest import make_product, seed_history
 
 
 def _seed_price_history(asin: str, prices: list[float]) -> None:
     """Write prior-day history entries for an ASIN (one per past day)."""
-    constants_mod.HISTORY_DIR.mkdir(parents=True, exist_ok=True)
+    with db.transaction(db.state()) as conn:
+        conn.execute("DELETE FROM price_history WHERE asin = ?", (asin,))
+        conn.execute("DELETE FROM products WHERE asin = ?", (asin,))
     today = datetime.date.today()
-    entries = [
-        {
-            "date": (today - datetime.timedelta(days=len(prices) - i)).isoformat(),
-            "price": price,
-            "title": "Test Book",
-        }
-        for i, price in enumerate(prices)
-    ]
-    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+    seed_history(
+        asin,
+        [
+            {
+                "date": (today - datetime.timedelta(days=len(prices) - i)).isoformat(),
+                "price": price,
+                "title": "Test Book",
+            }
+            for i, price in enumerate(prices)
+        ],
+    )
 
 
 def _capture_history_context(monkeypatch):

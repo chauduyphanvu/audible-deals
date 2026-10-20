@@ -8,10 +8,11 @@ import datetime
 from dataclasses import dataclass, field
 
 from audible_deals.result_models import (
+    UNSET,
     DiscoveryResult,
     RecipePatch,
     ResultSession,
-    UNSET,
+    _Unset,
 )
 from audible_deals.result_processing import (
     RECIPE_DEFAULTS,
@@ -54,7 +55,7 @@ class CachedRefinementRequest:
     reset: bool = False
     count_only: bool = False
     output_requested: bool = False
-    credit_price: float | None | object = UNSET
+    credit_price: float | None | _Unset = UNSET
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "clear_fields", tuple(self.clear_fields))
@@ -71,7 +72,7 @@ class CachedRefinementOutcome:
     credit_price: float | None = None
 
 
-def _is_patch_empty(patch: object) -> bool:
+def _is_patch_empty(patch: RecipePatch | FetchBoundPatch) -> bool:
     return all(getattr(patch, item.name) is UNSET for item in dataclasses.fields(patch))
 
 
@@ -180,10 +181,10 @@ def refine_cached_results(
     if (skip_plus, only_plus) != (recipe.skip_plus, recipe.only_plus):
         recipe = RecipePatch(skip_plus=skip_plus, only_plus=only_plus).merge(recipe)
 
+    patch_genres = request.recipe_patch.exclude_genres
     if (
-        request.recipe_patch.exclude_genres is not UNSET
-        and tuple(request.recipe_patch.exclude_genres)
-        != session.baseline_recipe.exclude_genres
+        not isinstance(patch_genres, _Unset)
+        and tuple(patch_genres) != session.baseline_recipe.exclude_genres
     ):
         raise CachedRefinementValidationError(
             "Changing --exclude-genre requires category resolution. Rerun: "
@@ -227,11 +228,13 @@ def refine_cached_results(
             + _rerun_command(session)
         )
 
-    credit_price = (
-        session.constraints["credit_price"]
-        if "credit_price" in session.constraints
-        else (None if request.credit_price is UNSET else request.credit_price)
-    )
+    credit_price: float | None
+    if "credit_price" in session.constraints:
+        credit_price = session.constraints["credit_price"]
+    elif isinstance(request.credit_price, _Unset):
+        credit_price = None
+    else:
+        credit_price = request.credit_price
     result = process_session_recipe(
         session,
         recipe,

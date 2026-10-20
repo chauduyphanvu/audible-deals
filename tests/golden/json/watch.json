@@ -1,0 +1,24 @@
+{
+  "author_watches": "int",
+  "hits": "int",
+  "items": [
+    {
+      "asin": "str",
+      "authors": [
+        "str"
+      ],
+      "currency": "str",
+      "list_price": "float|null",
+      "price": "float|null",
+      "status": "str",
+      "target": "float",
+      "title": "str",
+      "url": "str",
+      "verdict": "null|str"
+    }
+  ],
+  "missing": [
+    "str"
+  ],
+  "schema_version": "int"
+}

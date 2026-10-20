@@ -5,12 +5,17 @@ from __future__ import annotations
 import collections
 import json as json_mod
 import logging
+from collections.abc import Mapping
 from pathlib import Path
 
 import click
 
-from audible_deals.cli.helpers import _currency, _get_client, _resolve_output_quiet
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
+from audible_deals.cli.helpers import (
+    _currency,
+    _get_client,
+    _resolve_output_quiet,
+    _scan_cache,
+)
 from audible_deals.client import DealsClient
 from audible_deals.filtering import filter_products, sort_local
 from audible_deals.presentation.products import display_products
@@ -28,6 +33,7 @@ from audible_deals.serialization import (
     serialize_product,
     validate_export_path,
 )
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 logger = logging.getLogger(__name__)
 
@@ -78,7 +84,7 @@ def _library_stats_json(products: list[Product]) -> dict:
 
 def _emit_library_output(
     filtered: list[Product],
-    filter_breakdown: dict[str, int],
+    filter_breakdown: Mapping[str, int],
     *,
     stats: bool,
     stats_products: list[Product],
@@ -223,6 +229,9 @@ def library(
     dc = _get_client(ctx.obj["locale"])
     with dc:
         all_products = fetch_library_with_progress(dc, show_progress=not json_flag)
+    # A full fetch is the freshest owned list there is; keep it for --skip-owned.
+    if (cache := _scan_cache(ctx, refresh=True)) is not None:
+        cache.library_store(ctx.obj["locale"], (p.asin for p in all_products))
     outcome = filter_products(
         all_products,
         FilterContext(

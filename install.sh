@@ -32,6 +32,14 @@ LIBRARY_STATE_AMBIGUOUS=0
 PRESERVE_TRANSACTION=0
 COMMITTED=0
 
+# --- Source install hint ---
+
+# audible-deals is not published on PyPI, so point at the Git repository.
+print_source_install_hint() {
+    echo "  uv tool install git+https://github.com/$REPO" >&2
+    echo "  pipx install git+https://github.com/$REPO" >&2
+}
+
 # --- Detect platform ---
 
 detect_platform() {
@@ -65,12 +73,13 @@ detect_platform() {
     # Only arm64 macOS and x64 Linux binaries are available
     if [ "$os" = "linux" ] && [ "$arch" = "arm64" ]; then
         echo "Error: Linux arm64 binaries are not available yet." >&2
-        echo "Install from source instead: pip install audible-deals" >&2
+        echo "Install from source instead (requires Python 3.11+):" >&2
+        print_source_install_hint
         exit 1
     fi
     if [ "$os" = "macos" ] && [ "$arch" = "x64" ]; then
         echo "Error: macOS Intel binaries are not available. Install from source:" >&2
-        echo "  pip install audible-deals" >&2
+        print_source_install_hint
         exit 1
     fi
 
@@ -614,7 +623,7 @@ main() {
         echo "Check that v${version} exists at https://github.com/$REPO/releases" >&2
         echo "" >&2
         echo "Alternatively, install from source (requires Python 3.11+):" >&2
-        echo "  git clone https://github.com/$REPO.git && cd audible-deals && pip install ." >&2
+        print_source_install_hint
         exit 1
     fi
 

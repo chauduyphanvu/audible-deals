@@ -7,7 +7,7 @@ import types
 def _install_frozen_pillow_stub() -> None:
     pil = types.ModuleType("PIL")
     image = types.ModuleType("PIL.Image")
-    pil.Image = image
+    vars(pil)["Image"] = image
     sys.modules["PIL"] = pil
     sys.modules["PIL.Image"] = image
 

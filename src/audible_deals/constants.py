@@ -1,37 +1,14 @@
 """Shared constants for audible-deals.
 
-Consolidates file paths, locale maps, sort options, genre aliases, and the
-configuration schema used across the package. This module is a dependency-free
+Consolidates locale maps, sort options, genre aliases, and the configuration
+schema used across the package. (File locations live in ``paths.py``, which
+resolves them at call time.) This module is a dependency-free
 leaf, so it can safely be imported by all other ``audible_deals`` modules.
 """
 
 from __future__ import annotations
 
 import re
-from pathlib import Path
-
-# ---------------------------------------------------------------------------
-# File paths
-# ---------------------------------------------------------------------------
-
-CONFIG_DIR = Path.home() / ".config" / "audible-deals"
-AUTH_FILE = CONFIG_DIR / "auth.json"
-CATEGORIES_CACHE_FILE = CONFIG_DIR / "categories_cache.json"
-WISHLIST_FILE = CONFIG_DIR / "wishlist.json"
-PROFILES_FILE = CONFIG_DIR / "profiles.json"
-LAST_RESULTS_FILE = CONFIG_DIR / "last_results.json"
-SEEN_ASINS_FILE = CONFIG_DIR / "seen_asins.json"
-REFRESH_ELIGIBILITY_FILE = CONFIG_DIR / "refresh_eligibility.json"
-DISMISSED_ASINS_FILE = CONFIG_DIR / "dismissed_asins.json"
-CONFIG_FILE = CONFIG_DIR / "config.json"
-HISTORY_DIR = CONFIG_DIR / "history"
-NOTIFY_STATE_FILE = CONFIG_DIR / "notify_state.json"
-LOCK_FILE = CONFIG_DIR / ".deals.lock"
-TRACK_STATE_FILE = CONFIG_DIR / "track_state.json"
-MONITORS_FILE = CONFIG_DIR / "monitors.json"
-MONITOR_STATE_FILE = CONFIG_DIR / "monitor_state.json"
-TRACK_LOG_FILE = CONFIG_DIR / "track.log"
-TASTE_CACHE_FILE = CONFIG_DIR / "taste_cache.json"
 
 # ---------------------------------------------------------------------------
 # Locale maps
@@ -86,6 +63,9 @@ LOCALE_LANGUAGES: dict[str, str] = {
 MAX_PAGE_SIZE = 50
 MAX_CATALOG_CALLS_PER_SCAN = 60
 CATEGORIES_CACHE_TTL = 86400 * 7  # 7 days
+CATALOG_CACHE_DEFAULT_TTL_MINUTES = 120
+CATALOG_CACHE_MAX_TTL_MINUTES = 7 * 24 * 60
+LIBRARY_CACHE_TTL = 86400  # the cached list of owned titles
 
 CATALOG_RESPONSE_GROUPS = ",".join(
     [
@@ -181,38 +161,7 @@ GENRE_ALIASES: dict[str, str] = {
 
 _ASIN_RE = re.compile(r"^[A-Za-z0-9]{2,14}$")
 
-# ---------------------------------------------------------------------------
-# Config schema
-# ---------------------------------------------------------------------------
-
-_CONFIG_SCHEMA: dict[str, type] = {
-    "skip_owned": bool,
-    "max_price": float,
-    "max_pph": float,
-    "min_rating": float,
-    "min_ratings": int,
-    "min_hours": float,
-    "min_discount": int,
-    "language": str,
-    "locale": str,
-    "sort": str,
-    "pages": int,
-    "on_sale": bool,
-    "deep": bool,
-    "first_in_series": bool,
-    "all_languages": bool,
-    "interactive": bool,
-    "limit": int,
-    "narrator": str,
-    "author": str,
-    "series": str,
-    "publisher": str,
-    "skip_plus": bool,
-    "only_plus": bool,
-    "credit_price": float,
-    "webhook": str,
-    "webhook_format": str,
-    "webhook_headers": list,
-}
-
-WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "ntfy")
+#: ``teams`` is an Adaptive Card for Power Automate Workflows webhooks (a URL on
+#: the retired Office 365 connector hosts automatically keeps MessageCard);
+#: ``teams-legacy`` always sends MessageCard.
+WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "teams-legacy", "ntfy")

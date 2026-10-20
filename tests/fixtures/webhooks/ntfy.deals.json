@@ -1,0 +1,14 @@
+{
+  "captured_with": "deals notify --webhook URL --webhook-format FORMAT (wishlist of three titles with awkward names); the fake Audible API, a local HTTP server as the webhook",
+  "format": "ntfy",
+  "kind": "deals",
+  "request": {
+    "body": "Audible Deals (3)\n• Tom & Jerry <Live> | A *Bold* _Move_ ~Strike~ `code` @everyone — $4.48 (target $100.00) https://www.audible.com/pd/B0PKW9Y38E\n• Why [Brackets](Matter) — and Ünïcode — $8.98 (target $100.00) https://www.audible.com/pd/B0JEKRL881\n• Plain Title — $19.95 (target $100.00) https://www.audible.com/pd/B007DB4FU3",
+    "headers": {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Priority": "default",
+      "Tags": "book",
+      "Title": "Audible Deals (3)"
+    }
+  }
+}

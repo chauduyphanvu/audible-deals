@@ -9,27 +9,25 @@ from typing import Any
 
 import click
 
-from audible_deals import constants
+from audible_deals import constants, json_output, secret_store
 from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli.helpers import (
     _CL,
+    _credit_price,
     _get_client,
     _load_profile,
     _resolve_categories,
     _resolve_skip_asins,
 )
-from audible_deals.cli.options import _complete_profile_names
-from audible_deals.config_store import (
-    load_monitor_state,
-    load_monitors,
+from audible_deals.cli.options import (
+    _complete_profile_names,
+    filter_options,
+    json_option,
 )
-from audible_deals.constants import (
-    ALL_SORT_OPTIONS,
-    LOCALE_LANGUAGES,
-    WEBHOOK_FORMATS,
-)
+from audible_deals.config_store import load_monitors
+from audible_deals.constants import LOCALE_LANGUAGES, WEBHOOK_FORMATS
+from audible_deals.filter_specs import Scope, scope_defaults, specs_for
 from audible_deals.locking import LockHeldError
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.monitor_service import (
     MAX_MONITOR_API_CALLS_PER_RUN,
     MonitorExistsError,
@@ -37,15 +35,19 @@ from audible_deals.monitor_service import (
     MonitorRuntime,
     MonitorServiceError,
     add_monitor,
-    estimate_monitor_calls as _estimate_monitor_calls,
     monitor_events,
-    monitor_snapshot,
     remove_monitor,
-    scan_monitor as _scan_monitor,
     set_monitor_enabled,
     settings_to_dict,
     validated_monitor_definition,
 )
+from audible_deals.monitor_service import (
+    estimate_monitor_calls as _estimate_monitor_calls,
+)
+from audible_deals.monitor_service import (
+    scan_monitor as _scan_monitor,
+)
+from audible_deals.notices import note
 from audible_deals.presentation.terminal import (
     catalog_scan_progress,
     console,
@@ -55,46 +57,25 @@ from audible_deals.presentation.terminal import (
 from audible_deals.settings import (
     Settings,
     SettingsResolutionRequest,
+    filter_combination_error,
     resolve_settings,
+)
+from audible_deals.state_store import (
+    MonitorSummary,
+    load_monitor_snapshot,
+    monitor_summaries,
 )
 from audible_deals.validation import validate_webhook_url
 
 logger = logging.getLogger(__name__)
 
-_FIND_DEFAULTS = {
-    "max_price": 5.0,
-    "sort": "price-per-hour",
-    "pages": 10,
-    "min_ratings": 1,
-}
-_SEARCH_DEFAULTS = {
-    "max_price": None,
-    "sort": "relevance",
-    "pages": 3,
-    "min_ratings": 0,
-}
-_DIRECT_SETTING_FIELDS = (
-    "max_price",
-    "sort",
-    "pages",
-    "min_rating",
-    "min_ratings",
-    "min_hours",
-    "min_discount",
-    "genre",
-    "narrator",
-    "author",
-    "on_sale",
-    "deep",
-    "language",
-    "skip_owned",
-    "first_in_series",
-    "skip_plus",
-    "only_plus",
-    "exclude_authors",
-    "exclude_narrators",
-    "exclude_keywords",
+_NO_STATE = MonitorSummary(
+    initialized=False, last_success=None, last_error=None, product_count=0
 )
+
+# Flags a monitor can freeze, and the defaults each source command declares
+# differently from Settings (all from the filter registry).
+_DIRECT_SETTING_FIELDS = tuple(spec.key for spec in specs_for(Scope.MONITOR))
 
 
 def _complete_monitor_names(ctx, param, incomplete):
@@ -106,11 +87,13 @@ def _complete_monitor_names(ctx, param, incomplete):
 
 
 def _runtime() -> MonitorRuntime:
+    ctx = click.get_current_context(silent=True)
     return MonitorRuntime(
         get_client=_get_client,
         resolve_categories=_resolve_categories,
         resolve_skip_asins=_resolve_skip_asins,
         progress=catalog_scan_progress,
+        credit_price=_credit_price(ctx) if ctx is not None and ctx.obj else None,
     )
 
 
@@ -119,8 +102,8 @@ def _monitor_settings(
 ) -> Settings:
     """Resolve the frozen monitor settings with the command's own defaults."""
     profile = _load_profile(profile_name)
-    values: dict[str, Any] = dict(
-        _FIND_DEFAULTS if mode == "find" else _SEARCH_DEFAULTS
+    values: dict[str, Any] = scope_defaults(
+        Scope.FIND if mode == "find" else Scope.SEARCH
     )
     explicit_options: set[str] = set()
     for key in _DIRECT_SETTING_FIELDS:
@@ -142,6 +125,13 @@ def _monitor_settings(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
+    if problem := filter_combination_error(settings):
+        raise click.UsageError(problem)
+    if settings.exclude_seen:
+        # "Seen" changes every time results are shown, which would make a
+        # frozen snapshot appear and disappear; monitors never use it.
+        note("exclude-seen does not apply to monitors and was ignored.")
+        settings = dataclasses.replace(settings, exclude_seen=False)
     if not settings.language and not settings.all_languages:
         settings = dataclasses.replace(
             settings, language=LOCALE_LANGUAGES[ctx.obj["locale"]]
@@ -157,11 +147,6 @@ def estimate_monitor_calls(definition: dict) -> int:
         raise click.UsageError(str(exc)) from None
 
 
-def _monitor_slot(state: dict, name: str) -> dict:
-    """Return a validated state slot, repairing only this monitor when needed."""
-    return monitor_snapshot(state, name).to_dict()
-
-
 def scan_monitor(definition: dict) -> list[dict]:
     """Fetch a monitor without changing result caches, seen state, or history."""
     try:
@@ -174,8 +159,7 @@ def _events(previous: dict, current: list[dict], name: str) -> list[dict]:
     return [event.to_dict() for event in monitor_events(previous, tuple(current), name)]
 
 
-def _print_monitor(name: str, definition: dict, state: dict) -> None:
-    slot = _monitor_slot(state, name)
+def _print_monitor(name: str, definition: dict, health: MonitorSummary) -> None:
     status = "enabled" if definition.get("enabled", True) else "paused"
     query = (
         definition.get("query")
@@ -212,10 +196,10 @@ def _print_monitor(name: str, definition: dict, state: dict) -> None:
         f"  Estimated catalog calls/run: {_estimate_label(definition)} (shared budget {MAX_MONITOR_API_CALLS_PER_RUN})"
     )
     console.print(
-        f"  Snapshot: {len(slot.get('products', {}))} item(s)  Last success: {slot.get('last_success') or 'never'}"
+        f"  Snapshot: {health.product_count} item(s)  Last success: {health.last_success or 'never'}"
     )
-    if slot.get("last_error"):
-        console.print(f"  [red]Last error: {safe_markup(slot['last_error'])}[/red]")
+    if health.last_error:
+        console.print(f"  [red]Last error: {safe_markup(health.last_error)}[/red]")
 
 
 def _estimate_label(definition: dict) -> str:
@@ -233,45 +217,13 @@ def monitor(ctx):
         ctx.invoke(list_monitors)
 
 
-def _monitor_filter_options(func):
-    options = [
-        click.option("--max-price", type=NONNEGATIVE_FLOAT, default=None),
-        click.option(
-            "--sort", type=click.Choice(sorted(ALL_SORT_OPTIONS)), default=None
-        ),
-        click.option("--pages", type=click.IntRange(min=1), default=None),
-        click.option("--min-rating", type=RATING_FLOAT, default=None),
-        click.option("--min-ratings", type=NONNEGATIVE_INT, default=None),
-        click.option("--min-hours", type=NONNEGATIVE_FLOAT, default=None),
-        click.option(
-            "--min-discount", type=click.IntRange(min=0, max=100), default=None
-        ),
-        click.option("--genre", default=None),
-        click.option("--narrator", default=None),
-        click.option("--author", default=None),
-        click.option("--on-sale/--no-on-sale", default=False),
-        click.option("--deep/--no-deep", default=False),
-        click.option("--language", default=None),
-        click.option("--skip-owned/--no-skip-owned", default=False),
-        click.option("--first-in-series/--no-first-in-series", default=False),
-        click.option("--skip-plus/--no-skip-plus", default=False),
-        click.option("--only-plus/--no-only-plus", default=False),
-        click.option("--exclude-author", "exclude_authors", multiple=True),
-        click.option("--exclude-narrator", "exclude_narrators", multiple=True),
-        click.option("--exclude-keyword", "exclude_keywords", multiple=True),
-    ]
-    for option in reversed(options):
-        func = option(func)
-    return func
-
-
 @monitor.command("add")
 @click.argument("name")
 @click.option("--profile", "profile_name", shell_complete=_complete_profile_names)
 @click.option("--query", default=None, help="Search query; use | for OR queries")
 @click.option("--webhook", default=None, help="Monitor-specific webhook URL")
 @click.option("--webhook-format", type=click.Choice(WEBHOOK_FORMATS), default=None)
-@_monitor_filter_options
+@filter_options(Scope.MONITOR)
 @click.pass_context
 def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
     """Create a profile-backed find monitor or a direct-query search monitor."""
@@ -294,7 +246,7 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
         "query": query or "",
         "profile": profile_name,
         "settings": settings_to_dict(settings),
-        "webhook": webhook,
+        "webhook": webhook,  # the keychain only learns it once the add is certain
         "webhook_format": webhook_format,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
@@ -303,10 +255,18 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
         raise click.UsageError(
             f"Monitor would use {estimate} catalog calls; limit is {MAX_MONITOR_API_CALLS_PER_RUN} per run."
         )
+    storage_mode = secret_store.mode_of(ctx.obj.get("config"))
     try:
-        add_monitor(MonitorDefinition.from_dict(definition))
+        add_monitor(
+            MonitorDefinition.from_dict(definition),
+            protect_webhook=lambda url: secret_store.protect(
+                url, secret_store.monitor_account(name), mode=storage_mode
+            ),
+        )
     except LockHeldError as exc:
-        raise click.ClickException(f"Another run is in progress, try again: {exc}")
+        raise click.ClickException(
+            f"Another run is in progress, try again: {exc}"
+        ) from exc
     except MonitorExistsError as exc:
         raise click.ClickException(str(exc)) from exc
     console.print(
@@ -320,11 +280,51 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
     )
 
 
+def _estimate_or_none(definition: dict) -> int | None:
+    try:
+        return estimate_monitor_calls(definition)
+    except (KeyError, TypeError, click.ClickException):
+        return None
+
+
+def _monitor_json(
+    name: str, definition: dict, health: MonitorSummary, *, include_settings: bool
+) -> dict[str, Any]:
+    problem = None
+    try:
+        validated_monitor_definition(definition)
+    except MonitorServiceError as exc:
+        problem = str(exc)
+    return json_output.monitor_entry(
+        name,
+        definition if isinstance(definition, dict) else {},
+        matches=health.product_count,
+        last_success=health.last_success,
+        last_error=health.last_error,
+        estimated_calls=None if problem else _estimate_or_none(definition),
+        problem=problem,
+        include_settings=include_settings and problem is None,
+    )
+
+
 @monitor.command("list")
-def list_monitors():
+@json_option("Output the monitors as JSON")
+def list_monitors(json_flag):
     """List monitors and their persisted status without exposing webhook secrets."""
     monitors = load_monitors()
-    state = load_monitor_state()
+    state = monitor_summaries()
+    if json_flag:
+        entries = [
+            _monitor_json(
+                name,
+                definition,
+                state.get(name, _NO_STATE),
+                include_settings=False,
+            )
+            for name, definition in sorted(monitors.items())
+        ]
+        click.echo(json_output.dumps(json_output.with_schema(monitors=entries)))
+        return
     if not monitors:
         console.print("[dim]No monitors. Use 'deals monitor add --profile NAME'.[/dim]")
         return
@@ -337,7 +337,7 @@ def list_monitors():
                 f"({safe_markup(exc)})[/red]"
             )
             continue
-        slot = _monitor_slot(state, name)
+        health = state.get(name, _NO_STATE)
         status = "enabled" if definition.get("enabled", True) else "paused"
         source = (
             f"profile {definition['profile']}"
@@ -348,19 +348,20 @@ def list_monitors():
             f"  [bold]{safe_markup(name)}[/bold]  {status}, "
             f"{safe_markup(definition.get('mode'))} "
             f"{safe_markup(definition.get('locale'))}, {safe_markup(source)} — "
-            f"{len(slot.get('products', {}))} matches, last success: "
-            f"{safe_markup(slot.get('last_success') or 'never')}, "
+            f"{health.product_count} matches, last success: "
+            f"{safe_markup(health.last_success or 'never')}, "
             f"estimate: {_estimate_label(definition)}"
         )
-        if slot.get("last_error"):
+        if health.last_error:
             console.print(
-                f"    [red]last error: {safe_markup(slot['last_error'])}[/red]"
+                f"    [red]last error: {safe_markup(health.last_error)}[/red]"
             )
 
 
 @monitor.command("show")
 @click.argument("name", shell_complete=_complete_monitor_names)
-def show(name):
+@json_option("Output the monitor as JSON")
+def show(name, json_flag):
     """Show frozen settings and latest health for one monitor."""
     definition = load_monitors().get(name)
     if definition is None:
@@ -369,23 +370,32 @@ def show(name):
         validated_monitor_definition(definition)
     except MonitorServiceError as exc:
         raise click.ClickException(f"Monitor '{name}' is malformed: {exc}") from exc
-    _print_monitor(name, definition, load_monitor_state())
+    health = monitor_summaries().get(name, _NO_STATE)
+    if json_flag:
+        entry = _monitor_json(name, definition, health, include_settings=True)
+        click.echo(json_output.dumps(json_output.with_schema(monitor=entry)))
+        return
+    _print_monitor(name, definition, health)
 
 
 @monitor.command("remove")
 @click.argument("name", shell_complete=_complete_monitor_names)
-@click.option("--yes", is_flag=True, help="Do not ask for confirmation")
+@click.option("--yes", "-y", is_flag=True, help="Do not ask for confirmation")
 def remove(name, yes):
     """Remove a monitor and its baseline."""
     if not yes and not click.confirm(f"Remove monitor '{safe_text(name)}'?"):
         console.print("[dim]Cancelled.[/dim]")
         return
     try:
-        remove_monitor(name)
+        stored = remove_monitor(name)
     except LockHeldError as exc:
-        raise click.ClickException(f"Another run is in progress, try again: {exc}")
+        raise click.ClickException(
+            f"Another run is in progress, try again: {exc}"
+        ) from exc
     except MonitorNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
+    if isinstance(stored, dict):
+        secret_store.discard(stored.get("webhook"))  # its keychain entry, if any
     console.print(f"[green]Monitor '{safe_markup(name)}' removed[/green]")
 
 
@@ -393,7 +403,9 @@ def _set_enabled(name: str, enabled: bool) -> None:
     try:
         changed = set_monitor_enabled(name, enabled)
     except LockHeldError as exc:
-        raise click.ClickException(f"Another run is in progress, try again: {exc}")
+        raise click.ClickException(
+            f"Another run is in progress, try again: {exc}"
+        ) from exc
     except MonitorNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
     except MonitorServiceError as exc:
@@ -436,13 +448,9 @@ def test(name):
     except MonitorServiceError as exc:
         raise click.ClickException(f"Monitor '{name}' is malformed: {exc}") from exc
     current = scan_monitor(definition)
-    slot = _monitor_slot(load_monitor_state(), name)
-    events = (
-        _events(slot.get("products", {}), current, name)
-        if slot.get("initialized")
-        else []
-    )
-    if not slot.get("initialized"):
+    baseline = load_monitor_snapshot(name)
+    events = _events(baseline.products, current, name) if baseline.initialized else []
+    if not baseline.initialized:
         console.print(
             f"[dim]{len(current)} match(es); first tracked run will establish a silent baseline.[/dim]"
         )
@@ -450,7 +458,7 @@ def test(name):
         console.print(f"[dim]{len(current)} match(es), {len(events)} event(s).[/dim]")
     if current:
         console.print("[bold]Current matches[/bold]")
-        currency = constants.LOCALE_CURRENCY.get(definition.get("locale"), "$")
+        currency = constants.LOCALE_CURRENCY.get(definition.get("locale") or "", "$")
         for product in current:
             title = product.get("full_title") or product.get("title", "")
             price = product.get("price")

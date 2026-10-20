@@ -1,0 +1,24 @@
+{
+  "avg_hours": "float",
+  "avg_rating": "float",
+  "top_authors": [
+    {
+      "count": "int",
+      "name": "str"
+    }
+  ],
+  "top_genres": [
+    {
+      "count": "int",
+      "name": "str"
+    }
+  ],
+  "top_narrators": [
+    {
+      "count": "int",
+      "name": "str"
+    }
+  ],
+  "total_books": "int",
+  "total_hours": "float"
+}

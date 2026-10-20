@@ -4,9 +4,10 @@
 # (e.g. deals-linux-x64, deals-macos-arm64, deals-windows-x64).
 # Defaults to 'deals' when unset.
 
+import importlib.util
 import os
 
-from PyInstaller.utils.hooks import collect_submodules
+from PyInstaller.utils.hooks import collect_data_files, collect_submodules
 
 _artifact = os.environ.get('DEALS_ARTIFACT', 'deals')
 _strip = os.name != 'nt'  # strip on Linux/macOS, skip on Windows
@@ -56,18 +57,45 @@ _excludes = [
     'setuptools',
     'pkg_resources',
     'Crypto',
-    'sqlite3',
     'uvloop',
     'blib2to3',
     'multiprocessing',
+    # Optional keychain support (`pip install audible-deals[keyring]`) is not bundled:
+    # it pulls in platform-specific backends that would grow every binary.
+    'keyring',
 ]
+
+# The full-screen results browser (`deals find -i`) is bundled when the `tui` extra
+# (textual) is installed in the build environment; without it the prompt browser is
+# the only one. Textual needs a few modules the list above would otherwise drop.
+_tui = importlib.util.find_spec('textual') is not None
+_hidden = collect_submodules('audible_deals.cli')
+_datas = []
+if _tui:
+    _hidden += collect_submodules('audible_deals.tui') + collect_submodules('textual')
+    _datas += collect_data_files('textual')
+    _excludes = [
+        name
+        for name in _excludes
+        if name
+        not in {
+            'markdown_it',
+            'mdurl',
+            'pygments',
+            'rich.markdown',
+            'rich.syntax',
+            'rich.traceback',
+            'asyncio',
+            'argparse',
+        }
+    ]
 
 a = Analysis(
     ['src/audible_deals/__main__.py'],
     pathex=[],
     binaries=[],
-    datas=[],
-    hiddenimports=collect_submodules('audible_deals.cli'),
+    datas=_datas,
+    hiddenimports=_hidden,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],

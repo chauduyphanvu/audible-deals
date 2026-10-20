@@ -6,6 +6,81 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+Upgrading from 0.11.1? Read **Upgrade notes** first: your records are imported into a new database on the first run, a few exit statuses and webhook rules changed, and older releases cannot be run against the upgraded data directory.
+
+### Upgrade notes
+
+Breaking and behavior changes since 0.11.1.
+
+- **Your records move into `state.db`.** Price history, the last result session, seen and dismissed ASINs, refresh eligibility, monitor baselines, alert cooldowns and tracking state moved from many JSON files into `state.db`; category lists and the `for-me` taste profile moved to `cache.db` (safe to delete; the categories are fetched again once after upgrading). `config.json`, `profiles.json`, `monitors.json`, `wishlist.json` and `auth.json` stay JSON. The first run imports the old files in a single transaction and renames them to `*.migrated` (`history/` becomes `history.migrated/`). Nothing is deleted, a failed import changes nothing and is retried, and unusable entries are skipped and reported by `deals doctor`.
+  **Downgrade caveat:** do not run an older release against the same data directory afterwards. It would not see the imported records and would start new JSON files that this release ignores. Back up the directory first (`deals cache info` shows where it is) if you might go back. See "Local data" in the command guide.
+- **Exit status 10 means "nothing matched".** `--exit-code` on `watch` and `notify` now exits **10** instead of 1 when nothing hit its target, so it can be told apart from a real error (1); `find`, `search` and `last` gain `--exit-code` with the same meaning. A busy run lock in `notify` exits 0 with a note instead of 1, and Ctrl-C exits 130 everywhere (it was 1 with "Aborted!"). Authentication problems exit 3 and failed Audible requests 4, a refused connection or a timeout included ("Audible request failed (could not connect)"). The retry warnings read `Warning: Audible request failed (could not connect); retrying in 1s (attempt 2 of 3)`; `-v` adds the endpoint and the raw error. The full table is "Exit codes and errors" in the command guide.
+- **Teams alerts are Adaptive Cards.** `--webhook-format teams` sends an Adaptive Card for Power Automate Workflows webhooks, the replacement for the Office 365 connectors Microsoft retired. URLs on `*.webhook.office.com` (or `outlook.office.com/webhook/`) keep getting a MessageCard automatically; `--webhook-format teams-legacy` forces one.
+- **Webhooks on your own network need an opt-in.** Webhook addresses are now checked when the alert is sent, not only when the URL is entered: the host is resolved once, a non-public address is refused (never retried) and the connection goes to the address that was checked. A webhook to `127.0.0.1` or a LAN address (self-hosted ntfy, Home Assistant), which used to be refused only when entered, now needs `deals config set webhook-allow-private true`. Behind an HTTP(S) proxy the proxy resolves the name, when you enter a URL as well as when it is sent, so `deals` only refuses a URL that names a private place outright (an address such as `10.0.0.5`, `localhost`) and leaves the rest to the proxy; hosts in `NO_PROXY` get the full check (see "Where a webhook may point" in the automation guide).
+- **`deals notify` without a webhook always prints valid JSON.** An empty wishlist printed a sentence on stdout; it now prints `{"deals": [], "count": 0}` and the sentence goes to stderr. `notify --cooldown 0` is accepted and means no cooldown.
+- **Catalog scans are cached for two hours.** Re-running or refining a `find`, `search`, `for-me` or `series` scan makes no API calls and says how old the prices are; `--refresh` fetches live data and `deals config set cache-ttl MINUTES` changes the lifetime (`0` turns it off). Cached prices are never recorded in the price history, and `track run`, `notify`, `watch`, `wishlist` and monitors always use live data. Progress and `--dry-run` count cached pages as free: `api_calls` now counts only requests that would reach Audible, and `cached_calls` is a new key in the dry-run JSON.
+- **`find` also re-prices titles you have seen.** Up to 100 titles it showed you in the last 90 days, in the categories being scanned, are fetched live (at most two batch calls, shown in `--dry-run` as `known_candidate_calls` and counted toward the 60-call limit) and merged into the results, so a cheap title beyond the last scanned page, or one you first saw through `search`, still turns up. `--keywords` scans skip it; `--no-known` or `deals config set known-candidates false` turns it off. The product index behind it is schema version 2 of `state.db` (an automatic, additive migration).
+- **Messages about a run go to stderr** as `Warning: ...` or `Note: ...`, no longer on stdout and without logger names. Errors are one line (`Error: ...`); `-v` restores the detailed format and `-vv` the traceback. With `--json`, an error is written to stderr as `{"error": {"code": N, "message": "..."}}`.
+- **Requirements:** `click>=8.2`. Python 3.11 to 3.14 are supported.
+- **Deprecated:** `deals watch --every` (use `deals track run --every`). It still works, prints a warning, and now takes the shared run lock and backs off after failures instead of ending with a traceback.
+
+### Added
+
+**Browsing and output**
+- A full-screen results browser for `-i` on `find`, `search`, `for-me`, `series` and `last` (optional extra `tui`, which adds `textual>=8.2,<9`; included in the pre-built binaries): a table with the wide table's columns, a detail pane (Enter), filter-as-you-type (`/`, applied a moment after the last keystroke), sort cycling saved to the result session so `@N` and `deals last` follow it (`s`), marking (space), wishlist add with a target-price dialog (`w`), open (`o`), compare 2-4 (`c`), price history (`h`), dismiss (`n`), help (`?`) and quit (`q`). It is a view over the same actions as the prompt browser and opens only when textual is installed and stdin and stdout are terminals; otherwise, and with `deals config set interactive-ui prompt`, `-i` uses the prompt loop as before.
+- On an interactive terminal `find` and `search` show a live "best so far" table under the progress bar. Ctrl-C during a scan now shows what was gathered ("Scan interrupted after X/Y pages"), saves the session so `@N` works, records history for the live-fetched items and exits 130 (before, it discarded the scan).
+- `--color auto|always|never` on every command; an explicit `always`/`never` beats `NO_COLOR`/`FORCE_COLOR`.
+- `--locale` and `-v/--verbose` are accepted after the command as well as before it.
+- `deals completions bash|zsh|fish --install` writes the completion script to the per-user directory the shell loads from, without touching any startup file, and is safe to re-run after an upgrade.
+- `deals profile save` and `deals monitor add` take every filter `find` takes; `find` and `search` gain `--no-exclude-seen` and `--no-require-history`; `deals config set max-effective-price N` sets a global default.
+
+**Scripting**
+- `--json` on `doctor`, `watch`, `track status`, `monitor list`, `monitor show`, `config list`, `config get`, `profile list`, `profile show`, `categories`, `detail`, `compare`, `cache info` and `notify`. New outputs are objects with `"schema_version": 1`; stdout carries only the document (hints, warnings and progress go to stderr); webhook URLs and header values are never printed. [docs/json.md](docs/json.md) documents every shape and `tests/golden/json` pins their key structure.
+- `--exit-code` on `find`, `search` and `last` (exit 10 when nothing matched), and documented statuses for every command.
+- `--refresh` on `find`, `search` and `series` (and extended on `for-me`).
+- `DEALS_HOME` selects the data directory on every run (an existing `~/.config/audible-deals` is still kept; `%APPDATA%\audible-deals` on Windows otherwise). `deals doctor` and `deals cache info [--json]` show the directory and why it was chosen; `deals cache clear` empties only the disposable cache and gives its disk space back ("Cleared 40 cached item(s), freed 2,945,832 bytes"). `deals doctor` creates nothing: on a machine that has not saved anything yet it reports `state.db` and `cache.db` as "not created yet" instead of making them. `deals doctor` also checks `state.db` (`PRAGMA quick_check`, schema version), the outcome of the JSON import and `cache.db`; a `state.db` that cannot be read is moved to `state.db.corrupt-<timestamp>` with a one-line warning and recreated, and one written by a newer release is refused untouched.
+
+**Automation and notifications**
+- `deals track run --every 30m` runs the background job in the foreground for people without a scheduler: the same run lock as scheduled runs, exponential backoff with jitter after failures (capped at an hour), config re-read before each run, a clean stop on Ctrl+C or SIGTERM.
+- `deals track install` writes the data directory into the scheduled job (launchd, systemd, cron, Task Scheduler) and prints it. Where systemd has no user session (containers, WSL, ssh), it no longer leaves unit files behind: it uses a crontab entry instead and says so, or, without cron, stops with the `deals track run --every ...` command to use. `deals doctor` warns when the installed schedule points at a program that no longer exists.
+- `track.log` rotates at 1 MB (`track.log.1` to `.3`) and `deals track log` reads only the end of the file.
+- Optional keychain storage of secrets: `deals config set secret-storage keyring|file` (extra `keyring`) moves the login and webhook URLs and headers between the data directory and the OS keychain, after a confirmation and with every secret verified before any file changes. Not bundled in the pre-built binaries; the default (`file`) never imports `keyring`.
+- `--webhook-format teams-legacy`, and `webhook-allow-private` (see Upgrade notes).
+
+**Distribution and development**
+- One version authority: `audible_deals.__version__` in `src/audible_deals/__init__.py`. The package version is read from it, `deals --version` prints it (no more hardcoded fallback for frozen builds) and the release workflow rewrites that one line.
+- Pre-built binaries are built from `uv.lock` with the `tui` extra and smoke-tested on every platform before they are published (`--version`, a dry-run search, `cache info`, textual present); CI builds and smoke-tests the Linux binary on every change.
+- CI runs the tests on Linux (Python 3.11 to 3.14), macOS and Windows (3.13), in parallel with pytest-xdist, checks the built wheel's version, and runs ruff and mypy. The macOS and Windows jobs are new.
+- The release workflow has a `pypi` job that publishes with PyPI trusted publishing. It is off until the repository owner completes the one-time setup in CONTRIBUTING.md; nothing is published by this change.
+- Every filter's flag, type, bounds, help, default and availability is declared once in `src/audible_deals/filter_specs.py` (see "Adding a filter" in CONTRIBUTING.md); mypy is in the `dev` extra and CI; ruff checks `E`, `F`, `W`, `I`, `B`, `UP`; `tests/test_golden.py` pins every command's option names.
+- Benchmarks: `benchmarks/benchmark_scan.py` (cold vs cached scans) and `benchmarks/benchmark_history.py` (history, recap and lookup on thousands of tracked ASINs).
+
+### Changed
+
+- Price-history reads are queries instead of "load every file": `deals recap` on 5,000 tracked titles takes under a third of the time and under half the memory, recording prices is about twenty times faster, and `deals history ASIN` opens one database. Ties in recap ordering and `--atl-all` are broken by ASIN rather than directory order.
+- Webhook titles are escaped for the service they go to (Slack, Discord and Teams Markdown); Discord messages carry `allowed_mentions: {"parse": []}` so a title cannot ping `@everyone`. ntfy shows prices with the shared formatter and sends a non-ASCII `Title` as an RFC 2047 encoded word. Every format shares one provider interface.
+- Every option of `deals last` and `deals profile save` now has help text, and `last`, `profile save` and `monitor add` complete genre names.
+- A webhook URL with an invalid port (`https://example.com:99999/x`, `:abc`) is a usage error (exit 2) when entered, instead of a delivery failure later.
+- `-y` is accepted wherever `--yes` is (`history --purge-older-than`, `config reset`, `monitor remove`); `recap --webhook-format` takes its choices from the same list as `notify`, `track install` and `monitor add`.
+- `--released-after` and `--released-before` are checked when the command line is parsed (an invalid date is a usage error naming the option; `20240101` is still accepted).
+- Every state file is read and written as UTF-8 regardless of the platform's locale encoding (files written in the old locale encoding still load). A zero-byte or whitespace-only data file is treated as empty without a warning.
+- `deals login` no longer changes the process-wide umask; it writes the same JSON through the atomic 0600 writer. The launchd plist is built with `plistlib` and the systemd units and plist are written atomically. `track install` and `uninstall` update only the install record, atomically.
+- `--skip-owned` reuses the list of owned titles for 24 hours (`deals library` and `--refresh` update it) and category names are cached for 7 days.
+- Internal: one paginator and worker-pool lifecycle serve the catalog, library, wishlist and series readers, and genre matching lives in `genres.py`; requests, ordering and call counts are unchanged.
+- Price history is purged per marketplace without the old "has no entries, skipping purge" warning; `-v`/`-vv` also apply to warnings emitted while loading saved configuration at startup.
+- Catalog requests still ask for every response group, including `product_desc` and `media`, which nothing reads. Dropping them would shrink the responses, but needs one check against a live account that `language`, `subtitle`, `publisher_name` and `release_date` come from `product_attrs`; `tests/test_product_fields.py` records which group each parsed field is expected in.
+
+### Fixed
+
+- A `config.json`, `profiles.json`, `monitors.json` or `dismissed_asins.json` that could not be parsed (for example after a typo while hand-editing) was silently replaced with an empty file the next time a command saved it, deleting every saved profile, monitor or default. Commands that would write to such a file now stop with a one-line error naming the file, line and column, and leave it untouched; commands that only read it print a one-line warning.
+- `deals track run` looked every wishlist title up in the command's marketplace, so a title added from another marketplace (`--locale uk wishlist add ...`) was priced in the wrong one. It now uses the same wishlist check as `notify`.
+- A webhook that could not be delivered made `deals track run` fail without a trace in the run history. The failed run is now recorded (`deals track status` shows `WebhookDeliveryError: ...`) and the alert is not marked as sent, so the next run sends it again.
+- Monitor alerts to ntfy failed to send because the `Title` header (`Audible Deals — <monitor>`) contains an em dash.
+- Error messages that list choices on a second line (`deals find --genre nosuchgenre`) printed a literal `\n`, and the `--json` error object carried a doubled backslash. They now print real separate lines.
+- `deals config set webhook URL` refused a bad URL with "Invalid value for '--webhook'", an option `config set` does not have; it names the `webhook` key now.
+- Interactive mode printed the literal text `[dim]...[/dim]` around its "Invalid input" hint.
+- `install.sh`, the README and the installation guide told users to `pip install audible-deals`, which fails because the package is not on PyPI; they now show `uv tool install git+https://github.com/chauduyphanvu/audible-deals` (or the `pipx` equivalent). The optional-extra hints do the same.
+
 ## [0.11.1] - 2026-08-31
 
 ### Fixed

@@ -7,12 +7,13 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
 
+from rich.console import Group, RenderableType
 from rich.panel import Panel
 from rich.table import Table
+from rich.text import Text
 
 from audible_deals.metrics import buy_verdict, price_per_hour
 from audible_deals.presentation import terminal
-from audible_deals.presentation.terminal import safe_markup
 from audible_deals.presentation.common import (
     _VERDICT_MARKUP,
     _buy_cell,
@@ -22,6 +23,7 @@ from audible_deals.presentation.common import (
     price_str,
     rating_str,
 )
+from audible_deals.presentation.terminal import safe_markup
 from audible_deals.product import Product
 
 
@@ -414,15 +416,97 @@ def _render_product_row(
         )
     row.append(rating_str(product.rating, product.num_ratings))
     if layout.show_buy_column:
-        row.append(_buy_cell(product, options.credit_price))
+        row.append(
+            _buy_cell(product, options.credit_price)
+            if options.credit_price is not None
+            else "[dim]-[/dim]"
+        )
     if layout.show_history_column:
         pct = options.hist_context.get(product.asin) if options.hist_context else None
         row.append(_hist_cell(pct))
     if layout.show_match_column:
-        row.append(safe_markup(options.match_context.get(product.asin, "")))
+        row.append(safe_markup((options.match_context or {}).get(product.asin, "")))
     if layout.show_url_column:
         row.append(safe_markup(product.url))
     return row
+
+
+@dataclass(frozen=True)
+class ColumnSpec:
+    """One column of the results table, independent of the widget that shows it."""
+
+    title: str
+    justify: Literal["left", "right"] = "left"
+    width: int | None = None
+    min_width: int | None = None
+    max_width: int | None = None
+    no_wrap: bool = False
+    overflow: Literal["fold", "crop", "ellipsis", "ignore"] | None = None
+    style: str | None = None
+
+
+def product_columns(
+    options: ProductDisplayOptions, layout: ProductLayout
+) -> list[ColumnSpec]:
+    """The columns of the results table for *layout*, in order.
+
+    The terminal table and the full-screen browser both build from this list and
+    from :func:`product_row`, so they always show the same columns.
+    """
+    columns = [
+        ColumnSpec(
+            "Ref",
+            "right",
+            width=layout.ref_width,
+            no_wrap=True,
+            style="dim cyan",
+        ),
+        ColumnSpec("Title / Author", max_width=layout.title_width, overflow="ellipsis"),
+        ColumnSpec("Price", "right", width=layout.price_width, no_wrap=True),
+    ]
+    if layout.wide:
+        columns.append(
+            ColumnSpec("Hrs", "right", width=layout.hours_width, no_wrap=True)
+        )
+        columns.append(
+            ColumnSpec(
+                f"{options.currency}/hr", "right", width=layout.pph_width, no_wrap=True
+            )
+        )
+    columns.append(
+        ColumnSpec("Rating", "right", width=layout.rating_width, no_wrap=True)
+    )
+    if layout.show_buy_column:
+        columns.append(ColumnSpec("Buy", width=7))
+    if layout.show_history_column:
+        columns.append(
+            ColumnSpec("vs hist", "right", width=layout.history_width, no_wrap=True)
+        )
+    if layout.show_match_column:
+        columns.append(ColumnSpec("Match", width=layout.match_width, style="cyan"))
+    if layout.show_url_column:
+        columns.append(
+            ColumnSpec(
+                "URL",
+                width=layout.url_width,
+                min_width=layout.url_width,
+                max_width=layout.url_width,
+                no_wrap=True,
+                overflow="ignore",
+                style="dim cyan",
+            )
+        )
+    return columns
+
+
+def product_row(
+    product: Product,
+    index: int,
+    options: ProductDisplayOptions,
+    layout: ProductLayout,
+) -> list[str]:
+    """The Rich-markup cells of one results row (see :func:`product_columns`)."""
+    return _render_product_row(product, index, options, layout)
 
 
 def _build_product_table(
@@ -437,42 +521,19 @@ def _build_product_table(
         title_style="bold",
         expand=False,
     )
-    table.add_column(
-        "Ref", style="dim cyan", width=layout.ref_width, justify="right", no_wrap=True
-    )
-    table.add_column(
-        "Title / Author", max_width=layout.title_width, overflow="ellipsis"
-    )
-    table.add_column("Price", justify="right", width=layout.price_width, no_wrap=True)
-    if layout.wide:
-        table.add_column("Hrs", justify="right", width=layout.hours_width, no_wrap=True)
+    for column in product_columns(options, layout):
         table.add_column(
-            f"{options.currency}/hr",
-            justify="right",
-            width=layout.pph_width,
-            no_wrap=True,
-        )
-    table.add_column("Rating", justify="right", width=layout.rating_width, no_wrap=True)
-    if layout.show_buy_column:
-        table.add_column("Buy", width=7)
-    if layout.show_history_column:
-        table.add_column(
-            "vs hist", justify="right", width=layout.history_width, no_wrap=True
-        )
-    if layout.show_match_column:
-        table.add_column("Match", width=layout.match_width, style="cyan")
-    if layout.show_url_column:
-        table.add_column(
-            "URL",
-            width=layout.url_width,
-            min_width=layout.url_width,
-            max_width=layout.url_width,
-            no_wrap=True,
-            overflow="ignore",
-            style="dim cyan",
+            column.title,
+            justify=column.justify,
+            width=column.width,
+            min_width=column.min_width,
+            max_width=column.max_width,
+            no_wrap=column.no_wrap,
+            overflow=column.overflow or "ellipsis",  # Rich's own default, as in 0.11.1
+            style=column.style or "",
         )
     for index, product in enumerate(products, 1):
-        table.add_row(*_render_product_row(product, index, options, layout))
+        table.add_row(*product_row(product, index, options, layout))
     return table
 
 
@@ -524,7 +585,8 @@ def display_products(
         _display_url_fallback(products)
 
 
-def display_product_detail(product: Product, credit_price: float | None = None) -> None:
+def product_detail_panel(product: Product, credit_price: float | None = None) -> Panel:
+    """The detail view of one title (``deals detail``, and the browser's side pane)."""
     lines: list[str] = [f"[bold]{safe_markup(product.full_title)}[/bold]", ""]
     if product.authors:
         lines.append(
@@ -579,19 +641,22 @@ def display_product_detail(product: Product, credit_price: float | None = None) 
         lines.append("  [magenta]Included in Audible Plus[/magenta]")
     lines.extend(["", f"  [dim]{safe_markup(product.url)}[/dim]"])
 
-    terminal.console.print(
-        Panel(
-            "\n".join(lines),
-            title=f"[cyan]{safe_markup(product.asin)}[/cyan]",
-            border_style="dim",
-            padding=(1, 2),
-        )
+    return Panel(
+        "\n".join(lines),
+        title=f"[cyan]{safe_markup(product.asin)}[/cyan]",
+        border_style="dim",
+        padding=(1, 2),
     )
 
 
-def display_comparison(
+def display_product_detail(product: Product, credit_price: float | None = None) -> None:
+    terminal.console.print(product_detail_panel(product, credit_price))
+
+
+def comparison_renderable(
     products: list[Product], credit_price: float | None = None
-) -> None:
+) -> Group:
+    """The side-by-side comparison table and its "best value" line."""
     currency = products[0].currency if products else "$"
     table = Table(
         title="Comparison",
@@ -651,8 +716,7 @@ def display_comparison(
         )
     for label, values in rows:
         table.add_row(label, *values)
-    terminal.console.print(table)
-
+    parts: list[RenderableType] = [table]
     priced = [
         product
         for product in products
@@ -660,7 +724,16 @@ def display_comparison(
     ]
     if priced:
         best = min(priced, key=price_per_hour)
-        terminal.console.print(
-            f"\n  Best value: [bold green]{safe_markup(best.title)}[/bold green] "
-            f"at {_pph_str(best, best.currency)}/hr"
+        parts.append(
+            Text.from_markup(
+                f"\n  Best value: [bold green]{safe_markup(best.title)}[/bold green] "
+                f"at {_pph_str(best, best.currency)}/hr"
+            )
         )
+    return Group(*parts)
+
+
+def display_comparison(
+    products: list[Product], credit_price: float | None = None
+) -> None:
+    terminal.console.print(comparison_renderable(products, credit_price))

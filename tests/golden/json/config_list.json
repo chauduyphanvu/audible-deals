@@ -1,0 +1,7 @@
+{
+  "config": {
+    "max_price": "float",
+    "webhook": "str"
+  },
+  "schema_version": "int"
+}

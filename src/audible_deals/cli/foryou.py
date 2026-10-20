@@ -8,35 +8,37 @@ import logging
 import shlex
 from decimal import Decimal
 from inspect import cleandoc
-from pathlib import Path
 
 import click
 
 from audible_deals import taste
+from audible_deals.catalog_workflow import cached_pages_for
 from audible_deals.cli.helpers import (
     _CL,
     _credit_price,
     _currency,
     _get_client,
+    _report_cache_use,
     _report_partial_series_outcomes,
     _resolve_output_quiet,
+    _scan_cache,
 )
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
+from audible_deals.cli.options import filter_options, output_options, scope_values
 from audible_deals.client import CatalogSearchRequest, DealsClient
-from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
-from audible_deals.price_history import (
-    history_key,
-    load_price_history,
-    price_history_context,
-)
-from audible_deals.product import Product
+from audible_deals.constants import LOCALE_LANGUAGES
+from audible_deals.filter_specs import Scope, specs_for
+from audible_deals.notices import note
 from audible_deals.presentation.terminal import (
     console,
     create_scan_progress,
     safe_markup,
 )
+from audible_deals.price_history import (
+    load_product_histories,
+    price_history_context,
+)
+from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
-from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.result_processing import (
     DiscoveryProcessingRequest,
     process_discovery,
@@ -47,6 +49,8 @@ from audible_deals.result_publication import (
     ResultSessionSpec,
     publish_discovery,
 )
+from audible_deals.results_cache import load_dismissed_asins
+from audible_deals.scan_cache import ScanCache
 from audible_deals.serialization import validate_export_path
 from audible_deals.series_identity import (
     normalize_identity_text,
@@ -55,7 +59,7 @@ from audible_deals.series_identity import (
     series_book_identity_from_parts,
     series_identity,
 )
-from audible_deals.settings import SettingsResolutionRequest, resolve_settings
+from audible_deals.settings import Settings, SettingsResolutionRequest, resolve_settings
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
 logger = logging.getLogger(__name__)
@@ -78,8 +82,64 @@ def _scan_plan(profile: dict) -> tuple[list[str], list[dict], list[dict]]:
     return authors, genres, series
 
 
+def _catalog_requests(
+    authors: list[str], genres: list[dict], cache: ScanCache | None = None
+) -> list[CatalogSearchRequest]:
+    """The author and genre searches ``for-me`` makes, in the order it makes them."""
+    requests = [
+        CatalogSearchRequest(
+            keywords=author,
+            sort_by="Relevance",
+            max_pages=_PAGES_PER_SCAN,
+            cache=cache,
+        )
+        for author in authors
+    ]
+    requests.extend(
+        CatalogSearchRequest(
+            category_id=genre["id"],
+            sort_by="BestSellers",
+            max_pages=_PAGES_PER_SCAN,
+            cache=cache,
+        )
+        for genre in genres
+    )
+    return requests
+
+
+def _cached_for_me_calls(
+    locale: str,
+    authors: list[str],
+    genres: list[dict],
+    series: list[dict],
+    cache: ScanCache | None,
+) -> int:
+    """How many of the planned requests a stored copy would answer."""
+    if cache is None or cache.refresh:
+        return 0
+    cached = sum(
+        cached_pages_for(request, locale, cache)
+        for request in _catalog_requests(authors, genres)
+    )
+    cached += sum(
+        1
+        for item in series
+        if cache.lookup(
+            locale,
+            f"1.0/catalog/products/{item['series_asin']}",
+            {"response_groups": "relationships"},
+        )
+        is not None
+    )
+    return cached
+
+
 def _for_me_plan(
-    profile: dict, authors: list[str], genres: list[dict], series: list[dict]
+    profile: dict,
+    authors: list[str],
+    genres: list[dict],
+    series: list[dict],
+    cached_calls: int = 0,
 ) -> dict:
     catalog_calls = (len(authors) + len(genres)) * _PAGES_PER_SCAN
     relationship_calls = len(series)
@@ -92,7 +152,8 @@ def _for_me_plan(
         "series": [item["name"] for item in series],
         "authors": list(authors),
         "genres": [item["name"] for item in genres],
-        "known_api_calls": catalog_calls + relationship_calls,
+        "known_api_calls": max(0, catalog_calls + relationship_calls - cached_calls),
+        "cached_calls": cached_calls,
         "series_product_batches": "additional when a relationship has children",
     }
 
@@ -113,19 +174,31 @@ def _print_for_me_plan(plan: dict) -> None:
         console.print(f"  Authors: {safe_markup(', '.join(authors))}")
     if genres:
         console.print(f"  Genres: {safe_markup(', '.join(genres))}")
+    cached_note = f" ({plan['cached_calls']} cached)" if plan["cached_calls"] else ""
     console.print(
-        f"  Known API calls: {plan['known_api_calls']} + series product batches"
+        f"  Known API calls: {plan['known_api_calls']}{cached_note} "
+        "+ series product batches"
     )
 
 
-def _resolve_for_me_settings(ctx: click.Context, **flags):
-    explicit_options = {key for key in flags if ctx.get_parameter_source(key) == _CL}
+def _resolve_for_me_settings(ctx: click.Context, flags: dict) -> Settings:
+    cli_flags = scope_values(Scope.FOR_ME, flags)
+    # for-me re-sorts only on request, never inherits a default, and always
+    # follows the locale language.
+    cli_flags["sort"] = cli_flags.get("sort") or ""
+    cli_flags["language"] = ""
+    cli_flags["all_languages"] = False
+    explicit_options = {
+        spec.key
+        for spec in specs_for(Scope.FOR_ME)
+        if ctx.get_parameter_source(spec.param_name(Scope.FOR_ME)) == _CL
+    }
     try:
         settings = resolve_settings(
             SettingsResolutionRequest(
                 config=ctx.obj.get("config", {}),
                 profile=None,
-                cli_flags=flags,
+                cli_flags=cli_flags,
                 explicit_options=explicit_options,
             )
         )
@@ -146,6 +219,7 @@ def _fetch_candidates(
     owned: set[str],
     *,
     show_progress: bool = True,
+    cache: ScanCache | None = None,
 ) -> tuple[
     list[Product],
     dict[str, taste.SeriesMatch],
@@ -205,7 +279,7 @@ def _fetch_candidates(
         done = 0
 
         series_batch = dc.get_series_products_many(
-            [item["series_asin"] for item in series]
+            [item["series_asin"] for item in series], cache=cache
         )
         for s in series:
             target_identity = normalize_identity_text(
@@ -240,25 +314,12 @@ def _fetch_candidates(
             done += 1
             progress.update(task, completed=done, items=len(candidates_by_edition))
 
-        catalog_requests = [
-            CatalogSearchRequest(
-                keywords=author,
-                sort_by="Relevance",
-                max_pages=_PAGES_PER_SCAN,
-            )
-            for author in authors
-        ]
-        catalog_requests.extend(
-            CatalogSearchRequest(
-                category_id=genre["id"],
-                sort_by="BestSellers",
-                max_pages=_PAGES_PER_SCAN,
-            )
-            for genre in genres
-        )
+        catalog_requests = _catalog_requests(authors, genres, cache)
         catalog_results = dc.search_segments(catalog_requests)
 
-        for author, segment in zip(authors, catalog_results[: len(authors)]):
+        for author, segment in zip(
+            authors, catalog_results[: len(authors)], strict=False
+        ):
             for page_products, _, _ in segment.pages:
                 for p in page_products:
                     if any(author.lower() in a.lower() for a in p.authors):
@@ -326,139 +387,15 @@ def _fetch_candidates(
     "--refresh",
     is_flag=True,
     default=False,
-    help="Rebuild the taste profile (refetches your library)",
-)
-@click.option(
-    "--max-price", type=NONNEGATIVE_FLOAT, default=None, help="Max price filter"
-)
-@click.option(
-    "--max-effective-price",
-    "max_effective_price",
-    type=NONNEGATIVE_FLOAT,
-    default=None,
-    help="Max effective price — the cheaper of cash price and one credit",
-)
-@click.option("--min-rating", type=RATING_FLOAT, default=0.0, help="Minimum rating")
-@click.option(
-    "--min-ratings", type=NONNEGATIVE_INT, default=0, help="Minimum number of ratings"
-)
-@click.option(
-    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
-)
-@click.option(
-    "--on-sale/--no-on-sale", default=False, help="Only show discounted items"
-)
-@click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(min=0),
-    default=DEFAULT_LIMIT,
-    help="Show only the top N results (0 for unlimited, default: 25)",
-)
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Export results to file (.json or .csv)",
-)
-@click.option(
-    "--json",
-    "json_flag",
-    is_flag=True,
-    default=False,
-    help="Output results as JSON to stdout",
-)
-@click.option(
-    "--quiet", "-q", is_flag=True, default=False, help="Suppress table output"
-)
-@click.option(
-    "--show-url", is_flag=True, default=False, help="Show Audible URL for each item"
-)
-@click.option(
-    "--interactive/--no-interactive",
-    "-i",
-    default=False,
-    help="Browse results interactively",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Show what would be scanned without making API calls",
-)
-@click.option(
-    "--sort",
-    type=click.Choice(
-        [
-            "price",
-            "-price",
-            "discount",
-            "price-per-hour",
-            "value",
-            "rating",
-            "length",
-            "date",
-            "title",
-            "author",
-            "asin",
-            "bestsellers",
-        ]
+    help=(
+        "Rebuild the taste profile (refetches your library) and ignore "
+        "cached catalog pages"
     ),
-    default=None,
-    help="Re-sort results after fit ranking (default: fit rank order)",
 )
-@click.option(
-    "--narrator",
-    default="",
-    help="Filter by narrator name (substring match, client-side)",
-)
-@click.option(
-    "--exclude-author",
-    "exclude_authors",
-    multiple=True,
-    help="Exclude author (substring match, repeatable)",
-)
-@click.option(
-    "--exclude-narrator",
-    "exclude_narrators",
-    multiple=True,
-    help="Exclude narrator (substring match, repeatable)",
-)
-@click.option(
-    "--skip-plus/--no-skip-plus",
-    default=False,
-    help="Exclude Audible Plus catalog titles",
-)
-@click.option(
-    "--only-plus/--no-only-plus",
-    default=False,
-    help="Show only Audible Plus catalog titles",
-)
+@filter_options(Scope.FOR_ME)
+@output_options("output", "json", "quiet", "show_url", "dry_run")
 @click.pass_context
-def for_me(
-    ctx,
-    refresh,
-    max_price,
-    max_effective_price,
-    min_rating,
-    min_ratings,
-    min_hours,
-    on_sale,
-    limit,
-    output,
-    json_flag,
-    quiet,
-    show_url,
-    interactive,
-    dry_run,
-    sort,
-    narrator,
-    exclude_authors,
-    exclude_narrators,
-    skip_plus,
-    only_plus,
-):
+def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
     """Personalized deals from your own library's taste profile.
 
     Builds a local profile from the books you own (top authors, narrators,
@@ -474,29 +411,18 @@ def for_me(
         deals for-me --dry-run          # show the scan plan
     """
     logger.info(
-        "for-me refresh=%s max_price=%s dry_run=%s", refresh, max_price, dry_run
+        "for-me refresh=%s max_price=%s dry_run=%s",
+        refresh,
+        flags["max_price"],
+        dry_run,
     )
     if dry_run and output:
         raise click.UsageError("--dry-run cannot be combined with --output/-o")
     validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    settings = _resolve_for_me_settings(
-        ctx,
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        on_sale=on_sale,
-        limit=limit,
-        interactive=interactive,
-        sort=sort or "",
-        narrator=narrator,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        language="",
-        all_languages=False,
-    )
+    settings = _resolve_for_me_settings(ctx, flags)
     dc = _get_client(ctx.obj["locale"])
+    cache = _scan_cache(ctx, refresh)
 
     profile = None if refresh else taste.load_cached_profile()
     if dry_run:
@@ -510,7 +436,13 @@ def for_me(
             raise click.ClickException(
                 "Could not derive a taste profile from your library."
             )
-        plan = _for_me_plan(profile, authors, genres, series)
+        plan = _for_me_plan(
+            profile,
+            authors,
+            genres,
+            series,
+            _cached_for_me_calls(ctx.obj["locale"], authors, genres, series, cache),
+        )
         if json_flag:
             click.echo(json.dumps(plan, indent=2, ensure_ascii=False, allow_nan=False))
         else:
@@ -518,6 +450,7 @@ def for_me(
         return
 
     max_price = settings.max_price
+    max_effective_price = settings.max_effective_price
     min_rating = settings.min_rating
     min_ratings = settings.min_ratings
     min_hours = settings.min_hours
@@ -526,6 +459,8 @@ def for_me(
     interactive = settings.interactive
     sort = settings.sort
     narrator = settings.narrator
+    exclude_authors = settings.exclude_authors
+    exclude_narrators = settings.exclude_narrators
     skip_plus = settings.skip_plus
     only_plus = settings.only_plus
     dismissed_asins = load_dismissed_asins()
@@ -541,14 +476,12 @@ def for_me(
                 )
             profile = taste.build_profile(lib_products)
             taste.save_profile(profile)
-            profile_message = (
+            if cache is not None:
+                cache.library_store(ctx.obj["locale"], (p.asin for p in lib_products))
+            note(
                 f"Taste profile built from {len(lib_products)} books "
                 "(cached for 24h; --refresh to rebuild)."
             )
-            if json_flag:
-                click.echo(profile_message, err=True)
-            else:
-                console.print(f"[dim]{profile_message}[/dim]")
 
         authors, genres, series = _scan_plan(profile)
         if not (authors or genres or series):
@@ -564,22 +497,15 @@ def for_me(
             series,
             owned,
             show_progress=not json_flag,
+            cache=cache,
         )
 
-    _report_partial_series_outcomes(
-        failures,
-        incomplete,
-        len(series),
-        json_flag=json_flag,
-    )
+    _report_cache_use(cache, quiet=quiet)
+    _report_partial_series_outcomes(failures, incomplete, len(series))
 
     credit_price = _credit_price(ctx)
     language = "" if settings.all_languages else settings.language
-    candidate_histories = {
-        history_key(p.asin, p.locale): load_price_history(p.asin, p.locale)
-        for p in candidates
-        if p.price is not None
-    }
+    candidate_histories = load_product_histories(candidates)
     candidate_atl, candidate_hist_context = price_history_context(
         candidates, histories=candidate_histories
     )
@@ -658,6 +584,7 @@ def for_me(
             show_url=show_url,
             credit_price=credit_price,
             candidates=tuple(ranked_candidates),
+            cached_asins=cache.cached_asins() if cache is not None else frozenset(),
             session_spec=ResultSessionSpec(
                 producer="for-me",
                 locale=ctx.obj["locale"],
@@ -713,7 +640,10 @@ def for_me(
 @click.pass_context
 def _deprecated_for_you(ctx, **kwargs):
     click.echo("Warning: `deals for-you` is deprecated; use `deals for-me`.", err=True)
-    return for_me.callback(**kwargs)
+    callback = for_me.callback
+    if callback is None:
+        raise RuntimeError("for-me command has no callback")
+    return callback(**kwargs)
 
 
 for_you = click.Command(

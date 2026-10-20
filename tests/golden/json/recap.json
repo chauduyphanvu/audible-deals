@@ -1,0 +1,19 @@
+{
+  "days": "int",
+  "drops": [
+    {
+      "asin": "str",
+      "drop_pct": "int",
+      "new_price": "float",
+      "old_price": "float",
+      "title": "str"
+    }
+  ],
+  "new_count": "int",
+  "wishlist_hits": [
+    {
+      "asin": "str",
+      "title": "str"
+    }
+  ]
+}

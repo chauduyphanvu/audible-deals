@@ -7,17 +7,22 @@ import datetime
 import json
 import math
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import click
 
-from audible_deals import constants
-from audible_deals.constants import LOCALE_DOMAIN, _ASIN_RE
+from audible_deals import paths
+from audible_deals.constants import _ASIN_RE, LOCALE_DOMAIN
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
-from audible_deals.storage import _fsync_parent, load_json_file, save_json_file
+from audible_deals.storage import (
+    _fsync_parent,
+    load_json_file,
+    read_text,
+    save_json_file,
+)
 
 
 @dataclass(frozen=True)
@@ -130,22 +135,26 @@ def warn_wishlist_issues(issues: Sequence[WishlistIssue]) -> None:
 
 
 def load_wishlist() -> list[dict]:
-    return load_json_file(constants.WISHLIST_FILE, list, "wishlist")
+    return load_json_file(paths.wishlist_file(), list, "wishlist")
 
 
 def load_wishlist_for_mutation() -> list[dict]:
     """Load a list-shaped wishlist without replacing malformed saved data."""
     try:
-        contents = constants.WISHLIST_FILE.read_text()
+        contents = read_text(paths.wishlist_file())
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError) as exc:
-        raise WishlistMutationError(f"Cannot modify wishlist: could not read it: {exc}")
+        raise WishlistMutationError(
+            f"Cannot modify wishlist: could not read it: {exc}"
+        ) from exc
 
     try:
         data = json.loads(contents)
     except json.JSONDecodeError as exc:
-        raise WishlistMutationError(f"Cannot modify wishlist: malformed JSON: {exc}")
+        raise WishlistMutationError(
+            f"Cannot modify wishlist: malformed JSON: {exc}"
+        ) from exc
     if not isinstance(data, list):
         raise WishlistMutationError("Cannot modify wishlist: expected a JSON list.")
     return data
@@ -154,11 +163,13 @@ def load_wishlist_for_mutation() -> list[dict]:
 def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
     """Load the exact saved bytes and require a list-shaped JSON document."""
     try:
-        contents = constants.WISHLIST_FILE.read_bytes()
+        contents = paths.wishlist_file().read_bytes()
     except FileNotFoundError:
         return [], None
     except OSError as exc:
-        raise WishlistMutationError(f"Cannot repair wishlist: could not read it: {exc}")
+        raise WishlistMutationError(
+            f"Cannot repair wishlist: could not read it: {exc}"
+        ) from exc
 
     try:
         data = json.loads(
@@ -167,7 +178,9 @@ def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
             parse_float=_parse_finite_float,
         )
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-        raise WishlistMutationError(f"Cannot repair wishlist: malformed JSON: {exc}")
+        raise WishlistMutationError(
+            f"Cannot repair wishlist: malformed JSON: {exc}"
+        ) from exc
     if not isinstance(data, list):
         raise WishlistMutationError("Cannot repair wishlist: expected a JSON list.")
     return data, contents
@@ -176,16 +189,14 @@ def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
 @contextlib.contextmanager
 def wishlist_lock():
     """Serialize wishlist read-modify-write operations across processes."""
-    lock_file = constants.WISHLIST_FILE.with_name(
-        f".{constants.WISHLIST_FILE.name}.lock"
-    )
+    lock_file = paths.wishlist_file().with_name(f".{paths.wishlist_file().name}.lock")
     with advisory_lock(lock_file, wait=True):
         yield
 
 
 def create_wishlist_backup(contents: bytes) -> Path:
     """Create an owner-only, collision-safe backup beside the wishlist."""
-    source = constants.WISHLIST_FILE
+    source = paths.wishlist_file()
     suffix = 0
     while True:
         ending = ".bak" if suffix == 0 else f".bak.{suffix}"
@@ -209,7 +220,7 @@ def create_wishlist_backup(contents: bytes) -> Path:
 
 
 def save_wishlist(items: list[dict], *, durable: bool = False) -> None:
-    save_json_file(constants.WISHLIST_FILE, items, "wishlist", durable=durable)
+    save_json_file(paths.wishlist_file(), items, "wishlist", durable=durable)
 
 
 def partition_wishlist(items: list[dict]) -> tuple[list[dict], list[dict]]:

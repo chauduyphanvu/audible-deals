@@ -5,7 +5,6 @@ from __future__ import annotations
 import json as json_mod
 import logging
 import shlex
-from pathlib import Path
 
 import click
 
@@ -14,21 +13,24 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _report_cache_use,
     _report_partial_series_outcomes,
     _resolve_output_quiet,
+    _scan_cache,
 )
+from audible_deals.cli.options import filter_options, output_options, scope_values
 from audible_deals.client import CatalogSearchRequest, DealsClient
+from audible_deals.filter_specs import Scope, specs_for
 from audible_deals.parsing import parse_series_position
-from audible_deals.price_history import price_history_context
 from audible_deals.presentation.reports import display_series_gaps
 from audible_deals.presentation.terminal import (
     console,
     create_scan_progress,
     safe_markup,
 )
+from audible_deals.price_history import price_history_context
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
-from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.result_processing import (
     DiscoveryProcessingRequest,
     process_discovery,
@@ -40,6 +42,8 @@ from audible_deals.result_publication import (
     publish_discovery,
     record_prices_safely,
 )
+from audible_deals.results_cache import load_dismissed_asins
+from audible_deals.scan_cache import ScanCache
 from audible_deals.serialization import validate_export_path
 from audible_deals.series_identity import (
     group_series_books,
@@ -50,7 +54,6 @@ from audible_deals.settings import (
     SettingsResolutionRequest,
     resolve_settings,
 )
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +98,7 @@ def _fetch_series_candidates(
     *,
     pages: int,
     show_progress: bool = True,
+    cache: ScanCache | None = None,
 ) -> tuple[list[Product], dict[str, tuple[str, ...]], tuple[str, ...], tuple[str, ...]]:
     """Fetch catalog entries for each invested series, skipping owned books.
 
@@ -122,6 +126,7 @@ def _fetch_series_candidates(
                 sort_by="Relevance",
                 max_pages=pages,
                 optional=True,
+                cache=cache,
             )
         )
     with create_scan_progress(disable=not show_progress) as progress:
@@ -131,13 +136,14 @@ def _fetch_series_candidates(
             items=0,
         )
         direct_batch = dc.get_series_products_many(
-            [series_asin for series_asin in series_asins if series_asin]
+            [series_asin for series_asin in series_asins if series_asin],
+            cache=cache,
         )
         fallback_results = dc.search_segments(fallback_requests)
-        fallback_by_index = dict(zip(fallback_indices, fallback_results))
+        fallback_by_index = dict(zip(fallback_indices, fallback_results, strict=True))
 
         for series_idx, ((target_identity, owned_books), series_asin) in enumerate(
-            zip(invested_sorted, series_asins)
+            zip(invested_sorted, series_asins, strict=True)
         ):
             sname = _representative_series_name(owned_books)
             try:
@@ -298,79 +304,8 @@ def _series_gaps_report(
     default="",
     help="Filter to a specific series name (substring match)",
 )
-@click.option(
-    "--max-price", type=NONNEGATIVE_FLOAT, default=None, help="Max price filter"
-)
-@click.option(
-    "--min-rating", type=RATING_FLOAT, default=0.0, help="Minimum rating (e.g. 4.0)"
-)
-@click.option(
-    "--min-ratings", type=NONNEGATIVE_INT, default=0, help="Minimum number of ratings"
-)
-@click.option(
-    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
-)
-@click.option(
-    "--on-sale", is_flag=True, default=False, help="Only show discounted items"
-)
-@click.option(
-    "--sort",
-    type=click.Choice(
-        [
-            "price",
-            "-price",
-            "discount",
-            "price-per-hour",
-            "rating",
-            "length",
-            "date",
-            "title",
-        ]
-    ),
-    default="price-per-hour",
-    help="Sort order (default: price-per-hour)",
-)
-@click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(min=0),
-    default=25,
-    help="Show only the top N results (0 for unlimited, default: 25)",
-)
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Export results to file (.json or .csv)",
-)
-@click.option(
-    "--json",
-    "json_flag",
-    is_flag=True,
-    default=False,
-    help="Output results as JSON to stdout",
-)
-@click.option(
-    "--quiet",
-    "-q",
-    is_flag=True,
-    default=False,
-    help="Suppress table output (useful with --output)",
-)
-@click.option(
-    "--interactive",
-    "-i",
-    is_flag=True,
-    default=False,
-    help="Browse results interactively",
-)
-@click.option(
-    "--pages",
-    type=click.IntRange(min=1),
-    default=3,
-    help="Pages to scan per series search (default: 3)",
-)
+@filter_options(Scope.SERIES)
+@output_options("output", "json", "quiet", "refresh", "interactive")
 @click.option(
     "--gaps",
     "gaps_mode",
@@ -384,19 +319,13 @@ def series(
     min_books,
     max_series,
     series_filter,
-    max_price,
-    min_rating,
-    min_ratings,
-    min_hours,
-    on_sale,
-    sort,
-    limit,
     output,
     json_flag,
     quiet,
+    refresh,
     interactive,
-    pages,
     gaps_mode,
+    **flags,
 ):
     """Find continuation books in series you're invested in.
 
@@ -428,26 +357,17 @@ def series(
         min_books,
         max_series,
         series_filter,
-        max_price,
-        sort,
+        flags["max_price"],
+        flags["sort"],
         gaps_mode,
     )
     validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
     explicit_options = {
-        name
-        for name in (
-            "max_price",
-            "min_rating",
-            "min_ratings",
-            "min_hours",
-            "on_sale",
-            "limit",
-            "sort",
-            "pages",
-        )
-        if ctx.get_parameter_source(name) == _CL
+        spec.key
+        for spec in specs_for(Scope.SERIES)
+        if ctx.get_parameter_source(spec.param_name(Scope.SERIES)) == _CL
     }
     try:
         s = resolve_settings(
@@ -455,16 +375,7 @@ def series(
                 config=ctx.obj.get("config", {}),
                 profile=None,
                 explicit_options=explicit_options,
-                cli_flags=dict(
-                    max_price=max_price,
-                    min_rating=min_rating,
-                    min_ratings=min_ratings,
-                    min_hours=min_hours,
-                    on_sale=on_sale,
-                    limit=limit,
-                    sort=sort,
-                    pages=pages,
-                ),
+                cli_flags=scope_values(Scope.SERIES, flags),
             ),
         )
     except ValueError as exc:
@@ -476,6 +387,7 @@ def series(
     dc = _get_client(ctx.obj["locale"])
     cur = _currency(ctx)
     dismissed_asins = load_dismissed_asins()
+    cache = _scan_cache(ctx, refresh)
 
     with dc:
         # 1. Fetch library
@@ -483,6 +395,8 @@ def series(
             console.print("[dim]Fetching library...[/dim]")
         lib_products = dc.get_library()
         owned_asins = {p.asin for p in lib_products}
+        if cache is not None:
+            cache.library_store(ctx.obj["locale"], owned_asins)
 
         # 2. Identify invested series (user owns min_books+ books)
         invested = _invested_series(
@@ -524,15 +438,12 @@ def series(
                 owned_asins,
                 pages=pages,
                 show_progress=not json_flag,
+                cache=cache,
             )
         )
 
-    _report_partial_series_outcomes(
-        failures,
-        incomplete,
-        len(invested_sorted),
-        json_flag=json_flag,
-    )
+    _report_cache_use(cache, quiet=quiet)
+    _report_partial_series_outcomes(failures, incomplete, len(invested_sorted))
 
     series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
     eligible_candidates = [
@@ -566,7 +477,8 @@ def series(
 
     if gaps_mode:
         # Keep history without caching or applying the flat-view limit.
-        record_prices_safely(list(result.products))
+        cached = cache.cached_asins() if cache is not None else frozenset()
+        record_prices_safely([p for p in result.products if p.asin not in cached])
         _series_gaps_report(
             list(result.products),
             invested_sorted,
@@ -590,6 +502,7 @@ def series(
             interactive=interactive,
             credit_price=_credit_price(ctx),
             candidates=tuple(eligible_candidates),
+            cached_asins=cache.cached_asins() if cache is not None else frozenset(),
             session_spec=ResultSessionSpec(
                 producer="series",
                 locale=ctx.obj["locale"],

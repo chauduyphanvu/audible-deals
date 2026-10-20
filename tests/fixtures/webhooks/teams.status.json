@@ -1,0 +1,43 @@
+{
+  "captured_with": "deals track run with no saved login (webhook and webhook-format from config); the fake Audible API, a local HTTP server as the webhook",
+  "format": "teams",
+  "kind": "status",
+  "request": {
+    "body": {
+      "attachments": [
+        {
+          "content": {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "body": [
+              {
+                "color": "Attention",
+                "size": "Medium",
+                "text": "audible-deals needs attention",
+                "type": "TextBlock",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "Background tracking failed: Not authenticated. Run 'deals login' first.\n\nRun 'deals login' to re-authenticate.",
+                "type": "TextBlock",
+                "wrap": true
+              }
+            ],
+            "msteams": {
+              "width": "Full"
+            },
+            "type": "AdaptiveCard",
+            "version": "1.2"
+          },
+          "contentType": "application/vnd.microsoft.card.adaptive",
+          "contentUrl": null
+        }
+      ],
+      "type": "message"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

@@ -11,6 +11,7 @@ from typing import TYPE_CHECKING, Any
 import click
 
 from audible_deals.auth_store import AuthStore
+from audible_deals.exit_codes import AuthRequiredError, request_failure_reason
 
 if TYPE_CHECKING:
     import audible
@@ -27,6 +28,7 @@ _LOG_PARAM_KEYS = (
     "sort_by",
 )
 _RETRY_DELAYS = (1.0, 2.0)
+_ATTEMPTS = 3
 
 
 def _log_request_params(params: dict[str, Any]) -> dict[str, Any]:
@@ -97,7 +99,7 @@ class AudibleTransport:
         try:
             client = self._get_client()
             debug = logger.isEnabledFor(logging.DEBUG)
-            for attempt in range(1, 4):
+            for attempt in range(1, _ATTEMPTS + 1):
                 if debug:
                     logger.debug(
                         "API GET %s params=%s", endpoint, _log_request_params(params)
@@ -108,30 +110,29 @@ class AudibleTransport:
                 except Exception as exc:
                     if isinstance(exc, click.ClickException):
                         raise
-                    if isinstance(exc, RuntimeError) and "Not authenticated" in str(
-                        exc
-                    ):
+                    if isinstance(exc, AuthRequiredError):
                         raise
                     status = _retryable_status(exc)
                     if status is not None and 400 <= status < 500 and status != 429:
                         raise
-                    if attempt >= 3:
-                        logger.warning(
-                            "API GET %s failed (attempt %d/%d): %s; giving up",
-                            endpoint,
-                            attempt,
-                            3,
-                            exc,
-                        )
-                        raise
-                    delay = _retry_delay(attempt, exc, status)
-                    logger.warning(
-                        "API GET %s failed (attempt %d/%d): %s; retrying in %.1fs",
+                    # The endpoint and the raw error are for -v; the person at
+                    # the terminal gets the reason in a few words.
+                    logger.info(
+                        "API GET %s failed (attempt %d/%d): %s",
                         endpoint,
                         attempt,
-                        3,
+                        _ATTEMPTS,
                         exc,
-                        delay,
+                    )
+                    if attempt >= _ATTEMPTS:
+                        raise  # the command reports the failure, once
+                    delay = _retry_delay(attempt, exc, status)
+                    logger.warning(
+                        "Audible request failed (%s); retrying in %ds (attempt %d of %d)",
+                        request_failure_reason(exc),
+                        max(1, round(delay)),
+                        attempt + 1,
+                        _ATTEMPTS,
                     )
                     if self._abort.wait(delay):
                         raise
@@ -161,6 +162,8 @@ class AudibleTransport:
                         total,
                     )
                 return response
+            # The final attempt always returns or re-raises above.
+            raise AssertionError("unreachable: retry loop ended without a result")
         finally:
             self._end_request()
 

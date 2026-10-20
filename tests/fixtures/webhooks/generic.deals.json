@@ -1,0 +1,36 @@
+{
+  "captured_with": "deals notify --webhook URL --webhook-format FORMAT (wishlist of three titles with awkward names); the fake Audible API, a local HTTP server as the webhook",
+  "format": "generic",
+  "kind": "deals",
+  "request": {
+    "body": {
+      "count": 3,
+      "deals": [
+        {
+          "asin": "B0PKW9Y38E",
+          "price": 4.48,
+          "target": 100.0,
+          "title": "Tom & Jerry <Live> | A *Bold* _Move_ ~Strike~ `code` @everyone",
+          "url": "https://www.audible.com/pd/B0PKW9Y38E"
+        },
+        {
+          "asin": "B0JEKRL881",
+          "price": 8.98,
+          "target": 100.0,
+          "title": "Why [Brackets](Matter) — and Ünïcode",
+          "url": "https://www.audible.com/pd/B0JEKRL881"
+        },
+        {
+          "asin": "B007DB4FU3",
+          "price": 19.95,
+          "target": 100.0,
+          "title": "Plain Title",
+          "url": "https://www.audible.com/pd/B007DB4FU3"
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

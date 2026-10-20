@@ -4,10 +4,11 @@ from __future__ import annotations
 
 import datetime
 import json
+from unittest.mock import ANY
 
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
+from audible_deals import cache_store, paths
 from audible_deals.cli import cli
 from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from audible_deals.series_identity import (
@@ -15,7 +16,7 @@ from audible_deals.series_identity import (
     series_book_identity,
     series_identity,
 )
-from tests.conftest import make_product, make_series_products_batch
+from tests.conftest import make_product, make_series_products_batch, raw_session
 
 
 def _mock_library_pages(mock_client, products):
@@ -55,7 +56,7 @@ def _seed_profile_cache():
             }
         ],
     }
-    constants_mod.TASTE_CACHE_FILE.write_text(json.dumps(profile))
+    cache_store.put("taste", "profile", profile)
     return profile
 
 
@@ -416,7 +417,9 @@ class TestSeriesCommand:
         result = runner.invoke(cli, ["series"])
         assert result.exit_code == 0, result.output
         assert "Alpha Book 3" in result.output
-        mock_client.get_series_products_many.assert_called_once_with(["SER_ALPHA"])
+        mock_client.get_series_products_many.assert_called_once_with(
+            ["SER_ALPHA"], cache=ANY
+        )
         mock_client.search_pages.assert_not_called()
 
     def test_series_reports_partial_lookup_failures(self, tmp_config, mock_client):
@@ -463,12 +466,13 @@ class TestSeriesCommand:
         result = CliRunner().invoke(cli, ["series"])
 
         assert result.exit_code == 0, result.output
+        # A warning about the run, so it goes to stderr and not into piped output.
         assert (
-            "Partial results: 1/2 series scanned; 1 failed; 1 incomplete.\n"
+            "Warning: Partial results: 1/2 series scanned; 1 failed; 1 incomplete.\n"
             "  Alpha Series: RuntimeError: temporary failure\n"
             "  Beta Series: 1 product(s) unavailable\n"
-        ) in result.stdout
-        assert "Partial results:" not in result.stderr
+        ) in result.stderr
+        assert "Partial results:" not in result.stdout
         assert "Beta Book 3" in result.output
 
     def test_series_reports_missing_child_products(self, tmp_config, mock_client):
@@ -530,7 +534,7 @@ class TestSeriesCommand:
         result = runner.invoke(cli, ["series"])
         assert result.exit_code == 0, result.output
         assert "Alpha Book 3" in result.output
-        mock_client.get_series_products_many.assert_called_once_with([])
+        mock_client.get_series_products_many.assert_called_once_with([], cache=ANY)
         assert mock_client.search_pages.call_count == 1
 
     def test_series_min_books_filters(self, tmp_config, mock_client):
@@ -593,7 +597,9 @@ class TestSeriesCommand:
         result = runner.invoke(cli, ["series", "--series", "Alpha"])
         assert result.exit_code == 0, result.output
 
-        mock_client.get_series_products_many.assert_called_once_with(["SER_ALPHA"])
+        mock_client.get_series_products_many.assert_called_once_with(
+            ["SER_ALPHA"], cache=ANY
+        )
         assert "Alpha Book 3" in result.output
 
     def test_series_skips_owned(self, tmp_config, mock_client):
@@ -935,7 +941,7 @@ class TestSeriesCommand:
 
         assert result.exit_code == 0, result.output
         assert [item["asin"] for item in json.loads(result.stdout)] == ["PREORDER"]
-        session = json.loads(constants_mod.LAST_RESULTS_FILE.read_text())
+        session = json.loads(raw_session())
         assert [item["asin"] for item in session["candidates"]] == ["PREORDER"]
 
     def test_gaps_retains_unavailable_and_counts_unique_identities(
@@ -1110,7 +1116,7 @@ class TestSeriesCommand:
     def test_gaps_config_max_price_keeps_unavailable_and_filters_priced(
         self, tmp_config, mock_client
     ):
-        constants_mod.CONFIG_FILE.write_text(json.dumps({"max_price": 5.0}))
+        paths.config_file().write_text(json.dumps({"max_price": 5.0}))
         self._assert_gaps_max_price(mock_client, [])
 
     @staticmethod
@@ -1226,7 +1232,7 @@ class TestForMeDryRunNoSideEffects:
         assert result.exit_code != 0
         assert "deals for-me" in result.output
         mock_client.get_library_pages.assert_not_called()
-        assert not constants_mod.TASTE_CACHE_FILE.exists()
+        assert cache_store.get("taste", "profile") is None
 
     def test_refresh_dry_run_does_not_fetch_or_overwrite(self, mock_client, tmp_config):
         # --refresh forces profile=None; combined with --dry-run it must still
@@ -1237,7 +1243,7 @@ class TestForMeDryRunNoSideEffects:
         assert result.exit_code != 0
         mock_client.get_library_pages.assert_not_called()
         # The on-disk cache is untouched.
-        assert json.loads(constants_mod.TASTE_CACHE_FILE.read_text()) == seeded
+        assert cache_store.get("taste", "profile") == seeded
 
     def test_dry_run_with_cache_still_prints_plan(self, mock_client, tmp_config):
         _seed_profile_cache()

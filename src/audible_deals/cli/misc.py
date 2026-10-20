@@ -11,7 +11,7 @@ from urllib.parse import parse_qs, urlparse
 import click
 from rich.table import Table
 
-from audible_deals import constants
+from audible_deals import db, json_import, json_output, paths
 from audible_deals.auth_state import inspect_auth_file
 from audible_deals.cli.helpers import (
     _CL,
@@ -19,12 +19,15 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_cli_selectors,
 )
+from audible_deals.cli.options import json_option
 from audible_deals.config_store import (
+    CONFIG_SCHEMA,
     config_numeric_errors,
-    load_monitor_state,
+    load_config,
     load_monitors,
 )
-from audible_deals.constants import _CONFIG_SCHEMA, product_url
+from audible_deals.constants import product_url
+from audible_deals.exit_codes import ExitCode
 from audible_deals.monitor_service import (
     MonitorServiceError,
     validated_monitor_definition,
@@ -34,12 +37,24 @@ from audible_deals.presentation.products import (
     display_product_detail,
 )
 from audible_deals.presentation.reports import display_categories
-from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.presentation.terminal import (
+    console,
+    route_console_to_stderr,
+    safe_markup,
+    safe_text,
+)
 from audible_deals.settings import (
     _PROFILE_EXTRA_KEYS,
     profile_validation_error,
     resolve_plus_flags,
 )
+from audible_deals.state_store import (
+    load_install_record,
+    load_notify_state,
+    load_track_state,
+    monitor_summaries,
+)
+from audible_deals.storage import read_text
 from audible_deals.wishlist import inspect_wishlist
 
 
@@ -48,11 +63,10 @@ def _reject_json_constant(value: str):
 
 
 def _load_raw_json(path: Path, expected_type: type):
-    data = json_mod.loads(path.read_text(), parse_constant=_reject_json_constant)
+    data = json_mod.loads(read_text(path), parse_constant=_reject_json_constant)
     if not isinstance(data, expected_type):
-        expected_name = {dict: "object", list: "array"}.get(
-            expected_type, expected_type.__name__
-        )
+        json_names: dict[type, str] = {dict: "object", list: "array"}
+        expected_name = json_names.get(expected_type, expected_type.__name__)
         raise ValueError(f"Expected a JSON {expected_name}, got {type(data).__name__}")
     return data
 
@@ -143,7 +157,7 @@ def _login_callback(via_file: Path | None, open_browser: bool):
                     click.echo(
                         "Warning: callback file is readable by other users.", err=True
                     )
-                callback_url = via_file.read_text().strip()
+                callback_url = read_text(via_file).strip()
             except OSError as exc:
                 raise click.ClickException(
                     f"Could not read callback file: {exc}"
@@ -205,16 +219,28 @@ def import_auth(ctx, path: Path):
 
 @click.command()
 @click.option("--parent", default="", help="Parent category ID (omit for top-level)")
+@json_option("Output the category list as JSON")
 @click.pass_context
-def categories(ctx, parent):
+def categories(ctx, parent, json_flag):
     """List Audible categories. Use --parent to drill into subcategories."""
+    if json_flag:
+        route_console_to_stderr(ctx)
     dc = _get_client(ctx.obj["locale"])
     with dc:
         try:
             cats = dc.get_categories(root=parent)
         except ValueError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
 
+    if json_flag:
+        click.echo(
+            json_output.dumps(
+                json_output.categories_payload(
+                    cats, parent=parent, locale=ctx.obj["locale"]
+                )
+            )
+        )
+        return
     title = "Subcategories" if parent else "Top-Level Categories"
     display_categories(cats, title=title)
     console.print(
@@ -232,11 +258,14 @@ def categories(ctx, parent):
     default=None,
     help="Use result #N from the last result session",
 )
+@json_option("Output the product as JSON")
 @click.pass_context
-def detail(ctx, asin, last_ref):
+def detail(ctx, asin, last_ref, json_flag):
     """Show product details using an ASIN, Audible URL, or @N selector."""
     if not asin and last_ref is None:
         raise click.UsageError("Provide an ASIN, Audible URL, @N, or use --last N.")
+    if json_flag:
+        route_console_to_stderr(ctx)
     resolved, locale = _resolve_cli_selectors(
         ctx,
         (asin,) if asin else (),
@@ -249,8 +278,13 @@ def detail(ctx, asin, last_ref):
         try:
             product = dc.get_product(asin)
         except ValueError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
 
+    if json_flag:
+        click.echo(
+            json_output.dumps(json_output.product_payload(product, _credit_price(ctx)))
+        )
+        return
     display_product_detail(product, credit_price=_credit_price(ctx))
 
 
@@ -289,8 +323,9 @@ def open_cmd(ctx, asin, last_ref):
     multiple=True,
     help="Use result #N from the last result session (repeatable)",
 )
+@json_option("Output the products as JSON")
 @click.pass_context
-def compare(ctx, asins, last_refs):
+def compare(ctx, asins, last_refs, json_flag):
     """Compare multiple products side-by-side.
 
     \b
@@ -301,6 +336,8 @@ def compare(ctx, asins, last_refs):
     """
     if len(asins) == 1 and not last_refs and not asins[0].startswith("@"):
         raise click.UsageError("Provide at least 2 ASINs to compare.")
+    if json_flag:
+        route_console_to_stderr(ctx)
     resolved, locale = _resolve_cli_selectors(ctx, asins, last_refs)
     all_asins = [item.asin for item in resolved]
 
@@ -312,9 +349,9 @@ def compare(ctx, asins, last_refs):
         products = dc.get_products_batch(all_asins)
 
     found_asins = {p.asin for p in products}
-    for asin in all_asins:
-        if asin not in found_asins:
-            console.print(f"[red]Not found: {safe_markup(asin)}[/red]")
+    missing = [asin for asin in all_asins if asin not in found_asins]
+    for asin in missing:
+        console.print(f"[red]Not found: {safe_markup(asin)}[/red]")
 
     if len(products) < 2:
         raise click.ClickException("Need at least 2 valid products to compare.")
@@ -323,6 +360,13 @@ def compare(ctx, asins, last_refs):
     asin_order = {asin: i for i, asin in enumerate(all_asins)}
     products.sort(key=lambda p: asin_order.get(p.asin, 999))
 
+    if json_flag:
+        click.echo(
+            json_output.dumps(
+                json_output.compare_payload(products, missing, _credit_price(ctx))
+            )
+        )
+        return
     display_comparison(products, credit_price=_credit_price(ctx))
 
 
@@ -332,16 +376,18 @@ _Row = tuple[str, str, str]  # (check, status token PASS/WARN/FAIL, detail)
 def _auth_checks() -> tuple[list[_Row], bool]:
     """Check config dir, auth file presence/parseability, and token expiry."""
     rows: list[_Row] = []
-    if constants.CONFIG_DIR.exists():
-        rows.append(("Config directory", "PASS", str(constants.CONFIG_DIR)))
+    directory, why = paths.data_dir_with_reason()
+    if directory.exists():
+        rows.append(("Config directory", "PASS", str(directory)))
     else:
         rows.append(
             (
                 "Config directory",
                 "WARN",
-                f"Not found — will be created at {constants.CONFIG_DIR}",
+                f"Not found — will be created at {directory}",
             )
         )
+    rows.append(("Data location", "PASS", why))
 
     inspection = inspect_auth_file()
     auth_ok = inspection.is_usable
@@ -350,7 +396,7 @@ def _auth_checks() -> tuple[list[_Row], bool]:
             ("Auth file present", "FAIL", "Run 'deals login' or 'deals import-auth'")
         )
     else:
-        rows.append(("Auth file present", "PASS", str(constants.AUTH_FILE)))
+        rows.append(("Auth file present", "PASS", str(paths.auth_file())))
 
     if inspection.status == "malformed":
         rows.append(("Auth file parseable", "FAIL", inspection.error))
@@ -397,9 +443,9 @@ def _connectivity_check(ctx, auth_ok: bool) -> _Row:
 def _config_checks() -> list[_Row]:
     """Validate the config file schema and profile option keys."""
     rows: list[_Row] = []
-    if constants.CONFIG_FILE.exists():
+    if paths.config_file().exists():
         try:
-            cfg = json_mod.loads(constants.CONFIG_FILE.read_text())
+            cfg = json_mod.loads(read_text(paths.config_file()))
             if not isinstance(cfg, dict):
                 rows.append(
                     (
@@ -413,9 +459,9 @@ def _config_checks() -> list[_Row]:
                 )
             else:
                 errors = [
-                    f"{k}: expected {_CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
+                    f"{k}: expected {CONFIG_SCHEMA[k].__name__}, got {type(v).__name__}"
                     for k, v in cfg.items()
-                    if k in _CONFIG_SCHEMA and not isinstance(v, _CONFIG_SCHEMA[k])
+                    if k in CONFIG_SCHEMA and not isinstance(v, CONFIG_SCHEMA[k])
                 ]
                 errors.extend(config_numeric_errors(cfg))
                 if all(
@@ -433,7 +479,7 @@ def _config_checks() -> list[_Row]:
                     rows.append(("Config file valid", "FAIL", "; ".join(errors)))
                 else:
                     rows.append(("Config file valid", "PASS", ""))
-                unknown = sorted(k for k in cfg if k not in _CONFIG_SCHEMA)
+                unknown = sorted(k for k in cfg if k not in CONFIG_SCHEMA)
                 if unknown:
                     rows.append(("Unknown config keys", "WARN", ", ".join(unknown)))
                 else:
@@ -446,10 +492,10 @@ def _config_checks() -> list[_Row]:
     else:
         rows.append(("Config file valid", "PASS", "No config file (using defaults)"))
 
-    if constants.PROFILES_FILE.exists():
+    if paths.profiles_file().exists():
         try:
-            profiles = _load_raw_json(constants.PROFILES_FILE, dict)
-            valid_profile_keys = set(_CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
+            profiles = _load_raw_json(paths.profiles_file(), dict)
+            valid_profile_keys = set(CONFIG_SCHEMA) | set(_PROFILE_EXTRA_KEYS)
             bad_profiles: dict[str, list[str]] = {}
             invalid_profiles: dict[str, str] = {}
             for pname, popts in profiles.items():
@@ -483,39 +529,133 @@ def _config_checks() -> list[_Row]:
     return rows
 
 
+def _databases_not_created_yet() -> list[_Row]:
+    """A machine that has not saved anything yet: report that, create nothing."""
+    pending = json_import.pending_source_names()
+    state = "not created yet (the first command that saves something creates it)"
+    if pending:
+        state += "; it will import these old files then: " + ", ".join(sorted(pending))
+    rows: list[_Row] = [
+        ("State database", "PASS", state),
+        (
+            "JSON migration",
+            "PASS",
+            "Pending until then" if pending else "Nothing to migrate",
+        ),
+    ]
+    if paths.cache_db_file().exists():
+        rows.append(_cache_database_row())
+    else:
+        rows.append(
+            ("Cache database", "PASS", "not created yet (made when a scan is cached)")
+        )
+    return rows
+
+
+def _cache_database_row() -> _Row:
+    try:
+        cache_conn = db.cache()
+        cache_version = cache_conn.execute("PRAGMA user_version").fetchone()[0]
+        return (
+            "Cache database",
+            "PASS",
+            f"schema {cache_version}, {db.file_size(paths.cache_db_file()):,} bytes "
+            "(disposable; 'deals cache clear' empties it)",
+        )
+    except Exception as exc:
+        return ("Cache database", "WARN", str(exc))
+
+
+def _database_checks() -> list[_Row]:
+    """Health of state.db and cache.db and of the one-time import of the old JSON files."""
+    rows: list[_Row] = []
+    if not paths.state_db_file().exists():
+        return _databases_not_created_yet()
+    try:
+        conn = db.state()
+    except Exception as exc:
+        return [("State database", "FAIL", str(exc))]
+    try:
+        verdict = db.quick_check(conn)
+    except Exception as exc:
+        verdict = [str(exc)]
+    size = db.file_size(paths.state_db_file())
+    version = conn.execute("PRAGMA user_version").fetchone()[0]
+    if verdict == ["ok"]:
+        rows.append(
+            (
+                "State database",
+                "PASS",
+                f"schema {version}, {size:,} bytes, integrity check ok",
+            )
+        )
+    else:
+        rows.append(
+            (
+                "State database",
+                "FAIL",
+                f"integrity check failed: {verdict[0]} — move {paths.state_db_file()} "
+                "aside and run any command to start fresh (old JSON files are kept as "
+                "*.migrated if you need them)",
+            )
+        )
+    imported = json_import.summary(conn)
+    if imported is None:
+        rows.append(("JSON migration", "WARN", "Not run yet"))
+    elif imported["renames_pending"]:
+        rows.append(
+            (
+                "JSON migration",
+                "WARN",
+                "Data imported, but these old files could not be renamed yet: "
+                + ", ".join(imported["renames_pending"]),
+            )
+        )
+    elif not imported["sources"]:
+        rows.append(("JSON migration", "PASS", "Nothing to migrate"))
+    else:
+        counts = imported["counts"]
+        detail = (
+            f"Imported {imported['at']} "
+            f"({counts.get('history_entries', 0)} price entries for "
+            f"{counts.get('history_asins', 0)} ASIN(s)); originals kept as *.migrated"
+        )
+        skipped = sum(imported["skipped"].values())
+        if skipped or imported["notes"]:
+            rows.append(
+                (
+                    "JSON migration",
+                    "WARN",
+                    f"{detail}; skipped {skipped} unusable item(s)"
+                    + "".join(f"; {note}" for note in imported["notes"]),
+                )
+            )
+        else:
+            rows.append(("JSON migration", "PASS", detail))
+    if paths.cache_db_file().exists():
+        rows.append(_cache_database_row())
+    else:
+        rows.append(
+            ("Cache database", "PASS", "not created yet (made when a scan is cached)")
+        )
+    return rows
+
+
 def _store_checks() -> list[_Row]:
     """Check notify-state health and that local state files are parseable."""
     rows: list[_Row] = []
     try:
-        ns = (
-            _load_raw_json(constants.NOTIFY_STATE_FILE, dict)
-            if constants.NOTIFY_STATE_FILE.exists()
-            else {}
-        )
+        ns = load_notify_state()
         today = datetime.date.today()
-        malformed = 0
         stale = 0
         for entry in ns.values():
-            if not isinstance(entry, dict):
-                malformed += 1
-                continue
             try:
-                d = datetime.date.fromisoformat(entry["date"])
-                age = abs((today - d).days)
-                if age > 365:
+                if abs((today - datetime.date.fromisoformat(entry["date"])).days) > 365:
                     stale += 1
             except (KeyError, ValueError, TypeError):
-                malformed += 1
-                continue
-            if not isinstance(entry.get("price"), (int, float)):
-                malformed += 1
-        if malformed or stale:
-            parts = []
-            if malformed:
-                parts.append(f"{malformed} malformed")
-            if stale:
-                parts.append(f"{stale} stale (>365 days)")
-            rows.append(("Notify-state health", "WARN", "; ".join(parts)))
+                stale += 1
+        if stale:
+            rows.append(("Notify-state health", "WARN", f"{stale} stale (>365 days)"))
         elif ns:
             rows.append(
                 ("Notify-state health", "PASS", f"{len(ns)} suppressed ASIN(s) tracked")
@@ -525,11 +665,11 @@ def _store_checks() -> list[_Row]:
     except Exception as e:
         rows.append(("Notify-state health", "WARN", str(e)))
 
-    if not constants.WISHLIST_FILE.exists():
+    if not paths.wishlist_file().exists():
         rows.append(("Wishlist health", "PASS", "No entries"))
     else:
         try:
-            raw_wishlist = json_mod.loads(constants.WISHLIST_FILE.read_text())
+            raw_wishlist = json_mod.loads(read_text(paths.wishlist_file()))
         except Exception as e:
             rows.append(("Wishlist health", "FAIL", str(e)))
         else:
@@ -557,68 +697,55 @@ def _store_checks() -> list[_Row]:
                     count = len(inspection.asin_items) + len(inspection.author_items)
                     rows.append(("Wishlist health", "PASS", f"{count} entries"))
 
-    if not constants.DISMISSED_ASINS_FILE.exists():
-        rows.append(("Dismissed-ASINs state", "PASS", "No entries"))
+    try:
+        counts = db.table_counts(db.state(), ("dismissed", "seen"))
+    except Exception as exc:
+        rows.append(("Dismissed-ASINs state", "FAIL", str(exc)))
+        rows.append(("Seen-ASINs state", "FAIL", str(exc)))
     else:
-        try:
-            dismissed = json_mod.loads(constants.DISMISSED_ASINS_FILE.read_text())
-        except Exception as exc:
-            rows.append(("Dismissed-ASINs state", "FAIL", str(exc)))
-        else:
-            if not isinstance(dismissed, list):
-                rows.append(
-                    (
-                        "Dismissed-ASINs state",
-                        "FAIL",
-                        f"Expected a list, got {type(dismissed).__name__}",
-                    )
-                )
-            elif not all(isinstance(asin, str) for asin in dismissed):
-                rows.append(
-                    (
-                        "Dismissed-ASINs state",
-                        "FAIL",
-                        "Expected every entry to be a string",
-                    )
-                )
-            else:
-                rows.append(
-                    (
-                        "Dismissed-ASINs state",
-                        "PASS",
-                        f"{len(set(dismissed))} ASIN(s) dismissed",
-                    )
-                )
+        dismissed = counts["dismissed"]
+        rows.append(
+            (
+                "Dismissed-ASINs state",
+                "PASS",
+                f"{dismissed} ASIN(s) dismissed" if dismissed else "No entries",
+            )
+        )
+        rows.append(
+            (
+                "Seen-ASINs state",
+                "PASS",
+                f"{counts['seen']} ASIN(s) seen" if counts["seen"] else "No entries",
+            )
+        )
 
     for check, path, expected_type in (
-        ("Profiles parseable", constants.PROFILES_FILE, dict),
-        ("Monitors parseable", constants.MONITORS_FILE, dict),
-        ("Seen-ASINs parseable", constants.SEEN_ASINS_FILE, list),
+        ("Profiles parseable", paths.profiles_file(), dict),
+        ("Monitors parseable", paths.monitors_file(), dict),
     ):
         if not path.exists():
             rows.append((check, "PASS", "No entries"))
             continue
         try:
             data = _load_raw_json(path, expected_type)
-            if path == constants.PROFILES_FILE:
-                malformed = [
+            malformed_entries: list[str]
+            if path == paths.profiles_file():
+                malformed_entries = [
                     name for name, value in data.items() if not isinstance(value, dict)
                 ]
-            elif path == constants.MONITORS_FILE:
-                malformed = []
+            else:
+                malformed_entries = []
                 for name, value in data.items():
                     try:
                         validated_monitor_definition(value)
                     except MonitorServiceError:
-                        malformed.append(name)
-            else:
-                malformed = []
-            if malformed:
+                        malformed_entries.append(name)
+            if malformed_entries:
                 rows.append(
                     (
                         check,
                         "FAIL",
-                        "Malformed entries: " + ", ".join(map(str, malformed)),
+                        "Malformed entries: " + ", ".join(map(str, malformed_entries)),
                     )
                 )
             else:
@@ -626,35 +753,35 @@ def _store_checks() -> list[_Row]:
         except Exception as e:
             rows.append((check, "FAIL", str(e)))
 
-    if constants.HISTORY_DIR.exists():
-        count = sum(1 for _ in constants.HISTORY_DIR.glob("*.json"))
-        rows.append(("Price history directory", "PASS", f"{count} ASIN(s) tracked"))
-    else:
-        rows.append(("Price history directory", "PASS", "Not yet created (optional)"))
+    try:
+        history = (
+            db.state()
+            .execute("SELECT COUNT(*), COUNT(DISTINCT asin) FROM price_history")
+            .fetchone()
+        )
+        if history[0]:
+            rows.append(
+                (
+                    "Price history",
+                    "PASS",
+                    f"{history[1]} ASIN(s) tracked, {history[0]} price entries",
+                )
+            )
+        else:
+            rows.append(("Price history", "PASS", "Not recorded yet (optional)"))
+    except Exception as exc:
+        rows.append(("Price history", "FAIL", str(exc)))
 
     return rows
 
 
 def _track_checks() -> list[_Row]:
     """Check background-tracking schedule health."""
-    from audible_deals.cli.track import _run_history
-
-    if constants.TRACK_STATE_FILE.exists():
-        try:
-            state = _load_raw_json(constants.TRACK_STATE_FILE, dict)
-        except Exception as exc:
-            return [("Background tracking state", "FAIL", str(exc))]
-    else:
-        state = {}
-    install_info = state.get("install")
-    if install_info is not None and not isinstance(install_info, dict):
-        return [
-            (
-                "Background tracking state",
-                "FAIL",
-                "install record must be an object",
-            )
-        ]
+    try:
+        install_info = load_install_record()
+        runs = load_track_state().runs
+    except Exception as exc:
+        return [("Background tracking state", "FAIL", str(exc))]
     if not install_info:
         return [
             (
@@ -677,6 +804,16 @@ def _track_checks() -> list[_Row]:
                     f"every {install_info.get('every', '?')} via {install_info.get('method', '?')}",
                 )
             )
+            missing = scheduler.missing_executable()
+            if missing is not None:
+                rows.append(
+                    (
+                        "Scheduled command",
+                        "WARN",
+                        f"The schedule runs {missing}, which no longer exists "
+                        "(moved or uninstalled?). Re-run 'deals track install'.",
+                    )
+                )
         else:
             rows.append(
                 (
@@ -688,10 +825,6 @@ def _track_checks() -> list[_Row]:
     except Exception as e:
         rows.append(("Background tracking", "WARN", str(e)))
 
-    history = _run_history(state)
-    runs = (
-        [r for r in history if isinstance(r, dict)] if isinstance(history, list) else []
-    )
     last = runs[0] if runs else None
     if not last:
         rows.append(("Last tracked run", "WARN", "Never ran — check 'deals track log'"))
@@ -740,7 +873,10 @@ def _monitor_checks() -> list[_Row]:
     monitors = load_monitors()
     if not monitors:
         return [("Saved-search monitors", "PASS", "No monitors configured")]
-    state = load_monitor_state().get("monitors", {})
+    try:
+        state = monitor_summaries()
+    except Exception:
+        state = {}  # the "State database" row already reports why
     invalid: dict[str, str] = {}
     for name, definition in monitors.items():
         try:
@@ -757,11 +893,7 @@ def _monitor_checks() -> list[_Row]:
         for name, definition in monitors.items()
         if isinstance(definition, dict) and definition.get("enabled", True)
     ]
-    failed = [
-        name
-        for name in enabled
-        if isinstance(state.get(name), dict) and state[name].get("last_error")
-    ]
+    failed = [name for name in enabled if name in state and state[name].last_error]
     if failed:
         return [
             (
@@ -799,39 +931,148 @@ def _render_doctor_rows(rows: list[_Row]) -> int:
     return failures
 
 
+def _secret_checks() -> list[_Row]:
+    """Where secrets live, and whether the keychain (if used) works."""
+    from audible_deals import secret_store
+    from audible_deals.auth_state import auth_file_is_reference
+
+    config = load_config()
+    mode = secret_store.mode_of(config)
+    auth_in_keychain = auth_file_is_reference()
+    if (
+        mode == "file"
+        and not auth_in_keychain
+        and not secret_store.config_references(config)
+    ):
+        return [("Secret storage", "PASS", "files in the data directory (mode 600)")]
+
+    rows: list[_Row] = []
+    usable, detail = secret_store.available()
+    if mode == "keyring":
+        rows.append(
+            ("Secret storage", "PASS", f"keyring ({detail})")
+            if usable
+            else ("Secret storage", "FAIL", detail)
+        )
+    else:
+        rows.append(
+            (
+                "Secret storage",
+                "WARN",
+                "files, but some secrets are still in the keychain; move them "
+                "with 'deals config set secret-storage file'",
+            )
+        )
+    if usable and auth_in_keychain:
+        try:
+            present = secret_store.get(secret_store.AUTH_ACCOUNT) is not None
+        except secret_store.SecretStoreError as exc:
+            rows.append(("Login in keychain", "FAIL", str(exc)))
+        else:
+            rows.append(
+                (
+                    "Login in keychain",
+                    "PASS" if present else "FAIL",
+                    "" if present else "missing: run 'deals login' to sign in again",
+                )
+            )
+    if mode == "keyring" and load_install_record():
+        rows.append(
+            (
+                "Keychain and background runs",
+                "WARN",
+                "Scheduled runs read the keychain too and may not be able to "
+                "(locked keychain, no desktop session). If 'deals track status' "
+                "shows keychain errors, use 'deals config set secret-storage file'.",
+            )
+        )
+    return rows
+
+
 @click.command()
+@json_option("Output the checks as JSON (exit status 1 when a check fails)")
 @click.pass_context
-def doctor(ctx):
+def doctor(ctx, json_flag):
     """Diagnostic checks for auth, config, and marketplace reachability."""
-    rows, auth_ok = _auth_checks()
-    rows.append(_connectivity_check(ctx, auth_ok))
-    rows.extend(_config_checks())
-    rows.extend(_store_checks())
-    rows.extend(_track_checks())
-    rows.extend(_monitor_checks())
+    if json_flag:
+        route_console_to_stderr(ctx)
+    with db.without_creating():  # a health check must not make what it checks
+        rows, auth_ok = _auth_checks()
+        rows.append(_connectivity_check(ctx, auth_ok))
+        rows.extend(_config_checks())
+        rows.extend(_secret_checks())
+        rows.extend(_database_checks())
+        rows.extend(_store_checks())
+        rows.extend(_track_checks())
+        rows.extend(_monitor_checks())
+    if json_flag:
+        payload = json_output.doctor_payload(rows)
+        click.echo(json_output.dumps(payload))
+        if not payload["ok"]:
+            ctx.exit(ExitCode.ERROR)
+        return
     if _render_doctor_rows(rows):
-        ctx.exit(1)
+        ctx.exit(ExitCode.ERROR)
 
 
 @click.command("completions")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+@click.option(
+    "--install",
+    "install_flag",
+    is_flag=True,
+    default=False,
+    help="Write the script to the per-user completions directory of SHELL "
+    "instead of printing it",
+)
 @click.pass_context
-def completions(ctx, shell):
+def completions(ctx, shell, install_flag):
     """Generate shell completion script.
+
+    Prints the script, or with --install writes it where the shell loads
+    completions from (no startup file is edited; run it again after upgrading
+    to refresh it).
 
     \b
     Install completions:
-        deals completions bash >> ~/.bashrc
-        deals completions zsh >> ~/.zshrc
+        deals completions bash --install   (~/.local/share/bash-completion/completions/deals)
+        deals completions zsh --install    (~/.zfunc/_deals; add ~/.zfunc to fpath)
+        deals completions fish --install   (~/.config/fish/completions/deals.fish)
+
+    \b
+    Or print the script and place it yourself:
         deals completions fish > ~/.config/fish/completions/deals.fish
     """
     from click.shell_completion import get_completion_class
 
     completion_class = get_completion_class(shell)
+    if completion_class is None:
+        raise click.ClickException(f"Unsupported shell: {shell}")
     completion = completion_class(
         ctx.find_root().command,
         {},
         "deals",
         "_DEALS_COMPLETE",
     )
-    click.echo(completion.source())
+    script = completion.source()
+    if not install_flag:
+        click.echo(script)
+        return
+
+    from audible_deals import completion_install
+
+    try:
+        result = completion_install.install(shell, script)
+    except completion_install.ForeignFileError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except OSError as exc:
+        raise click.ClickException(
+            f"Could not write the {shell} completion script: {exc}"
+        ) from exc
+    label = {
+        "installed": "Installed",
+        "updated": "Updated",
+        "unchanged": "Already up to date",
+    }[result.status]
+    click.echo(f"{label}: {safe_text(result.path)}")
+    click.echo(result.hint)

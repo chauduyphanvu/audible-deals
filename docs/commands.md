@@ -1,6 +1,6 @@
 # Command guide
 
-Run `deals --help` to see every command or `deals COMMAND --help` for authoritative option details.
+Run `deals --help` to see every command or `deals COMMAND --help` for authoritative option details. Commands that report something take `--json` for scripts; the shapes are in [JSON output](json.md).
 
 ## Command overview
 
@@ -27,8 +27,9 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals config` | Manage global defaults |
 | `deals login` | Authenticate with Audible |
 | `deals import-auth PATH` | Import audible-cli or Libation credentials |
-| `deals doctor` | Check authentication, configuration, and marketplace access |
-| `deals completions SHELL` | Generate bash, zsh, or fish completions |
+| `deals cache` | Show where data lives and what is stored; empty the disposable cache |
+| `deals doctor` | Check authentication, configuration, databases, and marketplace access |
+| `deals completions SHELL` | Print or install (`--install`) bash, zsh, or fish completions |
 
 ## Find and search
 
@@ -53,6 +54,37 @@ deals search --genre romance --max-price 3
 
 Use `--deep` to scan three catalog sort orders for broader coverage. It makes roughly three times as many API calls. Use `--dry-run` to preview the work without fetching anything.
 
+### Titles from earlier scans
+
+A scan only sees the pages it fetches, so a cheap title that sits beyond the last scanned page is invisible to it. `find` therefore remembers every title it shows you (the product index in `state.db`) and, after a scan, re-prices the remembered ones that the scan did not return:
+
+- the title is in the same marketplace, in one of the categories being scanned (any category for an unrestricted scan), and was shown to you within the last 90 days;
+- it passes every filter you gave that can be judged from what is remembered (language, length, rating, authors, narrators, Plus, release dates, owned/seen/dismissed...); price, discount, price per hour and history filters wait for the live price;
+- the cheapest 100 (by last-known price, then price per hour) are fetched live in at most two batch calls, merged with the scan results and filtered like any other result.
+
+A title you first met through `search`, or through a different sort order, can therefore turn up in a later `find`. `--no-known` (or `deals config set known-candidates false`) turns it off, `--known` overrides the config, and a `--keywords` scan is left alone. The extra calls appear in `--dry-run` (`known_candidate_calls`, "up to N") and count toward the 60-call limit: they use whatever room the scan leaves under it, and `--allow-large-scan` lifts the limit. Titles recorded before this feature joined the index have no stored details yet and are added the next time you see them.
+
+### Watching a scan, and stopping it
+
+On an interactive terminal, `find` and `search` show the best results found so far under the progress bar and keep it up to date as pages arrive and are filtered; the finished table replaces it. Nothing changes when the output is redirected or piped, or with `--json`, `-q`/`-o` or `-i`.
+
+Press Ctrl-C during a scan to stop it without losing the work: the pages already fetched are filtered and shown ("Scan interrupted after 5/30 pages; showing what was gathered so far."), the session is saved so `@N` selectors and `deals last` work, prices are recorded in your history, and the command exits with status 130. Pages that finished are also cached, so running the command again continues where it stopped.
+
+### Cached results
+
+`find`, `search`, `for-me` and `series` keep the catalog pages they fetch in `cache.db` for two hours, so repeating or tweaking a search (a different `--max-price`, `--sort` or filter over the same scan) costs no API calls. When a run used cached pages it says so and how old they are:
+
+```text
+Using cached results: prices up to 14 min old (8 of 10 pages). Add --refresh for live prices; cached prices are not added to your history.
+```
+
+- `--refresh` ignores the cache for that run and stores the fresh pages (`for-me --refresh` also rebuilds the taste profile).
+- `deals config set cache-ttl MINUTES` changes the lifetime; `0` turns the cache off (it also turns off the stored list of owned titles). `deals config reset cache-ttl` restores two hours.
+- Cached pages cost no API call: progress shows `N cached`, and `--dry-run` reports `cached_calls` and counts only the pages that would reach Audible in `api_calls` (and against the `--allow-large-scan` limit). The estimate looks up exact pages, so it only knows about a genre when the category list is stored.
+- Prices read from the cache are not recorded in your price history, the same rule `deals last` follows. Errors are never cached.
+- `track run`, `notify`, `watch`, `wishlist` and monitors always read live prices.
+- `--skip-owned` reuses the list of titles you own for 24 hours; `deals library` and `--refresh` update it.
+
 ### Filters
 
 | Flag | Purpose |
@@ -72,7 +104,7 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 | `--hist-below 25` | Keep prices at or below a tracked-history percentile |
 | `--min-price-drop 30` | Require a percentage drop from the last tracked price |
 | `--require-history` | Drop items without enough history for a history filter |
-| `--released-after 2024-01-01` | Keep releases on or after a date |
+| `--released-after 2024-01-01` | Keep releases on or after a date (checked as soon as the command is parsed) |
 | `--released-before 2025-01-01` | Keep releases on or before a date |
 | `--min-rating 4.0` | Require a minimum star rating |
 | `--min-ratings 100` | Require a minimum rating count |
@@ -87,12 +119,14 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 | `--skip-owned` | Exclude books already in your library |
 | `--skip-plus` | Exclude Audible Plus titles |
 | `--only-plus` | Keep only Audible Plus titles |
-| `--exclude-seen` | Exclude ASINs returned by earlier searches |
+| `--exclude-seen` | Exclude ASINs returned by earlier searches; `--no-exclude-seen` turns it off |
 | `-n, --limit 20` | Cap results; use `-n 0` for no limit |
 | `--pages 10` | Set catalog pages per scan |
 | `--deep` | Scan three server-side sort orders |
 | `--subcategories` | Scan each resolved subcategory separately on `find` |
 | `--dry-run` | Preview sort orders, pages, and API calls |
+| `--refresh` | Ignore cached catalog pages and fetch live prices |
+| `--known / --no-known` | `find` only: re-price remembered titles the scan missed (default on) |
 | `--show-url` | Include Audible URLs in the table |
 | `-i, --interactive` | Browse the results interactively |
 | `--profile NAME` | Load a saved profile on `find` or `search` |
@@ -135,7 +169,7 @@ deals for-me --dry-run
 
 The recommendation score adds 5 points for the `next in SERIES` continuation and 2 for another `in SERIES` match. Favorite authors, narrators, genres, and favorable price history add further boosts. The `Match` column explains each result.
 
-Owned books are always excluded. Results feed `deals last` and the price-history tracker. The profile is cached in `taste_cache.json` for 24 hours and never leaves your machine.
+Owned books are always excluded. Results feed `deals last` and the price-history tracker. The profile is cached for 24 hours in `cache.db` (see [Local data](#local-data)) and never leaves your machine.
 
 ## Series continuations
 
@@ -199,7 +233,37 @@ Seen results used by `--exclude-seen`, dismissed results, and the last-results c
 
 ## Interactive mode
 
-Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last`, then enter an action:
+Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last` to browse the results instead of just printing them. Two browsers share the same actions:
+
+### Full-screen browser
+
+When the optional `tui` extra is installed and both stdin and stdout are terminals, `-i` opens a full-screen browser (a table of the results with the same columns as the wide table):
+
+```bash
+uv tool install 'audible-deals[tui] @ git+https://github.com/chauduyphanvu/audible-deals'
+deals find --genre sci-fi --max-price 5 -i
+```
+
+| Key | Action |
+|-----|--------|
+| Up / Down, `j` / `k` | Move |
+| Enter | Details of the title in a side pane (same content as `deals detail`) |
+| `/` | Filter the rows as you type (title, author, narrator, series; local only). Enter keeps the filter, Esc clears it |
+| `s` | Next sort (price, highest price, discount, rating, price per hour, value, length, date, bestsellers, title, author). The order is saved in the result session, so `@N` and `deals last` follow what you see |
+| Space | Mark or unmark a title (then moves down) |
+| `w` | Add the marked titles, or the current one, to the wishlist; a dialog asks for the target price (default: the current price; empty means no target) |
+| `o` | Open the Audible page |
+| `c` | Compare 2 to 4 marked titles |
+| `h` | Price history and sparkline in the side pane |
+| `n` | Not interested: dismiss the marked (or current) titles for good |
+| `?` | List the keys |
+| `q` | Quit (Esc quits too, after closing a pane or clearing the filter) |
+
+What you did (titles added, titles dismissed) is printed when the screen closes. The filter is only a view: it is never saved. The terminal is restored when you quit.
+
+### Prompt browser
+
+Without the extra, when either end is not a terminal (a pipe, a script), or with `deals config set interactive-ui prompt`, `-i` uses a line-by-line prompt instead:
 
 | Input | Action |
 |-------|--------|
@@ -211,6 +275,8 @@ Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last`, then enter an 
 | `s discount` | Re-sort in place |
 | `n 1-3` | Dismiss items globally and remove them from the current view immediately |
 | `q` | Quit |
+
+`deals config set interactive-ui auto` (the default) picks the full-screen browser whenever it can run; `prompt` always uses the prompt. If the full-screen browser fails to start, `deals` says so and falls back to the prompt.
 
 Dismissed ASINs are excluded from future `find`, `search`, `for-me`, `series`, monitor, and `last` results.
 
@@ -227,7 +293,7 @@ deals profile show my-scifi
 deals profile delete my-scifi
 ```
 
-Most filter and sort flags can be saved. An explicit CLI option overrides the profile value. A profile cannot save both `--skip-plus` and `--only-plus` as true.
+Every filter that `find` accepts can be saved, including `--max-effective-price`, `--hist-below`, `--min-price-drop`, `--require-history`, `--released-after`/`--released-before`, and `--exclude-seen`, so a profile reproduces a full `find` and monitors built from it keep those filters. Boolean filters have a `--no-...` form (for example `--no-require-history`) to switch off a value a profile saved. An explicit CLI option overrides the profile value. A profile cannot save both `--skip-plus` and `--only-plus` as true, or a release window that ends before it starts.
 
 ## Saved-search monitors
 
@@ -247,7 +313,7 @@ deals monitor resume sci-fi-steals
 deals monitor remove sci-fi-steals --yes
 ```
 
-For monitor creation, explicit supported filter options (such as `--max-price`, `--pages`, `--sort`, `--genre`, `--author`, `--on-sale`, and `--skip-owned`) override profile and global values before the settings are frozen. Monitor-specific webhooks never receive global custom webhook headers.
+For monitor creation, explicit filter options (any filter that `deals profile save` takes except the per-view ones, such as `--max-price`, `--max-effective-price`, `--pages`, `--sort`, `--genre`, `--exclude-genre`, `--author`, `--hist-below`, `--released-after`, `--on-sale`, and `--skip-owned`) override profile and global values before the settings are frozen. Display options (`--limit`, `--interactive`) and `--exclude-seen` do not apply to monitors, because a monitor must see every match to detect changes, and `--keywords` is only available through a profile (use `--query` for direct monitors). `--max-effective-price` uses the credit price configured when the monitor runs. Monitor-specific webhooks never receive global custom webhook headers.
 
 ## Global defaults
 
@@ -261,7 +327,7 @@ deals config reset max-price
 deals config reset
 ```
 
-Precedence is `explicit CLI > profile > global config > built-in default`. For `skip-plus` and `only-plus`, a higher layer's true value disables the lower opposite; false values follow normal precedence without conflicting. Both true in one layer is invalid. Setting either to `true` with `deals config set` removes and reports the opposite persisted key; setting it to `false` leaves the opposite key unchanged. Existing same-layer conflicts are diagnosed rather than silently rewritten. Set a default marketplace with `deals config set locale uk`.
+Any filter with a numeric, text, or yes/no value can be a global default (`deals config set --help` lists the keys); release dates and the repeatable exclude filters are profile-only. Precedence is `explicit CLI > profile > global config > built-in default`. For `skip-plus` and `only-plus`, a higher layer's true value disables the lower opposite; false values follow normal precedence without conflicting. Both true in one layer is invalid. Setting either to `true` with `deals config set` removes and reports the opposite persisted key; setting it to `false` leaves the opposite key unchanged. Existing same-layer conflicts are diagnosed rather than silently rewritten. Set a default marketplace with `deals config set locale uk`. `deals config set cache-ttl MINUTES` sets how long cached catalog pages are reused (see [Cached results](#cached-results)). `deals config set webhook-allow-private true` lets webhooks reach servers on your own network (see [Where a webhook may point](automation.md#where-a-webhook-may-point)). `deals config set secret-storage keyring` keeps your login and webhook URLs in the OS keychain instead of files (see [Keep secrets in your OS keychain](installation.md#keep-secrets-in-your-os-keychain-optional)).
 
 ### Credit-aware recommendations
 
@@ -296,11 +362,12 @@ Multi-value CSV fields are joined with a semicolon and space.
 
 ## Marketplace support
 
-Pass `--locale` before the command. Currency symbols, Audible URLs, and price-per-hour headings adjust automatically.
+Pass `--locale` before or after the command. Currency symbols, Audible URLs, and price-per-hour headings adjust automatically. If you give it in both places, the one after the command wins.
 
 ```bash
 deals --locale uk find --genre fantasy --max-price 3
-deals --locale de detail B00R6S1RCY
+deals find --genre fantasy --max-price 3 --locale uk
+deals detail B00R6S1RCY --locale de
 ```
 
 | Locale | Currency | Domain |
@@ -315,13 +382,53 @@ deals --locale de detail B00R6S1RCY
 | `jp` | ¥ | www.audible.co.jp |
 | `es` | € | www.audible.es |
 
+## Color
+
+`--color auto|always|never` works before or after any command (`deals --color never find ...` or `deals find ... --color never`). `auto` (the default) colors output only on a terminal and honors `NO_COLOR` and `FORCE_COLOR`; an explicit `always` or `never` wins over both variables. `never` also removes bold and other text styling, so the output is plain text.
+
+## Exit codes and errors
+
+Every command uses the same statuses, so scripts and cron jobs can tell outcomes apart:
+
+| Status | Meaning |
+|--------|---------|
+| 0 | Success |
+| 1 | Error: a failed command, unusable data, or an unexpected problem |
+| 2 | Usage error: a bad option or argument |
+| 3 | Authentication required or rejected: run `deals login` |
+| 4 | The Audible request failed: no connection, a timeout, a server error or a rate limit (the message gives the short reason) |
+| 10 | Nothing matched, for commands run with `--exit-code` |
+| 130 | Interrupted with Ctrl-C |
+
+`--exit-code` is available on `find`, `search`, `last`, `watch` and `notify`: the command exits 10 instead of 0 when nothing matched (no result, or no wishlist item at its target). `deals doctor` exits 1 when a check fails. A background run that finds the run lock busy (`track run`, `notify`, `recap`) exits 0 with a one-line note, so a cron job is not reported as failed.
+
+An error is one line on stderr, `Error: ...`, with the fix when there is one; the traceback appears only with `-vv`. With `--json` the same error is written to stderr as one JSON object and stdout stays empty (an interrupted `find`/`search` still prints what it gathered, then the error object with code 130). Every `--json` output is described in [JSON output](json.md):
+
+```json
+{"error": {"code": 3, "message": "Not authenticated. Run 'deals login' first."}}
+```
+
+Warnings and notes are one line each on stderr, `Warning: ...` when something is off but the command carried on and `Note: ...` when it is only worth knowing (your data was moved, prices came from the cache, a scan was interrupted). They never appear in piped or `--json` output. Logger names and log levels only show with `-v`, and tracebacks only with `-vv`.
+
 ## Shell completions
 
 ```bash
-deals completions bash >> ~/.bashrc
-deals completions zsh >> ~/.zshrc
-deals completions fish > ~/.config/fish/completions/deals.fish
+deals completions bash --install
+deals completions zsh --install
+deals completions fish --install
 ```
+
+`--install` writes the script to the directory your shell loads completions from and does not edit any startup file (`.bashrc`, `.zshrc`):
+
+| Shell | File written | To activate |
+|-------|--------------|-------------|
+| bash | `~/.local/share/bash-completion/completions/deals` (`$XDG_DATA_HOME` is honored) | Start a new shell; needs the `bash-completion` package |
+| zsh | `~/.zfunc/_deals` | Put the directory on your `fpath` before `compinit` runs (`fpath+=~/.zfunc`, then `autoload -Uz compinit && compinit` in `~/.zshrc`), then start a new shell |
+| fish | `~/.config/fish/completions/deals.fish` (`$XDG_CONFIG_HOME` is honored) | Start a new shell |
+
+Run the command again after upgrading to refresh the file. It only replaces a file it recognizes as its own and stops if something else is at that path; remove the file to uninstall.
+
+Without `--install` the script is printed to stdout, for example `deals completions fish > ~/.config/fish/completions/deals.fish`, or `source <(deals completions bash)` in a bash startup file if you prefer to load it on each start.
 
 After reloading the shell, profiles, genres, and excluded genres support tab completion. Profile `show` and `delete` commands also complete profile names.
 
@@ -329,16 +436,31 @@ After reloading the shell, profiles, genres, and excluded genres support tab com
 
 ```bash
 deals -v find --genre sci-fi --max-price 5
-deals -vv find --genre sci-fi
+deals find --genre sci-fi -vv
 DEALS_DEBUG=1 deals find --genre sci-fi
 DEALS_LOG_FILE=~/.cache/deals.log deals notify --webhook https://example.com/hook
 ```
 
-`DEALS_LOG_FILE` captures DEBUG records even without `-v`, which is useful for scheduled runs. The log rotates at 5 MB and keeps three backups. Transient API failures are retried twice with jittered exponential backoff.
+`-v` and `--locale` are accepted before or after any command, including subcommands such as `deals wishlist add`. When both positions are used, the one after the command wins.
+
+`DEALS_LOG_FILE` captures DEBUG records even without `-v`, which is useful for scheduled runs. The log rotates at 5 MB and keeps three backups. Transient API failures (no connection, a timeout, a server error, a rate limit) are retried twice with jittered exponential backoff; each retry prints a line like `Warning: Audible request failed (could not connect); retrying in 1s (attempt 2 of 3)`, and `-v` adds the endpoint and the raw error.
 
 ## Local data
 
-All application data is stored in `~/.config/audible-deals/`:
+### Where it lives
+
+Everything is kept in one data directory. It is chosen on every run, in this order:
+
+1. `DEALS_HOME`, if set (any directory; it is created when needed);
+2. an existing `~/.config/audible-deals/`, which earlier releases used, so your data never moves;
+3. `$XDG_CONFIG_HOME/audible-deals/` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/audible-deals/` (macOS uses `~/.config` too);
+4. on Windows, `%APPDATA%\audible-deals\` when the directory in step 2 does not exist.
+
+`deals doctor` and `deals cache info` show the directory in use and which rule chose it (`deals doctor` only looks: on a machine that has not saved anything yet it reports the databases as "not created yet" and creates nothing, not even the directory, and it does not import old JSON files; the next command that saves something does). `DEALS_HOME` is also how to run against a scratch copy of your data, for example `DEALS_HOME=/tmp/try deals find`. `deals track install` writes the directory it is using into the scheduled job (launchd plist, systemd unit, crontab line, or Windows task), because those do not inherit your shell's environment.
+
+### What is stored
+
+Files you can edit by hand stay JSON:
 
 | Path | Contents |
 |------|----------|
@@ -346,17 +468,45 @@ All application data is stored in `~/.config/audible-deals/`:
 | `config.json` | Global defaults |
 | `wishlist.json` | Local watchlist |
 | `profiles.json` | Saved profiles |
-| `last_results.json` | Versioned candidate session from the latest flat `find`, `search`, `for-me`, or `series` result view |
-| `seen_asins.json` | ASINs returned by earlier result views for `--exclude-seen` |
-| `dismissed_asins.json` | ASINs dismissed globally with interactive `n` |
-| `refresh_eligibility.json` | Versioned per-marketplace dates for recently surfaced products eligible for background refresh |
-| `history/` | Per-ASIN price history |
-| `categories_cache.*.json` | Per-locale category caches |
-| `track_state.json`, `track.log` | Background tracking state and log |
-| `taste_cache.json` | Local taste profile for `for-me` |
+| `monitors.json` | Saved-search monitor definitions |
+| `track.log` | Log written by the scheduled job |
+
+Everything the tool records for you lives in two SQLite databases (standard library `sqlite3`, WAL mode):
+
+| Path | Contents |
+|------|----------|
+| `state.db` | Your records: per-marketplace price history (newest 365 entries per ASIN), the last result session, ASINs already seen for `--exclude-seen`, globally dismissed ASINs, recently surfaced products eligible for background refresh, monitor baselines, alert cooldowns, and background-tracking state and run history |
+| `cache.db` | Rebuildable data: catalog pages (2 hours by default), the list of titles you own (24 hours), category lists and names (7 days) and the `for-me` taste profile (24 hours). Safe to delete at any time |
+
+```bash
+deals cache info          # where data lives and how much is in each database
+deals cache info --json
+deals cache clear         # empties cache.db and gives its disk space back; records are never touched
+```
+
+`deals history --purge-older-than DAYS` removes old price history, and `deals last --clear`, `--clear-seen` and `--clear-dismissed` clear the other records.
+
+### Upgrading from JSON files
+
+Earlier releases kept the records above in separate JSON files (`history/`, `seen_asins.json`, `dismissed_asins.json`, `refresh_eligibility.json`, `last_results.json`, `monitor_state.json`, `notify_state.json`, `track_state.json`). The first time `state.db` is opened, they are imported in a single transaction and then renamed, never deleted:
+
+- `history/` becomes `history.migrated/`, and each file becomes `FILE.json.migrated`;
+- the cache files (`taste_cache.json`, `categories_cache.*.json`) are not imported, only renamed; the next run rebuilds them;
+- if a run is interrupted, nothing is half-imported and the files stay where they were, so the next run starts again; if a rename fails after the import, only the rename is retried, never the import;
+- entries that cannot be used (a price that is not a number, a bad date, a corrupt file) are skipped and counted, and `deals doctor` reports them; the originals remain in the `.migrated` files;
+- price history written before marketplaces were tracked (a bare list with no marketplace) is not assigned to one, as before; it stays in `history.migrated/`.
+
+Once you are happy, the `.migrated` files can be deleted. Do not run an older release against the same directory afterwards: it would not see the imported records and would start new JSON files that this release ignores.
+
+### Damaged data files
+
+`config.json`, `profiles.json`, `monitors.json` and `wishlist.json` are files you can edit by hand. If one cannot be parsed (for example after a typo), commands that only read it print a one-line warning with the file and parse position and carry on as if it were empty (`-vv` adds the traceback). Commands that would write to it stop with that same location and leave the file untouched, so a typo never costs you your saved data. Fix the file or move it aside, then run the command again.
+
+If `state.db` itself cannot be read, it is moved to `state.db.corrupt-<timestamp>` (with a one-line warning) and a fresh database is created, so commands keep working; `cache.db` is simply recreated. `deals doctor` runs SQLite's `PRAGMA quick_check` on `state.db`. A database written by a newer release is refused untouched.
 
 ## Related guides
 
 - [Installation and authentication](installation.md)
 - [Price tracking and automation](automation.md)
 - [Advanced recipes](recipes.md)
+- [JSON output](json.md)

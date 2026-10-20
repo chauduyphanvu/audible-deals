@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
-import math
 from typing import Literal
 
 import click
 
-from audible_deals.filtering import _SORT_KEYS, sort_local
+from audible_deals import browse_actions
+from audible_deals.filtering import _SORT_KEYS
 from audible_deals.presentation.products import (
     display_comparison,
     display_product_detail,
@@ -16,15 +18,12 @@ from audible_deals.presentation.products import (
 )
 from audible_deals.presentation.reports import display_price_history
 from audible_deals.presentation.terminal import console, safe_markup
-from audible_deals.price_history import load_price_history
 from audible_deals.product import Product
-from audible_deals.results_cache import save_dismissed_asins, update_session_view
 from audible_deals.selectors import _expand_ref_string
 from audible_deals.wishlist import (
     WishlistMutationError,
     warn_wishlist_issues,
 )
-from audible_deals.wishlist_service import add_products, plan_product_add
 
 INTERACTIVE_HINT = (
     "\n  [dim]Enter # or @# for details, 'o #/@#' open, 'w #/@#[,#-#]' wishlist, "
@@ -36,7 +35,7 @@ INTERACTIVE_INVALID_INPUT = (
     "'h #', 's <key>', 'n #[,#-#]', '?', or 'q'.[/dim]"
 )
 
-_VALID_SORT_KEYS = sorted(_SORT_KEYS.keys())
+_VALID_SORT_KEYS = browse_actions.VALID_SORT_KEYS
 
 
 def _wishlist_operation(operation, *args, **kwargs):
@@ -67,7 +66,11 @@ class InteractiveCommand:
 
 
 class InteractiveCommandParseError(ValueError):
-    pass
+    """Unparseable prompt input.
+
+    The message is always a trusted markup constant (``INTERACTIVE_INVALID_INPUT``)
+    and is printed as markup; never put user-derived text in it.
+    """
 
 
 def parse_interactive_command(text: str) -> InteractiveCommand:
@@ -117,9 +120,9 @@ class InteractiveBrowser:
         title: str = "Results",
         max_price: float | None = None,
         show_url: bool = False,
-        atl_asins: set[str] | None = None,
-        hist_context: dict[str, int] | None = None,
-        match_context: dict[str, str] | None = None,
+        atl_asins: AbstractSet[str] | None = None,
+        hist_context: Mapping[str, int] | None = None,
+        match_context: Mapping[str, str] | None = None,
     ) -> None:
         self.products = products
         self.currency = currency
@@ -190,7 +193,7 @@ class InteractiveBrowser:
         if not self._positions_in_bounds(command.positions):
             return True
         product = self.products[command.positions[0]]
-        entries = load_price_history(product.asin, product.locale)
+        entries = browse_actions.history_entries(product)
         if not entries:
             console.print(
                 f"[dim]No price history for {safe_markup(product.asin)}[/dim]"
@@ -204,27 +207,17 @@ class InteractiveBrowser:
             return True
 
         selected = [self.products[position] for position in command.positions]
-        plan = _wishlist_operation(
-            plan_product_add, (product.asin for product in selected)
-        )
-        warn_wishlist_issues(plan.issues)
-        stored_asins = set(plan.already_present)
-        pending_asins = set(plan.pending_asins)
-        seen_pending: set[str] = set()
-        pending_products: list[Product] = []
-        for product in selected:
-            if product.asin in stored_asins or product.asin in seen_pending:
-                console.print(
-                    f"[dim]{safe_markup(product.asin)} already on wishlist[/dim]"
-                )
-            elif product.asin in pending_asins:
-                seen_pending.add(product.asin)
-                pending_products.append(product)
-        if not pending_products:
+        selection = _wishlist_operation(browse_actions.select_for_wishlist, selected)
+        warn_wishlist_issues(selection.issues)
+        for product in selection.already:
+            console.print(f"[dim]{safe_markup(product.asin)} already on wishlist[/dim]")
+        if not selection.pending:
             return True
 
         target_price = self._prompt_target_price()
-        result = _wishlist_operation(add_products, pending_products, target_price)
+        result = _wishlist_operation(
+            browse_actions.add_to_wishlist, selection.pending, target_price
+        )
         warn_wishlist_issues(result.issues)
         for event in result.events:
             product = event.product
@@ -253,19 +246,10 @@ class InteractiveBrowser:
             ).strip()
         except EOFError:
             raw = ""
-        if not raw:
-            return None
-        try:
-            parsed = float(raw)
-        except ValueError:
-            console.print("[dim]Invalid price, no target set[/dim]")
-            return None
-        if math.isfinite(parsed) and parsed > 0:
-            return parsed
-        console.print(
-            "[dim]Target must be a finite number greater than 0, no target set[/dim]"
-        )
-        return None
+        target = browse_actions.parse_target_price(raw)
+        if target.problem:
+            console.print(f"[dim]{target.problem}[/dim]")
+        return target.price
 
     def _handle_sort(self, command: InteractiveCommand) -> bool:
         sort_key = command.sort_key
@@ -275,13 +259,7 @@ class InteractiveBrowser:
                 f"Valid: {', '.join(_VALID_SORT_KEYS)}[/dim]"
             )
             return True
-        self.products[:] = sort_local(self.products, sort_key)
-        try:
-            update_session_view(
-                [product.asin for product in self.products], sort=sort_key
-            )
-        except Exception:
-            pass
+        self.products[:] = browse_actions.resort(self.products, sort_key)
         console.print()
         display_products(
             self.products,
@@ -301,17 +279,11 @@ class InteractiveBrowser:
             return True
         asins = {self.products[position].asin for position in command.positions}
         try:
-            save_dismissed_asins(asins)
+            remaining = browse_actions.dismiss(self.products, asins)
         except Exception as exc:
             console.print(f"[red]Could not dismiss selection: {safe_markup(exc)}[/red]")
             return True
-        self.products[:] = [
-            product for product in self.products if product.asin not in asins
-        ]
-        try:
-            update_session_view([product.asin for product in self.products])
-        except Exception:
-            pass
+        self.products[:] = remaining
         console.print(f"[dim]Globally dismissed {len(asins)} title(s).[/dim]")
         console.print()
         display_products(
@@ -328,6 +300,104 @@ class InteractiveBrowser:
         return True
 
 
+INTERACTIVE_UI_CHOICES = ("auto", "prompt")
+
+
+def interactive_ui_setting() -> str:
+    """``interactive-ui`` from the running command's config (``auto`` by default)."""
+    ctx = click.get_current_context(silent=True)
+    config = ctx.obj.get("config") if ctx is not None and ctx.obj else None
+    value = config.get("interactive_ui") if isinstance(config, dict) else None
+    return value if value in INTERACTIVE_UI_CHOICES else "auto"
+
+
+def choose_ui(
+    setting: str | None = None, *, stdin=None, stdout=None
+) -> Literal["tui", "prompt"]:
+    """Which browser ``-i`` opens: the full-screen one or the prompt loop.
+
+    The full-screen browser needs the optional ``textual`` package and a real
+    terminal on both ends; otherwise (including ``interactive-ui prompt``) the
+    prompt loop runs, as it always has. Nothing is imported to decide this.
+    """
+    import importlib.util
+    import os
+    import sys
+
+    if (setting or interactive_ui_setting()) == "prompt":
+        return "prompt"
+    try:
+        if importlib.util.find_spec("textual") is None:
+            return "prompt"
+    except (ImportError, ValueError):
+        return "prompt"
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    try:
+        if not (stdin.isatty() and stdout.isatty()):
+            return "prompt"
+    except (AttributeError, ValueError):
+        return "prompt"
+    if os.environ.get("TERM", "") == "dumb":
+        return "prompt"
+    return "tui"
+
+
+def _saved_sort() -> str | None:
+    """The sort the saved result session was last viewed with, if any."""
+    try:
+        from audible_deals.results_cache import load_result_session
+
+        return load_result_session().current_recipe.sort or None
+    except Exception:
+        return None
+
+
+def _run_full_screen(
+    products: list[Product],
+    currency: str,
+    credit_price: float | None,
+    *,
+    title: str,
+    max_price: float | None,
+    show_url: bool,
+    atl_asins: AbstractSet[str] | None,
+    hist_context: Mapping[str, int] | None,
+    match_context: Mapping[str, str] | None,
+) -> bool:
+    """Run the full-screen browser. ``False`` means it could not, use the prompt."""
+    from audible_deals.notices import warn
+
+    try:
+        from audible_deals.tui.app import run_results_app
+
+        summary = run_results_app(
+            products,
+            currency,
+            credit_price,
+            title=title,
+            max_price=max_price,
+            show_url=show_url,
+            atl_asins=atl_asins,
+            hist_context=hist_context,
+            match_context=match_context,
+            sort_key=_saved_sort(),
+        )
+    except Exception as exc:
+        ctx = click.get_current_context(silent=True)
+        if ctx is not None and ctx.obj and ctx.obj.get("verbose", 0) >= 2:
+            raise
+        warn(
+            f"The full-screen browser could not run ({type(exc).__name__}: {exc}); "
+            "using the prompt instead. Set 'deals config set interactive-ui prompt' "
+            "to always use the prompt."
+        )
+        return False
+    for line in summary:
+        console.print(f"[dim]{safe_markup(line)}[/dim]", highlight=False)
+    return True
+
+
 def _interactive_browse(
     products: list[Product],
     currency: str = "$",
@@ -336,11 +406,41 @@ def _interactive_browse(
     title: str = "Results",
     max_price: float | None = None,
     show_url: bool = False,
-    atl_asins: set[str] | None = None,
-    hist_context: dict[str, int] | None = None,
-    match_context: dict[str, str] | None = None,
+    atl_asins: AbstractSet[str] | None = None,
+    hist_context: Mapping[str, int] | None = None,
+    match_context: Mapping[str, str] | None = None,
+    table_shown: bool = True,
 ) -> None:
-    """Interactive mode: let user pick items to view details, open, or wishlist."""
+    """Interactive mode: browse the results full-screen, or at a prompt.
+
+    ``table_shown`` says whether the results table was already printed (it is not
+    when the full-screen browser was expected, so a fallback prints it).
+    """
+    if choose_ui() == "tui" and _run_full_screen(
+        products,
+        currency,
+        credit_price,
+        title=title,
+        max_price=max_price,
+        show_url=show_url,
+        atl_asins=atl_asins,
+        hist_context=hist_context,
+        match_context=match_context,
+    ):
+        return
+    if not table_shown:
+        console.print()
+        display_products(
+            products,
+            max_price=max_price,
+            title=title,
+            currency=currency,
+            show_url=show_url,
+            atl_asins=atl_asins,
+            hist_context=hist_context,
+            credit_price=credit_price,
+            match_context=match_context,
+        )
     browser = InteractiveBrowser(
         products,
         currency,
@@ -364,7 +464,9 @@ def _interactive_browse(
             console.print(f"[dim]{safe_markup(exc.format_message())}[/dim]")
             continue
         except InteractiveCommandParseError as exc:
-            console.print(safe_markup(exc))
+            # The parse error text is a trusted constant carrying its own
+            # markup; escaping it would show literal "[dim]" tags to the user.
+            console.print(str(exc))
             continue
         if not browser.dispatch(command):
             break

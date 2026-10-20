@@ -8,8 +8,8 @@ import click
 import pytest
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
 import audible_deals.wishlist as wishlist_mod
+from audible_deals import browse_actions, paths
 from audible_deals.cli import cli
 from audible_deals.result_models import (
     DiscoveryResult,
@@ -19,7 +19,7 @@ from audible_deals.results_cache import (
     load_result_session,
     save_last_results,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, raw_session
 
 
 def _run_browse(products, user_input, tmp_config):
@@ -102,8 +102,8 @@ class TestInteractiveBrowse:
         """Skips with a dim note if ASIN is already on the wishlist."""
 
         products = [make_product(asin="AW1", title="Already Book")]
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.WISHLIST_FILE.write_text(
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().write_text(
             json.dumps(
                 [
                     {
@@ -322,7 +322,7 @@ class TestInteractiveBrowserDispatcher:
             interactive_mod.console, "print", lambda value="": output.append(value)
         )
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "load_price_history",
             lambda asin, locale: [{"price": 1}],
         )
@@ -331,8 +331,8 @@ class TestInteractiveBrowserDispatcher:
             "display_price_history",
             lambda entries, asin, currency: histories.append((entries, asin, currency)),
         )
-        monkeypatch.setattr(interactive_mod, "save_dismissed_asins", hidden.append)
-        monkeypatch.setattr(interactive_mod, "update_session_view", lambda *args: None)
+        monkeypatch.setattr(browse_actions, "save_dismissed_asins", hidden.append)
+        monkeypatch.setattr(browse_actions, "update_session_view", lambda *args: None)
         monkeypatch.setattr(
             interactive_mod, "display_products", lambda *args, **kwargs: None
         )
@@ -368,7 +368,7 @@ class TestInteractiveBrowserDispatcher:
         browser = self._browser()
         rendered = []
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "update_session_view",
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError("read only")),
         )
@@ -399,10 +399,10 @@ class TestInteractiveBrowserDispatcher:
                 {"asin": "IB2", "title": "Second"},
             ],
         )
-        before = constants_mod.LAST_RESULTS_FILE.read_text()
+        before = raw_session()
         rendered = []
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "save_dismissed_asins",
             lambda *args: (_ for _ in ()).throw(OSError("read only")),
         )
@@ -415,7 +415,7 @@ class TestInteractiveBrowserDispatcher:
         assert browser.dispatch(interactive_mod.InteractiveCommand("hide", (0,)))
 
         assert [product.asin for product in browser.products] == ["IB1", "IB2"]
-        assert constants_mod.LAST_RESULTS_FILE.read_text() == before
+        assert raw_session() == before
         assert rendered == []
         assert load_dismissed_asins() == set()
 
@@ -559,12 +559,12 @@ class TestInteractiveBrowseWishlist:
         product = make_product(asin="RACE1", title="Raced")
         output = []
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "plan_product_add",
             lambda asins: WishlistAddPlan(tuple(asins), (), (), 0),
         )
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "add_products",
             lambda products, target: WishlistAddResult(
                 (),
@@ -587,7 +587,7 @@ class TestInteractiveBrowseWishlist:
 
         product = make_product(asin="EXISTS1")
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "plan_product_add",
             lambda asins: WishlistAddPlan((), tuple(asins), (), 1),
         )
@@ -595,7 +595,7 @@ class TestInteractiveBrowseWishlist:
             click, "prompt", lambda *args, **kwargs: pytest.fail("prompted")
         )
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "add_products",
             lambda *args, **kwargs: pytest.fail("added"),
         )
@@ -645,17 +645,17 @@ class TestInteractiveBrowseWishlistCheck:
         """When all selected items are already on wishlist, file is not rewritten."""
 
         products = [make_product(asin="NW1", title="Already There")]
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
         original = [
             {"asin": "NW1", "title": "Already There", "max_price": None, "added": ""}
         ]
-        constants_mod.WISHLIST_FILE.write_text(json.dumps(original))
-        mtime_before = constants_mod.WISHLIST_FILE.stat().st_mtime
+        paths.wishlist_file().write_text(json.dumps(original))
+        mtime_before = paths.wishlist_file().stat().st_mtime
 
         result = _run_browse(products, "w 1\nq\n", tmp_config)
         assert result.exit_code == 0, result.output
         assert "already on wishlist" in result.output
-        assert constants_mod.WISHLIST_FILE.stat().st_mtime == mtime_before
+        assert paths.wishlist_file().stat().st_mtime == mtime_before
 
     def test_mixed_some_already_wishlisted_adds_only_new(self, tmp_config):
         """Partial overlap: already-on-wishlist items get a note; new items are added."""
@@ -664,8 +664,8 @@ class TestInteractiveBrowseWishlistCheck:
             make_product(asin="MX1", title="Already"),
             make_product(asin="MX2", title="New One"),
         ]
-        constants_mod.WISHLIST_FILE.parent.mkdir(parents=True, exist_ok=True)
-        constants_mod.WISHLIST_FILE.write_text(
+        paths.wishlist_file().parent.mkdir(parents=True, exist_ok=True)
+        paths.wishlist_file().write_text(
             json.dumps(
                 [{"asin": "MX1", "title": "Already", "max_price": None, "added": ""}]
             )
@@ -742,11 +742,10 @@ class TestInteractiveBrowseVerbs:
         assert "Beta Book" in out
 
     def test_history_no_entries_prints_message(self, tmp_config, monkeypatch):
-        import audible_deals.cli.interactive as interactive_mod
         from audible_deals.cli.interactive import _interactive_browse
 
         monkeypatch.setattr(
-            interactive_mod, "load_price_history", lambda asin, locale: []
+            browse_actions, "load_price_history", lambda asin, locale: []
         )
         p = make_product(asin="IH01", title="History Book", price=5.0)
         inputs = iter(["h 1", "q"])
@@ -767,6 +766,68 @@ class TestInteractiveBrowseVerbs:
         _interactive_browse([p])
         out = console.file.getvalue()
         assert "Invalid input" in out
+
+
+class TestInteractiveInvalidInputRendering:
+    """The invalid-input hint is trusted markup and must render, not print tags."""
+
+    def _recording_console(self, monkeypatch):
+        from io import StringIO
+
+        from rich.console import Console
+
+        import audible_deals.cli.interactive as interactive_mod
+        from audible_deals.presentation import terminal as display_mod
+
+        recording = Console(
+            file=StringIO(), force_terminal=False, record=True, width=200
+        )
+        monkeypatch.setattr(display_mod, "console", recording)
+        monkeypatch.setattr(interactive_mod, "console", recording)
+        return recording
+
+    @pytest.mark.parametrize("bad_input", ["xyz", "c 1", "w", "hide 1"])
+    def test_invalid_input_hint_has_no_literal_dim_tags(
+        self, tmp_config, monkeypatch, bad_input
+    ):
+        from audible_deals.cli.interactive import _interactive_browse
+
+        inputs = iter([bad_input, "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        recording = self._recording_console(monkeypatch)
+
+        _interactive_browse([make_product(asin="DIM01")])
+
+        text = recording.export_text()
+        assert "Invalid input. Enter a number" in text
+        assert "[dim]" not in text
+        assert "[/dim]" not in text
+
+    def test_invalid_input_hint_is_styled_dim(self, tmp_config, monkeypatch):
+        from audible_deals.cli.interactive import _interactive_browse
+
+        inputs = iter(["xyz", "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        recording = self._recording_console(monkeypatch)
+
+        _interactive_browse([make_product(asin="DIM02")])
+
+        # Rendered as markup: the dim style is applied to the hint text.
+        styled = recording.export_text(styles=True)
+        assert "\x1b[2mInvalid input." in styled
+
+    def test_user_derived_text_is_still_escaped(self, tmp_config, monkeypatch):
+        from audible_deals.cli.interactive import _interactive_browse
+
+        # User input that looks like Rich markup must be shown literally.
+        inputs = iter(["w [bold]x", "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        recording = self._recording_console(monkeypatch)
+
+        _interactive_browse([make_product(asin="DIM03")])
+
+        text = recording.export_text()
+        assert "[bold]x" in text
 
 
 class TestInteractiveTargetPrice:

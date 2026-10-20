@@ -1,0 +1,16 @@
+{
+  "captured_with": "deals notify --webhook URL --webhook-format FORMAT (wishlist of three titles with awkward names); the fake Audible API, a local HTTP server as the webhook",
+  "format": "discord",
+  "kind": "deals",
+  "request": {
+    "body": {
+      "allowed_mentions": {
+        "parse": []
+      },
+      "content": "**Audible Deals (3)**\n• [Tom & Jerry \\<Live\\> \\| A \\*Bold\\* \\_Move\\_ \\~Strike\\~ \\`code\\` @everyone](<https://www.audible.com/pd/B0PKW9Y38E>) — $4.48 (target $100.00)\n• [Why \\[Brackets\\]\\(Matter\\) — and Ünïcode](<https://www.audible.com/pd/B0JEKRL881>) — $8.98 (target $100.00)\n• [Plain Title](<https://www.audible.com/pd/B007DB4FU3>) — $19.95 (target $100.00)"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

@@ -7,11 +7,12 @@ They operate on ``list[Product]`` and return transformed lists.
 from __future__ import annotations
 
 import logging
-from typing import Callable
+from collections.abc import Callable, Mapping
+from collections.abc import Set as AbstractSet
 
-from audible_deals.product import Product
 from audible_deals.metrics import effective_price, price_per_hour, value_score
 from audible_deals.parsing import parse_series_position
+from audible_deals.product import Product
 from audible_deals.result_models import FilterContext, FilterOutcome
 
 logger = logging.getLogger(__name__)
@@ -36,7 +37,7 @@ def _exclude_spec(
 
 def _availability_specs(
     drop_zero_length: bool,
-    skip_asins: set[str] | None,
+    skip_asins: AbstractSet[str] | None,
     max_price: float | None,
     max_effective_price: float | None,
     credit_price: float | None,
@@ -143,7 +144,7 @@ def _deal_specs(on_sale: bool, min_discount: int) -> list[_FilterSpec]:
 
 
 def _catalog_specs(
-    exclude_category_ids: set[str] | None,
+    exclude_category_ids: AbstractSet[str] | None,
     genre: str,
     skip_plus: bool,
     only_plus: bool,
@@ -186,9 +187,9 @@ def _catalog_specs(
 
 def _history_specs(
     max_hist_percentile: int | None,
-    hist_percentile: dict[str, int] | None,
+    hist_percentile: Mapping[str, int] | None,
     min_price_drop: float,
-    price_drops: dict[str, float] | None,
+    price_drops: Mapping[str, float] | None,
     require_history: bool,
 ) -> list[_FilterSpec]:
     specs: list[_FilterSpec] = []
@@ -301,7 +302,7 @@ def filter_products(
         len(filtered),
         breakdown,
     )
-    return FilterOutcome(filtered, breakdown)
+    return FilterOutcome(tuple(filtered), breakdown)
 
 
 def _price_or(p: Product, missing: float) -> float:
@@ -364,7 +365,7 @@ def dedupe_editions(outcome: FilterOutcome) -> FilterOutcome:
     if removed:
         logger.debug("dedupe_editions removed=%d", removed)
     return FilterOutcome(
-        result,
+        tuple(result),
         outcome.breakdown,
         editions_removed=outcome.editions_removed + removed,
         series_collapsed=outcome.series_collapsed,
@@ -405,7 +406,7 @@ def first_in_series(outcome: FilterOutcome) -> FilterOutcome:
     if collapsed:
         logger.debug("first_in_series collapsed=%d", collapsed)
     return FilterOutcome(
-        result,
+        tuple(result),
         outcome.breakdown,
         editions_removed=outcome.editions_removed,
         series_collapsed=outcome.series_collapsed + collapsed,

@@ -1,0 +1,22 @@
+{
+  "monitor": {
+    "enabled": "bool",
+    "estimated_calls": "int",
+    "has_webhook": "bool",
+    "last_error": "null",
+    "last_success": "null",
+    "locale": "str",
+    "matches": "int",
+    "mode": "str",
+    "name": "str",
+    "profile": "str",
+    "query": "str",
+    "settings": {
+      "limit": "null",
+      "pages": "int",
+      "sort": "str"
+    },
+    "valid": "bool"
+  },
+  "schema_version": "int"
+}

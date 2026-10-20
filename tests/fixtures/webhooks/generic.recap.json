@@ -1,0 +1,58 @@
+{
+  "captured_with": "deals recap --atl --webhook URL --webhook-format FORMAT (price history seeded for the same titles); the fake Audible API, a local HTTP server as the webhook",
+  "format": "generic",
+  "kind": "recap",
+  "request": {
+    "body": {
+      "atl_hits": [
+        {
+          "asin": "B0PKW9Y38E",
+          "price": 4.48,
+          "target": 100.0,
+          "title": "Tom & Jerry <Live> | A *Bold* _Move_ ~Strike~ `code` @everyone"
+        },
+        {
+          "asin": "B0JEKRL881",
+          "price": 8.98,
+          "target": 100.0,
+          "title": "Why [Brackets](Matter) — and Ünïcode"
+        }
+      ],
+      "days": 7,
+      "drops": [
+        {
+          "asin": "B0PKW9Y38E",
+          "drop_pct": 63,
+          "new_price": 4.48,
+          "old_price": 12.0,
+          "title": "Tom & Jerry <Live> | A *Bold* _Move_ ~Strike~ `code` @everyone"
+        },
+        {
+          "asin": "B0JEKRL881",
+          "drop_pct": 5,
+          "new_price": 8.98,
+          "old_price": 9.5,
+          "title": "Why [Brackets](Matter) — and Ünïcode"
+        }
+      ],
+      "new_count": 1,
+      "wishlist_hits": [
+        {
+          "asin": "B0PKW9Y38E",
+          "title": "Tom & Jerry <Live> | A *Bold* _Move_ ~Strike~ `code` @everyone"
+        },
+        {
+          "asin": "B0JEKRL881",
+          "title": "Why [Brackets](Matter) — and Ünïcode"
+        },
+        {
+          "asin": "B007DB4FU3",
+          "title": "Plain Title"
+        }
+      ]
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

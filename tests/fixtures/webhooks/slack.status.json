@@ -1,0 +1,13 @@
+{
+  "captured_with": "deals track run with no saved login (webhook and webhook-format from config); the fake Audible API, a local HTTP server as the webhook",
+  "format": "slack",
+  "kind": "status",
+  "request": {
+    "body": {
+      "text": "*audible-deals needs attention*\nBackground tracking failed: Not authenticated. Run 'deals login' first.\nRun 'deals login' to re-authenticate."
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

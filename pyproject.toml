@@ -1,6 +1,6 @@
 [project]
 name = "audible-deals"
-version = "0.11.1"
+dynamic = ["version"]
 description = "CLI to find and sort Audible audiobook deals by price and genre"
 readme = "README.md"
 license = { text = "MIT" }
@@ -15,11 +15,12 @@ classifiers = [
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
     "Topic :: Multimedia :: Sound/Audio",
 ]
 dependencies = [
     "audible>=0.8.0",
-    "click>=8.1",
+    "click>=8.2",
     "rich>=13.0",
 ]
 
@@ -30,12 +31,17 @@ Issues = "https://github.com/chauduyphanvu/audible-deals/issues"
 Changelog = "https://github.com/chauduyphanvu/audible-deals/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "pre-commit>=4.0"]
+dev = ["pytest>=8.0", "pytest-xdist>=3.6", "ruff>=0.15,<0.16", "pre-commit>=4.0", "mypy>=2.4,<3", "keyring>=25", "textual>=8.2,<9"]
 docs = ["mkdocs-material>=9.7,<10"]
+keyring = ["keyring>=25"]
+tui = ["textual>=8.2,<9"]
 
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/audible_deals/__init__.py"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/audible_deals"]
@@ -45,3 +51,18 @@ deals = "audible_deals.cli:cli"
 
 [tool.ruff]
 target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]
+ignore = ["E501"]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["src/audible_deals"]
+warn_unused_ignores = true
+warn_redundant_casts = true
+check_untyped_defs = true
+
+[[tool.mypy.overrides]]
+module = ["audible", "audible.*"]
+ignore_missing_imports = true

@@ -6,9 +6,17 @@ on:
   pull_request:
     branches: [main]
 
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -21,19 +29,31 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
 
       - name: Install dependencies
-        run: uv pip install -e ".[dev]" --system
+        run: uv sync --locked --extra dev
 
       - name: Lint
-        run: ruff check .
+        run: uv run ruff check .
 
       - name: Format check
-        run: ruff format --check .
+        run: uv run ruff format --check .
+
+      - name: Type check
+        run: uv run mypy
 
   test:
-    runs-on: ubuntu-latest
+    name: test (${{ matrix.os }}, py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
     strategy:
+      fail-fast: false
       matrix:
-        python-version: ["3.11", "3.12", "3.13"]
+        include:
+          - { os: ubuntu-latest, python-version: "3.11" }
+          - { os: ubuntu-latest, python-version: "3.12" }
+          - { os: ubuntu-latest, python-version: "3.13" }
+          - { os: ubuntu-latest, python-version: "3.14" }
+          - { os: macos-latest, python-version: "3.13" }
+          - { os: windows-latest, python-version: "3.13" }
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -46,7 +66,72 @@ jobs:
         uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
 
       - name: Install dependencies
-        run: uv pip install -e ".[dev]" --system
+        run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
 
+      # The tests share nothing between workers: each gets its own data
+      # directory, so they run in parallel (about 2x faster on four cores).
       - name: Run tests
-        run: pytest tests/ -v
+        run: uv run pytest tests/ -n auto -ra
+
+  # Builds the wheel and sdist exactly as the release workflow does and checks
+  # that what a user would install carries the version `deals --version` prints.
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      - name: Build the distributions
+        run: uv build
+
+      - name: Check the package metadata
+        run: uvx twine check --strict dist/*
+
+      - name: Install the wheel and check its version
+        run: |
+          expected="$(sed -n 's/^__version__ = "\(.*\)"$/\1/p' src/audible_deals/__init__.py)"
+          wheel="$(ls "$PWD"/dist/*.whl)"
+          cd "$RUNNER_TEMP"
+          [ "$(uv run --isolated --no-project --with "$wheel" deals --version)" = "deals, version $expected" ]
+          uv run --isolated --no-project --with "$wheel" python -c \
+            "import importlib.metadata as m; assert m.version('audible-deals') == '$expected'"
+
+  # A PyInstaller build of the Linux binary on every change: the release
+  # workflow only builds binaries after it has tagged, so a broken bundle
+  # (a missing hidden import, say) should surface here first.
+  bundle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+
+      # PyInstaller is a build tool, not a dependency: it joins the locked
+      # environment here and never appears in pyproject.toml or uv.lock.
+      - name: Install dependencies
+        run: |
+          uv sync --locked --extra tui
+          uv pip install "pyinstaller==6.22.3"
+
+      - name: Build binary (onedir via spec)
+        env:
+          DEALS_ARTIFACT: deals-linux-x64
+        run: uv run --no-sync pyinstaller deals.spec --noconfirm
+
+      - name: Smoke-test the binary
+        run: .github/scripts/smoke-bundle.sh dist/deals-linux-x64

@@ -1,4 +1,4 @@
-"""Persistence for global config, saved search profiles, and notify cooldown state."""
+"""Persistence for the JSON files users own: global config, profiles and monitors."""
 
 from __future__ import annotations
 
@@ -8,76 +8,86 @@ import math
 
 import click
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.constants import (
-    _CONFIG_SCHEMA,
-    ALL_SORT_OPTIONS,
+    CATALOG_CACHE_MAX_TTL_MINUTES,
     LOCALE_DOMAIN,
     WEBHOOK_FORMATS,
 )
-from audible_deals.storage import load_json_file, save_json_file
+from audible_deals.filter_specs import (
+    CONFIG_FILTER_SCHEMA,
+    SPEC_BY_KEY,
+    config_bounds,
+    config_key_aliases,
+)
 from audible_deals.locking import advisory_lock
+from audible_deals.storage import ensure_updatable, load_json_file, save_json_file
 from audible_deals.validation import validate_finite_number
 
 logger = logging.getLogger(__name__)
 
+# Config keys that are not search filters. The filter keys (and their types)
+# come from the filter registry so the CLI flags and the config cannot drift.
+_EXTRA_CONFIG_SCHEMA: dict[str, type] = {
+    "locale": str,
+    "credit_price": float,
+    "webhook": str,
+    "webhook_format": str,
+    "webhook_headers": list,
+    # Let webhooks reach servers on your own network (self-hosted ntfy, Home
+    # Assistant). Off by default: webhook hosts must resolve to public addresses.
+    "webhook_allow_private": bool,
+    # Where secrets (the login, webhook URLs and headers) are kept: "file" (the
+    # data directory) or "keyring" (the OS keychain; see secret_store.py).
+    "secret_storage": str,
+    # Which browser `-i` opens: "auto" (full-screen when textual is installed and
+    # both ends are terminals) or "prompt" (always the line-by-line prompt).
+    "interactive_ui": str,
+    # Minutes a catalog page may be reused (0 turns the cache off).
+    "cache_ttl": int,
+    # Re-price titles seen before that a scan did not return.
+    "known_candidates": bool,
+}
+CONFIG_SCHEMA: dict[str, type] = {**CONFIG_FILTER_SCHEMA, **_EXTRA_CONFIG_SCHEMA}
+
 # Mirror the ranges the equivalent CLI options enforce so config set and the
 # flags agree. (lo, hi); None means unbounded on that side.
 _NUMERIC_BOUNDS: dict[str, tuple[float | None, float | None]] = {
-    "pages": (1, None),
-    "min_discount": (0, 100),
-    "limit": (0, None),
-    "max_price": (0, None),
-    "max_pph": (0, None),
+    **config_bounds(),
     "credit_price": (0, None),
-    "min_rating": (0, 5),
-    "min_ratings": (0, None),
-    "min_hours": (0, None),
+    "cache_ttl": (0, CATALOG_CACHE_MAX_TTL_MINUTES),
 }
 
 
 def load_profiles() -> dict[str, dict]:
-    return load_json_file(constants.PROFILES_FILE, dict, "profiles")
+    return load_json_file(paths.profiles_file(), dict, "profiles")
 
 
 def save_profiles(profiles: dict[str, dict]) -> None:
-    save_json_file(constants.PROFILES_FILE, profiles, "profiles")
+    save_json_file(paths.profiles_file(), profiles, "profiles")
 
 
-def load_monitors() -> dict[str, dict]:
-    return load_json_file(constants.MONITORS_FILE, dict, "monitors")
+def load_monitors(*, quiet: bool = False) -> dict[str, dict]:
+    return load_json_file(paths.monitors_file(), dict, "monitors", quiet=quiet)
+
+
+def load_monitors_for_update() -> dict[str, dict]:
+    """Load monitors for a read-modify-write, refusing to replace a corrupt file."""
+    ensure_updatable(paths.monitors_file(), dict, "monitors")
+    return load_monitors()
 
 
 def save_monitors(monitors: dict[str, dict]) -> None:
-    save_json_file(constants.MONITORS_FILE, monitors, "monitors")
+    save_json_file(paths.monitors_file(), monitors, "monitors")
 
 
-def load_monitor_state() -> dict:
-    state = load_json_file(constants.MONITOR_STATE_FILE, dict, "monitor state")
-    if not state:
-        return {"version": 1, "monitors": {}}
-    if state.get("version") != 1:
-        logger.warning(
-            "monitor state has unsupported version %r; resetting", state.get("version")
-        )
-        return {"version": 1, "monitors": {}}
-    if "monitors" not in state:
-        logger.warning("monitor state is missing monitors; repairing")
-        state["monitors"] = {}
-    elif not isinstance(state["monitors"], dict):
-        logger.warning("monitor state monitors is malformed; repairing")
-        state["monitors"] = {}
-    return state
+def load_config(*, quiet: bool = False) -> dict:
+    return load_json_file(paths.config_file(), dict, "config", quiet=quiet)
 
 
-def save_monitor_state(state: dict) -> None:
-    state["version"] = 1
-    state.setdefault("monitors", {})
-    save_json_file(constants.MONITOR_STATE_FILE, state, "monitor state")
-
-
-def load_config() -> dict:
-    return load_json_file(constants.CONFIG_FILE, dict, "config")
+def webhook_allow_private(config: dict | None) -> bool:
+    """Whether the config lets webhooks reach non-public addresses."""
+    return isinstance(config, dict) and config.get("webhook_allow_private") is True
 
 
 def config_numeric_errors(config: dict) -> list[str]:
@@ -93,7 +103,7 @@ def config_numeric_errors(config: dict) -> list[str]:
                 value,
                 minimum,
                 maximum,
-                integer=_CONFIG_SCHEMA[key] is int,
+                integer=CONFIG_SCHEMA[key] is int,
             )
         except ValueError as exc:
             errors.append(str(exc))
@@ -101,7 +111,7 @@ def config_numeric_errors(config: dict) -> list[str]:
 
 
 def save_config(cfg: dict) -> None:
-    save_json_file(constants.CONFIG_FILE, cfg, "config")
+    save_json_file(paths.config_file(), cfg, "config")
 
 
 def _state_lock(path):
@@ -111,7 +121,8 @@ def _state_lock(path):
 @contextlib.contextmanager
 def config_transaction():
     """Lock, load, mutate, and atomically save the global config."""
-    with _state_lock(constants.CONFIG_FILE):
+    with _state_lock(paths.config_file()):
+        ensure_updatable(paths.config_file(), dict, "config")
         config = load_config()
         yield config
         for key, value in list(config.items()):
@@ -124,31 +135,16 @@ def config_transaction():
 @contextlib.contextmanager
 def profiles_transaction():
     """Lock, load, mutate, and atomically save saved profiles."""
-    with _state_lock(constants.PROFILES_FILE):
+    with _state_lock(paths.profiles_file()):
+        ensure_updatable(paths.profiles_file(), dict, "profiles")
         profiles = load_profiles()
         yield profiles
         save_profiles(profiles)
 
 
-def load_notify_state() -> dict:
-    return load_json_file(constants.NOTIFY_STATE_FILE, dict, "notify state")
-
-
-def save_notify_state(state: dict) -> None:
-    save_json_file(constants.NOTIFY_STATE_FILE, state, "notify state")
-
-
-def load_track_state() -> dict:
-    return load_json_file(constants.TRACK_STATE_FILE, dict, "track state")
-
-
-def save_track_state(state: dict) -> None:
-    save_json_file(constants.TRACK_STATE_FILE, state, "track state")
-
-
 def coerce_config_value(key: str, raw: str):
-    """Coerce a raw string value to the type declared in _CONFIG_SCHEMA."""
-    typ = _CONFIG_SCHEMA[key]
+    """Coerce a raw string value to the type declared in CONFIG_SCHEMA."""
+    typ = CONFIG_SCHEMA[key]
     if typ is bool:
         if raw.lower() in ("true", "1", "yes"):
             return True
@@ -157,16 +153,31 @@ def coerce_config_value(key: str, raw: str):
         raise click.ClickException(
             f"Invalid boolean value for '{key}': {raw!r}. Use true/false."
         )
-    if key == "sort":
-        if raw not in ALL_SORT_OPTIONS:
+    spec = SPEC_BY_KEY.get(key)
+    if spec is not None and spec.valid is not None:
+        if raw not in spec.valid:
             raise click.ClickException(
-                f"Invalid sort value '{raw}'. Valid: {', '.join(sorted(ALL_SORT_OPTIONS))}"
+                f"Invalid {key} value '{raw}'. Valid: {', '.join(sorted(spec.valid))}"
             )
         return raw
     if key == "locale":
         if raw not in LOCALE_DOMAIN:
             raise click.ClickException(
                 f"Invalid locale '{raw}'. Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
+            )
+        return raw
+    if key == "interactive_ui":
+        if raw not in ("auto", "prompt"):
+            raise click.ClickException(
+                f"Invalid interactive-ui '{raw}'. Valid: auto, prompt"
+            )
+        return raw
+    if key == "secret_storage":
+        from audible_deals.secret_store import MODES
+
+        if raw not in MODES:
+            raise click.ClickException(
+                f"Invalid secret-storage '{raw}'. Valid: {', '.join(MODES)}"
             )
         return raw
     if key == "webhook_format":
@@ -178,7 +189,11 @@ def coerce_config_value(key: str, raw: str):
     if key == "webhook":
         from audible_deals.validation import validate_webhook_url
 
-        validate_webhook_url(raw)
+        try:
+            validate_webhook_url(raw)
+        except click.BadParameter as exc:
+            exc.param_hint = "'webhook'"  # config set has no --webhook option
+            raise
         return raw
     if key == "webhook_headers":
         from audible_deals.webhooks import parse_webhook_headers
@@ -188,14 +203,14 @@ def coerce_config_value(key: str, raw: str):
         except ValueError as e:
             raise click.ClickException(
                 f"Invalid webhook header {raw!r}: {e}. Use 'Name: Value' format."
-            )
+            ) from e
         return [raw]
     try:
         result = typ(raw)
     except (ValueError, TypeError) as e:
         raise click.ClickException(
             f"Invalid value for '{key}' (expected {typ.__name__}): {e}"
-        )
+        ) from e
     bounds = _NUMERIC_BOUNDS.get(key)
     if bounds is not None:
         lo, hi = bounds
@@ -211,16 +226,15 @@ def coerce_config_value(key: str, raw: str):
                 f"Value for '{key}' out of range: {result} (expected >= {rng})"
                 if hi is None
                 else f"Value for '{key}' out of range: {result} (expected {rng})"
-            )
+            ) from exc
     return result
 
 
 def validate_config_key(key: str) -> str:
     """Normalize and validate a config key. Returns the snake_case key or raises."""
     norm = key.replace("-", "_")
-    if norm == "max_price_per_hour":
-        return "max_pph"
-    if norm not in _CONFIG_SCHEMA:
-        valid = ", ".join(sorted(k.replace("_", "-") for k in _CONFIG_SCHEMA))
+    norm = config_key_aliases().get(norm, norm)
+    if norm not in CONFIG_SCHEMA:
+        valid = ", ".join(sorted(k.replace("_", "-") for k in CONFIG_SCHEMA))
         raise click.ClickException(f"Unknown config key '{key}'. Valid keys: {valid}")
     return norm

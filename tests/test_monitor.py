@@ -7,25 +7,28 @@ import json
 import pytest
 from click.testing import CliRunner
 
-from audible_deals import constants
+import audible_deals.monitor_service as monitor_service
+from audible_deals import constants, paths
+from audible_deals.automation_models import (
+    MonitorDefinition,
+    MonitorEvent,
+    MonitorSnapshot,
+)
 from audible_deals.catalog_workflow import build_monitor_scan_plan
 from audible_deals.cli import cli
 from audible_deals.cli import monitor as monitor_module
-import audible_deals.monitor_service as monitor_service
-from audible_deals.automation_models import MonitorDefinition, MonitorEvent
+from audible_deals.config_store import load_monitors, save_monitors, save_profiles
 from audible_deals.notification_service import deliver_monitor_events
-from audible_deals.config_store import (
-    load_monitor_state,
-    load_monitors,
-    save_monitor_state,
-    save_monitors,
-    save_profiles,
-)
 from audible_deals.presentation.reports import display_track_history
 from audible_deals.presentation.terminal import console
 from audible_deals.product import Product
 from audible_deals.result_models import DiscoveryResult
 from audible_deals.serialization import serialize_product
+from audible_deals.state_store import (
+    load_monitor_snapshot,
+    monitor_summaries,
+    save_monitor_snapshot,
+)
 from audible_deals.webhooks import (
     format_monitor_webhook_payload,
     format_webhook_payload,
@@ -33,16 +36,35 @@ from audible_deals.webhooks import (
 
 
 @pytest.fixture
-def monitor_files(monkeypatch, tmp_path):
-    for name, filename in (
-        ("MONITORS_FILE", "monitors.json"),
-        ("MONITOR_STATE_FILE", "monitor-state.json"),
-        ("PROFILES_FILE", "profiles.json"),
-        ("CONFIG_FILE", "config.json"),
-        ("LOCK_FILE", "monitor.lock"),
-    ):
-        monkeypatch.setattr(constants, name, tmp_path / filename)
-    return tmp_path
+def monitor_files(tmp_config):
+    """The isolated data directory holding monitors, profiles, config and state."""
+    return tmp_config
+
+
+def _slot(name):
+    """A monitor's stored baseline as a plain dict."""
+    snapshot = load_monitor_snapshot(name)
+    return {
+        "initialized": snapshot.initialized,
+        "products": snapshot.products,
+        "last_success": snapshot.last_success,
+        "last_error": snapshot.last_error,
+    }
+
+
+def _slots():
+    return {name: _slot(name) for name in sorted(monitor_summaries())}
+
+
+def _seed_state(monitors):
+    for name, slot in monitors.items():
+        save_monitor_snapshot(
+            name,
+            MonitorSnapshot(
+                initialized=slot.get("initialized", False),
+                products=slot.get("products", {}),
+            ),
+        )
 
 
 def _definition(name="cheap", *, locale="us", mode="find", **settings):
@@ -80,7 +102,7 @@ def _run_monitor(definition, *, deliver=None):
 
 
 def test_add_contract_frozen_precedence_show_and_remove(monitor_files):
-    constants.CONFIG_FILE.write_text(
+    paths.config_file().write_text(
         json.dumps({"pages": 2, "max_price": 9.0, "limit": 1})
     )
     save_profiles({"scifi": {"pages": 4, "max_price": 6.0, "limit": 2}})
@@ -186,7 +208,7 @@ def test_baseline_events_disappear_reentry_and_monitor_isolation(
     assert _run_monitor(first).events == ()
     assert [event.event for event in _run_monitor(first).events] == ["new"]
     assert _run_monitor(second).events == ()
-    state = load_monitor_state()["monitors"]
+    state = _slots()
     assert state["first"]["products"]["A1"]["price"] == 3.98
     assert state["second"]["products"]["A1"]["price"] == 2.0
 
@@ -197,7 +219,7 @@ def test_unpriced_products_are_not_snapshotted_or_delivered(monkeypatch, monitor
         monitor_service, "scan_monitor", lambda definition, runtime: (product,)
     )
     assert _run_monitor(_definition()).events == ()
-    assert load_monitor_state()["monitors"]["cheap"]["products"] == {}
+    assert _slot("cheap")["products"] == {}
     # Production scan filters unpriced records before they reach this low-level helper.
     assert monitor_module._events({}, [product], "cheap") == []
 
@@ -286,18 +308,18 @@ def test_delivery_failure_keeps_snapshot_for_retry_and_persists_error(
             ),
         )
     monitor_service.record_monitor_error("cheap", RuntimeError("down"))
-    slot = load_monitor_state()["monitors"]["cheap"]
+    slot = _slot("cheap")
     assert set(slot["products"]) == {"A1"}
     assert "down" in slot["last_error"]
     result = _run_monitor(definition)
     assert [event.asin for event in result.events] == ["A2"]
-    assert load_monitor_state()["monitors"]["cheap"]["last_error"] is None
+    assert _slot("cheap")["last_error"] is None
 
 
-def test_malformed_state_self_heals_without_losing_valid_sibling(
+def test_malformed_legacy_state_imports_without_losing_valid_sibling(
     monkeypatch, monitor_files
 ):
-    constants.MONITOR_STATE_FILE.write_text(
+    (monitor_files / "monitor_state.json").write_text(
         json.dumps(
             {
                 "version": 1,
@@ -315,16 +337,18 @@ def test_malformed_state_self_heals_without_losing_valid_sibling(
     )
     result = _run_monitor(_definition("bad"))
     assert result.events == () and result.baseline is True
-    state = load_monitor_state()["monitors"]
+    state = _slots()
     assert state["good"]["products"]["A1"]["price"] == 4.0
     assert state["bad"]["products"]["A2"]["price"] == 2.0
 
 
-def test_missing_monitor_state_mapping_is_repaired(monkeypatch, monitor_files):
-    constants.MONITOR_STATE_FILE.write_text(json.dumps({"version": 1}))
+def test_legacy_state_without_a_monitors_mapping_imports_cleanly(
+    monkeypatch, monitor_files
+):
+    (monitor_files / "monitor_state.json").write_text(json.dumps({"version": 1}))
     monkeypatch.setattr(monitor_service, "scan_monitor", lambda definition, runtime: ())
     _run_monitor(_definition())
-    slot = load_monitor_state()["monitors"]["cheap"]
+    slot = _slot("cheap")
     assert slot["initialized"] is True
     assert slot["products"] == {}
     assert slot["last_success"]
@@ -399,7 +423,7 @@ def test_invalid_persisted_monitor_is_skipped_and_inspectable(
     assert [definition.name for definition in selection.monitors] == ["valid"]
     assert "Skipping malformed monitor invalid" in caplog.text
 
-    constants.MONITORS_FILE.write_text(json.dumps({"invalid": invalid}, allow_nan=True))
+    paths.monitors_file().write_text(json.dumps({"invalid": invalid}, allow_nan=True))
     monkeypatch.setattr(
         monitor_module,
         "_get_client",
@@ -415,19 +439,12 @@ def test_pause_resume_are_idempotent_and_test_does_not_persist(
     monkeypatch, monitor_files
 ):
     save_monitors({"cheap": _definition()})
-    save_monitor_state(
-        {
-            "version": 1,
-            "monitors": {
-                "cheap": {"initialized": True, "products": {"A1": _product()}}
-            },
-        }
-    )
+    _seed_state({"cheap": {"initialized": True, "products": {"A1": _product()}}})
     runner = CliRunner()
     assert runner.invoke(cli, ["monitor", "pause", "cheap"]).exit_code == 0
     assert "already paused" in runner.invoke(cli, ["monitor", "pause", "cheap"]).output
     assert runner.invoke(cli, ["monitor", "resume", "cheap"]).exit_code == 0
-    before = constants.MONITOR_STATE_FILE.read_text()
+    before = _slots()
     monkeypatch.setattr(
         monitor_module, "scan_monitor", lambda definition: [_product("A2", 2.0)]
     )
@@ -435,23 +452,16 @@ def test_pause_resume_are_idempotent_and_test_does_not_persist(
     assert result.exit_code == 0
     assert "Current matches" in result.output
     assert "A2 — $2.00 — A2" in result.output
-    assert constants.MONITOR_STATE_FILE.read_text() == before
+    assert _slots() == before
 
 
 def test_add_clears_orphaned_state(monitor_files):
     save_profiles({"scifi": {}})
-    save_monitor_state(
-        {
-            "version": 1,
-            "monitors": {
-                "cheap": {"initialized": True, "products": {"A1": _product()}}
-            },
-        }
-    )
+    _seed_state({"cheap": {"initialized": True, "products": {"A1": _product()}}})
     runner = CliRunner()
     result = runner.invoke(cli, ["monitor", "add", "cheap", "--profile", "scifi"])
     assert result.exit_code == 0, result.output
-    assert "cheap" not in load_monitor_state()["monitors"]
+    assert "cheap" not in _slots()
 
 
 def test_add_rejects_explicit_plus_conflict_without_writing(monitor_files):
@@ -478,7 +488,7 @@ def test_persisted_plus_conflict_is_diagnosed_without_repair(
 ):
     conflicting = _definition(skip_plus=True, only_plus=True)
     save_monitors({"bad-plus": conflicting})
-    before = constants.MONITORS_FILE.read_text()
+    before = paths.monitors_file().read_text()
     calls = []
     monkeypatch.setattr(
         monitor_module, "_get_client", lambda locale: calls.append(locale)
@@ -489,13 +499,13 @@ def test_persisted_plus_conflict_is_diagnosed_without_repair(
     assert result.exit_code != 0
     assert "mutually exclusive" in result.output
     assert calls == []
-    assert constants.MONITORS_FILE.read_text() == before
+    assert paths.monitors_file().read_text() == before
 
     doctor = CliRunner().invoke(cli, ["doctor"])
     assert doctor.exit_code == 1
     assert "Saved-search monitors" in doctor.output
     assert "FAIL" in doctor.output
-    assert constants.MONITORS_FILE.read_text() == before
+    assert paths.monitors_file().read_text() == before
 
 
 def test_scan_monitor_ignores_legacy_limit(monkeypatch, monitor_files):

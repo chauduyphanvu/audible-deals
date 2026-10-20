@@ -1,0 +1,54 @@
+{
+  "captured_with": "deals notify --webhook URL --webhook-format FORMAT (wishlist of three titles with awkward names); the fake Audible API, a local HTTP server as the webhook",
+  "format": "teams",
+  "kind": "deals",
+  "request": {
+    "body": {
+      "attachments": [
+        {
+          "content": {
+            "$schema": "http://adaptivecards.io/schemas/adaptive-card.json",
+            "body": [
+              {
+                "size": "Medium",
+                "text": "Audible Deals (3)",
+                "type": "TextBlock",
+                "weight": "Bolder",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "• [Tom & Jerry \\<Live\\> \\| A \\*Bold\\* \\_Move\\_ \\~Strike\\~ \\`code\\` @everyone](https://www.audible.com/pd/B0PKW9Y38E) — $4.48 (target $100.00)",
+                "type": "TextBlock",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "• [Why \\[Brackets\\]\\(Matter\\) — and Ünïcode](https://www.audible.com/pd/B0JEKRL881) — $8.98 (target $100.00)",
+                "type": "TextBlock",
+                "wrap": true
+              },
+              {
+                "spacing": "Small",
+                "text": "• [Plain Title](https://www.audible.com/pd/B007DB4FU3) — $19.95 (target $100.00)",
+                "type": "TextBlock",
+                "wrap": true
+              }
+            ],
+            "msteams": {
+              "width": "Full"
+            },
+            "type": "AdaptiveCard",
+            "version": "1.2"
+          },
+          "contentType": "application/vnd.microsoft.card.adaptive",
+          "contentUrl": null
+        }
+      ],
+      "type": "message"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

@@ -1,0 +1,10 @@
+{
+  "profile": {
+    "name": "str",
+    "options": {
+      "genre": "str",
+      "max_price": "float"
+    }
+  },
+  "schema_version": "int"
+}

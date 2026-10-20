@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-
 import pytest
 from click.testing import CliRunner
 
-import audible_deals.constants as constants_mod
 from audible_deals.cli import cli
-from tests.conftest import make_product
+from tests.conftest import count_rows, make_product, raw_session
 
 
 class TestCatalogRegressions:
@@ -65,9 +63,9 @@ class TestCatalogRegressions:
         )
         assert result.exit_code != 0
         assert "Filesystem error" in result.output
-        assert not constants_mod.LAST_RESULTS_FILE.exists()
-        assert not constants_mod.SEEN_ASINS_FILE.exists()
-        assert not constants_mod.HISTORY_DIR.exists()
+        assert raw_session() is None
+        assert count_rows("seen") == 0
+        assert count_rows("price_history") == 0
 
     def test_search_multi_query_dry_run_multiplies_estimates(self, tmp_config):
         result = CliRunner().invoke(

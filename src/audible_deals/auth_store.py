@@ -2,26 +2,27 @@
 
 from __future__ import annotations
 
-import contextlib
 import hashlib
 import json
 import logging
 import os
 import threading
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
+from audible_deals import secret_store
+from audible_deals.auth_state import auth_reference, parse_auth_reference
 from audible_deals.constants import LOCALE_DOMAIN
+from audible_deals.exit_codes import AuthRequiredError
 from audible_deals.locking import advisory_lock
-from audible_deals.storage import _atomic_write, _atomic_write_bytes
+from audible_deals.storage import _atomic_write_bytes, read_text
 
 if TYPE_CHECKING:
     import audible
 
 logger = logging.getLogger(__name__)
-
-_UMASK_LOCK = threading.Lock()
 
 
 def _captcha_callback(captcha_url: str) -> str:
@@ -35,17 +36,6 @@ def _captcha_callback(captcha_url: str) -> str:
     except Exception:
         pass
     return input("Answer for CAPTCHA: ").strip().lower()
-
-
-@contextlib.contextmanager
-def _restrictive_umask():
-    """Temporarily set umask to 0o177 so new files are created at 0o600."""
-    with _UMASK_LOCK:
-        old = os.umask(0o177)
-        try:
-            yield
-        finally:
-            os.umask(old)
 
 
 def _auth_from_libation(data: dict, locale: str) -> dict:
@@ -113,6 +103,8 @@ class AuthStore:
         self._auth_save_pending = False
         self._auth_save_warned = False
         self._auth_persistence_disabled = False
+        #: Where the loaded login came from: the auth file, or the OS keychain.
+        self._auth_source = "file"
         self._state_lock = threading.RLock()
 
     def _prepare_auth_dir(self) -> None:
@@ -133,6 +125,52 @@ class AuthStore:
     ) -> tuple[object, object, object]:
         return (auth.access_token, auth.refresh_token, auth.expires)
 
+    def _write_auth_file(self, text: str) -> None:
+        _atomic_write_bytes(self.auth_file, text.encode("utf-8"))
+        os.chmod(self.auth_file, 0o600)
+
+    def _save_auth(self, auth_data: dict, *, indent: int) -> None:
+        """Save a login: in the auth file, or (keyring mode) in the keychain.
+
+        File mode writes exactly the JSON ``Authenticator.to_file`` would, through
+        our atomic 0600 writer, so no umask change is needed and a reader never
+        sees half a file. Keyring mode stores the same JSON in the keychain and
+        leaves a small reference file (see ``auth_state.auth_reference``).
+        """
+        text = json.dumps(auth_data, indent=indent, allow_nan=False)
+        with self._auth_file_lock():
+            if secret_store.configured_mode() == "keyring":
+                secret_store.put(secret_store.AUTH_ACCOUNT, text)
+                if secret_store.get(secret_store.AUTH_ACCOUNT) != text:
+                    raise secret_store.SecretStoreError(
+                        "The keychain did not keep the login (reading it back "
+                        "returned something else). Nothing was changed."
+                    )
+                self._write_auth_file(json.dumps(auth_reference(auth_data), indent=2))
+            else:
+                self._write_auth_file(text)
+
+    def _read_saved_auth(self) -> tuple[bytes, dict | None]:
+        """The bytes that identify the saved login right now, and its reference (if any).
+
+        For a file login these are the file's bytes; for a keychain login, the
+        secret's, so "did something else change it?" works for both.
+        """
+        raw = self.auth_file.read_bytes()
+        try:
+            reference = parse_auth_reference(json.loads(raw.decode("utf-8-sig")))
+        except ValueError:
+            reference = None
+        if reference is None:
+            return raw, None
+        secret = secret_store.get(str(reference["account"]))
+        if secret is None:
+            raise AuthRequiredError(
+                "Your saved login is not in the keychain any more. "
+                "Run 'deals login' to sign in again."
+            )
+        return secret.encode("utf-8"), reference
+
     def login(self, username: str, password: str) -> None:
         """Interactive Audible login. Persists tokens to auth_file."""
         import audible
@@ -147,11 +185,8 @@ class AuthStore:
                 with_username=True,
                 captcha_callback=_captcha_callback,
             )
-            with self._auth_file_lock():
-                with _restrictive_umask():
-                    auth.to_file(self.auth_file)
-                os.chmod(self.auth_file, 0o600)
-        logger.info("login complete, auth written to %s", self.auth_file)
+            self._save_auth(auth.to_dict(), indent=4)
+        logger.info("login complete, auth saved (%s)", self.auth_file)
 
     def login_external(
         self,
@@ -189,7 +224,7 @@ class AuthStore:
                     )
                     print()
                     input("Press Enter here once the file is saved...")
-                    url = callback_url_file.read_text().strip()
+                    url = read_text(callback_url_file).strip()
                     if not url:
                         raise RuntimeError(f"File is empty: {callback_url_file}")
                     return url
@@ -208,11 +243,8 @@ class AuthStore:
                     locale=self.locale,
                 )
 
-            with self._auth_file_lock():
-                with _restrictive_umask():
-                    auth.to_file(self.auth_file)
-                os.chmod(self.auth_file, 0o600)
-        logger.info("login_external complete, auth written to %s", self.auth_file)
+            self._save_auth(auth.to_dict(), indent=4)
+        logger.info("login_external complete, auth saved (%s)", self.auth_file)
 
     def import_auth(self, source_path: Path) -> None:
         """Import auth from an audible-cli or Libation-exported JSON file."""
@@ -220,7 +252,7 @@ class AuthStore:
         with self._state_lock:
             self._prepare_auth_dir()
 
-            raw = source_path.read_text()
+            raw = read_text(source_path)
             if len(raw) > 1_000_000:
                 raise ValueError(
                     f"Auth file too large ({len(raw):,} chars). "
@@ -239,15 +271,8 @@ class AuthStore:
                 auth_data = _validate_audible_cli_auth(data, self.locale)
                 source_format = "audible-cli"
 
-            with self._auth_file_lock():
-                _atomic_write(
-                    self.auth_file,
-                    json.dumps(auth_data, indent=2, allow_nan=False),
-                )
-                os.chmod(self.auth_file, 0o600)
-        logger.info(
-            "import_auth (%s format) written to %s", source_format, self.auth_file
-        )
+            self._save_auth(auth_data, indent=2)
+        logger.info("import_auth (%s format) saved (%s)", source_format, self.auth_file)
 
     @property
     def is_authenticated(self) -> bool:
@@ -261,12 +286,21 @@ class AuthStore:
             if self._authenticator is not None:
                 return self._authenticator
             if not self.auth_file.exists():
-                raise RuntimeError("Not authenticated. Run 'deals login' first.")
+                raise AuthRequiredError("Not authenticated. Run 'deals login' first.")
             with self._auth_file_lock():
                 if not self.auth_file.exists():
-                    raise RuntimeError("Not authenticated. Run 'deals login' first.")
-                auth_contents = self.auth_file.read_bytes()
-                auth = audible.Authenticator.from_file(self.auth_file)
+                    raise AuthRequiredError(
+                        "Not authenticated. Run 'deals login' first."
+                    )
+                auth_contents, reference = self._read_saved_auth()
+                if reference is None:
+                    auth = audible.Authenticator.from_file(self.auth_file)
+                    self._auth_source = "file"
+                else:
+                    auth = audible.Authenticator.from_dict(
+                        json.loads(auth_contents.decode("utf-8"))
+                    )
+                    self._auth_source = "keyring"
             self._authenticator = auth
             self._auth_snapshot = self._auth_refresh_state(auth)
             self._auth_file_fingerprint = self._auth_fingerprint(auth_contents)
@@ -287,7 +321,7 @@ class AuthStore:
                 return
             try:
                 with self._auth_file_lock():
-                    disk_contents = self.auth_file.read_bytes()
+                    disk_contents, _reference = self._read_saved_auth()
                     disk_fingerprint = self._auth_fingerprint(disk_contents)
                     if disk_fingerprint != self._auth_file_fingerprint:
                         if not self._auth_save_warned:
@@ -301,11 +335,17 @@ class AuthStore:
                         self._auth_save_pending = False
                         self._auth_persistence_disabled = True
                         return
-                    serialized = json.dumps(
-                        auth.to_dict(), indent=4, allow_nan=False
-                    ).encode("utf-8")
-                    _atomic_write_bytes(self.auth_file, serialized)
-                    os.chmod(self.auth_file, 0o600)
+                    auth_dict = auth.to_dict()
+                    text = json.dumps(auth_dict, indent=4, allow_nan=False)
+                    serialized = text.encode("utf-8")
+                    if self._auth_source == "keyring":
+                        secret_store.put(secret_store.AUTH_ACCOUNT, text)
+                        self._write_auth_file(
+                            json.dumps(auth_reference(auth_dict), indent=2)
+                        )
+                    else:
+                        _atomic_write_bytes(self.auth_file, serialized)
+                        os.chmod(self.auth_file, 0o600)
                     self._auth_file_fingerprint = self._auth_fingerprint(serialized)
             except Exception as exc:
                 self._auth_save_pending = True

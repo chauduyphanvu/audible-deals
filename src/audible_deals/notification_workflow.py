@@ -4,23 +4,23 @@ from __future__ import annotations
 
 import json as json_mod
 import logging
-import sys
 
 import click
 
 from audible_deals.presentation.reports import display_recap
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, route_console_to_stderr
 from audible_deals.price_history import (
     find_all_atl_hits,
     find_wishlist_atl_hits,
     find_wishlist_hits,
     has_price_history,
-    load_all_price_histories,
     scan_price_changes,
 )
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
 from audible_deals.webhooks import (
     format_recap_payload,
+)
+from audible_deals.webhooks import (
     parse_webhook_headers as _parse_wh_headers,
 )
 
@@ -32,7 +32,7 @@ def parse_webhook_headers(raw: tuple[str, ...]) -> dict[str, str]:
     try:
         return _parse_wh_headers(raw, strict=True)
     except ValueError as e:
-        raise click.UsageError(str(e))
+        raise click.UsageError(str(e)) from e
 
 
 def empty_recap_payload(days: int, include_atl: bool) -> dict:
@@ -97,14 +97,14 @@ def run_recap(
     currency,
     extra_headers=None,
     locale="us",
+    allow_private=False,
 ):
     logger.info(
         "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
     )
     if json_flag:
-        console.file = sys.stderr
-    histories = load_all_price_histories(locale)
-    drops, new_items = scan_price_changes(days, histories=histories)
+        route_console_to_stderr(click.get_current_context(silent=True))
+    drops, new_items = scan_price_changes(days, locale=locale)
     if not drops and not new_items and not has_price_history(locale):
         if json_flag:
             empty = empty_recap_payload(days, atl or atl_all)
@@ -116,9 +116,7 @@ def run_recap(
         return
     wishlist_hits = find_wishlist_hits(locale)
     if atl_all:
-        atl_hits: list[dict] | None = find_all_atl_hits(
-            histories=histories, locale=locale
-        )
+        atl_hits: list[dict] | None = find_all_atl_hits(locale=locale)
     elif atl:
         atl_hits = find_wishlist_atl_hits(locale)
     else:
@@ -141,14 +139,14 @@ def run_recap(
                 return
             try:
                 body, headers = format_recap_payload(
-                    payload, webhook_format, currency=currency
+                    payload, webhook_format, currency=currency, url=webhook
                 )
             except ValueError as e:
-                raise click.ClickException(str(e))
+                raise click.ClickException(str(e)) from e
             if extra_headers:
                 headers = {**headers, **extra_headers}
             try:
-                WebhookClient().post(webhook, body, headers)
+                WebhookClient(allow_private=allow_private).post(webhook, body, headers)
             except WebhookDeliveryError as exc:
                 raise click.ClickException(str(exc)) from exc
             console.print("[green]Sent recap to webhook[/green]")

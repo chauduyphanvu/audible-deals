@@ -1,22 +1,28 @@
-"""CLI for finding Audible audiobook deals.
+"""The ``deals`` command line.
 
-Usage:
-    deals login                    Authenticate with Audible
-    deals import-auth PATH         Import auth from audible-cli or Libation
-    deals categories [--parent ID] List categories
-    deals search QUERY [options]   Search catalog with filters
-    deals find [options]           Browse & filter deals (main command)
-    deals detail SELECTOR          Show detailed product info
-    deals open SELECTOR            Open Audible page in browser
-    deals compare SELECTOR ...     Side-by-side comparison
-    deals wishlist add/remove/list/sync/repair Manage your watchlist
-    deals watch                    Check wishlist for price drops
-    deals notify [--webhook URL]   Send notifications for deals at target
-    deals profile save/list/delete Manage saved search profiles
-    deals monitor add/list/show/remove Manage saved-search monitors
-    deals history SELECTOR         View price history with sparkline
-    deals recap [--days N]         Recap of recent price changes
-    deals completions SHELL        Generate shell completions
+This module holds only what every command shares; each command lives in its own
+submodule and is imported the first time it is used, so ``deals --help`` and
+``deals --version`` load none of them.
+
+* ``_COMMAND_SPECS`` is the registry: command name -> (module, attribute, short
+  help, deprecated). ``deals --help`` is generated from it, grouped by
+  ``_COMMAND_GROUPS``.
+* ``DealsGroup`` is the root group. It loads a command on demand, attaches the
+  options that are accepted before or after any subcommand (``--locale``,
+  ``-v``, ``--color``; see ``global_options``), remembers the raw arguments (so
+  an error can still honor ``--json``), and turns every failure into a one-line
+  error with a documented exit status (``errors``, ``exit_codes``).
+* ``cli`` (below) is the group object itself: before any subcommand runs it
+  sets up logging, loads the saved config and settles the marketplace. A bare
+  ``deals`` prints a local-only starting dashboard.
+
+Modules: ``catalog`` (find, search), ``foryou``, ``library``, ``series``,
+``last``, ``wishlist`` (also ``watch``), ``history``, ``recap``, ``notify``,
+``track``, ``monitor``, ``config`` (also ``profile``), ``cache`` and ``misc``
+(login, detail, compare, categories, doctor, completions, ...). ``options``
+declares the shared option sets, ``helpers`` the pieces most commands need
+(client, selectors, output), and ``json_output`` (one level up) the
+machine-readable payloads.
 """
 
 from __future__ import annotations
@@ -31,6 +37,8 @@ except ImportError:
 
 import click
 
+#: ``ctx.meta`` key holding the arguments the root group was invoked with.
+RAW_ARGS_KEY = "deals.raw_args"
 
 _COMMAND_SPECS = {
     "login": (
@@ -177,6 +185,12 @@ _COMMAND_SPECS = {
         "Manage saved-search monitors run by deals track run.",
         False,
     ),
+    "cache": (
+        "audible_deals.cli.cache",
+        "cache",
+        "Inspect and clear local databases and caches.",
+        False,
+    ),
 }
 
 _COMMAND_GROUPS = (
@@ -188,7 +202,15 @@ _COMMAND_GROUPS = (
     ),
     (
         "Setup & Support",
-        ("login", "import-auth", "profile", "config", "doctor", "completions"),
+        (
+            "login",
+            "import-auth",
+            "profile",
+            "config",
+            "cache",
+            "doctor",
+            "completions",
+        ),
     ),
 )
 
@@ -213,8 +235,8 @@ def _force_utf8_output() -> None:
 _force_utf8_output()
 
 
-class _HandleAuthErrors(click.Group):
-    """Catch RuntimeError from missing auth and show a friendly message."""
+class DealsGroup(click.Group):
+    """The root group: lazy command loading and one-line, coded error handling."""
 
     def get_command(self, ctx, cmd_name):
         command = super().get_command(ctx, cmd_name)
@@ -225,32 +247,49 @@ class _HandleAuthErrors(click.Group):
             return None
         module_name, attribute, _, _ = spec
         command = getattr(importlib.import_module(module_name), attribute)
+        from audible_deals.cli.global_options import attach_global_options
+
+        # --locale / -v are accepted after the subcommand as well as before it.
+        attach_global_options(command)
         self.add_command(command, cmd_name)
         return command
 
     def list_commands(self, ctx):
         return sorted({*super().list_commands(ctx), *_COMMAND_SPECS})
 
+    def parse_args(self, ctx, args):
+        # Remember what was typed: a usage error raised while a subcommand's
+        # arguments are still being parsed must still honor --json.
+        ctx.meta[RAW_ARGS_KEY] = tuple(args)
+        return super().parse_args(ctx, args)
+
     def invoke(self, ctx):
         try:
             return super().invoke(ctx)
-        except click.ClickException as exc:
-            exc.message = _safe_text(exc.message)
+        except (click.exceptions.Exit, click.Abort):
             raise
-        except RuntimeError as e:
-            if "Not authenticated" in str(e):
-                raise click.ClickException(_safe_text(e))
-            raise
-        except BrokenPipeError:
-            raise
-        except OSError as e:
-            raise click.ClickException(f"Filesystem error: {_safe_text(e)}")
+        except KeyboardInterrupt:
+            from audible_deals.cli import errors
+            from audible_deals.exit_codes import ExitCode
+
+            if errors.wants_json(ctx):
+                errors.CliError(
+                    "Interrupted", ExitCode.INTERRUPTED, json_mode=True
+                ).show()
+            else:
+                click.echo("\nAborted!", err=True)
+            raise click.exceptions.Exit(ExitCode.INTERRUPTED) from None
         except Exception as exc:
-            if not _is_audible_request_error(exc):
+            from audible_deals.cli import errors
+
+            converted = errors.convert(exc, ctx)
+            if converted is not None:
+                raise converted from exc
+            if isinstance(exc, (click.ClickException, BrokenPipeError)):
                 raise
-            raise click.ClickException(
-                "Audible request failed. Check your network connection and authentication, then try again."
-            )
+            if ctx.obj and ctx.obj.get("verbose", 0) >= 2:
+                raise  # -vv: the traceback is wanted
+            raise errors.unexpected(exc, ctx) from exc
 
     def format_commands(self, ctx, formatter):
         """Render command help in workflows rather than one long alphabetic list."""
@@ -278,33 +317,41 @@ class _HandleAuthErrors(click.Group):
                     formatter.write_dl(rows)
 
 
-def _safe_text(value: object) -> str:
-    from audible_deals.presentation.terminal import safe_text
-
-    return safe_text(value)
-
-
-def _is_audible_request_error(exc: Exception) -> bool:
-    """Recognize SDK request errors without importing Audible during startup."""
-    exceptions_module = sys.modules.get("audible.exceptions")
-    request_error = getattr(exceptions_module, "RequestError", None)
-    return isinstance(request_error, type) and isinstance(exc, request_error)
-
-
 def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
     if not value or ctx.resilient_parsing:
         return
-    try:
-        from importlib.metadata import version as _pkg_version
+    from audible_deals import __version__
 
-        v = _pkg_version("audible-deals")
-    except Exception:
-        v = "0.11.1"  # fallback for PyInstaller frozen builds
-    click.echo(f"deals, version {v}")
+    click.echo(f"deals, version {__version__}")
     ctx.exit()
 
 
-@click.group(cls=_HandleAuthErrors, invoke_without_command=True)
+def _will_update_config(ctx: click.Context) -> bool:
+    """Whether the command line is one that rewrites ``config.json``.
+
+    Judged from the words typed (options and their values do not matter much:
+    a false match only drops a warning that the command would not need).
+    """
+    words = [a for a in ctx.meta.get(RAW_ARGS_KEY, ()) if not a.startswith("-")]
+    pairs = set(zip(words, words[1:], strict=False))
+    if {("config", "set"), ("config", "reset")} & pairs:
+        return True
+    return ("track", "install") in pairs and any(
+        a == "--webhook" or a.startswith("--webhook=")
+        for a in ctx.meta.get(RAW_ARGS_KEY, ())
+    )
+
+
+def _apply_root_color(ctx, param, value):
+    """``--color`` before the subcommand; the shared callback does the work."""
+    if value is None:
+        return value
+    from audible_deals.cli.global_options import _apply_color
+
+    return _apply_color(ctx, param, value)
+
+
+@click.group(cls=DealsGroup, invoke_without_command=True)
 @click.option(
     "--version",
     is_flag=True,
@@ -319,6 +366,18 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
     help="Audible marketplace (us, uk, ca, de, fr, au, jp, in, es)",
 )
 @click.option(
+    "--color",
+    type=click.Choice(["auto", "always", "never"]),
+    default=None,
+    expose_value=False,
+    callback=_apply_root_color,
+    metavar="WHEN",
+    help=(
+        "Colored output: auto (default; honors NO_COLOR and FORCE_COLOR), "
+        "always or never. An explicit value wins over those variables."
+    ),
+)
+@click.option(
     "-v",
     "--verbose",
     "verbose",
@@ -328,11 +387,22 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 @click.pass_context
 def cli(ctx, locale, verbose):
     """Audible deal finder - find cheap audiobooks during sales."""
+    import logging
+
     from audible_deals.config_store import load_config
     from audible_deals.constants import LOCALE_DOMAIN
 
     ctx.ensure_object(dict)
-    cfg = load_config()
+    ctx.obj["verbose"] = verbose
+    if ctx.invoked_subcommand is not None:
+        # Configure logging before reading any state so load-time warnings
+        # (e.g. a corrupt config file) honor -v/-vv.
+        from audible_deals.logging_setup import configure_logging
+
+        configure_logging(verbose)
+    # A command about to change a corrupt config refuses with its own error;
+    # the "ignoring" warning would only repeat it.
+    cfg = load_config(quiet=_will_update_config(ctx))
     ctx.obj["config"] = cfg
     locale_explicit = (
         ctx.get_parameter_source("locale") == click.core.ParameterSource.COMMANDLINE
@@ -357,11 +427,6 @@ def cli(ctx, locale, verbose):
     if ctx.invoked_subcommand is None:
         _print_dashboard(locale)
         return
-    import logging
-
-    from audible_deals.logging_setup import configure_logging
-
-    configure_logging(verbose)
     logging.getLogger(__name__).debug(
         "cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand
     )

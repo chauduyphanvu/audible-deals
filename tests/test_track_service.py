@@ -9,16 +9,16 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.track_service as track_service
-from audible_deals import constants
 from audible_deals.automation_models import (
     MonitorEvent,
     MonitorRunResult,
     TrackRunRequest,
 )
 from audible_deals.cli import cli
-from audible_deals.config_store import load_track_state
+from audible_deals.exit_codes import AuthRequiredError
 from audible_deals.locking import run_lock
 from audible_deals.monitor_service import MonitorRuntime
+from audible_deals.state_store import TrackState, load_track_state
 from audible_deals.track_service import (
     TrackRuntime,
     refresh_eligible_asins,
@@ -190,7 +190,7 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
             calls.append(list(asins))
             return []
 
-    state = {}
+    state = TrackState()
 
     track_runtime = replace(
         runtime(RecordingClient(), Webhook(), wishlist=[]),
@@ -201,14 +201,14 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
     )
 
     run_track(request(), track_runtime)
-    first = calls[1]
+    first = calls[0]  # an empty wishlist makes no lookup of its own
     run_track(request(), track_runtime)
-    second = calls[3]
+    second = calls[1]
 
     assert first == [f"A{index:03d}" for index in range(200)]
     assert second[:50] == [f"A{index:03d}" for index in range(200, 250)]
     assert second[50:] == [f"A{index:03d}" for index in range(150)]
-    assert state["refresh_cursors"]["us"] == {
+    assert state.refresh_cursors["us"] == {
         "surfaced_on": today.isoformat(),
         "asin": "A149",
     }
@@ -249,7 +249,7 @@ def test_partial_monitor_failure_isolated_and_success_saved(tmp_config, monkeypa
     assert result.monitor_events == 1
     assert result.monitor_failures == ("bad: RuntimeError: broken",)
     assert errors == [("bad", "broken")]
-    assert load_track_state()["run_history"][0] == result.to_dict()
+    assert load_track_state().runs[0] == result.to_dict()
 
 
 def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
@@ -265,7 +265,7 @@ def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
             acquisitions.append(1)
             yield
 
-    auth_error = RuntimeError("Not authenticated. Run 'deals login' first.")
+    auth_error = AuthRequiredError("Not authenticated. Run 'deals login' first.")
     track_runtime = runtime(
         Client(auth_error),
         webhook,
@@ -277,9 +277,9 @@ def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
         run_track(request("https://example.test"), track_runtime)
 
     state = load_track_state()
-    entry = state["run_history"][0]
+    entry = state.runs[0]
     assert set(entry) == {"at", "duration_s", "error"}
-    assert state["auth_error_notified"] is True
+    assert state.auth_error_notified is True
     assert len(webhook.calls) == 1
     assert len(acquisitions) == 2
 
@@ -293,12 +293,12 @@ def test_auth_failure_reacquires_lock_writes_sparse_entry_and_latches_once(
         load_wishlist=lambda: [],
     )
     run_track(request("https://example.test"), successful_runtime)
-    assert load_track_state().get("auth_error_notified") is not True
+    assert load_track_state().auth_error_notified is False
 
 
 def test_auth_webhook_failure_does_not_latch_and_is_retried(tmp_config):
     webhook = Webhook(error=RuntimeError("webhook down"))
-    auth_error = RuntimeError("Not authenticated")
+    auth_error = AuthRequiredError("Not authenticated")
     track_runtime = runtime(
         Client(auth_error),
         webhook,
@@ -310,10 +310,12 @@ def test_auth_webhook_failure_does_not_latch_and_is_retried(tmp_config):
             run_track(request("https://example.test"), track_runtime)
 
     assert len(webhook.calls) == 2
-    assert load_track_state().get("auth_error_notified") is not True
+    assert load_track_state().auth_error_notified is False
 
 
-def test_wishlist_webhook_failure_does_not_record_run_or_notify_state(tmp_config):
+def test_wishlist_webhook_failure_is_a_recorded_failed_run_with_no_notify_state(
+    tmp_config,
+):
     product = make_product(asin="A1", price=3)
     webhook = Webhook(WebhookDeliveryError("Webhook failed: down"))
     notify_saves = []
@@ -330,8 +332,31 @@ def test_wishlist_webhook_failure_does_not_record_run_or_notify_state(tmp_config
     with pytest.raises(WebhookDeliveryError, match="Webhook failed: down"):
         run_track(request("https://example.test"), track_runtime)
 
-    assert notify_saves == []
-    assert not constants.TRACK_STATE_FILE.exists()
+    assert notify_saves == []  # so the next run alerts again
+    (recorded,) = load_track_state().runs
+    assert recorded["error"] == "WebhookDeliveryError: Webhook failed: down"
+    assert "hits" not in recorded
+
+
+def test_track_status_shows_a_webhook_failure(tmp_config, monkeypatch):
+    import audible_deals.cli.track as track_cli
+
+    monkeypatch.setattr(track_cli.scheduler, "installed", lambda: (False, "none"))
+    state = TrackState()
+    state.add_run(
+        {
+            "at": "2026-06-09T08:00:00",
+            "duration_s": 1.0,
+            "error": "WebhookDeliveryError: Webhook failed: down",
+        }
+    )
+    from audible_deals.state_store import save_track_state
+
+    save_track_state(state)
+
+    result = CliRunner().invoke(cli, ["track", "status"])
+
+    assert "Webhook failed: down" in result.output
 
 
 def test_track_cli_preserves_webhook_error_prefix(tmp_config, monkeypatch):
@@ -349,3 +374,42 @@ def test_track_cli_preserves_webhook_error_prefix(tmp_config, monkeypatch):
     assert result.exit_code != 0
     assert "Webhook failed: down" in result.output
     assert "track run failed:" not in result.output
+
+
+def test_a_wishlist_title_is_priced_in_its_own_marketplace(tmp_config):
+    """Like `notify`, `track run` looks a title up where it was added, not in the
+    command's marketplace (it used to price every title in the default one)."""
+    requested = []
+
+    class LocaleClient(Client):
+        def __init__(self, locale):
+            super().__init__(
+                products=[
+                    make_product(asin="B0UKTITLE1", price=3.0, locale=locale),
+                    make_product(asin="B0USTITLE1", price=3.0, locale=locale),
+                ]
+            )
+            self.locale = locale
+
+        def get_products_batch(self, asins):
+            requested.append((self.locale, list(asins)))
+            return super().get_products_batch(asins)
+
+    webhook = Webhook()
+    track_runtime = replace(
+        runtime(
+            None,
+            webhook,
+            wishlist=[
+                {"asin": "B0USTITLE1", "title": "US", "max_price": 5.0},
+                {"asin": "B0UKTITLE1", "title": "UK", "max_price": 5.0, "locale": "uk"},
+            ],
+        ),
+        get_client=LocaleClient,
+    )
+
+    result = run_track(request("https://hooks.example.test/x"), track_runtime)
+
+    assert ("us", ["B0USTITLE1"]) in requested
+    assert ("uk", ["B0UKTITLE1"]) in requested
+    assert result.hits == 2 and len(webhook.calls) == 1

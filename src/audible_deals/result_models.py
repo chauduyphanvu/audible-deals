@@ -5,13 +5,15 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import math
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from audible_deals import constants
+from audible_deals.filter_specs import Kind, recipe_fields, recipe_specs
 from audible_deals.product import Product
 from audible_deals.settings import resolve_plus_flags
-
 
 SESSION_VERSION = 2
 
@@ -112,44 +114,23 @@ class CatalogScanProgress:
     total: int
     completed: int
     items: int
+    #: Pages answered by the catalog cache so far (they cost no API call).
+    cached: int = 0
+    #: The products on the page that just arrived, for a live view.
+    new_products: tuple[Product, ...] = ()
 
 
-_RECIPE_TUPLE_FIELDS = {
-    "exclude_authors",
-    "exclude_narrators",
-    "exclude_keywords",
-    "exclude_genres",
-}
-_RECIPE_BOOL_FIELDS = {
-    "on_sale",
-    "first_in_series",
-    "skip_plus",
-    "only_plus",
-    "require_history",
-    "skip_owned",
-    "exclude_seen",
-}
-_RECIPE_TEXT_FIELDS = {
-    "narrator",
-    "author",
-    "series",
-    "publisher",
-    "language",
-    "sort",
-    "released_after",
-    "released_before",
-}
-_RECIPE_NUMBER_FIELDS = {
-    "max_price",
-    "max_pph",
-    "max_effective_price",
-    "min_rating",
-    "min_ratings",
-    "min_hours",
-    "min_discount",
-    "limit",
-    "hist_below",
-    "min_price_drop",
+# Recipe field groups come from the filter registry (see filter_specs); the
+# ResultRecipe / RecipePatch dataclasses below stay explicit, and
+# tests/test_filter_specs.py fails when they drift apart.
+_RECIPE_TUPLE_FIELDS = recipe_fields({Kind.MULTI_TEXT})
+_RECIPE_BOOL_FIELDS = recipe_fields({Kind.BOOL_PAIR, Kind.FLAG})
+_RECIPE_TEXT_FIELDS = recipe_fields({Kind.TEXT, Kind.DATE})
+_RECIPE_NUMBER_FIELDS = recipe_fields({Kind.FLOAT, Kind.INT, Kind.PERCENT, Kind.RATING})
+_RECIPE_BOUNDS = {
+    spec.recipe_name: (spec.lower_bound, spec.upper_bound, spec.integer)
+    for spec in recipe_specs()
+    if spec.is_numeric
 }
 
 
@@ -204,22 +185,10 @@ def _validate_recipe(recipe: dict[str, Any], field: str) -> None:
             )
         if value is None:
             continue
-        bounds = {
-            "max_price": (0, None, False),
-            "max_pph": (0, None, False),
-            "max_effective_price": (0, None, False),
-            "min_rating": (0, 5, False),
-            "min_ratings": (0, None, True),
-            "min_hours": (0, None, False),
-            "min_discount": (0, 100, True),
-            "limit": (0, None, True),
-            "hist_below": (0, 100, True),
-            "min_price_drop": (0, None, False),
-        }
-        minimum, maximum, integer = bounds[key]
+        minimum, maximum, integer = _RECIPE_BOUNDS[key]
         if (
             (integer and not isinstance(value, int))
-            or value < minimum
+            or (minimum is not None and value < minimum)
             or (maximum is not None and value > maximum)
         ):
             raise ResultSessionValidationError(
@@ -302,12 +271,9 @@ class ResultRecipe:
             for field in dataclasses.fields(self)
             if not field.name.startswith("_")
         }
-        values.update(
-            {
-                key: _thaw_json(value)
-                for key, value in self._persisted_extra_fields.items()
-            }
-        )
+        # Set with object.__setattr__ in __post_init__ (not a dataclass field).
+        extra_fields: Mapping[str, Any] = vars(self)["_persisted_extra_fields"]
+        values.update({key: _thaw_json(value) for key, value in extra_fields.items()})
         return values
 
 
@@ -352,7 +318,7 @@ class ResultSession:
     constraints: dict[str, Any] = dataclasses.field(default_factory=dict)
     ranking_context: dict[str, Any] = dataclasses.field(default_factory=dict)
     timestamp: str = dataclasses.field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+        default_factory=lambda: datetime.datetime.now(datetime.UTC).isoformat()
     )
     version: int = SESSION_VERSION
     legacy: bool = False
@@ -674,8 +640,9 @@ class FilterContext:
     exclude_authors: tuple[str, ...] = ()
     exclude_narrators: tuple[str, ...] = ()
     on_sale: bool = False
-    skip_asins: frozenset[str] | None = None
-    exclude_category_ids: frozenset[str] = frozenset()
+    # Any sets; __post_init__ stores them as frozensets.
+    skip_asins: AbstractSet[str] | None = None
+    exclude_category_ids: AbstractSet[str] = frozenset()
     genre: str = ""
     max_pph: float | None = None
     min_discount: int = 0
@@ -730,7 +697,7 @@ HistoryEntries = Mapping[str, tuple[Mapping[str, Any], ...]]
 
 
 def _freeze_histories(
-    histories: Mapping[str, list[dict] | tuple[Mapping[str, Any], ...]] | None,
+    histories: Mapping[str, Sequence[Mapping[str, Any]]] | None,
 ) -> HistoryEntries | None:
     if histories is None:
         return None
@@ -748,9 +715,10 @@ class DiscoveryResult:
     breakdown: Mapping[str, int] = dataclasses.field(default_factory=dict)
     editions_removed: int = 0
     series_collapsed: int = 0
-    histories: HistoryEntries | None = None
+    # Accepts lists or tuples; __post_init__ stores the read-only tuple form.
+    histories: Mapping[str, Sequence[Mapping[str, Any]]] | None = None
     match_reasons: Mapping[str, str] | None = None
-    atl_asins: frozenset[str] | None = None
+    atl_asins: AbstractSet[str] | None = None
     hist_context: Mapping[str, int] | None = None
 
     def __post_init__(self) -> None:
@@ -775,7 +743,7 @@ class DiscoveryResult:
         *,
         histories: Mapping[str, list[dict]] | None = None,
         match_reasons: Mapping[str, str] | None = None,
-        atl_asins: set[str] | None = None,
+        atl_asins: AbstractSet[str] | None = None,
         hist_context: Mapping[str, int] | None = None,
     ) -> DiscoveryResult:
         return cls(
@@ -783,7 +751,7 @@ class DiscoveryResult:
             breakdown=outcome.breakdown,
             editions_removed=outcome.editions_removed,
             series_collapsed=outcome.series_collapsed,
-            histories=histories,
+            histories=_freeze_histories(histories),
             match_reasons=match_reasons,
             atl_asins=atl_asins,
             hist_context=hist_context,

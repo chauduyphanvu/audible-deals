@@ -226,9 +226,15 @@ def test_notify_stdout_failure_prevents_pending_state_commit(tmp_config, monkeyp
         lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("writer failed")),
     )
 
-    result = CliRunner().invoke(cli, ["notify"])
+    result = CliRunner().invoke(cli, ["-vv", "notify"])  # -vv keeps the traceback
 
     assert isinstance(result.exception, RuntimeError)
+    assert commits == []
+    # Without -vv the failure is one line and a plain exit status 1.
+    plain = CliRunner().invoke(cli, ["notify"])
+    assert plain.exit_code == 1
+    assert "Unexpected RuntimeError: writer failed" in plain.output
+    assert "Traceback" not in plain.output
     assert commits == []
 
 
@@ -241,7 +247,7 @@ def test_notify_save_failure_occurs_after_deals_json_output(tmp_config, monkeypa
         lambda *args: (_ for _ in ()).throw(RuntimeError("save failed")),
     )
 
-    result = CliRunner().invoke(cli, ["notify"])
+    result = CliRunner().invoke(cli, ["-vv", "notify"])
 
     assert isinstance(result.exception, RuntimeError)
     assert '"deals"' in result.output

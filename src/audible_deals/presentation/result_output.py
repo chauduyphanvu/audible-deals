@@ -4,17 +4,17 @@ from __future__ import annotations
 
 import datetime
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
-from audible_deals.price_history import (
-    history_key,
-    load_price_history,
-    price_history_context,
-)
 from audible_deals.presentation.products import display_products
 from audible_deals.presentation.reports import display_summary
 from audible_deals.presentation.terminal import console
+from audible_deals.price_history import (
+    load_product_histories,
+    price_history_context,
+)
 from audible_deals.product import Product
 from audible_deals.result_models import DiscoveryResult
 
@@ -44,13 +44,7 @@ def _prior_histories(products: list[Product], histories) -> dict[str, list[dict]
     today_iso = datetime.date.today().isoformat()
     source = histories
     if source is None:
-        source = {
-            history_key(product.asin, product.locale): load_price_history(
-                product.asin, product.locale
-            )
-            for product in products
-            if product.price is not None
-        }
+        source = load_product_histories(products)
     return {
         key: [dict(entry) for entry in entries if entry.get("date") != today_iso]
         for key, entries in source.items()
@@ -66,26 +60,33 @@ def emit_results(request: ResultPresentationRequest) -> None:
             )
         )
     need_context = (not request.json_flag and not request.quiet) or request.interactive
-    atl_asins = request.result.atl_asins
-    hist_context = request.result.hist_context
+    atl_asins: AbstractSet[str] | None = request.result.atl_asins
+    hist_context: Mapping[str, int] | None = request.result.hist_context
     if need_context and atl_asins is None and hist_context is None:
         atl_asins, hist_context = price_history_context(
             filtered,
             histories=_prior_histories(filtered, request.result.histories),
         )
+    # The full-screen browser shows the table itself, so it is not printed first.
+    full_screen = False
+    if request.interactive and filtered and not request.json_flag:
+        from audible_deals.cli.interactive import choose_ui
+
+        full_screen = choose_ui() == "tui"
     if not request.json_flag and not request.quiet:
-        console.print()
-        display_products(
-            filtered,
-            max_price=request.max_price,
-            title=request.title,
-            currency=request.currency,
-            show_url=request.show_url,
-            atl_asins=atl_asins,
-            hist_context=hist_context,
-            credit_price=request.credit_price,
-            match_context=request.result.match_reasons,
-        )
+        if not full_screen:
+            console.print()
+            display_products(
+                filtered,
+                max_price=request.max_price,
+                title=request.title,
+                currency=request.currency,
+                show_url=request.show_url,
+                atl_asins=atl_asins,
+                hist_context=hist_context,
+                credit_price=request.credit_price,
+                match_context=request.result.match_reasons,
+            )
         display_summary(
             len(filtered),
             request.result.breakdown,
@@ -120,4 +121,5 @@ def emit_results(request: ResultPresentationRequest) -> None:
             atl_asins=atl_asins,
             hist_context=hist_context,
             match_context=request.result.match_reasons,
+            table_shown=not full_screen,
         )

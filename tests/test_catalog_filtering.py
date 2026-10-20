@@ -4,11 +4,11 @@ from __future__ import annotations
 
 import json
 
+import click
 import pytest
 from click.testing import CliRunner
 
 import audible_deals.config_store as config_store_mod
-import audible_deals.constants as constants_mod
 from audible_deals.cli import cli
 from audible_deals.filtering import (
     filter_products as _typed_filter_products,
@@ -29,7 +29,7 @@ from audible_deals.result_models import (
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from tests.conftest import make_product
+from tests.conftest import make_product, put_raw_session
 
 
 def _filter_products(products, **values):
@@ -144,9 +144,7 @@ class TestExcludeAuthorFilter:
                 series_position="",
             ),
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
-            json.dumps([_serialize_product(p) for p in products])
-        )
+        put_raw_session(json.dumps([_serialize_product(p) for p in products]))
         out_file = tmp_config / "last_excl_author.json"
         runner = CliRunner()
         result = runner.invoke(
@@ -325,9 +323,7 @@ class TestAuthorFilter:
                 series_position="",
             ),
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
-            json.dumps([_serialize_product(p) for p in products])
-        )
+        put_raw_session(json.dumps([_serialize_product(p) for p in products]))
         out_file = tmp_config / "last_author.json"
         runner = CliRunner()
         result = runner.invoke(
@@ -474,9 +470,7 @@ class TestExcludeNarratorFilter:
                 series_position="",
             ),
         ]
-        constants_mod.LAST_RESULTS_FILE.write_text(
-            json.dumps([_serialize_product(p) for p in products])
-        )
+        put_raw_session(json.dumps([_serialize_product(p) for p in products]))
         out_file = tmp_config / "last_excl_narrator.json"
         runner = CliRunner()
         result = runner.invoke(
@@ -927,32 +921,39 @@ class TestExcludeKeyword:
 
 
 class TestReleasedDateNormalization:
-    def test_compact_released_after_is_normalized(self, mock_client, tmp_config):
-        """Compact ISO form '20240101' parses and normalizes to '2024-01-01'."""
-        from audible_deals.cli.catalog import _validate_history_filter_options
+    """Release dates are validated and normalized when the option is parsed."""
 
-        after, before = _validate_history_filter_options(
-            False, None, 0.0, "20240101", ""
-        )
-        assert after == "2024-01-01"
-        assert before == ""
+    @pytest.mark.parametrize("command", [["find"], ["search", "test"]])
+    @pytest.mark.parametrize(
+        ("option", "given", "shown"),
+        [
+            ("--released-after", "20240101", "released-after=2024-01-01"),
+            ("--released-before", "20241231", "released-before=2024-12-31"),
+            ("--released-after", "2024-06-01", "released-after=2024-06-01"),
+        ],
+    )
+    def test_dates_are_normalized_to_extended_iso(
+        self, command, option, given, shown, tmp_config
+    ):
+        result = CliRunner().invoke(cli, [*command, option, given, "--dry-run"])
 
-    def test_compact_released_before_is_normalized(self, mock_client, tmp_config):
-        """Compact ISO form '20241231' normalizes to '2024-12-31'."""
-        from audible_deals.cli.catalog import _validate_history_filter_options
+        assert result.exit_code == 0, result.output
+        assert shown in result.output
 
-        after, before = _validate_history_filter_options(
-            False, None, 0.0, "", "20241231"
-        )
-        assert after == ""
-        assert before == "2024-12-31"
+    def test_iso_date_type_normalizes_and_rejects(self):
+        from audible_deals.validation import IsoDate
 
-    def test_dashed_dates_pass_through_unchanged(self, mock_client, tmp_config):
-        """Standard dashed dates are returned as-is."""
-        from audible_deals.cli.catalog import _validate_history_filter_options
+        date = IsoDate()
+        assert date.convert("20240101", None, None) == "2024-01-01"
+        assert date.convert("2024-06-01", None, None) == "2024-06-01"
+        assert date.convert("", None, None) == ""
+        with pytest.raises(click.BadParameter, match="invalid date"):
+            date.convert("2024-13-01", None, None)
 
-        after, before = _validate_history_filter_options(
-            False, None, 0.0, "2024-06-01", "2024-12-31"
-        )
-        assert after == "2024-06-01"
-        assert before == "2024-12-31"
+    @pytest.mark.parametrize("command", [["find"], ["search", "test"], ["last"]])
+    def test_invalid_date_is_a_usage_error_at_parse_time(self, command, tmp_config):
+        result = CliRunner().invoke(cli, [*command, "--released-after", "yesterday"])
+
+        assert result.exit_code == 2
+        assert "invalid date" in result.output
+        assert "YYYY-MM-DD" in result.output

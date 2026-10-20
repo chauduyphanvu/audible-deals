@@ -71,7 +71,7 @@ class Product:
 
 
 def _finite_float(
-    value: object,
+    value: Any,
     default: float | None = None,
     *,
     minimum: float | None = None,

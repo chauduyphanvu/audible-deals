@@ -1,7 +1,7 @@
 """Taste profile built locally from the user's Audible library.
 
-Pure profile construction and fit scoring; persistence goes through
-storage.py into TASTE_CACHE_FILE. No API calls happen here.
+Pure profile construction and fit scoring; the built profile is cached in
+``cache.db`` (see cache_store.py). No API calls happen here.
 """
 
 from __future__ import annotations
@@ -9,14 +9,17 @@ from __future__ import annotations
 import collections
 import datetime
 import logging
+from typing import Any
 
-from audible_deals import constants
+from audible_deals import cache_store
 from audible_deals.metrics import value_score
 from audible_deals.product import Product
 from audible_deals.series_identity import group_series_books
-from audible_deals.storage import load_json_file, save_json_file
 
 logger = logging.getLogger(__name__)
+
+_CACHE_NAMESPACE = "taste"
+_CACHE_KEY = "profile"
 
 PROFILE_MAX_AGE_SECONDS = 86400  # rebuild after a day; library changes slowly
 PROFILE_VERSION = 2
@@ -61,38 +64,34 @@ def build_profile(lib_products: list[Product]) -> dict:
                 author_counts[a] += 1
         for n in p.narrators:
             narrator_counts[n] += 1
-        for cid, cname in zip(p.category_ids, p.categories):
+        for cid, cname in zip(p.category_ids, p.categories, strict=False):
             genre_counts[cid] += 1
             genre_names[cid] = cname
 
     series_map = group_series_books(lib_products)
 
-    series = sorted(
-        (
-            {
-                "name": next(
-                    (book.series_name for book in books if book.series_name), identity
-                ),
-                "owned": len(books),
-                "series_asin": next(
-                    (b.series_asin for b in books if b.series_asin), ""
-                ),
-                "books": [
-                    {
-                        "asin": book.asin,
-                        "title": book.title,
-                        "position": book.series_position,
-                    }
-                    for book in books
-                ],
-            }
-            for identity, books in series_map.items()
-            if len(books) >= MIN_SERIES_OWNED
-        ),
-        key=lambda s: -s["owned"],
-    )[:TOP_SERIES]
+    owned_series: list[dict[str, Any]] = [
+        {
+            "name": next(
+                (book.series_name for book in books if book.series_name), identity
+            ),
+            "owned": len(books),
+            "series_asin": next((b.series_asin for b in books if b.series_asin), ""),
+            "books": [
+                {
+                    "asin": book.asin,
+                    "title": book.title,
+                    "position": book.series_position,
+                }
+                for book in books
+            ],
+        }
+        for identity, books in series_map.items()
+        if len(books) >= MIN_SERIES_OWNED
+    ]
+    series = sorted(owned_series, key=lambda s: -s["owned"])[:TOP_SERIES]
 
-    profile = {
+    profile: dict[str, Any] = {
         "version": PROFILE_VERSION,
         "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "library_size": len(lib_products),
@@ -118,8 +117,8 @@ def load_cached_profile(
     max_age_s: int = PROFILE_MAX_AGE_SECONDS,
 ) -> dict | None:
     """Return the cached profile, or None when missing/stale/corrupt."""
-    data = load_json_file(constants.TASTE_CACHE_FILE, dict, "taste profile")
-    if not data:
+    data = cache_store.get(_CACHE_NAMESPACE, _CACHE_KEY)
+    if not isinstance(data, dict) or not data:
         return None
     if data.get("version") != PROFILE_VERSION:
         logger.debug("taste profile version mismatch")
@@ -135,7 +134,7 @@ def load_cached_profile(
 
 
 def save_profile(profile: dict) -> None:
-    save_json_file(constants.TASTE_CACHE_FILE, profile, "taste profile")
+    cache_store.put(_CACHE_NAMESPACE, _CACHE_KEY, profile)
 
 
 def fit_score(

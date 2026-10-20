@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import stat
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +25,7 @@ from audible_deals.product import (
     parse_product,
 )
 from audible_deals.taste import build_profile
-from tests.conftest import make_product
+from tests.conftest import assert_mode, make_product
 
 
 def _make_429_exc(retry_after: str | None = None) -> Exception:
@@ -238,6 +237,18 @@ class TestParseProduct:
         assert p.rating == 0.0
 
 
+def _store_raw_categories(text: str) -> None:
+    """Put arbitrary text where the client keeps its us category list."""
+    from audible_deals import db
+
+    with db.transaction(db.cache()) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO cache_entries (namespace, key, value, stored_at) "
+            "VALUES ('categories', 'us', ?, ?)",
+            (text, time.time()),
+        )
+
+
 class TestCategoryCache:
     def test_save_and_load(self, tmp_config):
         from audible_deals.client import DealsClient
@@ -274,13 +285,33 @@ class TestCategoryCache:
         assert dc._load_categories_cache() is None
 
     def test_corrupt_cache(self, tmp_config):
-        from audible_deals.constants import CATEGORIES_CACHE_FILE
-
-        cache_file = CATEGORIES_CACHE_FILE.with_suffix(".us.json")
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text("not json{{{")
+        _store_raw_categories("not json{{{")
 
         dc = DealsClient(locale="us")
+        assert dc._load_categories_cache() is None
+
+    def test_cache_is_per_marketplace(self, tmp_config):
+        us = DealsClient(locale="us")
+        uk = DealsClient(locale="uk")
+        us._save_categories_cache([{"id": "1", "name": "US"}])
+        uk._save_categories_cache([{"id": "2", "name": "UK"}])
+
+        assert us._load_categories_cache() == [{"id": "1", "name": "US"}]
+        assert uk._load_categories_cache() == [{"id": "2", "name": "UK"}]
+
+    def test_cache_survives_a_new_client(self, tmp_config):
+        DealsClient(locale="us")._save_categories_cache([{"id": "1", "name": "A"}])
+        assert DealsClient(locale="us")._load_categories_cache() == [
+            {"id": "1", "name": "A"}
+        ]
+
+    def test_cache_failures_never_break_the_client(self, tmp_config, monkeypatch):
+        def broken():
+            raise RuntimeError("cache unavailable")
+
+        monkeypatch.setattr("audible_deals.cache_store.db.cache", broken)
+        dc = DealsClient(locale="us")
+        dc._save_categories_cache([{"id": "1", "name": "A"}])  # must not raise
         assert dc._load_categories_cache() is None
 
 
@@ -458,26 +489,22 @@ class TestImportAuthValidation:
             dc.import_auth(src)
 
     def test_import_sets_owner_only_directory_and_file_modes(self, tmp_path):
-        import stat
-
         source = tmp_path / "source.json"
         source.write_text(json.dumps({"access_token": "at", "refresh_token": "rt"}))
         auth_file = tmp_path / "private" / "auth.json"
 
         AuthStore(auth_file, "us").import_auth(source)
 
-        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+        assert_mode(auth_file.parent, 0o700)
+        assert_mode(auth_file, 0o600)
 
     def test_external_login_uses_callback_without_network(self, tmp_path, monkeypatch):
-        import stat
-
         callback_calls = []
         auth_file = tmp_path / "private" / "auth.json"
 
         class FakeAuth:
-            def to_file(self, path):
-                path.write_text("saved")
+            def to_dict(self):
+                return {"access_token": "at", "refresh_token": "rt"}
 
         def fake_external(*, locale, login_url_callback):
             callback_calls.append((locale, login_url_callback("oauth-url")))
@@ -489,19 +516,20 @@ class TestImportAuthValidation:
         store.login_external(login_url_callback=lambda url: f"callback:{url}")
 
         assert callback_calls == [("us", "callback:oauth-url")]
-        assert auth_file.read_text() == "saved"
-        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+        assert json.loads(auth_file.read_text()) == {
+            "access_token": "at",
+            "refresh_token": "rt",
+        }
+        assert_mode(auth_file.parent, 0o700)
+        assert_mode(auth_file, 0o600)
 
     def test_credential_login_sets_owner_only_modes(self, tmp_path, monkeypatch):
-        import stat
-
         auth_file = tmp_path / "private" / "auth.json"
         callbacks = []
 
         class FakeAuth:
-            def to_file(self, path):
-                path.write_text("saved")
+            def to_dict(self):
+                return {"access_token": "at", "refresh_token": "rt"}
 
         def fake_login(username, password, *, locale, with_username, captcha_callback):
             callbacks.append(captcha_callback)
@@ -512,8 +540,8 @@ class TestImportAuthValidation:
         AuthStore(auth_file, "us").login("user", "password")
 
         assert callbacks == [_captcha_callback]
-        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+        assert_mode(auth_file.parent, 0o700)
+        assert_mode(auth_file, 0o600)
 
     def test_captcha_callback_opens_browser_and_normalizes_answer(
         self, monkeypatch, capsys
@@ -882,6 +910,92 @@ class TestLibraryPagination:
         assert set(transport.calls) <= {1, 2, 3, 4, 5}
 
 
+class TestWorkerPoolLifecycle:
+    """Which readers abort in-flight retries when something fails."""
+
+    @staticmethod
+    def _client(transport):
+        client = object.__new__(DealsClient)
+        client.locale = "us"
+        client._transport = transport
+        return client
+
+    class _Transport:
+        def __init__(self, fail_for=()):
+            self.fail_for = fail_for
+            self.cancel_count = 0
+            self.reset_count = 0
+
+        def request(self, path, **params):
+            asins = params.get("asins", "")
+            if any(asin in asins for asin in self.fail_for):
+                raise click.ClickException("batch failed")
+            return {
+                "products": [
+                    {"asin": asin, "title": f"Book {asin}"}
+                    for asin in asins.split(",")
+                    if asin
+                ]
+            }
+
+        def cancel(self):
+            self.cancel_count += 1
+
+        def reset_abort(self):
+            self.reset_count += 1
+
+    def test_product_batch_failure_aborts_pending_retries_and_resets(self):
+        transport = self._Transport(fail_for=("B000000050",))
+        asins = [f"B{index:09d}" for index in range(2 * MAX_PAGE_SIZE)]
+
+        with pytest.raises(click.ClickException, match="batch failed"):
+            self._client(transport).get_products_batch(asins)
+
+        assert (transport.cancel_count, transport.reset_count) == (1, 1)
+
+    def test_a_single_batch_runs_without_a_pool(self, monkeypatch):
+        import audible_deals.client as client_mod
+
+        monkeypatch.setattr(
+            client_mod,
+            "ThreadPoolExecutor",
+            lambda *args, **kwargs: pytest.fail("one batch does not need an executor"),
+        )
+        transport = self._Transport()
+
+        products = self._client(transport).get_products_batch(["B000000001"])
+
+        assert [product.asin for product in products] == ["B000000001"]
+
+    def test_series_batch_failures_are_collected_without_aborting_the_rest(self):
+        # Failed batches are reported per series; the transport is never aborted.
+        class Transport(self._Transport):
+            def request(self, path, **params):
+                if "relationships" == params.get("response_groups"):
+                    series = path.rsplit("/", 1)[1]
+                    count = 2 * MAX_PAGE_SIZE if series == "S1" else 1
+                    return {
+                        "product": {
+                            "relationships": [
+                                {
+                                    "asin": f"B{series[1:]}{index:08d}",
+                                    "relationship_to_product": "child",
+                                }
+                                for index in range(count)
+                            ]
+                        }
+                    }
+                return super().request(path, **params)
+
+        transport = Transport(fail_for=("B100000000",))
+
+        result = self._client(transport).get_series_products_many(["S1", "S2", "S1"])
+
+        assert set(result.product_failures) == {"S1"}
+        assert len(result.products["S2"]) == 1
+        assert (transport.cancel_count, transport.reset_count) == (0, 0)
+
+
 class TestRetryAfterBackoff:
     @staticmethod
     def _make_transport(api_fixture):
@@ -1203,11 +1317,7 @@ def test_client_does_not_reexport_product_or_transport_internals():
 
 class TestBugfixClientNonDictCategoriesCache:
     def _write_cache(self, content: str) -> None:
-        from audible_deals.constants import CATEGORIES_CACHE_FILE
-
-        cache_file = CATEGORIES_CACHE_FILE.with_suffix(".us.json")
-        cache_file.parent.mkdir(parents=True, exist_ok=True)
-        cache_file.write_text(content)
+        _store_raw_categories(content)
 
     def test_list_content_is_cache_miss(self, tmp_config):
         self._write_cache(json.dumps([1, 2, 3]))
@@ -1286,7 +1396,7 @@ class TestBugfixClientRefreshedAuthPersistence:
         assert saved["access_token"] == "new-access"
         assert saved["refresh_token"] == "new-refresh"
         assert saved["expires"] == 200
-        assert stat.S_IMODE(store.auth_file.stat().st_mode) == 0o600
+        assert_mode(store.auth_file, 0o600)
         assert list(store.auth_file.parent.glob(".tmp-*")) == []
 
     def test_unchanged_auth_is_not_rewritten(self, api, monkeypatch):
@@ -1427,58 +1537,29 @@ class TestBugfixClientRefreshedAuthPersistence:
         assert store._auth_file_fingerprint == hashlib.sha256(written[1]).digest()
 
 
-def test_bugfixclient_restrictive_umask_is_process_wide_and_restores_original(
-    monkeypatch,
-):
+def test_saving_a_login_never_changes_the_process_umask(tmp_path, monkeypatch):
+    """The login used to be written under a process-wide umask change (shared with
+    every other thread); it is now written through our own 0600 writer."""
+
     import audible_deals.auth_store as auth_store_mod
 
-    current_umask = 0o022
-    calls = []
-    first_entered = threading.Event()
-    second_attempted = threading.Event()
-    second_entered = threading.Event()
-    release_first = threading.Event()
+    def forbidden(value):
+        raise AssertionError("os.umask must not be called")
 
-    def fake_umask(value):
-        nonlocal current_umask
-        previous = current_umask
-        current_umask = value
-        calls.append((value, previous))
-        return previous
+    monkeypatch.setattr(auth_store_mod.os, "umask", forbidden)
+    assert not hasattr(auth_store_mod, "_restrictive_umask")
 
-    monkeypatch.setattr(auth_store_mod.os, "umask", fake_umask)
+    class FakeAuth:
+        def to_dict(self):
+            return {"access_token": "at", "refresh_token": "rt"}
 
-    def first():
-        with auth_store_mod._restrictive_umask():
-            first_entered.set()
-            assert release_first.wait(1)
+    monkeypatch.setattr("audible.Authenticator.from_login", lambda *a, **kw: FakeAuth())
+    auth_file = tmp_path / "private" / "auth.json"
 
-    def second():
-        assert first_entered.wait(1)
-        second_attempted.set()
-        with auth_store_mod._restrictive_umask():
-            second_entered.set()
+    auth_store_mod.AuthStore(auth_file, "us").login("user", "password")
 
-    first_thread = threading.Thread(target=first)
-    second_thread = threading.Thread(target=second)
-    first_thread.start()
-    second_thread.start()
-    assert first_entered.wait(1)
-    assert second_attempted.wait(1)
-    assert not second_entered.is_set()
-    release_first.set()
-    for thread in (first_thread, second_thread):
-        thread.join(1)
-        assert not thread.is_alive()
-
-    assert second_entered.is_set()
-    assert current_umask == 0o022
-    assert calls == [
-        (0o177, 0o022),
-        (0o022, 0o177),
-        (0o177, 0o022),
-        (0o022, 0o177),
-    ]
+    assert_mode(auth_file, 0o600)
+    assert_mode(auth_file.parent, 0o700)
 
 
 class TestBugfixProductBasePriceNonNumeric:
@@ -1522,7 +1603,7 @@ class TestBugfixProductCategoryAlignment:
         }
         categories, category_ids = _extract_categories(raw)
         assert len(categories) == len(category_ids)
-        pairs = dict(zip(category_ids, categories))
+        pairs = dict(zip(category_ids, categories, strict=True))
         # The unnamed entry is dropped (no blank genre leaks into display/stats),
         # and the named entry keeps its correct id->name pairing.
         assert "ID_A" not in pairs

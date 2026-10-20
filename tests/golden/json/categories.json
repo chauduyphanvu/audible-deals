@@ -1,0 +1,11 @@
+{
+  "categories": [
+    {
+      "id": "str",
+      "name": "str"
+    }
+  ],
+  "locale": "str",
+  "parent": "null",
+  "schema_version": "int"
+}

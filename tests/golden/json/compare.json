@@ -1,0 +1,43 @@
+{
+  "credit_price": "float",
+  "missing": [],
+  "products": [
+    {
+      "asin": "str",
+      "authors": [
+        "str"
+      ],
+      "categories": [
+        "str"
+      ],
+      "category_ids": [
+        "str"
+      ],
+      "discount_pct": "int",
+      "full_title": "str",
+      "hours": "float",
+      "in_plus_catalog": "bool",
+      "language": "str",
+      "length_minutes": "int",
+      "list_price": "float",
+      "locale": "str",
+      "narrators": [
+        "str"
+      ],
+      "num_ratings": "int",
+      "price": "float",
+      "price_per_hour": "float",
+      "publisher": "str",
+      "rating": "float",
+      "release_date": "str",
+      "series_asin": "str",
+      "series_name": "str",
+      "series_position": "str",
+      "subtitle": "str",
+      "title": "str",
+      "url": "str",
+      "verdict": "str"
+    }
+  ],
+  "schema_version": "int"
+}

@@ -18,7 +18,7 @@ deals find --genre sci-fi --subcategories --deep --max-price 5
 
 ## Preview an expensive scan
 
-`--dry-run` reports the sort orders, pages, and API-call count without fetching catalog data:
+`--dry-run` reports the sort orders, pages, and API-call count (pages already in the cache are listed as `cached` and cost no call) without fetching catalog data:
 
 ```bash
 deals find --genre sci-fi --deep --dry-run

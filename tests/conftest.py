@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
+import os
+import stat
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -11,6 +16,37 @@ import pytest
 
 from audible_deals.client import CatalogSearchResult, SeriesProductsBatch
 from audible_deals.product import Product
+
+# ---------------------------------------------------------------------------
+# Platform helpers
+# ---------------------------------------------------------------------------
+
+
+def skip_on_windows(reason: str):
+    """``skipif(win32)`` for the few tests that are genuinely POSIX-only."""
+    return pytest.mark.skipif(sys.platform == "win32", reason=reason)
+
+
+#: The generators for cron, systemd and launchd files only ever run on Linux
+#: and macOS, and their tests compare against text built from POSIX paths.
+posix_scheduler_text = skip_on_windows(
+    "cron, systemd and launchd files are written on Linux/macOS; "
+    "the expected text holds POSIX path literals"
+)
+
+
+def assert_mode(path: Path, expected: int) -> None:
+    """Assert POSIX permission bits (Windows has no 0600/0700 to compare)."""
+    if sys.platform != "win32":
+        assert stat.S_IMODE(path.stat().st_mode) == expected, oct(
+            stat.S_IMODE(path.stat().st_mode)
+        )
+
+
+def bare_env(**extra: str) -> dict[str, str]:
+    """A minimal environment for a child Python (Windows needs SYSTEMROOT to start it)."""
+    keep = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT") if k in os.environ}
+    return {**keep, **extra}
 
 
 # ---------------------------------------------------------------------------
@@ -67,6 +103,64 @@ def make_series_products_batch(
             for series_asin, errors in (product_failures or {}).items()
         },
     )
+
+
+def seed_history(asin, entries, locale="us"):
+    """Record dated prices through the real write path.
+
+    *entries* are ``(date, price)`` pairs or ``{"date", "price", "title"}`` dicts.
+    """
+    from audible_deals.price_history import record_prices
+
+    for entry in entries:
+        if isinstance(entry, dict):
+            date, price, title = entry["date"], entry["price"], entry.get("title", "")
+        else:
+            (date, price), title = entry, "T"
+        record_prices(
+            [make_product(asin=asin, locale=locale, price=price, title=title)],
+            observation_date=date,
+        )
+
+
+def seed_prices(asin, prices, locale="us", title="T"):
+    """Record *prices* on consecutive days starting 2024-01-01."""
+    seed_history(
+        asin,
+        [
+            {"date": f"2024-01-{i + 1:02d}", "price": price, "title": title}
+            for i, price in enumerate(prices)
+        ],
+        locale=locale,
+    )
+
+
+def raw_session() -> str | None:
+    """The stored last-results JSON text, or None when there is no session."""
+    from audible_deals import db
+
+    row = (
+        db.state().execute("SELECT body FROM result_sessions WHERE slot = 1").fetchone()
+    )
+    return None if row is None else row[0]
+
+
+def put_raw_session(text: str) -> None:
+    """Store *text* as the last-results session without validating it."""
+    from audible_deals import db
+
+    with db.transaction(db.state()) as conn:
+        conn.execute(
+            "INSERT OR REPLACE INTO result_sessions (slot, body, saved_at) "
+            "VALUES (1, ?, '2026-01-01T00:00:00+00:00')",
+            (text,),
+        )
+
+
+def count_rows(table: str) -> int:
+    from audible_deals import db
+
+    return db.state().execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
 
 
 @pytest.fixture
@@ -192,50 +286,106 @@ def raw_api_product_minimal():
 # ---------------------------------------------------------------------------
 
 
+_tmp_counter = itertools.count()
+
+
+@pytest.fixture
+def tmp_path(tmp_path_factory):
+    """A fresh, empty directory per test, created without pytest's directory scan.
+
+    pytest's own ``tmp_path`` looks for the next free number by listing every
+    sibling directory, which grows with each test in the session; with a couple
+    of thousand tests that listing costs several seconds. A counter gives the
+    same isolation (every test gets its own new directory) without the scan.
+    """
+    path = tmp_path_factory.getbasetemp() / f"t{next(_tmp_counter):04d}"
+    path.mkdir()
+    return path
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "fresh_schema: build the databases from scratch instead of copying the "
+        "session's schema-only template",
+    )
+
+
+@pytest.fixture(scope="session")
+def _database_templates(tmp_path_factory):
+    """Schema-only copies of both databases, built once with the real code.
+
+    Creating a database costs a few milliseconds (WAL setup plus every table);
+    hundreds of tests would pay that for nothing. Copying these bytes into a
+    test's own data directory gives the same empty databases much faster. The
+    JSON-import marker is deliberately absent, so a first open still imports.
+    """
+    from audible_deals import db
+
+    directory = tmp_path_factory.mktemp("db-templates")
+    templates = {}
+    for kind, name in (("state", "state.db"), ("cache", "cache.db")):
+        path = directory / name
+        conn = db._connect(path)
+        try:
+            db._apply_schema(conn, kind)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+        templates[name] = path.read_bytes()
+    return templates
+
+
+@pytest.fixture(autouse=True)
+def _no_proxy_environment(monkeypatch):
+    """Tests decide for themselves whether a proxy is in play.
+
+    Whether a webhook host is resolved here or by a proxy depends on these
+    variables, so a developer's (or a sandbox's) own settings must not leak in.
+    """
+    for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.upper(), raising=False)
+
+
+@pytest.fixture(autouse=True)
+def _isolated_data_dir(request, tmp_path, monkeypatch):
+    """Point every test at its own data directory (never the real one).
+
+    ``DEALS_HOME`` is read at call time, so one environment variable redirects
+    config, auth, the lock file and both SQLite databases. A test that exercises
+    database creation itself opts out of the template copy with
+    ``@pytest.mark.fresh_schema``.
+    """
+    from audible_deals import db
+
+    monkeypatch.setenv("DEALS_HOME", str(tmp_path))
+    monkeypatch.delenv("XDG_CONFIG_HOME", raising=False)
+    # Anything that still asks for the user's home (scheduler unit files, the
+    # legacy data directory) lands in the sandbox, never in the real one.
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
+    monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    if request.node.get_closest_marker("fresh_schema") is None:
+        templates = request.getfixturevalue("_database_templates")
+        real_connect = db._connect
+
+        def connect_from_template(path):
+            if not path.exists() and path.name in templates:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(templates[path.name])
+            return real_connect(path)
+
+        monkeypatch.setattr(db, "_connect", connect_from_template)
+    yield
+    db.close_all()
+
+
 @pytest.fixture
 def tmp_config(tmp_path, monkeypatch):
-    """Redirect all config paths to a temp directory and fix Rich console for Click."""
-    from audible_deals.presentation import terminal as display_mod
+    """The isolated data directory, with the Rich console fixed up for Click."""
     from rich.console import Console
 
-    import audible_deals.constants as constants_mod
-
-    monkeypatch.setattr(constants_mod, "AUTH_FILE", tmp_path / "auth.json")
-    monkeypatch.setattr(
-        constants_mod, "CATEGORIES_CACHE_FILE", tmp_path / "categories_cache.json"
-    )
-    # Store modules read path constants from audible_deals.constants at call
-    # time, so patching the constants module once redirects every consumer.
-    monkeypatch.setattr(constants_mod, "WISHLIST_FILE", tmp_path / "wishlist.json")
-    monkeypatch.setattr(constants_mod, "CONFIG_FILE", tmp_path / "config.json")
-    monkeypatch.setattr(constants_mod, "PROFILES_FILE", tmp_path / "profiles.json")
-    monkeypatch.setattr(constants_mod, "MONITORS_FILE", tmp_path / "monitors.json")
-    monkeypatch.setattr(
-        constants_mod, "MONITOR_STATE_FILE", tmp_path / "monitor_state.json"
-    )
-    monkeypatch.setattr(
-        constants_mod, "NOTIFY_STATE_FILE", tmp_path / "notify_state.json"
-    )
-    monkeypatch.setattr(
-        constants_mod, "LAST_RESULTS_FILE", tmp_path / "last_results.json"
-    )
-    monkeypatch.setattr(constants_mod, "SEEN_ASINS_FILE", tmp_path / "seen_asins.json")
-    monkeypatch.setattr(
-        constants_mod,
-        "REFRESH_ELIGIBILITY_FILE",
-        tmp_path / "refresh_eligibility.json",
-    )
-    monkeypatch.setattr(
-        constants_mod, "DISMISSED_ASINS_FILE", tmp_path / "dismissed_asins.json"
-    )
-    monkeypatch.setattr(constants_mod, "HISTORY_DIR", tmp_path / "history")
-    # Redirect the run lock so tests never collide with real lock files
-    monkeypatch.setattr(constants_mod, "LOCK_FILE", tmp_path / ".deals.lock")
-    monkeypatch.setattr(
-        constants_mod, "TRACK_STATE_FILE", tmp_path / "track_state.json"
-    )
-    monkeypatch.setattr(constants_mod, "TRACK_LOG_FILE", tmp_path / "track.log")
-    monkeypatch.setattr(constants_mod, "TASTE_CACHE_FILE", tmp_path / "taste.json")
+    from audible_deals.presentation import terminal as display_mod
 
     # Replace the Rich console with one that writes to a fresh stderr-like
     # stream, so it doesn't conflict with Click's CliRunner file handling.
@@ -257,15 +407,15 @@ def tmp_config(tmp_path, monkeypatch):
 
 def _cli_console_modules():
     """All cli submodules that bind the shared Rich console by name."""
+    import audible_deals.cli.catalog as cli_catalog_mod
+    import audible_deals.cli.config as cli_config_mod
     import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.history as cli_history_mod
     import audible_deals.cli.interactive as cli_interactive_mod
-    import audible_deals.cli.misc as cli_misc_mod
-    import audible_deals.cli.catalog as cli_catalog_mod
-    import audible_deals.cli.config as cli_config_mod
     import audible_deals.cli.last as cli_last_mod
     import audible_deals.cli.library as cli_library_mod
+    import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.monitor as cli_monitor_mod
     import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.series as cli_series_mod
@@ -301,11 +451,11 @@ def _cli_console_modules():
 @pytest.fixture
 def mock_client(monkeypatch):
     """Patch _get_client to return a mock that doesn't hit the network."""
+    import audible_deals.cli.catalog as cli_catalog_mod
     import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
-    import audible_deals.cli.misc as cli_misc_mod
-    import audible_deals.cli.catalog as cli_catalog_mod
     import audible_deals.cli.library as cli_library_mod
+    import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.series as cli_series_mod
     import audible_deals.cli.track as cli_track_mod

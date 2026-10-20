@@ -1,0 +1,41 @@
+{
+  "cache_db": {
+    "bytes": "int",
+    "namespaces": {
+      "categories": {
+        "entries": "int",
+        "newest": "str"
+      }
+    },
+    "path": "str",
+    "schema": "int"
+  },
+  "data_dir": "str",
+  "data_dir_reason": "str",
+  "state_db": {
+    "bytes": "int",
+    "json_import": {
+      "at": "str",
+      "counts": {},
+      "notes": [],
+      "renames_pending": [],
+      "skipped": {},
+      "sources": []
+    },
+    "last_result_session_saved_at": "null",
+    "path": "str",
+    "rows": {
+      "dismissed": "int",
+      "monitor_products": "int",
+      "monitor_state": "int",
+      "notify_state": "int",
+      "price_history": "int",
+      "products": "int",
+      "refresh_eligibility": "int",
+      "result_sessions": "int",
+      "seen": "int",
+      "track_runs": "int"
+    },
+    "schema": "int"
+  }
+}

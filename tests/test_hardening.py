@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 import pytest
 from click.testing import CliRunner
 
-from audible_deals import constants
+from audible_deals import paths
 from audible_deals.cli import cli
 from audible_deals.config_store import (
     config_transaction,
@@ -23,7 +23,7 @@ from audible_deals.presentation.terminal import safe_text
 from audible_deals.price_history import load_price_history, record_prices
 from audible_deals.product import Product, parse_product
 from audible_deals.serialization import export_products
-from audible_deals.track_service import append_run, run_history
+from audible_deals.state_store import load_track_state
 from tests.conftest import make_product
 
 
@@ -43,11 +43,11 @@ def test_terminal_text_and_product_markup_are_rendered_literally(capsys):
 
 
 def test_profile_config_and_monitor_markup_is_literal(tmp_config):
-    constants.CONFIG_FILE.write_text(json.dumps({"narrator": "[red]literal[/red]"}))
-    constants.PROFILES_FILE.write_text(
+    paths.config_file().write_text(json.dumps({"narrator": "[red]literal[/red]"}))
+    paths.profiles_file().write_text(
         json.dumps({"[green]profile[/green]": {"genre": "[blue]genre[/blue]"}})
     )
-    constants.MONITORS_FILE.write_text(
+    paths.monitors_file().write_text(
         json.dumps(
             {
                 "[yellow]monitor[/yellow]": {
@@ -116,7 +116,7 @@ def test_product_csv_neutralizes_dangerous_text_cells(tmp_path):
 
 
 def test_wishlist_csv_neutralizes_text_cells(tmp_config):
-    constants.WISHLIST_FILE.write_text(
+    paths.wishlist_file().write_text(
         json.dumps(
             [
                 {
@@ -158,7 +158,7 @@ def test_wishlist_csv_neutralizes_text_cells(tmp_config):
 )
 def test_import_auth_errors_preserve_existing_auth(tmp_config, source):
     original = b'{"existing": true}\n'
-    constants.AUTH_FILE.write_bytes(original)
+    paths.auth_file().write_bytes(original)
     source_path = tmp_config / "source.json"
     source_path.write_text(source)
 
@@ -166,7 +166,7 @@ def test_import_auth_errors_preserve_existing_auth(tmp_config, source):
 
     assert result.exit_code != 0
     assert "Could not import auth" in result.output
-    assert constants.AUTH_FILE.read_bytes() == original
+    assert paths.auth_file().read_bytes() == original
 
 
 def test_product_parser_skips_bad_nested_values_and_nonfinite_numbers():
@@ -231,9 +231,10 @@ def test_strict_state_writer_rejects_nonfinite_numbers(tmp_config):
         save_config({"max_price": math.nan})
 
 
-def test_nonfinite_history_is_ignored_without_rewriting(tmp_config):
-    constants.HISTORY_DIR.mkdir()
-    path = constants.HISTORY_DIR / "B001.json"
+def test_nonfinite_legacy_history_is_skipped_and_the_original_kept(tmp_config):
+    history_dir = paths.legacy_history_dir()
+    history_dir.mkdir()
+    path = history_dir / "B001.json"
     original = (
         b'{"marketplaces":{"us":['
         b'{"date":"2026-01-01","price":NaN,"title":"Bad"},'
@@ -245,14 +246,16 @@ def test_nonfinite_history_is_ignored_without_rewriting(tmp_config):
     record_prices([make_product(asin="B002", price=math.inf)])
 
     assert entries == [{"date": "2026-01-02", "price": 2.0, "title": "Good"}]
-    assert path.read_bytes() == original
-    assert not (constants.HISTORY_DIR / "B002.json").exists()
+    assert (
+        paths.data_dir() / "history.migrated" / "B001.json"
+    ).read_bytes() == original
+    assert load_price_history("B002") == []
 
 
-def test_history_write_discards_poisoned_prices_in_other_marketplaces(tmp_config):
-    constants.HISTORY_DIR.mkdir()
-    path = constants.HISTORY_DIR / "B000TEST01.json"
-    path.write_text(
+def test_poisoned_prices_in_other_marketplaces_do_not_survive_the_import(tmp_config):
+    history_dir = paths.legacy_history_dir()
+    history_dir.mkdir()
+    (history_dir / "B000TEST01.json").write_text(
         '{"marketplaces":{"uk":[{"date":"2026-01-01","price":NaN}],'
         '"us":[{"date":"2026-01-01","price":4.0}]}}'
     )
@@ -262,13 +265,12 @@ def test_history_write_discards_poisoned_prices_in_other_marketplaces(tmp_config
         observation_date="2026-01-02",
     )
 
-    saved = json.loads(path.read_text(), parse_constant=lambda value: 1 / 0)
-    assert saved["marketplaces"]["uk"] == []
-    assert [entry["price"] for entry in saved["marketplaces"]["us"]] == [4.0, 3.0]
+    assert load_price_history("B000TEST01", "uk") == []
+    assert [e["price"] for e in load_price_history("B000TEST01", "us")] == [4.0, 3.0]
 
 
 def test_invalid_stored_locale_allows_recovery_commands(tmp_config):
-    constants.CONFIG_FILE.write_text(json.dumps({"locale": "invalid"}))
+    paths.config_file().write_text(json.dumps({"locale": "invalid"}))
     runner = CliRunner()
 
     blocked = runner.invoke(cli, ["find", "--dry-run"])
@@ -283,8 +285,8 @@ def test_invalid_stored_locale_allows_recovery_commands(tmp_config):
 
 
 def test_malformed_profiles_and_monitors_are_marked_and_rejected(tmp_config):
-    constants.PROFILES_FILE.write_text(json.dumps({"broken": []}))
-    constants.MONITORS_FILE.write_text(json.dumps({"broken": []}))
+    paths.profiles_file().write_text(json.dumps({"broken": []}))
+    paths.monitors_file().write_text(json.dumps({"broken": []}))
     runner = CliRunner()
 
     profile_list = runner.invoke(cli, ["profile", "list"])
@@ -299,7 +301,7 @@ def test_malformed_profiles_and_monitors_are_marked_and_rejected(tmp_config):
 
 
 def test_malformed_monitor_field_types_are_rejected_cleanly(tmp_config):
-    constants.MONITORS_FILE.write_text(
+    paths.monitors_file().write_text(
         json.dumps(
             {
                 "bad-locale": {
@@ -330,19 +332,20 @@ def test_malformed_monitor_field_types_are_rejected_cleanly(tmp_config):
     assert "Saved-search monitors" in doctor.output
 
 
-def test_malformed_track_records_warn_instead_of_crashing(caplog):
-    state = {"run_history": ["bad", {"at": "ok"}]}
+def test_malformed_legacy_track_records_are_skipped_not_fatal(tmp_config):
+    (tmp_config / "track_state.json").write_text(
+        json.dumps({"run_history": ["bad", {"at": "ok"}]})
+    )
 
-    assert run_history(state) == [{"at": "ok"}]
-    append_run(state, {"at": "new"})
+    state = load_track_state()
+    state.add_run({"at": "new"})
 
-    assert state["run_history"] == [{"at": "new"}, {"at": "ok"}]
-    assert "malformed" in caplog.text
+    assert [run["at"] for run in state.runs] == ["new", "ok"]
 
 
 def test_doctor_fails_on_raw_profile_and_monitor_corruption(tmp_config, mock_client):
-    constants.PROFILES_FILE.write_text("[]")
-    constants.MONITORS_FILE.write_text(json.dumps({"bad": []}))
+    paths.profiles_file().write_text("[]")
+    paths.monitors_file().write_text(json.dumps({"bad": []}))
 
     result = CliRunner().invoke(cli, ["doctor"])
 
@@ -353,7 +356,7 @@ def test_doctor_fails_on_raw_profile_and_monitor_corruption(tmp_config, mock_cli
 
 
 def test_doctor_rejects_malformed_profile_field_shapes(tmp_config, mock_client):
-    constants.PROFILES_FILE.write_text(json.dumps({"bad": {"genre": []}}))
+    paths.profiles_file().write_text(json.dumps({"bad": {"genre": []}}))
 
     result = CliRunner().invoke(cli, ["doctor"])
 
@@ -363,7 +366,7 @@ def test_doctor_rejects_malformed_profile_field_shapes(tmp_config, mock_client):
 
 
 def test_tolerant_runtime_loader_recovers_from_invalid_utf8(tmp_config):
-    constants.CONFIG_FILE.write_bytes(b"\xff")
+    paths.config_file().write_bytes(b"\xff")
     runner = CliRunner()
 
     recovered = runner.invoke(cli, ["config", "list"])
@@ -381,7 +384,7 @@ def test_config_secrets_are_redacted_unless_explicitly_requested(
     monkeypatch.setattr(
         "audible_deals.validation.validate_webhook_url", lambda _value: None
     )
-    constants.CONFIG_FILE.write_text(
+    paths.config_file().write_text(
         json.dumps(
             {
                 "webhook": "https://example.com/secret",
@@ -408,6 +411,98 @@ def test_config_secrets_are_redacted_unless_explicitly_requested(
     assert "<redacted>" in get_hidden.output
     assert "new-secret" not in set_hidden.output
     assert "<redacted>" in set_hidden.output
+
+
+SECRET_VALUES = (
+    "hunter2",  # a header value
+    "a:b:c",  # a header value with colons in it
+    "tok-123",  # the webhook's token
+)
+
+
+def test_text_and_json_config_output_share_one_redaction_rule():
+    from audible_deals import json_output
+    from audible_deals.cli.config import _config_value
+
+    headers = [
+        "Authorization: Bearer hunter2",
+        "X-Token: a:b:c",
+        "no colon here",
+        7,
+    ]
+    cases = [
+        ("webhook", "https://example.com/tok-123"),
+        ("webhook_headers", headers),
+        ("webhook_headers", "Authorization: Bearer hunter2"),
+        ("webhook_headers", ["keyring:webhook_headers"]),
+        ("webhook", "keyring:webhook"),
+        ("webhook_headers", []),
+    ]
+    for key, value in cases:
+        shown = json_output.redact_config_value(key, value)
+        text = _config_value(key, value, False)
+        assert json_output.redact_config({key: value}) == {key: shown}
+        assert text == (shown if isinstance(shown, str) else repr(shown))
+        for secret in SECRET_VALUES:
+            assert secret not in text and secret not in json.dumps(shown)
+    # other keys are untouched in both
+    assert json_output.redact_config_value("max_price", 5) == 5
+    assert _config_value("max_price", 5, False) == "5"
+
+
+@pytest.mark.parametrize("mode", ["file", "keyring"])
+def test_no_config_command_prints_a_header_value_or_secret_in_either_format(
+    tmp_config, monkeypatch, mode
+):
+    from audible_deals import secret_store
+
+    monkeypatch.setattr(
+        "audible_deals.validation.validate_webhook_url", lambda _value: None
+    )
+    vault = {}
+    monkeypatch.setattr(
+        secret_store, "put", lambda account, value: vault.update({account: value})
+    )
+    monkeypatch.setattr(secret_store, "get", lambda account: vault.get(account))
+    monkeypatch.setattr(
+        secret_store, "remove", lambda account: vault.pop(account, None)
+    )
+    monkeypatch.setattr(secret_store, "ensure_available", lambda: None)
+    runner = CliRunner()
+    if mode == "keyring":
+        paths.config_file().write_text(json.dumps({"secret_storage": "keyring"}))
+    outputs = [
+        runner.invoke(cli, ["config", "set", "webhook", "https://example.com/tok-123"]),
+        runner.invoke(
+            cli,
+            ["config", "set", "webhook_headers", "Authorization: Bearer hunter2"],
+        ),
+        runner.invoke(
+            cli, ["config", "set", "webhook_headers", "X-Token: a:b:c", "--yes"]
+        ),
+    ]
+    for args in (
+        ["config", "list"],
+        ["config", "list", "--json"],
+        ["config", "get", "webhook"],
+        ["config", "get", "webhook", "--json"],
+        ["config", "get", "webhook_headers"],
+        ["config", "get", "webhook_headers", "--json"],
+    ):
+        outputs.append(runner.invoke(cli, args))
+
+    for result in outputs:
+        assert result.exit_code == 0, result.output
+        combined = result.stdout + result.stderr
+        for secret in SECRET_VALUES + ("example.com",):
+            assert secret not in combined, (secret, combined)
+    if mode == "keyring":
+        assert vault  # the secrets really are in the (fake) keychain
+        stored = " ".join(vault.values())
+        assert "tok-123" in stored
+        assert not any(
+            secret in paths.config_file().read_text() for secret in SECRET_VALUES
+        )
 
 
 def test_config_and_profile_transactions_preserve_concurrent_updates(
@@ -548,7 +643,7 @@ def test_large_dry_run_is_nonblocking_and_reports_override(tmp_config):
 def test_wishlist_json_and_output_can_be_combined_and_extension_is_validated(
     tmp_config,
 ):
-    constants.WISHLIST_FILE.write_text(
+    paths.wishlist_file().write_text(
         json.dumps([{"asin": "B001", "title": "Book", "max_price": 5}])
     )
     runner = CliRunner()
