@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 - `DEALS_HOME` selects the data directory, read on every run (tests and scheduled jobs use it too). Without it, an existing `~/.config/audible-deals` is kept, otherwise `$XDG_CONFIG_HOME/audible-deals`, otherwise `~/.config/audible-deals` (`%APPDATA%\audible-deals` on Windows when that does not exist). `deals doctor` shows the directory and why it was chosen. `deals track install` now writes the directory into the scheduled job (launchd plist, systemd unit, crontab line, schtasks command) and prints it.
+- `deals cache info [--json]` shows where data lives and what each database holds; `deals cache clear` empties the disposable cache without touching your records.
 - `deals doctor` checks `state.db` (`PRAGMA quick_check`, schema version), reports the outcome of the one-time JSON import, and checks `cache.db`.
 - `benchmarks/benchmark_history.py` compares history, recap and lookup costs on thousands of tracked ASINs for any source tree.
 - `--locale` and `-v/--verbose` are now accepted after the command as well as before it, on every command and subcommand (`deals find --locale uk`, `deals wishlist add ASIN -v`). If both positions are used, the one after the command wins.

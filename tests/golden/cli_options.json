@@ -5,6 +5,22 @@
     "--version",
     "-v"
   ],
+  "deals cache": [
+    "--locale",
+    "--verbose",
+    "-v"
+  ],
+  "deals cache clear": [
+    "--locale",
+    "--verbose",
+    "-v"
+  ],
+  "deals cache info": [
+    "--json",
+    "--locale",
+    "--verbose",
+    "-v"
+  ],
   "deals categories": [
     "--locale",
     "--parent",

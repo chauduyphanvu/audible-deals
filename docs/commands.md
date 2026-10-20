@@ -27,6 +27,7 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals config` | Manage global defaults |
 | `deals login` | Authenticate with Audible |
 | `deals import-auth PATH` | Import audible-cli or Libation credentials |
+| `deals cache` | Show where data lives and what is stored; empty the disposable cache |
 | `deals doctor` | Check authentication, configuration, databases, and marketplace access |
 | `deals completions SHELL` | Generate bash, zsh, or fish completions |
 
@@ -350,7 +351,7 @@ Everything is kept in one data directory. It is chosen on every run, in this ord
 3. `$XDG_CONFIG_HOME/audible-deals/` when `XDG_CONFIG_HOME` is set, otherwise `~/.config/audible-deals/` (macOS uses `~/.config` too);
 4. on Windows, `%APPDATA%\audible-deals\` when the directory in step 2 does not exist.
 
-`deals doctor` shows the directory in use and which rule chose it. `DEALS_HOME` is also how to run against a scratch copy of your data, for example `DEALS_HOME=/tmp/try deals find`. `deals track install` writes the directory it is using into the scheduled job (launchd plist, systemd unit, crontab line, or Windows task), because those do not inherit your shell's environment.
+`deals doctor` and `deals cache info` show the directory in use and which rule chose it. `DEALS_HOME` is also how to run against a scratch copy of your data, for example `DEALS_HOME=/tmp/try deals find`. `deals track install` writes the directory it is using into the scheduled job (launchd plist, systemd unit, crontab line, or Windows task), because those do not inherit your shell's environment.
 
 ### What is stored
 
@@ -371,6 +372,12 @@ Everything the tool records for you lives in two SQLite databases (standard libr
 |------|----------|
 | `state.db` | Your records: per-marketplace price history (newest 365 entries per ASIN), the last result session, ASINs already seen for `--exclude-seen`, globally dismissed ASINs, recently surfaced products eligible for background refresh, monitor baselines, alert cooldowns, and background-tracking state and run history |
 | `cache.db` | Rebuildable data: category lists (7 days) and the `for-me` taste profile (24 hours). Safe to delete at any time |
+
+```bash
+deals cache info          # where data lives and how much is in each database
+deals cache info --json
+deals cache clear         # empties cache.db only; records are never touched
+```
 
 `deals history --purge-older-than DAYS` removes old price history, and `deals last --clear`, `--clear-seen` and `--clear-dismissed` clear the other records.
 

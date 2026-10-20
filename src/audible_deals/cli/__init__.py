@@ -176,6 +176,12 @@ _COMMAND_SPECS = {
         "Manage saved-search monitors run by deals track run.",
         False,
     ),
+    "cache": (
+        "audible_deals.cli.cache",
+        "cache",
+        "Inspect and clear local databases and caches.",
+        False,
+    ),
 }
 
 _COMMAND_GROUPS = (
@@ -187,7 +193,15 @@ _COMMAND_GROUPS = (
     ),
     (
         "Setup & Support",
-        ("login", "import-auth", "profile", "config", "doctor", "completions"),
+        (
+            "login",
+            "import-auth",
+            "profile",
+            "config",
+            "cache",
+            "doctor",
+            "completions",
+        ),
     ),
 )
 
