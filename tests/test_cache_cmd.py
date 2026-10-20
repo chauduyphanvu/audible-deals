@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from audible_deals import cache_store, paths
@@ -11,6 +12,15 @@ from audible_deals.cli import cli
 from audible_deals.price_history import load_price_history
 from audible_deals.results_cache import save_dismissed_asins, save_seen_asins
 from tests.conftest import make_product, seed_history
+
+
+@pytest.fixture(autouse=True)
+def wide_console(monkeypatch):
+    """The data directory is printed on one line; a deep temporary path
+    (pytest-xdist workers, macOS) would otherwise be folded at 80 columns.
+    Rich reads COLUMNS when the console is created, so this runs before
+    ``tmp_config`` builds it."""
+    monkeypatch.setenv("COLUMNS", "1000")
 
 
 def run(*args):
