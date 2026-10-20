@@ -44,7 +44,8 @@ run cache info # creates state.db: the bundle ships sqlite3
 
 # The `tui` extra (textual and its data files) must be part of every release
 # binary; `deals find -i` falls back to the prompt browser without it.
-if [ -z "$(find "$bundle" -type d -name textual -print -quit)" ]; then
+textual_dirs="$(find "$bundle" -type d -name textual)" # no -quit: BSD find on macOS
+if [ -z "$textual_dirs" ]; then
     fail "textual was not bundled (build with: uv sync --locked --extra tui)"
 fi
 
