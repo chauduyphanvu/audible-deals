@@ -2,22 +2,28 @@
 
 from __future__ import annotations
 
-import difflib
+import contextlib
 import logging
-import math
 import re
 from collections.abc import Callable, Iterator
-from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
 from audible_deals import cache_store as _cache_store
 from audible_deals import constants as _constants
+from audible_deals import genres as _genres
 from audible_deals import paths as _paths
 from audible_deals import product as _product
 from audible_deals.audible_transport import AudibleTransport as _AudibleTransport
 from audible_deals.auth_store import AuthStore as _AuthStore
+from audible_deals.pagination import (
+    MAX_CONCURRENT_FETCHES,
+    page_count,
+    prefetch_in_order,
+    read_serially,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -32,8 +38,6 @@ def _validate_category_id(value: str) -> None:
     if not _CATEGORY_ID_RE.fullmatch(value):
         raise ValueError(f"Invalid category ID format: {value!r}")
 
-
-_MAX_CONCURRENT_FETCHES = 4
 
 # One page of the user's library: (products, items on the page, reported total).
 _LibraryPage = tuple[list[_product.Product], int, Any]
@@ -130,6 +134,53 @@ class DealsClient:
     def __exit__(self, *args):
         self.close()
 
+    @contextlib.contextmanager
+    def _pool(self, *, abortable: bool = True) -> Iterator[ThreadPoolExecutor]:
+        """A worker pool for concurrent requests, torn down on every exit path.
+
+        With *abortable*, an error (or the caller closing a generator) first
+        cancels requests that are retrying, and the transport is usable again
+        afterwards. Either way the pool is drained with ``wait=True``:
+        unwinding with reads still in flight lets the client get GC'd under
+        them, stalling each until its 10s socket timeout.
+        """
+        pool = ThreadPoolExecutor(max_workers=MAX_CONCURRENT_FETCHES)
+        try:
+            yield pool
+        except BaseException:
+            if abortable:
+                self._transport.cancel()
+            raise
+        finally:
+            pool.shutdown(wait=True, cancel_futures=True)
+            if abortable:
+                self._transport.reset_abort()
+
+    def _settle(
+        self, fn: Callable[[Any], Any], items: list[Any]
+    ) -> list[tuple[Any, Any, Exception | None]]:
+        """Run ``fn(item)`` for every item, concurrently when there are several.
+
+        Returns ``(item, value, error)`` per item in input order; a failing item
+        does not stop the others.
+        """
+        outcomes: list[tuple[Any, Any, Exception | None]] = []
+        if len(items) <= 1:
+            for item in items:
+                try:
+                    outcomes.append((item, fn(item), None))
+                except Exception as exc:
+                    outcomes.append((item, None, exc))
+            return outcomes
+        with self._pool(abortable=False) as pool:
+            futures = [(item, pool.submit(fn, item)) for item in items]
+            for item, future in futures:
+                try:
+                    outcomes.append((item, future.result(), None))
+                except Exception as exc:
+                    outcomes.append((item, None, exc))
+        return outcomes
+
     def search_catalog(
         self,
         *,
@@ -179,47 +230,30 @@ class DealsClient:
         concurrently and yielded in logical page order. Stops after an empty
         page, though later pages may already be in flight.
         """
-        products, total = self.search_catalog(
-            keywords=keywords,
-            title=title,
-            category_id=category_id,
-            sort_by=sort_by,
-            page=0,
-        )
+
+        def fetch(page: int) -> tuple[list[_product.Product], int]:
+            return self.search_catalog(
+                keywords=keywords,
+                title=title,
+                category_id=category_id,
+                sort_by=sort_by,
+                page=page - 1,
+            )
+
+        products, total = fetch(1)
         yield products, 1, total
 
-        last_page = (
-            min(max_pages, math.ceil(total / _constants.MAX_PAGE_SIZE)) if total else 1
-        )
+        last_page = page_count(total, max_pages)
         if not products or last_page < 2:
             return
 
-        pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
-        try:
-            futures = {
-                page: pool.submit(
-                    self.search_catalog,
-                    keywords=keywords,
-                    title=title,
-                    category_id=category_id,
-                    sort_by=sort_by,
-                    page=page - 1,
-                )
-                for page in range(2, last_page + 1)
-            }
-            for page in range(2, last_page + 1):
-                page_products, page_total = futures[page].result()
+        with self._pool() as pool:
+            for page, (page_products, page_total) in prefetch_in_order(
+                pool, fetch, range(2, last_page + 1)
+            ):
                 yield page_products, page, page_total
                 if not page_products:
                     break
-        except BaseException:
-            self._transport.cancel()
-            raise
-        finally:
-            # wait=True: unwinding with reads still in flight lets the client
-            # get GC'd under them, stalling each until its 10s socket timeout.
-            pool.shutdown(wait=True, cancel_futures=True)
-            self._transport.reset_abort()
 
     def search_segments(
         self,
@@ -267,15 +301,7 @@ class DealsClient:
         def remaining_pages(index: int, products, total: int) -> range:
             if not products:
                 return range(0)
-            last_page = (
-                min(
-                    requests[index].max_pages,
-                    math.ceil(total / _constants.MAX_PAGE_SIZE),
-                )
-                if total
-                else 1
-            )
-            return range(2, last_page + 1)
+            return range(2, page_count(total, requests[index].max_pages) + 1)
 
         try:
             index, logical_page, products, total = fetch(0, 1)
@@ -289,9 +315,8 @@ class DealsClient:
             store(index, logical_page, products, total)
             initial_remaining = remaining_pages(0, products, total)
 
-        pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
         pending = {}
-        try:
+        with self._pool() as pool:
             for index in range(1, len(requests)):
                 future = pool.submit(fetch, index, 1)
                 pending[future] = (index, 1)
@@ -316,12 +341,6 @@ class DealsClient:
                         for next_page in remaining_pages(index, products, total):
                             next_future = pool.submit(fetch, index, next_page)
                             pending[next_future] = (index, next_page)
-        except BaseException:
-            self._transport.cancel()
-            raise
-        finally:
-            pool.shutdown(wait=True, cancel_futures=True)
-            self._transport.reset_abort()
 
         results: list[CatalogSearchResult] = []
         for index, page_map in enumerate(pages):
@@ -342,9 +361,7 @@ class DealsClient:
         if self._library_cache is not None:
             return self._library_cache
 
-        asins: set[str] = set()
-        page = 1
-        while True:
+        def fetch(page: int) -> tuple[list[str], int]:
             resp = self._transport.request(
                 "1.0/library",
                 num_results=1000,
@@ -352,13 +369,11 @@ class DealsClient:
                 response_groups="product_attrs",
             )
             items = resp.get("items", [])
-            for item in items:
-                asin = item.get("asin", "")
-                if asin:
-                    asins.add(asin)
-            if len(items) < 1000:
-                break
-            page += 1
+            return [item["asin"] for item in items if item.get("asin")], len(items)
+
+        asins: set[str] = set()
+        for _, page_asins in read_serially(fetch, 1, 1000):
+            asins.update(page_asins)
 
         logger.debug("library asins fetched count=%d", len(asins))
         self._library_cache = asins
@@ -384,13 +399,14 @@ class DealsClient:
             return products, item_count, resp.get("total_results")
 
         def fetch_serially(start_page: int):
-            page = start_page
-            while True:
-                products, item_count, _ = fetch(page)
-                yield products, page
-                if item_count < _constants.MAX_PAGE_SIZE:
-                    return
-                page += 1
+            def read(page: int) -> tuple[list[_product.Product], int]:
+                page_products, count, _ = fetch(page)
+                return page_products, count
+
+            for page, page_products in read_serially(
+                read, start_page, _constants.MAX_PAGE_SIZE
+            ):
+                yield page_products, page
 
         products, item_count, total_results = fetch(1)
         yield products, 1
@@ -418,34 +434,14 @@ class DealsClient:
                 yield from fetch_serially(3)
             return
 
-        pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
-        try:
-            next_page = 2
-            pending: dict[Future[_LibraryPage], int] = {}
-            ready: dict[int, Future[_LibraryPage]] = {}
-            while next_page <= last_page and len(pending) < _MAX_CONCURRENT_FETCHES:
-                pending[pool.submit(fetch, next_page)] = next_page
-                next_page += 1
-            for page in range(2, last_page + 1):
-                while page not in ready:
-                    done, _ = wait(pending, return_when=FIRST_COMPLETED)
-                    for future in done:
-                        completed_page = pending.pop(future)
-                        ready[completed_page] = future
-                products, item_count, _ = ready.pop(page).result()
+        with self._pool() as pool:
+            for page, (products, item_count, _) in prefetch_in_order(
+                pool, fetch, range(2, last_page + 1), window=MAX_CONCURRENT_FETCHES
+            ):
                 yield products, page
                 if item_count < _constants.MAX_PAGE_SIZE and page < last_page:
                     self._transport.cancel()
                     break
-                if next_page <= last_page:
-                    pending[pool.submit(fetch, next_page)] = next_page
-                    next_page += 1
-        except BaseException:
-            self._transport.cancel()
-            raise
-        finally:
-            pool.shutdown(wait=True, cancel_futures=True)
-            self._transport.reset_abort()
 
         if item_count == _constants.MAX_PAGE_SIZE:
             yield from fetch_serially(last_page + 1)
@@ -466,9 +462,8 @@ class DealsClient:
         The wishlist API uses 0-indexed pages and returns up to MAX_PAGE_SIZE
         products per page in the same format as the catalog.
         """
-        all_products: list[_product.Product] = []
-        page = 0  # wishlist API uses 0-indexed pages
-        while True:
+
+        def fetch(page: int) -> tuple[list[_product.Product], int]:
             resp = self._transport.request(
                 "1.0/wishlist",
                 num_results=_constants.MAX_PAGE_SIZE,
@@ -477,68 +472,23 @@ class DealsClient:
                 sort_by="-DateAdded",
             )
             raw_products = resp.get("products", [])
-            products = _parse_api_products(raw_products, self.locale)
+            return _parse_api_products(raw_products, self.locale), len(raw_products)
+
+        all_products: list[_product.Product] = []
+        # The wishlist API counts pages from 0.
+        for _, products in read_serially(fetch, 0, _constants.MAX_PAGE_SIZE):
             all_products.extend(products)
-            if len(raw_products) < _constants.MAX_PAGE_SIZE:
-                break
-            page += 1
         logger.debug("wishlist fetched count=%d", len(all_products))
         return all_products
 
     def resolve_genre(self, query: str) -> tuple[str, str]:
         """Fuzzy-match a genre name to a category (id, name).
 
-        Tries alias expansion, exact match, substring, then difflib.
-        Raises ValueError if no match or ambiguous.
+        Raises ValueError if there is no match or the name is ambiguous.
         """
         if self._categories_cache is None:
             self._categories_cache = self.get_categories()
-
-        cats = self._categories_cache
-        names = [c["name"] for c in cats]
-        names_lower = [n.lower() for n in names]
-
-        # Normalize and expand aliases
-        q_raw = query.strip().lower()
-        q = _constants.GENRE_ALIASES.get(q_raw, q_raw)
-        if q != q_raw:
-            logger.debug("resolve_genre alias %r -> %r", q_raw, q)
-
-        # Exact match
-        if q in names_lower:
-            idx = names_lower.index(q)
-            logger.debug(
-                "resolve_genre exact match: %r -> %s", query, cats[idx]["name"]
-            )
-            return cats[idx]["id"], cats[idx]["name"]
-
-        # Substring match
-        matches = [i for i, n in enumerate(names_lower) if q in n]
-        if len(matches) == 1:
-            logger.debug(
-                "resolve_genre substring match: %r -> %s",
-                query,
-                cats[matches[0]]["name"],
-            )
-            return cats[matches[0]]["id"], cats[matches[0]]["name"]
-        if len(matches) > 1:
-            options = ", ".join(names[i] for i in matches)
-            raise ValueError(
-                f'Ambiguous genre "{query}" matches: {options}\n'
-                "Use a more specific name or --category ID."
-            )
-
-        # Fuzzy match via difflib
-        close = difflib.get_close_matches(q, names_lower, n=1, cutoff=0.5)
-        if close:
-            idx = names_lower.index(close[0])
-            logger.debug(
-                "resolve_genre fuzzy match: %r -> %s", query, cats[idx]["name"]
-            )
-            return cats[idx]["id"], cats[idx]["name"]
-
-        available = ", ".join(names)
-        raise ValueError(f'No genre matching "{query}".\nAvailable: {available}')
+        return _genres.match_genre(query, self._categories_cache)
 
     def get_category_name(self, category_id: str) -> str:
         """Look up a category's display name by ID."""
@@ -623,64 +573,30 @@ class DealsClient:
         unique_series = list(dict.fromkeys(series_asins))
         children: dict[str, list[str]] = {}
         failures: dict[str, Exception] = {}
-
-        def fetch_relationship(series_asin: str):
-            return series_asin, self._get_series_child_asins(series_asin)
-
-        if len(unique_series) <= 1:
-            for series_asin in unique_series:
-                try:
-                    _, child_asins = fetch_relationship(series_asin)
-                except Exception as exc:
-                    failures[series_asin] = exc
-                else:
-                    children[series_asin] = child_asins
-        else:
-            pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
-            try:
-                futures = {
-                    series_asin: pool.submit(fetch_relationship, series_asin)
-                    for series_asin in unique_series
-                }
-                for series_asin, future in futures.items():
-                    try:
-                        _, child_asins = future.result()
-                    except Exception as exc:
-                        failures[series_asin] = exc
-                    else:
-                        children[series_asin] = child_asins
-            finally:
-                pool.shutdown(wait=True, cancel_futures=True)
+        for series_asin, child_asins, error in self._settle(
+            self._get_series_child_asins, unique_series
+        ):
+            if error is not None:
+                failures[series_asin] = error
+            else:
+                children[series_asin] = child_asins
 
         all_child_asins = list(
             dict.fromkeys(asin for values in children.values() for asin in values)
         )
         batches = [
-            all_child_asins[i : i + _constants.MAX_PAGE_SIZE]
+            tuple(all_child_asins[i : i + _constants.MAX_PAGE_SIZE])
             for i in range(0, len(all_child_asins), _constants.MAX_PAGE_SIZE)
         ]
         fetched: list[_product.Product] = []
         failed_batches: list[tuple[tuple[str, ...], Exception]] = []
-        if len(batches) <= 1:
-            for batch in batches:
-                try:
-                    fetched.extend(self._fetch_products_batch(batch))
-                except Exception as exc:
-                    failed_batches.append((tuple(batch), exc))
-        else:
-            pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
-            try:
-                batch_futures = [
-                    (tuple(batch), pool.submit(self._fetch_products_batch, batch))
-                    for batch in batches
-                ]
-                for batch_asins, batch_future in batch_futures:
-                    try:
-                        fetched.extend(batch_future.result())
-                    except Exception as exc:
-                        failed_batches.append((batch_asins, exc))
-            finally:
-                pool.shutdown(wait=True, cancel_futures=True)
+        for batch, batch_products, error in self._settle(
+            lambda batch: self._fetch_products_batch(list(batch)), batches
+        ):
+            if error is not None:
+                failed_batches.append((batch, error))
+            else:
+                fetched.extend(batch_products)
 
         by_asin = {product.asin: product for product in fetched}
         products: dict[str, tuple[_product.Product, ...]] = {}
@@ -739,18 +655,11 @@ class DealsClient:
         if len(batches) <= 1:
             product_batches = [self._fetch_products_batch(batch) for batch in batches]
         else:
-            pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
-            try:
+            with self._pool() as pool:
                 futures = [
                     pool.submit(self._fetch_products_batch, batch) for batch in batches
                 ]
                 product_batches = [future.result() for future in futures]
-            except BaseException:
-                self._transport.cancel()
-                raise
-            finally:
-                pool.shutdown(wait=True, cancel_futures=True)
-                self._transport.reset_abort()
 
         results = [product for batch in product_batches for product in batch]
         logger.debug("get_products_batch in=%d out=%d", len(asins), len(results))

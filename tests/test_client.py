@@ -914,6 +914,92 @@ class TestLibraryPagination:
         assert set(transport.calls) <= {1, 2, 3, 4, 5}
 
 
+class TestWorkerPoolLifecycle:
+    """Which readers abort in-flight retries when something fails."""
+
+    @staticmethod
+    def _client(transport):
+        client = object.__new__(DealsClient)
+        client.locale = "us"
+        client._transport = transport
+        return client
+
+    class _Transport:
+        def __init__(self, fail_for=()):
+            self.fail_for = fail_for
+            self.cancel_count = 0
+            self.reset_count = 0
+
+        def request(self, path, **params):
+            asins = params.get("asins", "")
+            if any(asin in asins for asin in self.fail_for):
+                raise click.ClickException("batch failed")
+            return {
+                "products": [
+                    {"asin": asin, "title": f"Book {asin}"}
+                    for asin in asins.split(",")
+                    if asin
+                ]
+            }
+
+        def cancel(self):
+            self.cancel_count += 1
+
+        def reset_abort(self):
+            self.reset_count += 1
+
+    def test_product_batch_failure_aborts_pending_retries_and_resets(self):
+        transport = self._Transport(fail_for=("B000000050",))
+        asins = [f"B{index:09d}" for index in range(2 * MAX_PAGE_SIZE)]
+
+        with pytest.raises(click.ClickException, match="batch failed"):
+            self._client(transport).get_products_batch(asins)
+
+        assert (transport.cancel_count, transport.reset_count) == (1, 1)
+
+    def test_a_single_batch_runs_without_a_pool(self, monkeypatch):
+        import audible_deals.client as client_mod
+
+        monkeypatch.setattr(
+            client_mod,
+            "ThreadPoolExecutor",
+            lambda *args, **kwargs: pytest.fail("one batch does not need an executor"),
+        )
+        transport = self._Transport()
+
+        products = self._client(transport).get_products_batch(["B000000001"])
+
+        assert [product.asin for product in products] == ["B000000001"]
+
+    def test_series_batch_failures_are_collected_without_aborting_the_rest(self):
+        # Failed batches are reported per series; the transport is never aborted.
+        class Transport(self._Transport):
+            def request(self, path, **params):
+                if "relationships" == params.get("response_groups"):
+                    series = path.rsplit("/", 1)[1]
+                    count = 2 * MAX_PAGE_SIZE if series == "S1" else 1
+                    return {
+                        "product": {
+                            "relationships": [
+                                {
+                                    "asin": f"B{series[1:]}{index:08d}",
+                                    "relationship_to_product": "child",
+                                }
+                                for index in range(count)
+                            ]
+                        }
+                    }
+                return super().request(path, **params)
+
+        transport = Transport(fail_for=("B100000000",))
+
+        result = self._client(transport).get_series_products_many(["S1", "S2", "S1"])
+
+        assert set(result.product_failures) == {"S1"}
+        assert len(result.products["S2"]) == 1
+        assert (transport.cancel_count, transport.reset_count) == (0, 0)
+
+
 class TestRetryAfterBackoff:
     @staticmethod
     def _make_transport(api_fixture):
