@@ -51,6 +51,7 @@ from audible_deals.db import (
     meta_set,
     transaction,
 )
+from audible_deals.logging_setup import NOTE
 from audible_deals.state_store import RUN_HISTORY_MAX, insert_track_run
 from audible_deals.storage import read_text
 
@@ -647,7 +648,8 @@ def ensure_imported(conn: sqlite3.Connection) -> None:
 
 def _announce(summary: dict[str, Any], failed: list[Path]) -> None:
     counts = summary["counts"]
-    logger.warning(
+    logger.log(
+        NOTE,
         "Moved your saved data into state.db (%d price entries for %d titles, %d seen, "
         "%d dismissed); the old files were renamed to *%s and can be deleted once you "
         "are happy.",
@@ -660,7 +662,11 @@ def _announce(summary: dict[str, Any], failed: list[Path]) -> None:
     for note in summary["notes"]:
         logger.warning("Migration: %s", note)
     for what, count in summary["skipped"].items():
-        logger.info("Migration skipped %d %s", count, what)
+        logger.warning(
+            "Migration skipped %d unusable %s; 'deals doctor' has the details",
+            count,
+            what,
+        )
     if failed:
         logger.warning(
             "%d old file(s) could not be renamed yet; this will be retried next time",

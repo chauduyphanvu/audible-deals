@@ -16,6 +16,7 @@ from audible_deals.client import DealsClient, cached_top_categories
 from audible_deals.config_store import load_profiles
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.genres import match_genre
+from audible_deals.notices import note, warn
 from audible_deals.presentation.common import age_str
 from audible_deals.presentation.terminal import console, safe_markup, safe_text
 from audible_deals.product import Product
@@ -183,15 +184,7 @@ def _live_results(
     )
 
 
-def _announce(message: str, *, json_flag: bool, style: str = "dim") -> None:
-    """A status line that stays out of JSON on stdout."""
-    if json_flag:
-        click.echo(safe_text(message), err=True)
-    else:
-        console.print(f"[{style}]{safe_markup(message)}[/{style}]")
-
-
-def _report_cache_use(cache: ScanCache | None, *, json_flag: bool, quiet: bool) -> None:
+def _report_cache_use(cache: ScanCache | None, *, quiet: bool) -> None:
     """Tell the user which data came from the cache, and how to get live data."""
     if cache is None or quiet:
         return
@@ -209,10 +202,9 @@ def _report_cache_use(cache: ScanCache | None, *, json_flag: bool, quiet: bool) 
         )
     if use.library_age_s is not None:
         parts.append(f"owned titles {age_str(use.library_age_s)} old")
-    _announce(
+    note(
         f"Using cached results: {', '.join(parts)}. "
-        "Add --refresh for live prices; cached prices are not added to your history.",
-        json_flag=json_flag,
+        "Add --refresh for live prices; cached prices are not added to your history."
     )
 
 
@@ -230,7 +222,7 @@ def _report_interruption(report: ScanReport, *, json_flag: bool) -> None:
 
         CliError(message, ExitCode.INTERRUPTED, json_mode=True).show()
     else:
-        _announce(message, json_flag=False, style="yellow")
+        warn(message)
 
 
 def _resolve_cli_selectors(
@@ -318,8 +310,6 @@ def _report_partial_series_outcomes(
     failures: tuple[str, ...],
     incomplete: tuple[str, ...],
     total: int,
-    *,
-    json_flag: bool,
 ) -> None:
     if not failures and not incomplete:
         return
@@ -332,12 +322,6 @@ def _report_partial_series_outcomes(
     summary = (
         f"Partial results: {completed}/{total} series scanned; {'; '.join(outcomes)}."
     )
-    details = (*failures, *incomplete)
-    if json_flag:
-        click.echo(summary, err=True)
-        for detail in details:
-            click.echo(f"  {safe_text(detail)}", err=True)
-    else:
-        console.print(f"[yellow]{safe_markup(summary)}[/yellow]")
-        for detail in details:
-            console.print(f"[dim]  {safe_markup(detail)}[/dim]")
+    warn(summary)
+    for detail in (*failures, *incomplete):
+        click.echo(f"  {safe_text(detail)}", err=True)

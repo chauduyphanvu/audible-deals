@@ -12,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
+from audible_deals.notices import warn
 from audible_deals.presentation.result_output import (
     ResultPresentationRequest,
     emit_results,
@@ -84,10 +85,10 @@ def record_prices_safely(
     try:
         record_prices(products, observation_date=observation_date)
     except Exception as exc:
-        logger.exception("record_prices failed for %d products", len(products))
-        console.print(
-            f"[dim]Warning: could not record price history: {safe_markup(exc)}[/dim]"
+        logger.debug(
+            "record_prices failed for %d products", len(products), exc_info=True
         )
+        warn(f"could not record price history: {exc}")
 
 
 def mark_refresh_eligible_safely(products: list[Product]) -> None:

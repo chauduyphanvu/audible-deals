@@ -43,6 +43,7 @@ from audible_deals.monitor_service import (
 from audible_deals.monitor_service import (
     scan_monitor as _scan_monitor,
 )
+from audible_deals.notices import note
 from audible_deals.presentation.terminal import (
     catalog_scan_progress,
     console,
@@ -125,9 +126,7 @@ def _monitor_settings(
     if settings.exclude_seen:
         # "Seen" changes every time results are shown, which would make a
         # frozen snapshot appear and disappear; monitors never use it.
-        console.print(
-            "[dim]Note: exclude-seen does not apply to monitors and was ignored.[/dim]"
-        )
+        note("exclude-seen does not apply to monitors and was ignored.")
         settings = dataclasses.replace(settings, exclude_seen=False)
     if not settings.language and not settings.all_languages:
         settings = dataclasses.replace(

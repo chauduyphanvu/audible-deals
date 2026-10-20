@@ -13,6 +13,7 @@ from pathlib import Path
 import pytest
 
 from audible_deals import db, json_import, paths
+from audible_deals.logging_setup import NOTE
 from audible_deals.price_history import load_all_price_histories, load_price_history
 from audible_deals.refresh_eligibility import load_refresh_eligibility
 from audible_deals.results_cache import (
@@ -697,15 +698,15 @@ class TestCachesAndRenames:
         put("seen_asins.json", ["A1", "A2"])
         history_file("B00NOTE001", {"us": [entry("2026-01-01", 1.0)]})
 
-        with caplog.at_level(logging.WARNING, logger="audible_deals.json_import"):
+        with caplog.at_level(NOTE, logger="audible_deals.json_import"):
             db.state()
 
-        lines = [
-            r.message for r in caplog.records if "Moved your saved data" in r.message
-        ]
-        assert len(lines) == 1
-        assert "1 price entries for 1 titles, 2 seen" in lines[0]
-        assert "*.migrated" in lines[0]
+        records = [r for r in caplog.records if "Moved your saved data" in r.message]
+        assert len(records) == 1
+        # A note, not a warning: nothing is wrong, the user is just told.
+        assert records[0].levelno == NOTE
+        assert "1 price entries for 1 titles, 2 seen" in records[0].message
+        assert "*.migrated" in records[0].message
 
     def test_the_summary_is_recorded_for_doctor(self, tmp_config):
         put("seen_asins.json", ["A1"])
@@ -891,9 +892,10 @@ class TestEncodings:
 
 RACER = textwrap.dedent(
     """
-    import logging, sys, time
+    import sys, time
     from pathlib import Path
-    logging.basicConfig(level=logging.WARNING, format="%(message)s")
+    from audible_deals.logging_setup import configure_logging
+    configure_logging(0)
     from audible_deals import db
     go = Path(sys.argv[1])
     while not go.exists():

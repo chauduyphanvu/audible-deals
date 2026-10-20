@@ -20,7 +20,6 @@ from audible_deals.catalog_workflow import (
 )
 from audible_deals.cli.helpers import (
     _CL,
-    _announce,
     _credit_price,
     _currency,
     _estimated_cached_calls,
@@ -58,6 +57,7 @@ from audible_deals.known_candidates import (
     indexed_count,
     select_known,
 )
+from audible_deals.notices import note, warn
 from audible_deals.presentation.dry_run import (
     CatalogDryRunSummary,
     render_catalog_dry_run,
@@ -175,19 +175,14 @@ def _reprice_known_candidates(
     if not asins:
         return []
     if not quiet:
-        _announce(
-            f"Re-pricing {len(asins)} title(s) from earlier scans...",
-            json_flag=json_flag,
-        )
+        note(f"Re-pricing {len(asins)} title(s) from earlier scans...")
     try:
         fetched = dc.get_products_batch(asins)
     except Exception as exc:
         logger.warning("known-candidate re-price failed", exc_info=True)
-        _announce(
+        warn(
             f"Could not re-price titles from earlier scans ({type(exc).__name__}); "
-            "showing this scan's results only.",
-            json_flag=json_flag,
-            style="yellow",
+            "showing this scan's results only."
         )
         return []
     return [product for product in fetched if product.asin not in have]
@@ -400,7 +395,7 @@ def search(
                 allow_partial=True,
             )
     _report_interruption(scan_report, json_flag=json_flag)
-    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
+    _report_cache_use(cache, quiet=quiet)
 
     cur = _currency(ctx)
     search_title = _search_title(queries, category_name)
@@ -644,11 +639,7 @@ def find(
             description = f"Scanning {desc_str} ({len(child_ids)} subcategories)"
         else:
             if subcategories:
-                message = "No subcategories found; scanning the category directly."
-                if json_flag:
-                    click.echo(message, err=True)
-                else:
-                    console.print(f"[dim]{message}[/dim]")
+                note("No subcategories found; scanning the category directly.")
             scan_category_ids = [category]
             description = f"Scanning {desc_str}"
 
@@ -705,7 +696,7 @@ def find(
             )
             all_products = [*all_products, *known_new]
     _report_interruption(scan_report, json_flag=json_flag)
-    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
+    _report_cache_use(cache, quiet=quiet)
 
     cur = _currency(ctx)
     find_title = f"Deals under {cur}{s.max_price:.2f}"

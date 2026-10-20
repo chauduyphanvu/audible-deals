@@ -12,6 +12,7 @@ from audible_deals.cli.options import filter_options, output_options
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.exit_codes import ExitCode
 from audible_deals.filter_specs import Refine, Scope, recipe_specs, specs_for
+from audible_deals.notices import note
 from audible_deals.presentation.result_output import (
     ResultPresentationRequest,
     emit_results,
@@ -198,9 +199,9 @@ def last_cmd(
             ctx.exit(ExitCode.NO_MATCH)
         return
     if session.legacy and not json_flag and not quiet and not count_only:
-        console.print(
-            "[yellow]Legacy limited cache: display, narrowing, and selectors work; "
-            "run one new discovery scan to enable true widening.[/yellow]"
+        note(
+            "Legacy limited cache: display, narrowing, and selectors work; "
+            "run one new discovery scan to enable true widening."
         )
     assert outcome.visible_result is not None
     visible = outcome.visible_result.products

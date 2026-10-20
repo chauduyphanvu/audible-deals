@@ -27,6 +27,7 @@ from audible_deals.cli.options import filter_options, output_options, scope_valu
 from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.constants import LOCALE_LANGUAGES
 from audible_deals.filter_specs import Scope, specs_for
+from audible_deals.notices import note
 from audible_deals.presentation.terminal import (
     console,
     create_scan_progress,
@@ -477,14 +478,10 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
             taste.save_profile(profile)
             if cache is not None:
                 cache.library_store(ctx.obj["locale"], (p.asin for p in lib_products))
-            profile_message = (
+            note(
                 f"Taste profile built from {len(lib_products)} books "
                 "(cached for 24h; --refresh to rebuild)."
             )
-            if json_flag:
-                click.echo(profile_message, err=True)
-            else:
-                console.print(f"[dim]{profile_message}[/dim]")
 
         authors, genres, series = _scan_plan(profile)
         if not (authors or genres or series):
@@ -503,13 +500,8 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
             cache=cache,
         )
 
-    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
-    _report_partial_series_outcomes(
-        failures,
-        incomplete,
-        len(series),
-        json_flag=json_flag,
-    )
+    _report_cache_use(cache, quiet=quiet)
+    _report_partial_series_outcomes(failures, incomplete, len(series))
 
     credit_price = _credit_price(ctx)
     language = "" if settings.all_languages else settings.language

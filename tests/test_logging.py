@@ -9,7 +9,7 @@ from click.testing import CliRunner
 
 from audible_deals import paths
 from audible_deals.cli import cli
-from audible_deals.logging_setup import configure_logging
+from audible_deals.logging_setup import NOTE, configure_logging
 
 
 @pytest.fixture(autouse=True)
@@ -38,9 +38,10 @@ def _level(name: str = "audible_deals") -> int:
 
 
 class TestConfigureLogging:
-    def test_default_is_warning(self):
+    def test_default_shows_notes_and_warnings(self):
         configure_logging(0)
-        assert _level() == logging.WARNING
+        assert _level() == NOTE
+        assert NOTE < logging.WARNING
 
     def test_v_enables_info(self):
         configure_logging(1)

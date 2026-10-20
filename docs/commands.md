@@ -372,6 +372,8 @@ An error is one line on stderr, `Error: ...`, with the fix when there is one; th
 {"error": {"code": 3, "message": "Not authenticated. Run 'deals login' first."}}
 ```
 
+Warnings and notes are one line each on stderr, `Warning: ...` when something is off but the command carried on and `Note: ...` when it is only worth knowing (your data was moved, prices came from the cache, a scan was interrupted). They never appear in piped or `--json` output. Logger names and log levels only show with `-v`, and tracebacks only with `-vv`.
+
 ## Shell completions
 
 ```bash

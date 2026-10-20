@@ -442,13 +442,8 @@ def series(
             )
         )
 
-    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
-    _report_partial_series_outcomes(
-        failures,
-        incomplete,
-        len(invested_sorted),
-        json_flag=json_flag,
-    )
+    _report_cache_use(cache, quiet=quiet)
+    _report_partial_series_outcomes(failures, incomplete, len(invested_sorted))
 
     series_title = f"Series Continuation Books ({len(invested_sorted)} series)"
     eligible_candidates = [

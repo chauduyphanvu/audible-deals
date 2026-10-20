@@ -466,12 +466,13 @@ class TestSeriesCommand:
         result = CliRunner().invoke(cli, ["series"])
 
         assert result.exit_code == 0, result.output
+        # A warning about the run, so it goes to stderr and not into piped output.
         assert (
-            "Partial results: 1/2 series scanned; 1 failed; 1 incomplete.\n"
+            "Warning: Partial results: 1/2 series scanned; 1 failed; 1 incomplete.\n"
             "  Alpha Series: RuntimeError: temporary failure\n"
             "  Beta Series: 1 product(s) unavailable\n"
-        ) in result.stdout
-        assert "Partial results:" not in result.stderr
+        ) in result.stderr
+        assert "Partial results:" not in result.stdout
         assert "Beta Book 3" in result.output
 
     def test_series_reports_missing_child_products(self, tmp_config, mock_client):

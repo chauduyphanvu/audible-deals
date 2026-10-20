@@ -11,6 +11,7 @@ from click.testing import CliRunner
 import audible_deals.cli.catalog as cli_catalog_mod
 from audible_deals.cli import cli
 from audible_deals.cli.global_options import attach_global_options
+from audible_deals.logging_setup import NOTE
 from tests.conftest import make_product
 
 
@@ -265,7 +266,7 @@ def test_locale_works_on_a_command_inside_a_group(tmp_config):
 @pytest.mark.parametrize(
     ("flags", "expected"),
     [
-        ([], logging.WARNING),
+        ([], NOTE),
         (["-v"], logging.INFO),
         (["-vv"], logging.DEBUG),
         (["--verbose", "--verbose"], logging.DEBUG),
