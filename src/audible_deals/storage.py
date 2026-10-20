@@ -8,6 +8,7 @@ import os
 import tempfile
 from contextlib import suppress
 from pathlib import Path
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -66,20 +67,127 @@ def _atomic_write_bytes(path: Path, content: bytes, *, durable: bool = False) ->
         raise
 
 
+class StateFileError(Exception):
+    """A saved data file exists but cannot be safely read for modification.
+
+    Raised instead of overwriting a file whose contents we could not parse, so a
+    typo in a hand-edited ``profiles.json`` never costs the user their data.
+    """
+
+    def __init__(self, path: Path, message: str) -> None:
+        super().__init__(message)
+        self.path = path
+
+
+class _Unusable(Exception):
+    """Internal: the file exists but its contents cannot be used as expected."""
+
+    def __init__(self, detail: str, cause: BaseException | None = None) -> None:
+        super().__init__(detail)
+        self.detail = detail
+        self.cause = cause
+
+
+_JSON_KINDS = {
+    dict: "object",
+    list: "array",
+    str: "string",
+    bool: "boolean",
+    int: "number",
+    float: "number",
+    type(None): "null",
+}
+
+
+def _json_kind(value: object) -> str:
+    return _JSON_KINDS.get(type(value), type(value).__name__)
+
+
+def _parse_json_file(path: Path, expected_type: type) -> Any | None:
+    """Return the parsed document, or ``None`` when *path* does not exist.
+
+    A blank file holds nothing worth protecting and reads as an empty
+    *expected_type*. Anything else that cannot be used raises ``_Unusable``
+    with a short human-readable detail that includes the parse position.
+    """
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return None
+    except UnicodeDecodeError as exc:
+        raise _Unusable(
+            f"not valid text: {exc.reason} at byte {exc.start}", exc
+        ) from exc
+    except OSError as exc:
+        raise _Unusable(f"could not be read: {exc.strerror or exc}", exc) from exc
+    if not text.strip():
+        return expected_type()
+    try:
+        data = json.loads(text)
+    except json.JSONDecodeError as exc:
+        raise _Unusable(
+            f"not valid JSON at line {exc.lineno}, column {exc.colno}: {exc.msg}", exc
+        ) from exc
+    if not isinstance(data, expected_type):
+        raise _Unusable(
+            f"expected a JSON {_json_kind(expected_type())} "
+            f"but found a JSON {_json_kind(data)}"
+        )
+    return data
+
+
+_warned: set[tuple[str, str]] = set()
+
+
+def _warn_unusable(path: Path, desc: str, unusable: _Unusable) -> None:
+    """Warn once per process about an unusable file; traceback only when debugging."""
+    key = (str(path), unusable.detail)
+    if key in _warned:
+        return
+    _warned.add(key)
+    logger.warning(
+        "%s at %s is corrupt (%s), ignoring",
+        desc,
+        path,
+        unusable.detail,
+        exc_info=unusable.cause if logger.isEnabledFor(logging.DEBUG) else None,
+    )
+
+
 def load_json_file(path: Path, expected_type: type, desc: str):
-    """Load a JSON file, returning an empty expected_type if missing, corrupt, or wrong shape."""
-    if path.exists():
-        try:
-            data = json.loads(path.read_text())
-            if isinstance(data, expected_type):
-                logger.debug("loaded %s (%d) from %s", desc, len(data), path)
-                return data
-            logger.warning(
-                "%s at %s is not a %s, ignoring", desc, path, expected_type.__name__
-            )
-        except (json.JSONDecodeError, KeyError, OSError, UnicodeDecodeError):
-            logger.warning("%s at %s is corrupt, ignoring", desc, path, exc_info=True)
-    return expected_type()
+    """Load a JSON file, returning an empty expected_type if missing, corrupt, or wrong shape.
+
+    Read-only callers use this: a corrupt file is reported with a one-line
+    warning (plus a traceback under ``-vv``) and treated as empty. Callers that
+    go on to write must use :func:`ensure_updatable` first so the corrupt
+    contents are never silently replaced.
+    """
+    try:
+        data = _parse_json_file(path, expected_type)
+    except _Unusable as unusable:
+        _warn_unusable(path, desc, unusable)
+        return expected_type()
+    if data is None:
+        return expected_type()
+    logger.debug("loaded %s (%d) from %s", desc, len(data), path)
+    return data
+
+
+def ensure_updatable(path: Path, expected_type: type, desc: str) -> None:
+    """Raise ``StateFileError`` if *path* exists but is not a valid *expected_type*.
+
+    Call this at the start of every read-modify-write of a file the user owns
+    (config, profiles, monitors, ...) so a corrupt file is never overwritten.
+    A missing or blank file is fine: there is nothing to lose.
+    """
+    try:
+        _parse_json_file(path, expected_type)
+    except _Unusable as unusable:
+        raise StateFileError(
+            path,
+            f"Cannot update {desc}: {path} is corrupt ({unusable.detail}). "
+            "Fix the file or move it aside, then try again; nothing was changed.",
+        ) from unusable.cause
 
 
 def save_json_file(path: Path, data, desc: str, *, durable: bool = False) -> None:

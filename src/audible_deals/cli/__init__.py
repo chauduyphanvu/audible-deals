@@ -246,6 +246,8 @@ class _HandleAuthErrors(click.Group):
         except OSError as e:
             raise click.ClickException(f"Filesystem error: {_safe_text(e)}")
         except Exception as exc:
+            if _is_state_file_error(exc):
+                raise click.ClickException(_safe_text(exc)) from exc
             if not _is_audible_request_error(exc):
                 raise
             raise click.ClickException(
@@ -291,6 +293,13 @@ def _is_audible_request_error(exc: Exception) -> bool:
     return isinstance(request_error, type) and isinstance(exc, request_error)
 
 
+def _is_state_file_error(exc: Exception) -> bool:
+    """Recognize a refused write to a corrupt data file without importing storage."""
+    storage_module = sys.modules.get("audible_deals.storage")
+    error_type = getattr(storage_module, "StateFileError", None)
+    return isinstance(error_type, type) and isinstance(exc, error_type)
+
+
 def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
     if not value or ctx.resilient_parsing:
         return
@@ -328,10 +337,19 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 @click.pass_context
 def cli(ctx, locale, verbose):
     """Audible deal finder - find cheap audiobooks during sales."""
+    import logging
+
     from audible_deals.config_store import load_config
     from audible_deals.constants import LOCALE_DOMAIN
 
     ctx.ensure_object(dict)
+    ctx.obj["verbose"] = verbose
+    if ctx.invoked_subcommand is not None:
+        # Configure logging before reading any state so load-time warnings
+        # (e.g. a corrupt config file) honor -v/-vv.
+        from audible_deals.logging_setup import configure_logging
+
+        configure_logging(verbose)
     cfg = load_config()
     ctx.obj["config"] = cfg
     locale_explicit = (
@@ -357,11 +375,6 @@ def cli(ctx, locale, verbose):
     if ctx.invoked_subcommand is None:
         _print_dashboard(locale)
         return
-    import logging
-
-    from audible_deals.logging_setup import configure_logging
-
-    configure_logging(verbose)
     logging.getLogger(__name__).debug(
         "cli start locale=%s subcommand=%s", locale, ctx.invoked_subcommand
     )

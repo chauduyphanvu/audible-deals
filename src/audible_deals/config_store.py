@@ -15,8 +15,8 @@ from audible_deals.constants import (
     LOCALE_DOMAIN,
     WEBHOOK_FORMATS,
 )
-from audible_deals.storage import load_json_file, save_json_file
 from audible_deals.locking import advisory_lock
+from audible_deals.storage import ensure_updatable, load_json_file, save_json_file
 from audible_deals.validation import validate_finite_number
 
 logger = logging.getLogger(__name__)
@@ -46,6 +46,12 @@ def save_profiles(profiles: dict[str, dict]) -> None:
 
 def load_monitors() -> dict[str, dict]:
     return load_json_file(constants.MONITORS_FILE, dict, "monitors")
+
+
+def load_monitors_for_update() -> dict[str, dict]:
+    """Load monitors for a read-modify-write, refusing to replace a corrupt file."""
+    ensure_updatable(constants.MONITORS_FILE, dict, "monitors")
+    return load_monitors()
 
 
 def save_monitors(monitors: dict[str, dict]) -> None:
@@ -112,6 +118,7 @@ def _state_lock(path):
 def config_transaction():
     """Lock, load, mutate, and atomically save the global config."""
     with _state_lock(constants.CONFIG_FILE):
+        ensure_updatable(constants.CONFIG_FILE, dict, "config")
         config = load_config()
         yield config
         for key, value in list(config.items()):
@@ -125,6 +132,7 @@ def config_transaction():
 def profiles_transaction():
     """Lock, load, mutate, and atomically save saved profiles."""
     with _state_lock(constants.PROFILES_FILE):
+        ensure_updatable(constants.PROFILES_FILE, dict, "profiles")
         profiles = load_profiles()
         yield profiles
         save_profiles(profiles)

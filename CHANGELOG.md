@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Changed
+- A zero-byte or whitespace-only data file (`config.json`, `profiles.json`, ...) is now treated as empty without a warning; there is nothing in it to lose.
+- `-v`/`-vv` now also apply to warnings emitted while loading saved configuration at startup.
+
+### Fixed
+- A `config.json`, `profiles.json`, `monitors.json` or `dismissed_asins.json` that could not be parsed (for example after a typo while hand-editing) was silently replaced with an empty file the next time a command saved it, deleting every saved profile, monitor, or default. Commands that would write to such a file now stop with a one-line error naming the file and the line and column of the problem, and leave it untouched. Commands that only read it print a one-line warning (the traceback appears only with `-vv`).
+
 ## [0.11.1] - 2026-08-31
 
 ### Fixed

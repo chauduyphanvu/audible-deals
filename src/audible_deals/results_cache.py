@@ -8,9 +8,8 @@ from typing import Any
 
 import click
 
-from audible_deals import constants
-from audible_deals import result_models
-from audible_deals.storage import _atomic_write, load_json_file
+from audible_deals import constants, result_models
+from audible_deals.storage import _atomic_write, ensure_updatable, load_json_file
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +78,8 @@ def save_dismissed_asins(new_asins: set[str]) -> None:
     """Append ASINs to the cumulative dismissed-ASINs file."""
     if not new_asins:
         return
+    # Dismissals are the user's own decisions: never replace a corrupt file.
+    ensure_updatable(constants.DISMISSED_ASINS_FILE, list, "dismissed ASINs")
     existing = load_dismissed_asins()
     if new_asins <= existing:
         return

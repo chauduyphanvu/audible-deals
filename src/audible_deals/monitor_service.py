@@ -28,7 +28,7 @@ from audible_deals.catalog_workflow import (
 )
 from audible_deals.config_store import (
     load_monitor_state,
-    load_monitors,
+    load_monitors_for_update,
     save_monitor_state,
     save_monitors,
 )
@@ -336,7 +336,7 @@ def select_monitors_for_run(monitors: dict[str, dict], cursor: int) -> MonitorSe
 
 def add_monitor(definition: MonitorDefinition) -> None:
     with run_lock():
-        monitors = load_monitors()
+        monitors = load_monitors_for_update()
         if definition.name in monitors:
             raise MonitorExistsError(f"Monitor '{definition.name}' already exists.")
         monitors[definition.name] = definition.to_dict()
@@ -348,7 +348,7 @@ def add_monitor(definition: MonitorDefinition) -> None:
 
 def remove_monitor(name: str) -> None:
     with run_lock():
-        monitors = load_monitors()
+        monitors = load_monitors_for_update()
         if name not in monitors:
             raise MonitorNotFoundError(f"Monitor '{name}' not found.")
         del monitors[name]
@@ -360,7 +360,7 @@ def remove_monitor(name: str) -> None:
 
 def set_monitor_enabled(name: str, enabled: bool) -> bool:
     with run_lock():
-        monitors = load_monitors()
+        monitors = load_monitors_for_update()
         raw = monitors.get(name)
         if not isinstance(raw, dict):
             raise MonitorNotFoundError(f"Monitor '{name}' not found.")

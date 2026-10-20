@@ -355,6 +355,10 @@ All application data is stored in `~/.config/audible-deals/`:
 | `track_state.json`, `track.log` | Background tracking state and log |
 | `taste_cache.json` | Local taste profile for `for-me` |
 
+### Damaged data files
+
+`config.json`, `profiles.json`, `monitors.json`, `wishlist.json`, and `dismissed_asins.json` are files you can edit by hand. If one cannot be parsed (for example after a typo), commands that only read it print a one-line warning with the file and parse position and carry on as if it were empty (`-vv` adds the traceback). Commands that would write to it stop with that same location and leave the file untouched, so a typo never costs you your saved data. Fix the file or move it aside, then run the command again.
+
 ## Related guides
 
 - [Installation and authentication](installation.md)
