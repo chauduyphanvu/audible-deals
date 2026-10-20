@@ -72,7 +72,7 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 | `--hist-below 25` | Keep prices at or below a tracked-history percentile |
 | `--min-price-drop 30` | Require a percentage drop from the last tracked price |
 | `--require-history` | Drop items without enough history for a history filter |
-| `--released-after 2024-01-01` | Keep releases on or after a date |
+| `--released-after 2024-01-01` | Keep releases on or after a date (checked as soon as the command is parsed) |
 | `--released-before 2025-01-01` | Keep releases on or before a date |
 | `--min-rating 4.0` | Require a minimum star rating |
 | `--min-ratings 100` | Require a minimum rating count |
@@ -87,7 +87,7 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 | `--skip-owned` | Exclude books already in your library |
 | `--skip-plus` | Exclude Audible Plus titles |
 | `--only-plus` | Keep only Audible Plus titles |
-| `--exclude-seen` | Exclude ASINs returned by earlier searches |
+| `--exclude-seen` | Exclude ASINs returned by earlier searches; `--no-exclude-seen` turns it off |
 | `-n, --limit 20` | Cap results; use `-n 0` for no limit |
 | `--pages 10` | Set catalog pages per scan |
 | `--deep` | Scan three server-side sort orders |
@@ -227,7 +227,7 @@ deals profile show my-scifi
 deals profile delete my-scifi
 ```
 
-Most filter and sort flags can be saved. An explicit CLI option overrides the profile value. A profile cannot save both `--skip-plus` and `--only-plus` as true.
+Every filter that `find` accepts can be saved, including `--max-effective-price`, `--hist-below`, `--min-price-drop`, `--require-history`, `--released-after`/`--released-before`, and `--exclude-seen`, so a profile reproduces a full `find` and monitors built from it keep those filters. Boolean filters have a `--no-...` form (for example `--no-require-history`) to switch off a value a profile saved. An explicit CLI option overrides the profile value. A profile cannot save both `--skip-plus` and `--only-plus` as true, or a release window that ends before it starts.
 
 ## Saved-search monitors
 
@@ -247,7 +247,7 @@ deals monitor resume sci-fi-steals
 deals monitor remove sci-fi-steals --yes
 ```
 
-For monitor creation, explicit supported filter options (such as `--max-price`, `--pages`, `--sort`, `--genre`, `--author`, `--on-sale`, and `--skip-owned`) override profile and global values before the settings are frozen. Monitor-specific webhooks never receive global custom webhook headers.
+For monitor creation, explicit filter options (any filter that `deals profile save` takes except the per-view ones, such as `--max-price`, `--max-effective-price`, `--pages`, `--sort`, `--genre`, `--exclude-genre`, `--author`, `--hist-below`, `--released-after`, `--on-sale`, and `--skip-owned`) override profile and global values before the settings are frozen. Display options (`--limit`, `--interactive`) and `--exclude-seen` do not apply to monitors, because a monitor must see every match to detect changes, and `--keywords` is only available through a profile (use `--query` for direct monitors). `--max-effective-price` uses the credit price configured when the monitor runs. Monitor-specific webhooks never receive global custom webhook headers.
 
 ## Global defaults
 
@@ -261,7 +261,7 @@ deals config reset max-price
 deals config reset
 ```
 
-Precedence is `explicit CLI > profile > global config > built-in default`. For `skip-plus` and `only-plus`, a higher layer's true value disables the lower opposite; false values follow normal precedence without conflicting. Both true in one layer is invalid. Setting either to `true` with `deals config set` removes and reports the opposite persisted key; setting it to `false` leaves the opposite key unchanged. Existing same-layer conflicts are diagnosed rather than silently rewritten. Set a default marketplace with `deals config set locale uk`.
+Any filter with a numeric, text, or yes/no value can be a global default (`deals config set --help` lists the keys); release dates and the repeatable exclude filters are profile-only. Precedence is `explicit CLI > profile > global config > built-in default`. For `skip-plus` and `only-plus`, a higher layer's true value disables the lower opposite; false values follow normal precedence without conflicting. Both true in one layer is invalid. Setting either to `true` with `deals config set` removes and reports the opposite persisted key; setting it to `false` leaves the opposite key unchanged. Existing same-layer conflicts are diagnosed rather than silently rewritten. Set a default marketplace with `deals config set locale uk`.
 
 ### Credit-aware recommendations
 

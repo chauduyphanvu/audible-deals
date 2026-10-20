@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import datetime
 import ipaddress
 import math
 import socket
@@ -28,6 +29,23 @@ class FiniteFloatRange(click.FloatRange):
         if not math.isfinite(result):
             self.fail(f"{value!r} must be a finite number", param, ctx)
         return super().convert(result, param, ctx)
+
+
+class IsoDate(click.ParamType):
+    """A ``YYYY-MM-DD`` date, normalized to canonical form; empty means unset."""
+
+    name = "date"
+
+    def get_metavar(self, param, ctx=None):
+        return "YYYY-MM-DD"
+
+    def convert(self, value, param, ctx):
+        if value is None or value == "":
+            return value
+        try:
+            return datetime.date.fromisoformat(str(value)).isoformat()
+        except ValueError:
+            self.fail(f"invalid date {value!r} (expected YYYY-MM-DD)", param, ctx)
 
 
 NONNEGATIVE_FLOAT = FiniteFloatRange(0)

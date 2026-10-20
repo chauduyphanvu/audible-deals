@@ -13,21 +13,19 @@ from audible_deals import constants
 from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli.helpers import (
     _CL,
+    _credit_price,
     _get_client,
     _load_profile,
     _resolve_categories,
     _resolve_skip_asins,
 )
-from audible_deals.cli.options import _complete_profile_names
+from audible_deals.cli.options import _complete_profile_names, filter_options
 from audible_deals.config_store import (
     load_monitor_state,
     load_monitors,
 )
-from audible_deals.constants import (
-    ALL_SORT_OPTIONS,
-    LOCALE_LANGUAGES,
-    WEBHOOK_FORMATS,
-)
+from audible_deals.constants import LOCALE_LANGUAGES, WEBHOOK_FORMATS
+from audible_deals.filter_specs import Scope, scope_defaults, specs_for
 from audible_deals.locking import LockHeldError
 from audible_deals.monitor_service import (
     MAX_MONITOR_API_CALLS_PER_RUN,
@@ -58,51 +56,16 @@ from audible_deals.presentation.terminal import (
 from audible_deals.settings import (
     Settings,
     SettingsResolutionRequest,
+    filter_combination_error,
     resolve_settings,
 )
-from audible_deals.validation import (
-    NONNEGATIVE_FLOAT,
-    NONNEGATIVE_INT,
-    RATING_FLOAT,
-    validate_webhook_url,
-)
+from audible_deals.validation import validate_webhook_url
 
 logger = logging.getLogger(__name__)
 
-_FIND_DEFAULTS = {
-    "max_price": 5.0,
-    "sort": "price-per-hour",
-    "pages": 10,
-    "min_ratings": 1,
-}
-_SEARCH_DEFAULTS = {
-    "max_price": None,
-    "sort": "relevance",
-    "pages": 3,
-    "min_ratings": 0,
-}
-_DIRECT_SETTING_FIELDS = (
-    "max_price",
-    "sort",
-    "pages",
-    "min_rating",
-    "min_ratings",
-    "min_hours",
-    "min_discount",
-    "genre",
-    "narrator",
-    "author",
-    "on_sale",
-    "deep",
-    "language",
-    "skip_owned",
-    "first_in_series",
-    "skip_plus",
-    "only_plus",
-    "exclude_authors",
-    "exclude_narrators",
-    "exclude_keywords",
-)
+# Flags a monitor can freeze, and the defaults each source command declares
+# differently from Settings (all from the filter registry).
+_DIRECT_SETTING_FIELDS = tuple(spec.key for spec in specs_for(Scope.MONITOR))
 
 
 def _complete_monitor_names(ctx, param, incomplete):
@@ -114,11 +77,13 @@ def _complete_monitor_names(ctx, param, incomplete):
 
 
 def _runtime() -> MonitorRuntime:
+    ctx = click.get_current_context(silent=True)
     return MonitorRuntime(
         get_client=_get_client,
         resolve_categories=_resolve_categories,
         resolve_skip_asins=_resolve_skip_asins,
         progress=catalog_scan_progress,
+        credit_price=_credit_price(ctx) if ctx is not None and ctx.obj else None,
     )
 
 
@@ -127,8 +92,8 @@ def _monitor_settings(
 ) -> Settings:
     """Resolve the frozen monitor settings with the command's own defaults."""
     profile = _load_profile(profile_name)
-    values: dict[str, Any] = dict(
-        _FIND_DEFAULTS if mode == "find" else _SEARCH_DEFAULTS
+    values: dict[str, Any] = scope_defaults(
+        Scope.FIND if mode == "find" else Scope.SEARCH
     )
     explicit_options: set[str] = set()
     for key in _DIRECT_SETTING_FIELDS:
@@ -150,6 +115,15 @@ def _monitor_settings(
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
+    if problem := filter_combination_error(settings):
+        raise click.UsageError(problem)
+    if settings.exclude_seen:
+        # "Seen" changes every time results are shown, which would make a
+        # frozen snapshot appear and disappear; monitors never use it.
+        console.print(
+            "[dim]Note: exclude-seen does not apply to monitors and was ignored.[/dim]"
+        )
+        settings = dataclasses.replace(settings, exclude_seen=False)
     if not settings.language and not settings.all_languages:
         settings = dataclasses.replace(
             settings, language=LOCALE_LANGUAGES[ctx.obj["locale"]]
@@ -241,45 +215,13 @@ def monitor(ctx):
         ctx.invoke(list_monitors)
 
 
-def _monitor_filter_options(func):
-    options = [
-        click.option("--max-price", type=NONNEGATIVE_FLOAT, default=None),
-        click.option(
-            "--sort", type=click.Choice(sorted(ALL_SORT_OPTIONS)), default=None
-        ),
-        click.option("--pages", type=click.IntRange(min=1), default=None),
-        click.option("--min-rating", type=RATING_FLOAT, default=None),
-        click.option("--min-ratings", type=NONNEGATIVE_INT, default=None),
-        click.option("--min-hours", type=NONNEGATIVE_FLOAT, default=None),
-        click.option(
-            "--min-discount", type=click.IntRange(min=0, max=100), default=None
-        ),
-        click.option("--genre", default=None),
-        click.option("--narrator", default=None),
-        click.option("--author", default=None),
-        click.option("--on-sale/--no-on-sale", default=False),
-        click.option("--deep/--no-deep", default=False),
-        click.option("--language", default=None),
-        click.option("--skip-owned/--no-skip-owned", default=False),
-        click.option("--first-in-series/--no-first-in-series", default=False),
-        click.option("--skip-plus/--no-skip-plus", default=False),
-        click.option("--only-plus/--no-only-plus", default=False),
-        click.option("--exclude-author", "exclude_authors", multiple=True),
-        click.option("--exclude-narrator", "exclude_narrators", multiple=True),
-        click.option("--exclude-keyword", "exclude_keywords", multiple=True),
-    ]
-    for option in reversed(options):
-        func = option(func)
-    return func
-
-
 @monitor.command("add")
 @click.argument("name")
 @click.option("--profile", "profile_name", shell_complete=_complete_profile_names)
 @click.option("--query", default=None, help="Search query; use | for OR queries")
 @click.option("--webhook", default=None, help="Monitor-specific webhook URL")
 @click.option("--webhook-format", type=click.Choice(WEBHOOK_FORMATS), default=None)
-@_monitor_filter_options
+@filter_options(Scope.MONITOR)
 @click.pass_context
 def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
     """Create a profile-backed find monitor or a direct-query search monitor."""

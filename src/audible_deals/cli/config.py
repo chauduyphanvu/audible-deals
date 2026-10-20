@@ -7,7 +7,7 @@ import textwrap
 import click
 
 from audible_deals.cli.helpers import _CL
-from audible_deals.cli.options import _complete_profile_names
+from audible_deals.cli.options import _complete_profile_names, filter_options
 from audible_deals.config_store import (
     CONFIG_SCHEMA,
     coerce_config_value,
@@ -17,11 +17,16 @@ from audible_deals.config_store import (
     profiles_transaction,
     validate_config_key,
 )
-from audible_deals.constants import ALL_SORT_OPTIONS
-from audible_deals.filter_specs import config_key_aliases
+from audible_deals.filter_specs import (
+    FILTERS,
+    Scope,
+    config_key_aliases,
+)
 from audible_deals.presentation.terminal import console, safe_markup
-from audible_deals.settings import profile_validation_error, resolve_plus_flags
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
+from audible_deals.settings import (
+    profile_validation_error,
+    resolve_plus_flags,
+)
 
 
 @click.group("config", invoke_without_command=True)
@@ -173,37 +178,14 @@ def profile(ctx):
 
 @profile.command("save")
 @click.argument("name")
-@click.option("--genre", default="")
-@click.option("--exclude-genre", multiple=True)
-@click.option("--keywords", default="")
-@click.option("--max-price", type=NONNEGATIVE_FLOAT, default=None)
-@click.option("--sort", default="")
-@click.option("--min-rating", type=RATING_FLOAT, default=0.0)
-@click.option("--min-ratings", type=NONNEGATIVE_INT, default=0)
-@click.option("--min-hours", type=NONNEGATIVE_FLOAT, default=0.0)
-@click.option("--narrator", default="")
-@click.option("--author", default="")
-@click.option("--series", default="")
-@click.option("--exclude-author", "exclude_authors", multiple=True)
-@click.option("--exclude-narrator", "exclude_narrators", multiple=True)
-@click.option("--on-sale/--no-on-sale", default=False)
-@click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0)
-@click.option("--max-price-per-hour", "max_pph", type=NONNEGATIVE_FLOAT, default=None)
-@click.option("--publisher", default="")
-@click.option("--deep/--no-deep", default=False)
-@click.option("--pages", type=click.IntRange(min=1), default=None)
-@click.option("--first-in-series/--no-first-in-series", default=False)
-@click.option("--all-languages/--no-all-languages", default=False)
-@click.option("--limit", "-n", type=click.IntRange(min=0), default=None)
-@click.option("--skip-owned/--no-skip-owned", default=False)
-@click.option("--language", default="")
-@click.option("--interactive/--no-interactive", "-i", default=False)
-@click.option("--skip-plus/--no-skip-plus", default=False)
-@click.option("--only-plus/--no-only-plus", default=False)
-@click.option("--exclude-keyword", "exclude_keywords", multiple=True)
+@filter_options(Scope.PROFILE)
 @click.pass_context
 def profile_save(ctx, name, **kwargs):
     """Save a search profile.
+
+    Any filter accepted by `deals find` can be saved; `deals find --profile
+    NAME`, `deals search --profile NAME` and `deals monitor add --profile NAME`
+    then start from it.
 
     \b
     Example:
@@ -220,10 +202,20 @@ def profile_save(ctx, name, **kwargs):
         raise click.UsageError(str(exc)) from None
     if saved.get("language") and saved.get("all_languages"):
         raise click.UsageError("Use --language or --all-languages, not both.")
-    if "sort" in saved and saved["sort"] not in ALL_SORT_OPTIONS:
-        raise click.ClickException(
-            f"Invalid sort {saved['sort']!r}. Choose from: "
-            f"{', '.join(sorted(ALL_SORT_OPTIONS))}."
+    for spec in FILTERS:
+        valid = spec.valid
+        if valid is not None and spec.key in saved and saved[spec.key] not in valid:
+            raise click.ClickException(
+                f"Invalid {spec.key} {saved[spec.key]!r}. Choose from: "
+                f"{', '.join(sorted(valid))}."
+            )
+    if (
+        saved.get("released_after")
+        and saved.get("released_before")
+        and saved["released_after"] > saved["released_before"]
+    ):
+        raise click.UsageError(
+            "--released-after cannot be later than --released-before"
         )
     with profiles_transaction() as profiles:
         profiles[name] = saved
@@ -267,12 +259,7 @@ def profile_delete(name):
     console.print(f"[green]Profile '{safe_markup(name)}' deleted[/green]")
 
 
-_KEY_TO_FLAG: dict[str, str] = {
-    "exclude_authors": "exclude-author",
-    "exclude_narrators": "exclude-narrator",
-    "exclude_keywords": "exclude-keyword",
-    "max_pph": "max-price-per-hour",
-}
+_KEY_TO_FLAG: dict[str, str] = {spec.key: spec.flag_name for spec in FILTERS}
 
 
 def _opts_to_flag_parts(opts: dict) -> list[str]:

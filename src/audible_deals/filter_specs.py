@@ -10,6 +10,9 @@ derived from :data:`FILTERS`:
   ``monitor add`` for one :class:`Scope`.
 * :data:`CONFIG_FILTER_SCHEMA`, :func:`config_bounds` and the config coercion in
   ``config_store`` come from the specs available in ``Scope.CONFIG``.
+* ``result_processing`` copies ``Settings``/recipe values into ``FilterContext``
+  through each spec's ``context_field``; ``--dry-run``'s active-filter list uses
+  :func:`active_filter_labels`.
 * ``settings.profile_validation_error`` and ``Settings`` validation use the
   kind, bounds and choices declared here.
 * ``result_models`` derives its recipe field groups from :data:`FILTERS`.
@@ -21,12 +24,12 @@ docs stop matching this registry.
 This module is stdlib-only (plus the constants leaf) so it is safe to import on
 the startup path. Adding a filter: add a :class:`FilterSpec` to :data:`FILTERS`,
 add the matching ``Settings``/``ResultRecipe``/``RecipePatch``/``FilterContext``
-fields, write the predicate in ``filtering.py``, and add tests.
+fields, write the predicate in ``filtering.py``, add the docs line, regenerate
+the golden option names, and add tests (see CONTRIBUTING.md).
 """
 
 from __future__ import annotations
 
-import datetime
 import enum
 from collections.abc import Mapping
 from dataclasses import dataclass, field
@@ -701,8 +704,6 @@ FILTERS: tuple[FilterSpec, ...] = (
         refine=Refine.NONE,
     ),
 )
-# Declared scopes of ``first_in_series`` etc. above intentionally include LAST:
-# those keys are ResultRecipe fields (``Refine.LOCAL``).
 
 # ---------------------------------------------------------------------------
 # Lookups and derived artifacts
@@ -739,6 +740,8 @@ def recipe_fields(kinds: set[Kind]) -> frozenset[str]:
 
 def validate_date_text(value: str) -> str:
     """Return the canonical ``YYYY-MM-DD`` form of *value* or raise ValueError."""
+    import datetime
+
     return datetime.date.fromisoformat(value).isoformat()
 
 

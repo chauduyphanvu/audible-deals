@@ -8,9 +8,16 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 - `--locale` and `-v/--verbose` are now accepted after the command as well as before it, on every command and subcommand (`deals find --locale uk`, `deals wishlist add ASIN -v`). If both positions are used, the one after the command wins.
+- Development: every filter's flag, type, bounds, help, default and availability is declared once in `src/audible_deals/filter_specs.py`; the command options, config schema, profile and monitor validation, `last --clear-filter` names and `--dry-run` filter list are generated from it, and `tests/test_filter_specs.py` fails when a hand-written mirror (`Settings`, the result recipe, `FilterContext`, the docs) drifts. CONTRIBUTING.md has an "Adding a filter" section.
 - Development: mypy is part of the `dev` extra and the CI lint job, ruff checks a wider rule set (`E`, `F`, `W`, `I`, `B`, `UP`), CI installs from `uv.lock`, and `tests/test_golden.py` pins every command's option names and the key structure of the JSON outputs.
 
 ### Changed
+- `deals profile save` and `deals monitor add` now take every filter `find` takes. Profiles gain `--max-effective-price`, `--hist-below`, `--min-price-drop`, `--require-history`, `--released-after`/`--released-before` and `--exclude-seen`; monitors gain those (except `--exclude-seen`, which cannot apply to a snapshot) plus `--max-price-per-hour`, `--exclude-genre`, `--series`, `--publisher` and `--all-languages`. A monitor built from a profile keeps all of the profile's filters, and `--max-effective-price` uses the credit price configured when the monitor runs.
+- `--released-after` and `--released-before` are checked when the command line is parsed, on `find`, `search`, `last`, `profile save` and `monitor add` (an invalid date is a usage error naming the option; compact `20240101` is still accepted and normalized to `2024-01-01`).
+- `find` and `search` gain `--no-exclude-seen` and `--no-require-history`, so a value saved in a profile can be turned off from the command line.
+- `deals config set max-effective-price N` sets a global default for `--max-effective-price` (`deals for-me` honors it too). Release dates and the repeatable exclude filters stay profile-only.
+- Every option of `deals last` and `deals profile save` now has help text, and `last`, `profile save` and `monitor add` complete genre names.
+- The package now requires `click>=8.2`.
 - A zero-byte or whitespace-only data file (`config.json`, `profiles.json`, ...) is now treated as empty without a warning; there is nothing in it to lose.
 - `-v`/`-vv` now also apply to warnings emitted while loading saved configuration at startup.
 

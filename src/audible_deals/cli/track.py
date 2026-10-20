@@ -117,6 +117,7 @@ def track_run(ctx, cooldown):
             resolve_categories=_resolve_categories,
             resolve_skip_asins=_resolve_skip_asins,
             progress=catalog_scan_progress,
+            credit_price=request.credit_price,
         ),
         load_track_state=load_track_state,
         save_track_state=save_track_state,

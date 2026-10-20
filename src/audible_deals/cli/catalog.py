@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import dataclasses
-import datetime
 import logging
 import shlex
 
@@ -28,14 +27,16 @@ from audible_deals.cli.helpers import (
     _resolve_skip_snapshots,
 )
 from audible_deals.cli.options import (
-    _common_filter_options,
-    _complete_genre_names,
+    filter_options,
+    output_options,
+    scope_values,
 )
-from audible_deals.constants import (
-    CLIENT_SORT_OPTIONS,
-    LOCALE_LANGUAGES,
-    MAX_CATALOG_CALLS_PER_SCAN,
-    SORT_OPTIONS,
+from audible_deals.constants import LOCALE_LANGUAGES, MAX_CATALOG_CALLS_PER_SCAN
+from audible_deals.filter_specs import (
+    FILTERS,
+    Scope,
+    active_filter_labels,
+    specs_for,
 )
 from audible_deals.presentation.dry_run import (
     CatalogDryRunSummary,
@@ -60,9 +61,9 @@ from audible_deals.result_publication import (
 from audible_deals.settings import (
     Settings,
     SettingsResolutionRequest,
+    filter_combination_error,
     resolve_settings,
 )
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT
 
 logger = logging.getLogger(__name__)
 
@@ -80,45 +81,39 @@ def _enforce_catalog_call_limit(plan, allow_large_scan: bool) -> None:
         )
 
 
-def _resolve_scan_settings(ctx, profile_name: str | None, **kwargs) -> Settings:
-    explicit_options = {key for key in kwargs if ctx.get_parameter_source(key) == _CL}
+def _resolve_scan_settings(
+    ctx, profile_name: str | None, scope: Scope, flags: dict[str, object]
+) -> Settings:
+    """Merge the command's flags with its profile, config and defaults."""
+    cli_flags = scope_values(scope, flags)
+    if scope is Scope.SEARCH:
+        cli_flags["keywords"] = ""  # search takes its query positionally
+    explicit_options = {
+        spec.key
+        for spec in specs_for(scope)
+        if ctx.get_parameter_source(spec.param_name(scope)) == _CL
+    }
     try:
         settings = resolve_settings(
             SettingsResolutionRequest(
                 config=ctx.obj.get("config", {}),
                 profile=_load_profile(profile_name),
-                cli_flags=dict(kwargs),
+                cli_flags=cli_flags,
                 explicit_options=explicit_options,
             )
         )
     except ValueError as exc:
         raise click.ClickException(str(exc)) from None
+    if problem := filter_combination_error(settings):
+        raise click.UsageError(problem)
     if not settings.language and not settings.all_languages:
         settings = dataclasses.replace(
             settings, language=LOCALE_LANGUAGES.get(ctx.obj["locale"], "")
         )
     if logger.isEnabledFor(logging.DEBUG):
-        debug_keys = (
-            "genre",
-            "keywords",
-            "max_price",
-            "max_pph",
-            "sort",
-            "pages",
-            "limit",
-            "min_rating",
-            "min_ratings",
-            "min_hours",
-            "min_discount",
-            "language",
-            "on_sale",
-            "deep",
-            "first_in_series",
-            "skip_owned",
-        )
         logger.debug(
             "resolved scan settings: %s",
-            {key: getattr(settings, key) for key in debug_keys},
+            {spec.key: getattr(settings, spec.key) for spec in FILTERS},
         )
     return settings
 
@@ -167,229 +162,50 @@ def _search_title(queries: list[str], category_name: str) -> str:
     return title
 
 
-def _active_filter_labels(
-    s,
-    *,
-    max_effective_price: float | None,
-    exclude_seen: bool,
-    hist_below: int | None,
-    min_price_drop: float,
-    require_history: bool,
-    released_after: str,
-    released_before: str,
-) -> list[str]:
-    """Return active resolved filters in a stable, human-readable order."""
-    filters: list[str] = []
-
-    def add(name: str, value, active: bool = True) -> None:
-        if active:
-            filters.append(f"{name}={value}")
-
-    add("max-price", s.max_price, s.max_price is not None)
-    add("max-price-per-hour", s.max_pph, s.max_pph is not None)
-    add(
-        "max-effective-price",
-        max_effective_price,
-        max_effective_price is not None,
-    )
-    add("min-rating", s.min_rating, s.min_rating > 0)
-    add("min-ratings", s.min_ratings, s.min_ratings > 0)
-    add("min-hours", s.min_hours, s.min_hours > 0)
-    add("min-discount", s.min_discount, s.min_discount > 0)
-    add("language", s.language, bool(s.language))
-    add("author", s.author, bool(s.author))
-    add("narrator", s.narrator, bool(s.narrator))
-    add("series", s.series, bool(s.series))
-    add("publisher", s.publisher, bool(s.publisher))
-    add("on-sale", "yes", s.on_sale)
-    add("first-in-series", "yes", s.first_in_series)
-    add("skip-owned", "yes", s.skip_owned)
-    add("skip-plus", "yes", s.skip_plus)
-    add("only-plus", "yes", s.only_plus)
-    add("exclude-genres", ",".join(s.exclude_genre), bool(s.exclude_genre))
-    add("exclude-authors", ",".join(s.exclude_authors), bool(s.exclude_authors))
-    add(
-        "exclude-narrators",
-        ",".join(s.exclude_narrators),
-        bool(s.exclude_narrators),
-    )
-    add("exclude-keywords", ",".join(s.exclude_keywords), bool(s.exclude_keywords))
-    add("exclude-seen", "yes", exclude_seen)
-    add("hist-below", hist_below, hist_below is not None)
-    add("min-price-drop", min_price_drop, min_price_drop > 0)
-    add("require-history", "yes", require_history)
-    add("released-after", released_after, bool(released_after))
-    add("released-before", released_before, bool(released_before))
-    return filters
-
-
-def _validate_history_filter_options(
-    require_history: bool,
-    hist_below: int | None,
-    min_price_drop: float,
-    released_after: str,
-    released_before: str,
-) -> tuple[str, str]:
-    """Validate history/date filter options; return normalized (released_after, released_before)."""
-    if require_history and hist_below is None and not min_price_drop:
-        raise click.UsageError(
-            "--require-history requires --hist-below or --min-price-drop"
-        )
-
-    def _norm_date(opt: str, value: str) -> str:
-        if not value:
-            return value
-        try:
-            return datetime.date.fromisoformat(value).isoformat()
-        except ValueError:
-            raise click.UsageError(
-                f"{opt}: invalid date {value!r} (expected YYYY-MM-DD)"
-            ) from None
-
-    normalized_after = _norm_date("--released-after", released_after)
-    normalized_before = _norm_date("--released-before", released_before)
-    if normalized_after and normalized_before and normalized_after > normalized_before:
-        raise click.UsageError(
-            "--released-after cannot be later than --released-before"
-        )
-    return normalized_after, normalized_before
-
-
 @click.command()
 @click.argument("query", required=False, default="")
-@click.option(
-    "--max-price",
-    type=NONNEGATIVE_FLOAT,
-    default=None,
-    help="Max price filter (e.g. 5.00)",
-)
 @click.option("--category", default="", help="Category ID to search within")
-@click.option(
-    "--genre",
-    default="",
-    help="Genre name to search within (fuzzy match, e.g. 'sci-fi')",
-    shell_complete=_complete_genre_names,
-)
-@click.option(
-    "--sort",
-    type=click.Choice(list(SORT_OPTIONS.keys()) + sorted(CLIENT_SORT_OPTIONS)),
-    default="relevance",
-    help="Sort order (price/discount/price-per-hour/value are client-side)",
-)
-@click.option(
-    "--min-ratings",
-    type=NONNEGATIVE_INT,
-    default=0,
-    help="Minimum number of ratings (e.g. 100)",
-)
-@click.option(
-    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
-)
-@click.option(
-    "--pages",
-    type=click.IntRange(min=1),
-    default=3,
-    help="Number of pages to scan (50 items/page)",
-)
+@filter_options(Scope.SEARCH)
 @click.option(
     "--allow-large-scan",
     is_flag=True,
     help=f"Allow scans over {MAX_CATALOG_CALLS_PER_SCAN} catalog calls.",
 )
-@_common_filter_options
+@output_options(
+    "output",
+    "json",
+    "quiet",
+    "show_url",
+    "profile",
+    "dry_run",
+    validate_output_early=True,
+)
 @click.pass_context
 def search(
     ctx,
     query,
-    max_price,
-    max_pph,
-    max_effective_price,
     category,
-    genre,
-    exclude_genre,
-    sort,
-    min_rating,
-    min_ratings,
-    min_hours,
-    narrator,
-    author,
-    series,
-    publisher,
-    exclude_authors,
-    exclude_narrators,
-    on_sale,
-    min_discount,
-    deep,
-    pages,
     allow_large_scan,
-    language,
-    all_languages,
-    first_in_series,
-    skip_owned,
-    exclude_seen,
-    limit,
     output,
     json_flag,
     quiet,
     show_url,
-    interactive,
     profile_name,
     dry_run,
-    skip_plus,
-    only_plus,
-    exclude_keywords,
-    hist_below,
-    min_price_drop,
-    require_history,
-    released_after,
-    released_before,
+    **flags,
 ):
     """Search the Audible catalog by keyword."""
     logger.info(
         "search query=%r genre=%r category=%r max_price=%s pages=%s sort=%s deep=%s",
         query,
-        genre,
+        flags["genre"],
         category,
-        max_price,
-        pages,
-        sort,
-        deep,
+        flags["max_price"],
+        flags["pages"],
+        flags["sort"],
+        flags["deep"],
     )
-    released_after, released_before = _validate_history_filter_options(
-        require_history, hist_below, min_price_drop, released_after, released_before
-    )
-    s = _resolve_scan_settings(
-        ctx,
-        profile_name,
-        max_price=max_price,
-        max_pph=max_pph,
-        sort=sort,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        min_discount=min_discount,
-        language=language,
-        narrator=narrator,
-        author=author,
-        pages=pages,
-        limit=limit,
-        on_sale=on_sale,
-        deep=deep,
-        first_in_series=first_in_series,
-        all_languages=all_languages,
-        skip_owned=skip_owned,
-        interactive=interactive,
-        genre=genre,
-        exclude_genre=exclude_genre,
-        exclude_authors=exclude_authors,
-        exclude_narrators=exclude_narrators,
-        keywords="",
-        series=series,
-        publisher=publisher,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        exclude_keywords=exclude_keywords,
-    )
+    s = _resolve_scan_settings(ctx, profile_name, Scope.SEARCH, flags)
     if not query and not s.genre and not category:
         raise click.UsageError("Provide a QUERY or use --genre / --category to browse.")
     if dry_run and output:
@@ -416,18 +232,7 @@ def search(
                 result_sort=s.sort,
                 limit=s.limit,
                 profile_name=profile_name,
-                active_filters=tuple(
-                    _active_filter_labels(
-                        s,
-                        max_effective_price=max_effective_price,
-                        exclude_seen=exclude_seen,
-                        hist_below=hist_below,
-                        min_price_drop=min_price_drop,
-                        require_history=require_history,
-                        released_after=released_after,
-                        released_before=released_before,
-                    )
-                ),
+                active_filters=tuple(active_filter_labels(s)),
             ),
             json_flag=json_flag,
             json_writer=click.echo,
@@ -443,7 +248,7 @@ def search(
         )
 
         skip_asins, owned_snapshot, seen_snapshot, dismissed_snapshot = (
-            _resolve_skip_snapshots(dc, s.skip_owned, exclude_seen)
+            _resolve_skip_snapshots(dc, s.skip_owned, s.exclude_seen)
         )
 
         plan = bind_catalog_categories(plan, [category])
@@ -463,12 +268,6 @@ def search(
             settings=s,
             skip_asins=skip_asins,
             exclude_category_ids=exclude_category_ids,
-            hist_below=hist_below,
-            min_price_drop=min_price_drop,
-            require_history=require_history,
-            released_after=released_after,
-            released_before=released_before,
-            max_effective_price=max_effective_price,
             credit_price=credit_price,
         )
     )
@@ -489,17 +288,7 @@ def search(
             session_spec=ResultSessionSpec(
                 producer="search",
                 locale=ctx.obj["locale"],
-                recipe=recipe_from_settings(
-                    s,
-                    max_effective_price=max_effective_price,
-                    hist_below=hist_below,
-                    min_price_drop=min_price_drop,
-                    require_history=require_history,
-                    released_after=released_after,
-                    released_before=released_before,
-                    exclude_seen=exclude_seen,
-                    exclude_genres=s.exclude_genre,
-                ),
+                recipe=recipe_from_settings(s),
                 source={
                     "command": shlex.join(
                         [
@@ -544,45 +333,7 @@ def search(
 @click.option(
     "--category", default="", help="Category ID (use 'deals categories' to find IDs)"
 )
-@click.option(
-    "--genre",
-    default="",
-    help="Genre name (fuzzy match, e.g. 'sci-fi', 'mystery', 'romance')",
-    shell_complete=_complete_genre_names,
-)
-@click.option(
-    "--keywords", default="", help="Optional keyword filter within the category"
-)
-@click.option(
-    "--max-price",
-    type=NONNEGATIVE_FLOAT,
-    default=5.00,
-    help="Max price threshold (default: $5.00)",
-)
-@click.option(
-    "--sort",
-    type=click.Choice(sorted(CLIENT_SORT_OPTIONS) + list(SORT_OPTIONS.keys())),
-    default="price-per-hour",
-    help="Sort order (price/discount/price-per-hour/value are client-side)",
-)
-@click.option(
-    "--min-ratings",
-    type=NONNEGATIVE_INT,
-    default=1,
-    help="Minimum number of ratings (default: 1, filters unreviewed)",
-)
-@click.option(
-    "--min-hours",
-    type=NONNEGATIVE_FLOAT,
-    default=0.0,
-    help="Minimum length in hours (filters out shorts)",
-)
-@click.option(
-    "--pages",
-    type=click.IntRange(min=1),
-    default=10,
-    help="Pages to scan per sort order (50 items/page, default: 10)",
-)
+@filter_options(Scope.FIND)
 @click.option(
     "--subcategories/--no-subcategories",
     default=False,
@@ -593,54 +344,28 @@ def search(
     is_flag=True,
     help=f"Allow scans over {MAX_CATALOG_CALLS_PER_SCAN} catalog calls.",
 )
-@_common_filter_options
+@output_options(
+    "output",
+    "json",
+    "quiet",
+    "show_url",
+    "profile",
+    "dry_run",
+    validate_output_early=True,
+)
 @click.pass_context
 def find(
     ctx,
     category,
-    genre,
-    exclude_genre,
-    keywords,
-    max_price,
-    max_pph,
-    max_effective_price,
-    sort,
-    min_rating,
-    min_ratings,
-    min_hours,
-    narrator,
-    author,
-    series,
-    publisher,
-    exclude_authors,
-    exclude_narrators,
-    on_sale,
-    min_discount,
-    deep,
-    pages,
     subcategories,
     allow_large_scan,
-    language,
-    all_languages,
-    first_in_series,
-    skip_owned,
-    exclude_seen,
-    limit,
     output,
     json_flag,
     quiet,
     show_url,
     profile_name,
-    interactive,
     dry_run,
-    skip_plus,
-    only_plus,
-    exclude_keywords,
-    hist_below,
-    min_price_drop,
-    require_history,
-    released_after,
-    released_before,
+    **flags,
 ):
     """Find deals: browse the catalog filtered by price and genre.
 
@@ -662,49 +387,15 @@ def find(
     """
     logger.info(
         "find genre=%r category=%r keywords=%r max_price=%s pages=%s sort=%s deep=%s",
-        genre,
+        flags["genre"],
         category,
-        keywords,
-        max_price,
-        pages,
-        sort,
-        deep,
+        flags["keywords"],
+        flags["max_price"],
+        flags["pages"],
+        flags["sort"],
+        flags["deep"],
     )
-    released_after, released_before = _validate_history_filter_options(
-        require_history, hist_below, min_price_drop, released_after, released_before
-    )
-    s = _resolve_scan_settings(
-        ctx,
-        profile_name,
-        max_price=max_price,
-        max_pph=max_pph,
-        sort=sort,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        min_discount=min_discount,
-        language=language,
-        narrator=narrator,
-        author=author,
-        pages=pages,
-        limit=limit,
-        on_sale=on_sale,
-        deep=deep,
-        first_in_series=first_in_series,
-        all_languages=all_languages,
-        skip_owned=skip_owned,
-        interactive=interactive,
-        genre=genre,
-        exclude_genre=exclude_genre,
-        exclude_authors=exclude_authors,
-        exclude_narrators=exclude_narrators,
-        keywords=keywords,
-        series=series,
-        publisher=publisher,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        exclude_keywords=exclude_keywords,
-    )
+    s = _resolve_scan_settings(ctx, profile_name, Scope.FIND, flags)
     if dry_run and output:
         raise click.UsageError("--dry-run cannot be combined with --output/-o")
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
@@ -732,18 +423,7 @@ def find(
                 result_sort=s.sort,
                 limit=s.limit,
                 profile_name=profile_name,
-                active_filters=tuple(
-                    _active_filter_labels(
-                        s,
-                        max_effective_price=max_effective_price,
-                        exclude_seen=exclude_seen,
-                        hist_below=hist_below,
-                        min_price_drop=min_price_drop,
-                        require_history=require_history,
-                        released_after=released_after,
-                        released_before=released_before,
-                    )
-                ),
+                active_filters=tuple(active_filter_labels(s)),
             ),
             json_flag=json_flag,
             json_writer=click.echo,
@@ -765,7 +445,7 @@ def find(
             child_ids = [c["id"] for c in children if c.get("id")]
 
         skip_asins, owned_snapshot, seen_snapshot, dismissed_snapshot = (
-            _resolve_skip_snapshots(dc, s.skip_owned, exclude_seen)
+            _resolve_skip_snapshots(dc, s.skip_owned, s.exclude_seen)
         )
 
         desc_parts = []
@@ -808,12 +488,6 @@ def find(
             settings=s,
             skip_asins=skip_asins,
             exclude_category_ids=exclude_category_ids,
-            hist_below=hist_below,
-            min_price_drop=min_price_drop,
-            require_history=require_history,
-            released_after=released_after,
-            released_before=released_before,
-            max_effective_price=max_effective_price,
             credit_price=credit_price,
         )
     )
@@ -834,17 +508,7 @@ def find(
             session_spec=ResultSessionSpec(
                 producer="find",
                 locale=ctx.obj["locale"],
-                recipe=recipe_from_settings(
-                    s,
-                    max_effective_price=max_effective_price,
-                    hist_below=hist_below,
-                    min_price_drop=min_price_drop,
-                    require_history=require_history,
-                    released_after=released_after,
-                    released_before=released_before,
-                    exclude_seen=exclude_seen,
-                    exclude_genres=s.exclude_genre,
-                ),
+                recipe=recipe_from_settings(s),
                 source={
                     "command": shlex.join(
                         [

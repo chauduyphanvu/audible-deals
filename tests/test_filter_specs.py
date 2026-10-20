@@ -196,13 +196,15 @@ def test_config_keys_published_before_the_registry_still_exist():
         "webhook_format": str,
         "webhook_headers": list,
     }
+    # New filters may add keys; none of the published ones may disappear or
+    # change type.
     for key, typ in legacy.items():
         assert CONFIG_SCHEMA[key] is typ, key
-    assert set(CONFIG_SCHEMA) - set(legacy) == {"max_effective_price"}
 
 
 def test_config_bounds_match_the_flag_bounds():
-    assert config_bounds() == {
+    bounds = config_bounds()
+    published = {
         "pages": (1, None),
         "limit": (0, None),
         "max_price": (0, None),
@@ -213,6 +215,10 @@ def test_config_bounds_match_the_flag_bounds():
         "min_hours": (0, None),
         "min_discount": (0, 100),
     }
+    for key, expected in published.items():
+        assert bounds[key] == expected, key
+    # every numeric config key is bounded by its registry spec
+    assert set(bounds) == {s.key for s in specs_for(Scope.CONFIG) if s.is_numeric}
 
 
 def test_max_price_per_hour_remains_a_config_key_alias():

@@ -8,7 +8,6 @@ import logging
 import shlex
 from decimal import Decimal
 from inspect import cleandoc
-from pathlib import Path
 
 import click
 
@@ -21,8 +20,10 @@ from audible_deals.cli.helpers import (
     _report_partial_series_outcomes,
     _resolve_output_quiet,
 )
+from audible_deals.cli.options import filter_options, output_options, scope_values
 from audible_deals.client import CatalogSearchRequest, DealsClient
-from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
+from audible_deals.constants import LOCALE_LANGUAGES
+from audible_deals.filter_specs import Scope, specs_for
 from audible_deals.presentation.terminal import (
     console,
     create_scan_progress,
@@ -54,8 +55,7 @@ from audible_deals.series_identity import (
     series_book_identity_from_parts,
     series_identity,
 )
-from audible_deals.settings import SettingsResolutionRequest, resolve_settings
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
+from audible_deals.settings import Settings, SettingsResolutionRequest, resolve_settings
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
 logger = logging.getLogger(__name__)
@@ -118,14 +118,24 @@ def _print_for_me_plan(plan: dict) -> None:
     )
 
 
-def _resolve_for_me_settings(ctx: click.Context, **flags):
-    explicit_options = {key for key in flags if ctx.get_parameter_source(key) == _CL}
+def _resolve_for_me_settings(ctx: click.Context, flags: dict) -> Settings:
+    cli_flags = scope_values(Scope.FOR_ME, flags)
+    # for-me re-sorts only on request, never inherits a default, and always
+    # follows the locale language.
+    cli_flags["sort"] = cli_flags.get("sort") or ""
+    cli_flags["language"] = ""
+    cli_flags["all_languages"] = False
+    explicit_options = {
+        spec.key
+        for spec in specs_for(Scope.FOR_ME)
+        if ctx.get_parameter_source(spec.param_name(Scope.FOR_ME)) == _CL
+    }
     try:
         settings = resolve_settings(
             SettingsResolutionRequest(
                 config=ctx.obj.get("config", {}),
                 profile=None,
-                cli_flags=flags,
+                cli_flags=cli_flags,
                 explicit_options=explicit_options,
             )
         )
@@ -330,137 +340,10 @@ def _fetch_candidates(
     default=False,
     help="Rebuild the taste profile (refetches your library)",
 )
-@click.option(
-    "--max-price", type=NONNEGATIVE_FLOAT, default=None, help="Max price filter"
-)
-@click.option(
-    "--max-effective-price",
-    "max_effective_price",
-    type=NONNEGATIVE_FLOAT,
-    default=None,
-    help="Max effective price — the cheaper of cash price and one credit",
-)
-@click.option("--min-rating", type=RATING_FLOAT, default=0.0, help="Minimum rating")
-@click.option(
-    "--min-ratings", type=NONNEGATIVE_INT, default=0, help="Minimum number of ratings"
-)
-@click.option(
-    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
-)
-@click.option(
-    "--on-sale/--no-on-sale", default=False, help="Only show discounted items"
-)
-@click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(min=0),
-    default=DEFAULT_LIMIT,
-    help="Show only the top N results (0 for unlimited, default: 25)",
-)
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Export results to file (.json or .csv)",
-)
-@click.option(
-    "--json",
-    "json_flag",
-    is_flag=True,
-    default=False,
-    help="Output results as JSON to stdout",
-)
-@click.option(
-    "--quiet", "-q", is_flag=True, default=False, help="Suppress table output"
-)
-@click.option(
-    "--show-url", is_flag=True, default=False, help="Show Audible URL for each item"
-)
-@click.option(
-    "--interactive/--no-interactive",
-    "-i",
-    default=False,
-    help="Browse results interactively",
-)
-@click.option(
-    "--dry-run",
-    is_flag=True,
-    default=False,
-    help="Show what would be scanned without making API calls",
-)
-@click.option(
-    "--sort",
-    type=click.Choice(
-        [
-            "price",
-            "-price",
-            "discount",
-            "price-per-hour",
-            "value",
-            "rating",
-            "length",
-            "date",
-            "title",
-            "author",
-            "asin",
-            "bestsellers",
-        ]
-    ),
-    default=None,
-    help="Re-sort results after fit ranking (default: fit rank order)",
-)
-@click.option(
-    "--narrator",
-    default="",
-    help="Filter by narrator name (substring match, client-side)",
-)
-@click.option(
-    "--exclude-author",
-    "exclude_authors",
-    multiple=True,
-    help="Exclude author (substring match, repeatable)",
-)
-@click.option(
-    "--exclude-narrator",
-    "exclude_narrators",
-    multiple=True,
-    help="Exclude narrator (substring match, repeatable)",
-)
-@click.option(
-    "--skip-plus/--no-skip-plus",
-    default=False,
-    help="Exclude Audible Plus catalog titles",
-)
-@click.option(
-    "--only-plus/--no-only-plus",
-    default=False,
-    help="Show only Audible Plus catalog titles",
-)
+@filter_options(Scope.FOR_ME)
+@output_options("output", "json", "quiet", "show_url", "dry_run")
 @click.pass_context
-def for_me(
-    ctx,
-    refresh,
-    max_price,
-    max_effective_price,
-    min_rating,
-    min_ratings,
-    min_hours,
-    on_sale,
-    limit,
-    output,
-    json_flag,
-    quiet,
-    show_url,
-    interactive,
-    dry_run,
-    sort,
-    narrator,
-    exclude_authors,
-    exclude_narrators,
-    skip_plus,
-    only_plus,
-):
+def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
     """Personalized deals from your own library's taste profile.
 
     Builds a local profile from the books you own (top authors, narrators,
@@ -476,28 +359,16 @@ def for_me(
         deals for-me --dry-run          # show the scan plan
     """
     logger.info(
-        "for-me refresh=%s max_price=%s dry_run=%s", refresh, max_price, dry_run
+        "for-me refresh=%s max_price=%s dry_run=%s",
+        refresh,
+        flags["max_price"],
+        dry_run,
     )
     if dry_run and output:
         raise click.UsageError("--dry-run cannot be combined with --output/-o")
     validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
-    settings = _resolve_for_me_settings(
-        ctx,
-        max_price=max_price,
-        min_rating=min_rating,
-        min_ratings=min_ratings,
-        min_hours=min_hours,
-        on_sale=on_sale,
-        limit=limit,
-        interactive=interactive,
-        sort=sort or "",
-        narrator=narrator,
-        skip_plus=skip_plus,
-        only_plus=only_plus,
-        language="",
-        all_languages=False,
-    )
+    settings = _resolve_for_me_settings(ctx, flags)
     dc = _get_client(ctx.obj["locale"])
 
     profile = None if refresh else taste.load_cached_profile()
@@ -520,6 +391,7 @@ def for_me(
         return
 
     max_price = settings.max_price
+    max_effective_price = settings.max_effective_price
     min_rating = settings.min_rating
     min_ratings = settings.min_ratings
     min_hours = settings.min_hours
@@ -528,6 +400,8 @@ def for_me(
     interactive = settings.interactive
     sort = settings.sort
     narrator = settings.narrator
+    exclude_authors = settings.exclude_authors
+    exclude_narrators = settings.exclude_narrators
     skip_plus = settings.skip_plus
     only_plus = settings.only_plus
     dismissed_asins = load_dismissed_asins()

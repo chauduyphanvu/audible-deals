@@ -65,6 +65,8 @@ class MonitorRuntime:
     resolve_skip_asins: Callable[..., set[str] | None]
     progress: Callable[..., Any]
     now: Callable[[], datetime.datetime] = datetime.datetime.now
+    # Configured per-credit price, used by max_effective_price monitors.
+    credit_price: float | None = None
 
 
 def settings_to_dict(settings: Settings) -> dict[str, Any]:
@@ -203,6 +205,7 @@ def scan_monitor(
             settings=settings,
             skip_asins=skip_asins,
             exclude_category_ids=excluded,
+            credit_price=runtime.credit_price,
         )
     )
     return tuple(

@@ -5,7 +5,9 @@ from __future__ import annotations
 import dataclasses
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
+from typing import Any
 
+from audible_deals.filter_specs import FILTERS, recipe_specs
 from audible_deals.filtering import (
     dedupe_editions,
     filter_products,
@@ -33,6 +35,24 @@ RECIPE_DEFAULTS = ResultRecipe()
 RECIPE_FIELDS = tuple(field.name for field in dataclasses.fields(ResultRecipe))
 
 
+def _filter_context(source: object, *, recipe: bool, **extra: Any) -> FilterContext:
+    """Build a FilterContext from a Settings or ResultRecipe via the registry.
+
+    Every registry filter that names a ``context_field`` is copied across, so
+    adding a filter does not mean editing two parallel constructions.
+    """
+    values: dict[str, Any] = {}
+    for spec in FILTERS:
+        if spec.context_field is None:
+            continue
+        value = getattr(source, spec.recipe_name if recipe else spec.key)
+        if spec.is_numeric and not spec.nullable:
+            # A persisted recipe may carry None for "no minimum".
+            value = (int if spec.integer else float)(value or 0)
+        values[spec.context_field] = value
+    return FilterContext(**values, **extra)
+
+
 @dataclass(frozen=True)
 class DiscoveryProcessingRequest:
     products: tuple[Product, ...]
@@ -50,12 +70,6 @@ class SettingsFilterRequest:
     # Any sets; they are frozen when the filter context is built.
     skip_asins: AbstractSet[str] | None = None
     exclude_category_ids: AbstractSet[str] = frozenset()
-    hist_below: int | None = None
-    min_price_drop: float = 0.0
-    require_history: bool = False
-    released_after: str = ""
-    released_before: str = ""
-    max_effective_price: float | None = None
     credit_price: float | None = None
 
     def __post_init__(self) -> None:
@@ -74,7 +88,7 @@ def result_recipe(**values: object) -> ResultRecipe:
 
 def recipe_from_settings(settings: Settings, **values: object) -> ResultRecipe:
     recipe_values = {
-        key: getattr(settings, key) for key in RECIPE_FIELDS if hasattr(settings, key)
+        spec.recipe_name: getattr(settings, spec.key) for spec in recipe_specs()
     }
     recipe_values.update(values)
     return result_recipe(**recipe_values)
@@ -116,40 +130,16 @@ def process_discovery(request: DiscoveryProcessingRequest) -> DiscoveryResult:
 
 
 def process_settings_discovery(request: SettingsFilterRequest) -> DiscoveryResult:
-    settings = request.settings
     return process_discovery(
         DiscoveryProcessingRequest(
             request.products,
-            FilterContext(
-                max_price=settings.max_price,
-                max_effective_price=request.max_effective_price,
+            _filter_context(
+                request.settings,
+                recipe=False,
                 credit_price=request.credit_price,
-                min_rating=settings.min_rating,
-                min_ratings=settings.min_ratings,
-                min_hours=settings.min_hours,
-                narrator=settings.narrator,
-                author=settings.author,
-                exclude_authors=settings.exclude_authors,
-                exclude_narrators=settings.exclude_narrators,
-                language=settings.language,
-                on_sale=settings.on_sale,
                 skip_asins=request.skip_asins,
                 exclude_category_ids=request.exclude_category_ids,
-                first_in_series_only=settings.first_in_series,
-                sort=settings.sort,
-                max_pph=settings.max_pph,
-                min_discount=settings.min_discount,
-                series=settings.series,
-                publisher=settings.publisher,
-                skip_plus=settings.skip_plus,
-                only_plus=settings.only_plus,
-                exclude_keywords=settings.exclude_keywords,
                 drop_zero_length=True,
-                max_hist_percentile=request.hist_below,
-                min_price_drop=request.min_price_drop,
-                require_history=request.require_history,
-                released_after=request.released_after,
-                released_before=request.released_before,
             ),
         )
     )
@@ -182,36 +172,13 @@ def process_session_recipe(
     result = process_discovery(
         DiscoveryProcessingRequest(
             products,
-            FilterContext(
-                max_price=recipe.max_price,
-                max_effective_price=recipe.max_effective_price,
+            _filter_context(
+                recipe,
+                recipe=True,
                 credit_price=credit_price,
-                min_rating=float(recipe.min_rating or 0),
-                min_ratings=int(recipe.min_ratings or 0),
-                min_hours=float(recipe.min_hours or 0),
-                narrator=recipe.narrator,
-                author=recipe.author,
-                exclude_authors=recipe.exclude_authors,
-                exclude_narrators=recipe.exclude_narrators,
-                language=recipe.language,
-                on_sale=recipe.on_sale,
                 skip_asins=skip_asins or None,
                 exclude_category_ids=exclude_category_ids,
-                first_in_series_only=recipe.first_in_series,
-                sort=recipe.sort,
-                max_pph=recipe.max_pph,
-                min_discount=int(recipe.min_discount or 0),
-                series=recipe.series,
-                publisher=recipe.publisher,
-                skip_plus=recipe.skip_plus,
-                only_plus=recipe.only_plus,
-                exclude_keywords=recipe.exclude_keywords,
                 drop_zero_length=bool(constraints.get("drop_zero_length", True)),
-                max_hist_percentile=recipe.hist_below,
-                min_price_drop=float(recipe.min_price_drop or 0),
-                require_history=recipe.require_history,
-                released_after=recipe.released_after,
-                released_before=recipe.released_before,
                 hist_percentile=(
                     history_percentiles
                     if isinstance(history_percentiles, dict)

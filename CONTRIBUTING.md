@@ -47,6 +47,19 @@ UPDATE_GOLDEN=1 uv run pytest tests/test_golden.py
 - Never overwrite a user-edited data file (`config.json`, `profiles.json`, `monitors.json`, ...) that fails to parse: call `storage.ensure_updatable()` before a read-modify-write so the user gets an error instead of lost data.
 - Follow the existing code patterns and naming conventions.
 
+## Adding a filter
+
+Everything about a filter's command-line flag, type, bounds, help text, default and where it is available (`find`, `search`, `last`, `for-me`, `series`, profiles, config, monitors) is declared once, as a `FilterSpec` in `src/audible_deals/filter_specs.py`. The click options of every command, the config schema and its bounds, profile and monitor validation, `deals last --clear-filter`, the `--dry-run` active-filter list and the saved-session checks are all generated from that list.
+
+To add a simple filter, for example `--min-year`:
+
+1. Add a `FilterSpec` to `FILTERS`: its `key`, `flag`, `kind` (`FLOAT`, `INT`, `PERCENT`, `RATING`, `TEXT`, `MULTI_TEXT`, `BOOL_PAIR`, `DATE`), `help`, `default`, bounds, and the `scopes` it belongs to. Use `variants` only where one command genuinely differs (a different default or help text). Set `refine` to `Refine.LOCAL` if `deals last` can re-apply it to cached results, and `context_field` to the `FilterContext` field that carries it.
+2. Add the typed fields the registry mirrors: `Settings` (always), `ResultRecipe` and `RecipePatch` (when `Refine.LOCAL`), and `FilterContext` (when `context_field` is set).
+3. Write the predicate in `filtering.py` and call it from `filter_products`.
+4. Add the flag to the filter table in `docs/commands.md`, regenerate the golden option names (`UPDATE_GOLDEN=1 uv run pytest tests/test_golden.py`), and add tests for the predicate and one command-level test.
+
+`tests/test_filter_specs.py` fails with the name of the missing piece if `Settings`, the recipe classes, `FilterContext`, the config schema, a command's options or the docs do not match the registry.
+
 ## What makes a good PR
 
 - **Focused.** One logical change per PR.

@@ -1,15 +1,25 @@
-"""Shared click options and shell-completion callbacks."""
+"""Shared click options and shell-completion callbacks.
+
+The filter options of every command come from the filter registry
+(:mod:`audible_deals.filter_specs`) through :func:`filter_options`; the
+output/run options that are not filters (``--json``, ``-o``, ``-q``,
+``--show-url``, ``--dry-run``, ``--allow-large-scan``, ``--profile``, ``-i``
+on commands without a persisted preference) come from :func:`output_options`.
+"""
 
 from __future__ import annotations
 
+from collections.abc import Callable, Mapping
 from pathlib import Path
+from typing import Any
 
 import click
 
 from audible_deals.config_store import load_profiles
-from audible_deals.constants import DEFAULT_LIMIT, GENRE_ALIASES
+from audible_deals.constants import GENRE_ALIASES
+from audible_deals.filter_specs import FilterSpec, Kind, Scope, specs_for
 from audible_deals.serialization import validate_export_path
-from audible_deals.validation import NONNEGATIVE_FLOAT, RATING_FLOAT
+from audible_deals.validation import FiniteFloatRange, IsoDate
 
 
 def _validate_output_path(ctx, param, value):
@@ -33,202 +43,147 @@ def _complete_genre_names(ctx, param, incomplete):
     return [CompletionItem(k) for k in GENRE_ALIASES if k.startswith(incomplete)]
 
 
-def _common_filter_options(func):
-    """Apply the shared filter/output click options used by search and find."""
-    # Applied in reverse order (click decorators stack bottom-up)
-    options = [
-        click.option(
-            "--max-price-per-hour",
-            "max_pph",
-            type=NONNEGATIVE_FLOAT,
-            default=None,
-            help="Max price per hour (e.g. 0.50)",
-        ),
-        click.option(
-            "--max-effective-price",
-            "max_effective_price",
-            type=NONNEGATIVE_FLOAT,
-            default=None,
-            help="Max effective price — the cheaper of cash price and one credit (set 'deals config set credit-price' first)",
-        ),
-        click.option(
-            "--exclude-genre",
-            multiple=True,
-            help="Genre(s) to exclude (repeatable, fuzzy match)",
-            shell_complete=_complete_genre_names,
-        ),
-        click.option(
-            "--min-rating",
-            type=RATING_FLOAT,
-            default=0.0,
-            help="Minimum rating (e.g. 4.0)",
-        ),
-        click.option(
-            "--narrator",
-            default="",
-            help="Filter by narrator name (substring match, client-side)",
-        ),
-        click.option(
-            "--author", default="", help="Filter by author name (substring match)"
-        ),
-        click.option(
-            "--series", default="", help="Filter by series name (substring match)"
-        ),
-        click.option(
-            "--publisher", default="", help="Filter by publisher name (substring match)"
-        ),
-        click.option(
-            "--exclude-author",
-            "exclude_authors",
-            multiple=True,
-            help="Exclude author (substring match, repeatable)",
-        ),
-        click.option(
-            "--exclude-narrator",
-            "exclude_narrators",
-            multiple=True,
-            help="Exclude narrator (substring match, repeatable)",
-        ),
-        click.option(
-            "--on-sale/--no-on-sale", default=False, help="Only show discounted items"
-        ),
-        click.option(
-            "--min-discount",
-            type=click.IntRange(min=0, max=100),
-            default=0,
-            help="Minimum discount percentage (e.g. 70)",
-        ),
-        click.option(
-            "--deep/--no-deep",
-            default=False,
-            help="Scan with 3 sort orders for better coverage (3x API calls)",
-        ),
-        click.option("--language", default="", help="Language filter (e.g. english)"),
-        click.option(
-            "--all-languages/--no-all-languages",
-            default=False,
-            help="Include all languages (default: locale language only)",
-        ),
-        click.option(
-            "--first-in-series/--no-first-in-series",
-            default=False,
-            help="Show only the first book per series",
-        ),
-        click.option(
-            "--skip-owned/--no-skip-owned",
-            default=False,
-            help="Exclude books already in your library",
-        ),
-        click.option(
-            "--exclude-seen",
-            is_flag=True,
-            default=False,
-            help="Exclude ASINs from last search/find results",
-        ),
-        click.option(
-            "--limit",
-            "-n",
-            type=click.IntRange(min=0),
-            default=DEFAULT_LIMIT,
-            help="Show only the top N results (0 for unlimited, default: 25)",
-        ),
-        click.option(
+_COMPLETERS: dict[str, Callable] = {"genre": _complete_genre_names}
+
+
+def _click_type(spec: FilterSpec, scope: Scope) -> click.ParamType | None:
+    kind = spec.scope_kind(scope)
+    if kind is Kind.FLOAT or kind is Kind.RATING:
+        return FiniteFloatRange(spec.lower_bound, spec.upper_bound)
+    if kind is Kind.INT or kind is Kind.PERCENT:
+        return click.IntRange(min=spec.lower_bound, max=spec.upper_bound)
+    if kind is Kind.DATE:
+        return IsoDate()
+    choices = spec.scope_choices(scope)
+    if choices is not None:
+        return click.Choice(list(choices))
+    return None
+
+
+def _click_option(spec: FilterSpec, scope: Scope) -> Callable:
+    kind = spec.scope_kind(scope)
+    kwargs: dict[str, Any] = {
+        "help": spec.scope_help(scope) or None,
+        "hidden": spec.variant(scope).hidden,
+    }
+    if spec.metavar:
+        kwargs["metavar"] = spec.metavar
+    if spec.complete:
+        kwargs["shell_complete"] = _COMPLETERS[spec.complete]
+    if kind is Kind.MULTI_TEXT:
+        kwargs["multiple"] = True
+    elif kind is Kind.FLAG:
+        kwargs["is_flag"] = True
+        kwargs["default"] = spec.scope_default(scope)
+    else:
+        kwargs["default"] = spec.scope_default(scope)
+    click_type = _click_type(spec, scope)
+    if click_type is not None:
+        kwargs["type"] = click_type
+    return click.option(*spec.option_strings(scope), spec.param_name(scope), **kwargs)
+
+
+def filter_options(scope: Scope) -> Callable:
+    """Decorator adding the click options of every filter available in *scope*."""
+    options = [_click_option(spec, scope) for spec in specs_for(scope)]
+
+    def decorator(func: Callable) -> Callable:
+        # click decorators stack bottom-up, so apply in reverse for registry order
+        for option in reversed(options):
+            func = option(func)
+        return func
+
+    return decorator
+
+
+def scope_values(scope: Scope, params: Mapping[str, Any]) -> dict[str, Any]:
+    """Registry keys -> the values a command received for *scope*'s options."""
+    return {
+        spec.key: params[spec.param_name(scope)]
+        for spec in specs_for(scope)
+        if spec.param_name(scope) in params
+    }
+
+
+_OUTPUT_HELP = {
+    "output": "Export results to file (.json or .csv)",
+    "json": "Output results as JSON to stdout",
+    "quiet": "Suppress table output (useful with --output)",
+    "show_url": "Show Audible URL for each item in the table",
+    "dry_run": "Show what would be scanned without making API calls",
+    "interactive": "Browse results interactively",
+    "profile": "Load a saved search profile (overrides defaults, CLI flags take precedence)",
+}
+
+
+def output_options(
+    *names: str, validate_output_early: bool = False
+) -> Callable[[Callable], Callable]:
+    """Decorator adding the output/run options that are not filters.
+
+    *names* picks from ``output``, ``json``, ``quiet``, ``show_url``,
+    ``dry_run``, ``interactive`` (the plain ``-i`` flag of commands without a
+    persisted preference) and ``profile``. ``validate_output_early`` checks the
+    ``-o`` path while parsing instead of in the command body.
+    """
+    unknown = set(names) - set(_OUTPUT_HELP)
+    if unknown:
+        raise ValueError(f"unknown output option(s): {sorted(unknown)}")
+    builders: dict[str, Callable] = {
+        "output": lambda: click.option(
             "--output",
             "-o",
             type=click.Path(path_type=Path),
             default=None,
-            callback=_validate_output_path,
-            help="Export results to file (.json or .csv)",
+            callback=_validate_output_path if validate_output_early else None,
+            help=_OUTPUT_HELP["output"],
         ),
-        click.option(
+        "json": lambda: click.option(
             "--json",
             "json_flag",
             is_flag=True,
             default=False,
-            help="Output results as JSON to stdout",
+            help=_OUTPUT_HELP["json"],
         ),
-        click.option(
+        "quiet": lambda: click.option(
             "--quiet",
             "-q",
             is_flag=True,
             default=False,
-            help="Suppress table output (useful with --output)",
+            help=_OUTPUT_HELP["quiet"],
         ),
-        click.option(
+        "show_url": lambda: click.option(
             "--show-url",
             is_flag=True,
             default=False,
-            help="Show Audible URL for each item in the table",
+            help=_OUTPUT_HELP["show_url"],
         ),
-        click.option(
-            "--interactive/--no-interactive",
-            "-i",
-            default=False,
-            help="Browse results interactively",
-        ),
-        click.option(
-            "--profile",
-            "profile_name",
-            default=None,
-            help="Load a saved search profile (overrides defaults, CLI flags take precedence)",
-            shell_complete=_complete_profile_names,
-        ),
-        click.option(
+        "dry_run": lambda: click.option(
             "--dry-run",
             is_flag=True,
             default=False,
-            help="Show what would be scanned without making API calls",
+            help=_OUTPUT_HELP["dry_run"],
         ),
-        click.option(
-            "--skip-plus/--no-skip-plus",
-            default=False,
-            help="Exclude Audible Plus catalog titles",
-        ),
-        click.option(
-            "--only-plus/--no-only-plus",
-            default=False,
-            help="Show only Audible Plus catalog titles",
-        ),
-        click.option(
-            "--exclude-keyword",
-            "exclude_keywords",
-            multiple=True,
-            help="Drop results with title/subtitle matching keyword (repeatable)",
-        ),
-        click.option(
-            "--hist-below",
-            "hist_below",
-            type=click.IntRange(min=0, max=100),
-            default=None,
-            help="Keep only items whose current price is at or below the Nth percentile of their tracked history (requires ≥5 history entries; others pass through)",
-        ),
-        click.option(
-            "--min-price-drop",
-            "min_price_drop",
-            type=NONNEGATIVE_FLOAT,
-            default=0.0,
-            help="Keep only items whose price dropped by at least PCT% from their last tracked price (no history = pass through)",
-        ),
-        click.option(
-            "--require-history",
-            "require_history",
+        "interactive": lambda: click.option(
+            "--interactive",
+            "-i",
             is_flag=True,
             default=False,
-            help="With --hist-below/--min-price-drop, drop items lacking enough history instead of passing them through",
+            help=_OUTPUT_HELP["interactive"],
         ),
-        click.option(
-            "--released-after",
-            "released_after",
-            default="",
-            help="Only items released on/after this date (YYYY-MM-DD)",
+        "profile": lambda: click.option(
+            "--profile",
+            "profile_name",
+            default=None,
+            help=_OUTPUT_HELP["profile"],
+            shell_complete=_complete_profile_names,
         ),
-        click.option(
-            "--released-before",
-            "released_before",
-            default="",
-            help="Only items released on/before this date (YYYY-MM-DD)",
-        ),
-    ]
-    for option in reversed(options):
-        func = option(func)
-    return func
+    }
+    options = [builders[name]() for name in names]
+
+    def decorator(func: Callable) -> Callable:
+        for option in reversed(options):
+            func = option(func)
+        return func
+
+    return decorator

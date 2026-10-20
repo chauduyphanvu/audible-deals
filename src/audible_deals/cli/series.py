@@ -5,7 +5,6 @@ from __future__ import annotations
 import json as json_mod
 import logging
 import shlex
-from pathlib import Path
 
 import click
 
@@ -17,7 +16,9 @@ from audible_deals.cli.helpers import (
     _report_partial_series_outcomes,
     _resolve_output_quiet,
 )
+from audible_deals.cli.options import filter_options, output_options, scope_values
 from audible_deals.client import CatalogSearchRequest, DealsClient
+from audible_deals.filter_specs import Scope, specs_for
 from audible_deals.parsing import parse_series_position
 from audible_deals.presentation.reports import display_series_gaps
 from audible_deals.presentation.terminal import (
@@ -50,7 +51,6 @@ from audible_deals.settings import (
     SettingsResolutionRequest,
     resolve_settings,
 )
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 
 logger = logging.getLogger(__name__)
 
@@ -298,79 +298,8 @@ def _series_gaps_report(
     default="",
     help="Filter to a specific series name (substring match)",
 )
-@click.option(
-    "--max-price", type=NONNEGATIVE_FLOAT, default=None, help="Max price filter"
-)
-@click.option(
-    "--min-rating", type=RATING_FLOAT, default=0.0, help="Minimum rating (e.g. 4.0)"
-)
-@click.option(
-    "--min-ratings", type=NONNEGATIVE_INT, default=0, help="Minimum number of ratings"
-)
-@click.option(
-    "--min-hours", type=NONNEGATIVE_FLOAT, default=0.0, help="Minimum length in hours"
-)
-@click.option(
-    "--on-sale", is_flag=True, default=False, help="Only show discounted items"
-)
-@click.option(
-    "--sort",
-    type=click.Choice(
-        [
-            "price",
-            "-price",
-            "discount",
-            "price-per-hour",
-            "rating",
-            "length",
-            "date",
-            "title",
-        ]
-    ),
-    default="price-per-hour",
-    help="Sort order (default: price-per-hour)",
-)
-@click.option(
-    "--limit",
-    "-n",
-    type=click.IntRange(min=0),
-    default=25,
-    help="Show only the top N results (0 for unlimited, default: 25)",
-)
-@click.option(
-    "--output",
-    "-o",
-    type=click.Path(path_type=Path),
-    default=None,
-    help="Export results to file (.json or .csv)",
-)
-@click.option(
-    "--json",
-    "json_flag",
-    is_flag=True,
-    default=False,
-    help="Output results as JSON to stdout",
-)
-@click.option(
-    "--quiet",
-    "-q",
-    is_flag=True,
-    default=False,
-    help="Suppress table output (useful with --output)",
-)
-@click.option(
-    "--interactive",
-    "-i",
-    is_flag=True,
-    default=False,
-    help="Browse results interactively",
-)
-@click.option(
-    "--pages",
-    type=click.IntRange(min=1),
-    default=3,
-    help="Pages to scan per series search (default: 3)",
-)
+@filter_options(Scope.SERIES)
+@output_options("output", "json", "quiet", "interactive")
 @click.option(
     "--gaps",
     "gaps_mode",
@@ -384,19 +313,12 @@ def series(
     min_books,
     max_series,
     series_filter,
-    max_price,
-    min_rating,
-    min_ratings,
-    min_hours,
-    on_sale,
-    sort,
-    limit,
     output,
     json_flag,
     quiet,
     interactive,
-    pages,
     gaps_mode,
+    **flags,
 ):
     """Find continuation books in series you're invested in.
 
@@ -428,26 +350,17 @@ def series(
         min_books,
         max_series,
         series_filter,
-        max_price,
-        sort,
+        flags["max_price"],
+        flags["sort"],
         gaps_mode,
     )
     validate_export_path(output)
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
 
     explicit_options = {
-        name
-        for name in (
-            "max_price",
-            "min_rating",
-            "min_ratings",
-            "min_hours",
-            "on_sale",
-            "limit",
-            "sort",
-            "pages",
-        )
-        if ctx.get_parameter_source(name) == _CL
+        spec.key
+        for spec in specs_for(Scope.SERIES)
+        if ctx.get_parameter_source(spec.param_name(Scope.SERIES)) == _CL
     }
     try:
         s = resolve_settings(
@@ -455,16 +368,7 @@ def series(
                 config=ctx.obj.get("config", {}),
                 profile=None,
                 explicit_options=explicit_options,
-                cli_flags=dict(
-                    max_price=max_price,
-                    min_rating=min_rating,
-                    min_ratings=min_ratings,
-                    min_hours=min_hours,
-                    on_sale=on_sale,
-                    limit=limit,
-                    sort=sort,
-                    pages=pages,
-                ),
+                cli_flags=scope_values(Scope.SERIES, flags),
             ),
         )
     except ValueError as exc:
