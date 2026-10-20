@@ -30,9 +30,10 @@ Issues = "https://github.com/chauduyphanvu/audible-deals/issues"
 Changelog = "https://github.com/chauduyphanvu/audible-deals/blob/main/CHANGELOG.md"
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "pre-commit>=4.0", "mypy>=2.4,<3", "keyring>=25"]
+dev = ["pytest>=8.0", "ruff>=0.15,<0.16", "pre-commit>=4.0", "mypy>=2.4,<3", "keyring>=25", "textual>=8.2,<9"]
 docs = ["mkdocs-material>=9.7,<10"]
 keyring = ["keyring>=25"]
+tui = ["textual>=8.2,<9"]
 
 [build-system]
 requires = ["hatchling"]
