@@ -29,7 +29,7 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals import-auth PATH` | Import audible-cli or Libation credentials |
 | `deals cache` | Show where data lives and what is stored; empty the disposable cache |
 | `deals doctor` | Check authentication, configuration, databases, and marketplace access |
-| `deals completions SHELL` | Generate bash, zsh, or fish completions |
+| `deals completions SHELL` | Print or install (`--install`) bash, zsh, or fish completions |
 
 ## Find and search
 
@@ -381,10 +381,22 @@ Warnings and notes are one line each on stderr, `Warning: ...` when something is
 ## Shell completions
 
 ```bash
-deals completions bash >> ~/.bashrc
-deals completions zsh >> ~/.zshrc
-deals completions fish > ~/.config/fish/completions/deals.fish
+deals completions bash --install
+deals completions zsh --install
+deals completions fish --install
 ```
+
+`--install` writes the script to the directory your shell loads completions from and does not edit any startup file (`.bashrc`, `.zshrc`):
+
+| Shell | File written | To activate |
+|-------|--------------|-------------|
+| bash | `~/.local/share/bash-completion/completions/deals` (`$XDG_DATA_HOME` is honored) | Start a new shell; needs the `bash-completion` package |
+| zsh | `~/.zfunc/_deals` | Put the directory on your `fpath` before `compinit` runs (`fpath+=~/.zfunc`, then `autoload -Uz compinit && compinit` in `~/.zshrc`), then start a new shell |
+| fish | `~/.config/fish/completions/deals.fish` (`$XDG_CONFIG_HOME` is honored) | Start a new shell |
+
+Run the command again after upgrading to refresh the file. It only replaces a file it recognizes as its own and stops if something else is at that path; remove the file to uninstall.
+
+Without `--install` the script is printed to stdout, for example `deals completions fish > ~/.config/fish/completions/deals.fish`, or `source <(deals completions bash)` in a bash startup file if you prefer to load it on each start.
 
 After reloading the shell, profiles, genres, and excluded genres support tab completion. Profile `show` and `delete` commands also complete profile names.
 

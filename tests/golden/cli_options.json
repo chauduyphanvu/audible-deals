@@ -43,6 +43,7 @@
   ],
   "deals completions": [
     "--color",
+    "--install",
     "--locale",
     "--verbose",
     "-v"

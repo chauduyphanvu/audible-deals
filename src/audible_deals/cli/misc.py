@@ -914,14 +914,30 @@ def doctor(ctx, json_flag):
 
 @click.command("completions")
 @click.argument("shell", type=click.Choice(["bash", "zsh", "fish"]))
+@click.option(
+    "--install",
+    "install_flag",
+    is_flag=True,
+    default=False,
+    help="Write the script to the per-user completions directory of SHELL "
+    "instead of printing it",
+)
 @click.pass_context
-def completions(ctx, shell):
+def completions(ctx, shell, install_flag):
     """Generate shell completion script.
+
+    Prints the script, or with --install writes it where the shell loads
+    completions from (no startup file is edited; run it again after upgrading
+    to refresh it).
 
     \b
     Install completions:
-        deals completions bash >> ~/.bashrc
-        deals completions zsh >> ~/.zshrc
+        deals completions bash --install   (~/.local/share/bash-completion/completions/deals)
+        deals completions zsh --install    (~/.zfunc/_deals; add ~/.zfunc to fpath)
+        deals completions fish --install   (~/.config/fish/completions/deals.fish)
+
+    \b
+    Or print the script and place it yourself:
         deals completions fish > ~/.config/fish/completions/deals.fish
     """
     from click.shell_completion import get_completion_class
@@ -935,4 +951,25 @@ def completions(ctx, shell):
         "deals",
         "_DEALS_COMPLETE",
     )
-    click.echo(completion.source())
+    script = completion.source()
+    if not install_flag:
+        click.echo(script)
+        return
+
+    from audible_deals import completion_install
+
+    try:
+        result = completion_install.install(shell, script)
+    except completion_install.ForeignFileError as exc:
+        raise click.ClickException(str(exc)) from exc
+    except OSError as exc:
+        raise click.ClickException(
+            f"Could not write the {shell} completion script: {exc}"
+        ) from exc
+    label = {
+        "installed": "Installed",
+        "updated": "Updated",
+        "unchanged": "Already up to date",
+    }[result.status]
+    click.echo(f"{label}: {safe_text(result.path)}")
+    click.echo(result.hint)
