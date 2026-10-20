@@ -386,9 +386,8 @@ def remove(name, yes):
     if not yes and not click.confirm(f"Remove monitor '{safe_text(name)}'?"):
         console.print("[dim]Cancelled.[/dim]")
         return
-    stored = load_monitors().get(name)
     try:
-        remove_monitor(name)
+        stored = remove_monitor(name)
     except LockHeldError as exc:
         raise click.ClickException(
             f"Another run is in progress, try again: {exc}"

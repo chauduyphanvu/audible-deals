@@ -93,7 +93,7 @@ def plan_for(target: str) -> Plan:
     if target not in secret_store.MODES:
         raise ValueError(f"unknown secret storage {target!r}")
     to_keychain = target == "keyring"
-    config = load_config()
+    config = load_config(quiet=True)  # a switch that cannot save says so itself
     webhook, headers = _webhook_values(config)
 
     def movable(value: object) -> bool:
@@ -107,7 +107,7 @@ def plan_for(target: str) -> Plan:
     monitors = tuple(
         sorted(
             name
-            for name, definition in load_monitors().items()
+            for name, definition in load_monitors(quiet=True).items()
             if isinstance(definition, dict) and movable(definition.get("webhook"))
         )
     )
@@ -158,7 +158,7 @@ def migrate(target: str) -> Report:
 def _to_keychain(plan: Plan) -> Report:
     report = Report("keyring")
     _probe()
-    config = load_config()
+    config = load_config(quiet=True)  # a switch that cannot save says so itself
     webhook, headers = _webhook_values(config)
 
     # 1. Everything into the keychain, verified, before any file changes.
@@ -173,7 +173,9 @@ def _to_keychain(plan: Plan) -> Report:
         _store_verified(secret_store.WEBHOOK_ACCOUNT, webhook)
     if plan.headers and isinstance(headers, list):
         _store_verified(secret_store.HEADERS_ACCOUNT, json.dumps(headers))
-    monitor_hooks = {name: load_monitors()[name]["webhook"] for name in plan.monitors}
+    monitor_hooks = {
+        name: load_monitors(quiet=True)[name]["webhook"] for name in plan.monitors
+    }
     for name, url in monitor_hooks.items():
         _store_verified(secret_store.monitor_account(name), url)
 
@@ -222,7 +224,7 @@ def _to_files(plan: Plan) -> Report:
     report = Report("file")
     if plan.count:
         secret_store.ensure_available()  # a clear error before touching anything
-    config = load_config()
+    config = load_config(quiet=True)  # a switch that cannot save says so itself
     webhook, headers = _webhook_values(config)
 
     # 1. Read every secret first; a missing entry stops the whole move.
@@ -236,7 +238,7 @@ def _to_files(plan: Plan) -> Report:
             )
     webhook_value = secret_store.resolve(webhook) if plan.webhook else None
     headers_value = secret_store.resolve(headers) if plan.headers else None
-    stored_monitors = load_monitors()
+    stored_monitors = load_monitors(quiet=True)
     monitor_hooks = {
         name: secret_store.resolve(stored_monitors[name]["webhook"])
         for name in plan.monitors

@@ -172,18 +172,20 @@ def _warn_unusable(path: Path, desc: str, unusable: _Unusable) -> None:
     )
 
 
-def load_json_file(path: Path, expected_type: type, desc: str):
+def load_json_file(path: Path, expected_type: type, desc: str, *, quiet: bool = False):
     """Load a JSON file, returning an empty expected_type if missing, corrupt, or wrong shape.
 
     Read-only callers use this: a corrupt file is reported with a one-line
     warning (plus a traceback under ``-vv``) and treated as empty. Callers that
     go on to write must use :func:`ensure_updatable` first so the corrupt
-    contents are never silently replaced.
+    contents are never silently replaced. ``quiet`` skips the warning for a
+    caller that is about to do exactly that, whose refusal says more.
     """
     try:
         data = _parse_json_file(path, expected_type)
     except _Unusable as unusable:
-        _warn_unusable(path, desc, unusable)
+        if not quiet:
+            _warn_unusable(path, desc, unusable)
         return expected_type()
     if data is None:
         return expected_type()

@@ -354,6 +354,25 @@ class TestDefaultsFromTheConfig:
         assert "non-public address 127.0.0.1" in result.stderr
         assert "deals config set webhook-allow-private true" in result.stderr
 
+    def test_config_set_names_the_key_not_a_flag_that_does_not_exist(self, tmp_config):
+        runner = CliRunner()
+
+        config = runner.invoke(
+            cli, ["config", "set", "webhook", "http://127.0.0.1:9/hook"]
+        )
+        port = runner.invoke(
+            cli, ["config", "set", "webhook", "https://example.com:0/x"]
+        )
+        scheme = runner.invoke(cli, ["config", "set", "webhook", "ftp://example.com/x"])
+        flag = runner.invoke(cli, ["notify", "--webhook", "http://127.0.0.1:9/hook"])
+
+        for result in (config, port, scheme):
+            assert result.exit_code == 2
+            assert "Invalid value for 'webhook':" in result.stderr
+            assert "--webhook" not in result.stderr
+        # where it really is an option, the option is named
+        assert "Invalid value for '--webhook':" in flag.stderr
+
     def test_the_setting_allows_it_and_says_what_it_means(self, tmp_config):
         runner = CliRunner()
 

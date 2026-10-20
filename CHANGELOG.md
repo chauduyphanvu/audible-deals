@@ -77,6 +77,7 @@ Breaking and behavior changes since 0.11.1.
 - A webhook that could not be delivered made `deals track run` fail without a trace in the run history. The failed run is now recorded (`deals track status` shows `WebhookDeliveryError: ...`) and the alert is not marked as sent, so the next run sends it again.
 - Monitor alerts to ntfy failed to send because the `Title` header (`Audible Deals — <monitor>`) contains an em dash.
 - Error messages that list choices on a second line (`deals find --genre nosuchgenre`) printed a literal `\n`, and the `--json` error object carried a doubled backslash. They now print real separate lines.
+- `deals config set webhook URL` refused a bad URL with "Invalid value for '--webhook'", an option `config set` does not have; it names the `webhook` key now.
 - Interactive mode printed the literal text `[dim]...[/dim]` around its "Invalid input" hint.
 - `install.sh`, the README and the installation guide told users to `pip install audible-deals`, which fails because the package is not on PyPI; they now show `uv tool install git+https://github.com/chauduyphanvu/audible-deals` (or the `pipx` equivalent). The optional-extra hints do the same.
 

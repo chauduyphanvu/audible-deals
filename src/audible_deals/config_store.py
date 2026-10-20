@@ -67,8 +67,8 @@ def save_profiles(profiles: dict[str, dict]) -> None:
     save_json_file(paths.profiles_file(), profiles, "profiles")
 
 
-def load_monitors() -> dict[str, dict]:
-    return load_json_file(paths.monitors_file(), dict, "monitors")
+def load_monitors(*, quiet: bool = False) -> dict[str, dict]:
+    return load_json_file(paths.monitors_file(), dict, "monitors", quiet=quiet)
 
 
 def load_monitors_for_update() -> dict[str, dict]:
@@ -81,8 +81,8 @@ def save_monitors(monitors: dict[str, dict]) -> None:
     save_json_file(paths.monitors_file(), monitors, "monitors")
 
 
-def load_config() -> dict:
-    return load_json_file(paths.config_file(), dict, "config")
+def load_config(*, quiet: bool = False) -> dict:
+    return load_json_file(paths.config_file(), dict, "config", quiet=quiet)
 
 
 def webhook_allow_private(config: dict | None) -> bool:
@@ -189,7 +189,7 @@ def coerce_config_value(key: str, raw: str):
     if key == "webhook":
         from audible_deals.validation import validate_webhook_url
 
-        validate_webhook_url(raw)
+        validate_webhook_url(raw, param_hint="'webhook'")  # config set has no --webhook
         return raw
     if key == "webhook_headers":
         from audible_deals.webhooks import parse_webhook_headers

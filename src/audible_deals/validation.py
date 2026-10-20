@@ -96,6 +96,7 @@ def validate_webhook_url(
     *,
     allow_private: bool | None = None,
     resolver: Resolver | None = None,
+    param_hint: str = "'--webhook'",
 ) -> None:
     """Validate a webhook URL: http(s), with a host that resolves to public addresses.
 
@@ -114,13 +115,13 @@ def validate_webhook_url(
     if parsed.scheme not in ("http", "https"):
         raise click.BadParameter(
             f"Webhook URL must use http:// or https://, got {parsed.scheme!r}",
-            param_hint="'--webhook'",
+            param_hint=param_hint,
         )
     hostname = parsed.hostname
     if not hostname:
         raise click.BadParameter(
             "Webhook URL must include a host",
-            param_hint="'--webhook'",
+            param_hint=param_hint,
         )
     try:
         port = parsed.port  # ValueError for ":abc" and for numbers above 65535
@@ -129,7 +130,7 @@ def validate_webhook_url(
     if port is not None and not 1 <= port <= 65535:
         raise click.BadParameter(
             "Webhook URL has an invalid port (use a number from 1 to 65535)",
-            param_hint="'--webhook'",
+            param_hint=param_hint,
         )
     if allow_private is None:
         allow_private = _config_allows_private_webhooks()
@@ -140,7 +141,7 @@ def validate_webhook_url(
     except socket.gaierror as e:
         raise click.BadParameter(
             f"Cannot resolve webhook host {hostname!r}: {e}",
-            param_hint="'--webhook'",
+            param_hint=param_hint,
         ) from e
     except BlockedAddressError as e:
-        raise click.BadParameter(str(e), param_hint="'--webhook'") from e
+        raise click.BadParameter(str(e), param_hint=param_hint) from e

@@ -326,6 +326,22 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
     ctx.exit()
 
 
+def _will_update_config(ctx: click.Context) -> bool:
+    """Whether the command line is one that rewrites ``config.json``.
+
+    Judged from the words typed (options and their values do not matter much:
+    a false match only drops a warning that the command would not need).
+    """
+    words = [a for a in ctx.meta.get(RAW_ARGS_KEY, ()) if not a.startswith("-")]
+    pairs = set(zip(words, words[1:], strict=False))
+    if {("config", "set"), ("config", "reset")} & pairs:
+        return True
+    return ("track", "install") in pairs and any(
+        a == "--webhook" or a.startswith("--webhook=")
+        for a in ctx.meta.get(RAW_ARGS_KEY, ())
+    )
+
+
 def _apply_root_color(ctx, param, value):
     """``--color`` before the subcommand; the shared callback does the work."""
     if value is None:
@@ -384,7 +400,9 @@ def cli(ctx, locale, verbose):
         from audible_deals.logging_setup import configure_logging
 
         configure_logging(verbose)
-    cfg = load_config()
+    # A command about to change a corrupt config refuses with its own error;
+    # the "ignoring" warning would only repeat it.
+    cfg = load_config(quiet=_will_update_config(ctx))
     ctx.obj["config"] = cfg
     locale_explicit = (
         ctx.get_parameter_source("locale") == click.core.ParameterSource.COMMANDLINE

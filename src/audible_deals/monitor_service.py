@@ -335,14 +335,17 @@ def add_monitor(
         delete_monitor_state(definition.name)
 
 
-def remove_monitor(name: str) -> None:
+def remove_monitor(name: str) -> Any:
+    """Delete a monitor; returns the definition that was stored (its webhook may
+    need removing from the keychain)."""
     with run_lock():
         monitors = load_monitors_for_update()
         if name not in monitors:
             raise MonitorNotFoundError(f"Monitor '{name}' not found.")
-        del monitors[name]
+        removed = monitors.pop(name)
         save_monitors(monitors)
         delete_monitor_state(name)
+        return removed
 
 
 def set_monitor_enabled(name: str, enabled: bool) -> bool:
