@@ -20,12 +20,14 @@ from audible_deals.catalog_workflow import (
 )
 from audible_deals.cli.helpers import (
     _CL,
+    _announce,
     _credit_price,
     _currency,
     _estimated_cached_calls,
     _get_client,
     _live_results,
     _load_profile,
+    _offline_category,
     _report_cache_use,
     _report_interruption,
     _resolve_categories,
@@ -38,12 +40,22 @@ from audible_deals.cli.options import (
     output_options,
     scope_values,
 )
-from audible_deals.constants import LOCALE_LANGUAGES, MAX_CATALOG_CALLS_PER_SCAN
+from audible_deals.constants import (
+    LOCALE_LANGUAGES,
+    MAX_CATALOG_CALLS_PER_SCAN,
+    MAX_PAGE_SIZE,
+)
 from audible_deals.filter_specs import (
     FILTERS,
     Scope,
     active_filter_labels,
     specs_for,
+)
+from audible_deals.known_candidates import (
+    MAX_KNOWN_CANDIDATES,
+    calls_for,
+    indexed_count,
+    select_known,
 )
 from audible_deals.presentation.dry_run import (
     CatalogDryRunSummary,
@@ -57,6 +69,7 @@ from audible_deals.presentation.terminal import (
 from audible_deals.product import Product
 from audible_deals.result_processing import (
     SettingsFilterRequest,
+    known_candidate_context,
     process_settings_discovery,
     recipe_from_settings,
 )
@@ -89,6 +102,94 @@ def _enforce_catalog_call_limit(
             f"Scan would use {estimate} catalog calls; limit is "
             f"{MAX_CATALOG_CALLS_PER_SCAN}. Re-run with --allow-large-scan."
         )
+
+
+def _known_candidates_enabled(ctx, known: bool | None, settings: Settings) -> bool:
+    """Whether this ``find`` re-prices titles from earlier scans.
+
+    ``--known``/``--no-known`` win over the ``known-candidates`` config key
+    (on by default). A keyword search is left alone: a remembered title cannot
+    be matched against the query without asking Audible.
+    """
+    if settings.keywords:
+        return False
+    if known is not None:
+        return known
+    return ctx.obj.get("config", {}).get("known_candidates", True) is not False
+
+
+def _known_call_ceiling(ctx, category_ids: tuple[str, ...]) -> int:
+    """The most batch calls known titles could need (two, at the 100-title cap)."""
+    return calls_for(indexed_count(ctx.obj["locale"], category_ids))
+
+
+def _trim_to_call_limit(
+    calls: int, plan, *, cached_calls: int, allow_large_scan: bool
+) -> int:
+    """Known-title calls count toward the call cap: use what the scan leaves under it.
+
+    ``--allow-large-scan`` lifts the cap, so nothing is trimmed then.
+    """
+    if not calls or plan.total_calls is None or allow_large_scan:
+        return calls
+    scan_calls = plan.total_calls - cached_calls
+    return min(calls, max(0, MAX_CATALOG_CALLS_PER_SCAN - scan_calls))
+
+
+def _reprice_known_candidates(
+    dc,
+    ctx,
+    settings: Settings,
+    scanned: list[Product],
+    *,
+    category_ids: tuple[str, ...],
+    calls: int,
+    credit_price: float | None,
+    skip_asins,
+    exclude_category_ids,
+    json_flag: bool,
+    quiet: bool,
+) -> list[Product]:
+    """Fetch live prices for remembered titles the scan missed.
+
+    A failure here never fails the scan: the results are just the scan's.
+    """
+    context = known_candidate_context(
+        SettingsFilterRequest(
+            products=(),
+            settings=settings,
+            skip_asins=skip_asins,
+            exclude_category_ids=exclude_category_ids,
+            credit_price=credit_price,
+        )
+    )
+    have = {product.asin for product in scanned}
+    asins = select_known(
+        ctx.obj["locale"],
+        category_ids=category_ids,
+        exclude=have,
+        context=context,
+        limit=min(MAX_KNOWN_CANDIDATES, calls * MAX_PAGE_SIZE),
+    )
+    if not asins:
+        return []
+    if not quiet:
+        _announce(
+            f"Re-pricing {len(asins)} title(s) from earlier scans...",
+            json_flag=json_flag,
+        )
+    try:
+        fetched = dc.get_products_batch(asins)
+    except Exception as exc:
+        logger.warning("known-candidate re-price failed", exc_info=True)
+        _announce(
+            f"Could not re-price titles from earlier scans ({type(exc).__name__}); "
+            "showing this scan's results only.",
+            json_flag=json_flag,
+            style="yellow",
+        )
+        return []
+    return [product for product in fetched if product.asin not in have]
 
 
 def _resolve_scan_settings(
@@ -385,6 +486,14 @@ def search(
     is_flag=True,
     help=f"Allow scans over {MAX_CATALOG_CALLS_PER_SCAN} catalog calls.",
 )
+@click.option(
+    "--known/--no-known",
+    default=None,
+    help=(
+        "Re-price titles you saw in earlier scans that this one did not return "
+        "(default on; 'known-candidates' in the config)."
+    ),
+)
 @output_options(
     "output",
     "json",
@@ -401,6 +510,7 @@ def find(
     category,
     subcategories,
     allow_large_scan,
+    known,
     output,
     json_flag,
     quiet,
@@ -462,6 +572,17 @@ def find(
             ctx, plan, cache, genre=effective_genre, category=category
         )
     )
+    known_calls = 0
+    if _known_candidates_enabled(ctx, known, s):
+        scoped = _offline_category(ctx.obj["locale"], effective_genre, category)
+        known_calls = _trim_to_call_limit(
+            _known_call_ceiling(
+                ctx, ("",) if scoped is None or subcategories else (scoped,)
+            ),
+            plan,
+            cached_calls=cached_calls,
+            allow_large_scan=allow_large_scan,
+        )
     if dry_run:
         requested_category = category or effective_genre
         render_catalog_dry_run(
@@ -476,6 +597,7 @@ def find(
                 profile_name=profile_name,
                 active_filters=tuple(active_filter_labels(s)),
                 cached_calls=cached_calls,
+                known_candidate_calls=known_calls,
             ),
             json_flag=json_flag,
             json_writer=click.echo,
@@ -524,11 +646,13 @@ def find(
             description = f"Scanning {desc_str}"
 
         plan = bind_catalog_categories(plan, scan_category_ids)
+        cached_calls_resolved = cached_calls
         if subcategories:
+            cached_calls_resolved = estimate_cached_calls(
+                plan, ctx.obj["locale"], cache
+            )
             _enforce_catalog_call_limit(
-                plan,
-                allow_large_scan,
-                cached_calls=estimate_cached_calls(plan, ctx.obj["locale"], cache),
+                plan, allow_large_scan, cached_calls=cached_calls_resolved
             )
         live = _live_results(
             s,
@@ -550,6 +674,29 @@ def find(
                 report=scan_report,
                 allow_partial=True,
             )
+        known_new: list[Product] = []
+        if known_calls and not scan_report.interrupted:
+            if subcategories:  # the scan size was unknown until now
+                known_calls = _trim_to_call_limit(
+                    known_calls,
+                    plan,
+                    cached_calls=cached_calls_resolved,
+                    allow_large_scan=allow_large_scan,
+                )
+            known_new = _reprice_known_candidates(
+                dc,
+                ctx,
+                s,
+                all_products,
+                category_ids=tuple(scan_category_ids),
+                calls=known_calls,
+                credit_price=credit_price,
+                skip_asins=skip_asins,
+                exclude_category_ids=exclude_category_ids,
+                json_flag=json_flag,
+                quiet=quiet,
+            )
+            all_products = [*all_products, *known_new]
     _report_interruption(scan_report, json_flag=json_flag)
     _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
 
@@ -598,6 +745,7 @@ def find(
                             str(s.pages),
                             *(["--deep"] if s.deep else []),
                             *(["--subcategories"] if subcategories else []),
+                            *(["--no-known"] if known is False else []),
                         ]
                     ),
                     "query": s.keywords,
@@ -606,6 +754,7 @@ def find(
                     "pages": s.pages,
                     "deep": s.deep,
                     "subcategories": subcategories,
+                    **({"known_candidates": len(known_new)} if known_new else {}),
                 },
                 constraints={
                     "drop_zero_length": True,

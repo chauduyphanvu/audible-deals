@@ -54,6 +54,16 @@ deals search --genre romance --max-price 3
 
 Use `--deep` to scan three catalog sort orders for broader coverage. It makes roughly three times as many API calls. Use `--dry-run` to preview the work without fetching anything.
 
+### Titles from earlier scans
+
+A scan only sees the pages it fetches, so a cheap title that sits beyond the last scanned page is invisible to it. `find` therefore remembers every title it shows you (the product index in `state.db`) and, after a scan, re-prices the remembered ones that the scan did not return:
+
+- the title is in the same marketplace, in one of the categories being scanned (any category for an unrestricted scan), and was shown to you within the last 90 days;
+- it passes every filter you gave that can be judged from what is remembered (language, length, rating, authors, narrators, Plus, release dates, owned/seen/dismissed...); price, discount, price per hour and history filters wait for the live price;
+- the cheapest 100 (by last-known price, then price per hour) are fetched live in at most two batch calls, merged with the scan results and filtered like any other result.
+
+A title you first met through `search`, or through a different sort order, can therefore turn up in a later `find`. `--no-known` (or `deals config set known-candidates false`) turns it off, `--known` overrides the config, and a `--keywords` scan is left alone. The extra calls appear in `--dry-run` (`known_candidate_calls`, "up to N") and count toward the 60-call limit: they use whatever room the scan leaves under it, and `--allow-large-scan` lifts the limit. Titles recorded before this feature joined the index have no stored details yet and are added the next time you see them.
+
 ### Watching a scan, and stopping it
 
 On an interactive terminal, `find` and `search` show the best results found so far under the progress bar and keep it up to date as pages arrive and are filtered; the finished table replaces it. Nothing changes when the output is redirected or piped, or with `--json`, `-q`/`-o` or `-i`.
@@ -116,6 +126,7 @@ Using cached results: prices up to 14 min old (8 of 10 pages). Add --refresh for
 | `--subcategories` | Scan each resolved subcategory separately on `find` |
 | `--dry-run` | Preview sort orders, pages, and API calls |
 | `--refresh` | Ignore cached catalog pages and fetch live prices |
+| `--known / --no-known` | `find` only: re-price remembered titles the scan missed (default on) |
 | `--show-url` | Include Audible URLs in the table |
 | `-i, --interactive` | Browse the results interactively |
 | `--profile NAME` | Load a saved profile on `find` or `search` |

@@ -220,7 +220,7 @@ class TestPriceHistory:
 
 class TestDryRun:
     def _dry(self, *extra):
-        result = run(*FIND, "--dry-run", "--json", *extra)
+        result = run(*FIND, "--no-known", "--dry-run", "--json", *extra)
         assert result.exit_code == 0, result.output
         return json.loads(result.stdout)
 
@@ -245,7 +245,7 @@ class TestDryRun:
     def test_text_dry_run_shows_the_cached_count(self, fake_api):
         run(*FIND)
 
-        result = run(*FIND, "--dry-run")
+        result = run(*FIND, "--no-known", "--dry-run")
 
         assert f"API calls: 0 ({PAGES} cached)" in result.output
 
@@ -253,7 +253,7 @@ class TestDryRun:
         genre = (*FIND, "--genre", "science fiction")
         assert run(*genre).exit_code == 0
 
-        plan = json.loads(run(*genre, "--dry-run", "--json").stdout)
+        plan = json.loads(run(*genre, "--no-known", "--dry-run", "--json").stdout)
 
         assert (plan["api_calls"], plan["cached_calls"]) == (0, PAGES)
 

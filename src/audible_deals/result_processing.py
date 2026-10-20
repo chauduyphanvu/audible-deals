@@ -122,6 +122,38 @@ def process_discovery(request: DiscoveryProcessingRequest) -> DiscoveryResult:
     return DiscoveryResult.from_outcome(outcome, histories=histories)
 
 
+def known_candidate_context(
+    request: SettingsFilterRequest,
+) -> FilterContext:
+    """The filters that can be judged on a title's last-known data.
+
+    Everything the user asked for except what depends on today's price: the
+    price caps, the discount filters, price per hour and the history-based
+    price filters. Those apply after the title is re-priced.
+    """
+    context = _filter_context(
+        request.settings,
+        recipe=False,
+        credit_price=request.credit_price,
+        skip_asins=request.skip_asins,
+        exclude_category_ids=request.exclude_category_ids,
+        drop_zero_length=True,
+    )
+    return dataclasses.replace(
+        context,
+        max_price=None,
+        max_effective_price=None,
+        on_sale=False,
+        min_discount=0,
+        max_pph=None,
+        max_hist_percentile=None,
+        hist_percentile=None,
+        min_price_drop=0.0,
+        price_drops=None,
+        require_history=False,
+    )
+
+
 def process_settings_discovery(request: SettingsFilterRequest) -> DiscoveryResult:
     return process_discovery(
         DiscoveryProcessingRequest(

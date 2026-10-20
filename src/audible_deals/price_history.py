@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import datetime
+import json
 import logging
 import math
 import statistics
@@ -76,13 +77,24 @@ ON CONFLICT (asin, locale) DO UPDATE SET
 """
 
 
+def _product_json(product: Product) -> str | None:
+    """The product as the index stores it (``None`` if it cannot be encoded)."""
+    try:
+        # Product fields are plain values and lists of strings, so its __dict__
+        # serializes as it is (dataclasses.asdict deep-copies it, 3x slower).
+        return json.dumps(vars(product), ensure_ascii=False, allow_nan=False)
+    except (TypeError, ValueError):
+        return None
+
+
 def record_prices(
     products: list[Product], observation_date: datetime.date | str | None = None
 ) -> None:
     """Append observed prices to the history (one entry per ASIN, marketplace and day).
 
     The first price seen on a day wins; later sightings the same day are
-    ignored. Each ASIN keeps its newest 365 entries per marketplace.
+    ignored. Each ASIN keeps its newest 365 entries per marketplace. The
+    newest sighting of each product is also kept in the product index.
     """
     observed_on = _observation_day(observation_date)
     priced = [(p, price) for p in products if (price := _as_float(p.price)) is not None]
@@ -96,15 +108,16 @@ def record_prices(
         if not _ASIN_RE.fullmatch(p.asin):
             bad_asin += 1
             continue
-        rows.append((p.asin, p.locale, observed_on, round(price, 2), p.title or ""))
+        rows.append((p, round(price, 2)))
 
     written = 0
     with db.transaction(db.state()) as conn:
-        for asin, locale, date, price, title in rows:
+        for p, price in rows:
+            asin, locale, title = p.asin, p.locale, p.title or ""
             cursor = conn.execute(
                 "INSERT OR IGNORE INTO price_history (asin, locale, date, price, title) "
                 "VALUES (?, ?, ?, ?, ?)",
-                (asin, locale, date, price, title),
+                (asin, locale, observed_on, price, title),
             )
             if not cursor.rowcount:
                 continue  # already recorded for this day
@@ -113,7 +126,29 @@ def record_prices(
                 _TRIM,
                 {"asin": asin, "locale": locale, "keep": _MAX_HISTORY_ENTRIES - 1},
             )
-            conn.execute(_UPSERT_PRODUCT, (asin, locale, title, price, date))
+            previous = conn.execute(
+                "SELECT last_seen FROM products WHERE asin = ? AND locale = ?",
+                (asin, locale),
+            ).fetchone()
+            newest = (
+                previous is None or previous[0] is None or observed_on >= previous[0]
+            )
+            conn.execute(_UPSERT_PRODUCT, (asin, locale, title, price, observed_on))
+            if newest and (data := _product_json(p)) is not None:
+                conn.execute(
+                    "INSERT INTO product_index (locale, asin, data) VALUES (?, ?, ?) "
+                    "ON CONFLICT (locale, asin) DO UPDATE SET data = excluded.data",
+                    (locale, asin, data),
+                )
+                conn.execute(
+                    "DELETE FROM product_categories WHERE locale = ? AND asin = ?",
+                    (locale, asin),
+                )
+                conn.executemany(
+                    "INSERT OR IGNORE INTO product_categories (locale, asin, category_id) "
+                    "VALUES (?, ?, ?)",
+                    [(locale, asin, cid) for cid in p.category_ids if cid],
+                )
 
     logger.debug(
         "record_prices: priced=%d wrote=%d skipped_today=%d bad_asin=%d",

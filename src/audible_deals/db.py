@@ -146,6 +146,31 @@ _STATE_MIGRATIONS: tuple[tuple[str, ...], ...] = (
             value TEXT NOT NULL
         ) WITHOUT ROWID""",
     ),
+    # 2: the product index behind "known candidates": the last-seen product
+    # (as JSON) and its categories, so a later scan can re-price titles it did
+    # not return. Kept apart from `products` so the lookups that only need
+    # titles and prices (recap, history) keep reading narrow rows. Titles
+    # recorded before this schema have no index row until they are seen again.
+    (
+        """CREATE TABLE product_index (
+            locale TEXT NOT NULL,
+            asin TEXT NOT NULL,
+            data TEXT NOT NULL,
+            PRIMARY KEY (locale, asin),
+            FOREIGN KEY (locale, asin) REFERENCES products (locale, asin)
+                ON DELETE CASCADE
+        ) WITHOUT ROWID""",
+        """CREATE TABLE product_categories (
+            locale TEXT NOT NULL,
+            asin TEXT NOT NULL,
+            category_id TEXT NOT NULL,
+            PRIMARY KEY (locale, asin, category_id),
+            FOREIGN KEY (locale, asin) REFERENCES products (locale, asin)
+                ON DELETE CASCADE
+        ) WITHOUT ROWID""",
+        """CREATE INDEX product_categories_by_category
+            ON product_categories (locale, category_id, asin)""",
+    ),
 )
 
 _CACHE_MIGRATIONS: tuple[tuple[str, ...], ...] = (
