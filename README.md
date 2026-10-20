@@ -22,15 +22,15 @@ On macOS or Linux:
 curl -fsSL https://raw.githubusercontent.com/chauduyphanvu/audible-deals/main/install.sh | bash
 ```
 
-Or install from source with Python 3.11 or newer:
+Or install straight from GitHub with Python 3.11 or newer (audible-deals is not on PyPI yet):
 
 ```bash
-git clone https://github.com/chauduyphanvu/audible-deals.git
-cd audible-deals
-pip install -e .
+uv tool install git+https://github.com/chauduyphanvu/audible-deals
+# or
+pipx install git+https://github.com/chauduyphanvu/audible-deals
 ```
 
-Windows users should install from source. See the [installation guide](docs/installation.md) for manual downloads, platform notes, and troubleshooting.
+Windows users should install this way. See the [installation guide](docs/installation.md) for manual downloads, platform notes, and troubleshooting.
 
 ### Authenticate
 

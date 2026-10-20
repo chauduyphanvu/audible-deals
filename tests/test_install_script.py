@@ -965,3 +965,94 @@ def test_failed_restore_retains_backup(tmp_path: Path) -> None:
     assert not lib_dir.exists()
     assert link.is_symlink()
     assert backup.parent.is_dir()
+
+
+# --- Source-install hints -------------------------------------------------
+#
+# audible-deals is not published on PyPI, so `pip install audible-deals` 404s.
+# Every hint must point at the Git repository instead.
+
+GIT_URL = "git+https://github.com/chauduyphanvu/audible-deals"
+
+
+def assert_valid_source_hint(text: str) -> None:
+    assert f"uv tool install {GIT_URL}" in text
+    assert f"pipx install {GIT_URL}" in text
+    assert "pip install audible-deals" not in text
+
+
+def run_detect_platform(
+    tmp_path: Path, system: str, machine: str
+) -> subprocess.CompletedProcess[str]:
+    shim_dir = tmp_path / "uname-shims"
+    shim_dir.mkdir()
+    uname = shim_dir / "uname"
+    uname.write_text(
+        f'#!/bin/sh\ncase "$1" in -s) echo {shlex.quote(system)} ;; '
+        f"-m) echo {shlex.quote(machine)} ;; esac\n"
+    )
+    uname.chmod(0o755)
+    env = os.environ.copy()
+    env["PATH"] = os.pathsep.join([str(shim_dir), env.get("PATH", "")])
+    return subprocess.run(
+        [BASH, "-c", 'source "$1"; detect_platform', "bash", str(INSTALL_SCRIPT)],
+        cwd=tmp_path,
+        env=env,
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+
+
+@pytest.mark.parametrize(
+    ("system", "machine", "message"),
+    [
+        ("Linux", "aarch64", "Linux arm64 binaries are not available"),
+        ("Darwin", "x86_64", "macOS Intel binaries are not available"),
+    ],
+)
+def test_unsupported_platform_suggests_an_installable_source_command(
+    tmp_path: Path, system: str, machine: str, message: str
+) -> None:
+    result = run_detect_platform(tmp_path, system, machine)
+
+    assert result.returncode == 1
+    assert message in result.stderr
+    assert_valid_source_hint(result.stderr)
+
+
+def test_supported_platforms_still_resolve(tmp_path: Path) -> None:
+    result = run_detect_platform(tmp_path, "Linux", "x86_64")
+
+    assert result.returncode == 0, result.stderr
+    assert result.stdout.strip() == "linux-x64"
+
+
+def test_download_failure_suggests_an_installable_source_command(
+    tmp_path: Path,
+) -> None:
+    lib_dir, install_dir, link, _, env = install_fixture(tmp_path)
+    env["TEST_DOWNLOAD_FAIL"] = "1"
+
+    result = run_installer(tmp_path, env)
+
+    assert result.returncode != 0
+    assert_valid_source_hint(result.stderr)
+
+
+def test_docs_do_not_recommend_the_unpublished_pypi_package() -> None:
+    documents = [
+        ROOT / "README.md",
+        ROOT / "CONTRIBUTING.md",
+        INSTALL_SCRIPT,
+        *sorted((ROOT / "docs").glob("*.md")),
+    ]
+    offenders = [
+        str(path.relative_to(ROOT))
+        for path in documents
+        if re.search(
+            r"(?:pip|pipx|uv tool|uv pip) install\s+audible-deals\b", path.read_text()
+        )
+    ]
+
+    assert offenders == []

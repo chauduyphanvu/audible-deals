@@ -37,6 +37,16 @@ ln -sf ~/.local/lib/deals/deals ~/.local/bin/deals
 
 ## Install from source
 
+audible-deals is not published on PyPI yet, so install it from the GitHub repository. [uv](https://docs.astral.sh/uv/) or [pipx](https://pipx.pypa.io/) puts the `deals` command on your `PATH` in an isolated environment:
+
+```bash
+uv tool install git+https://github.com/chauduyphanvu/audible-deals
+# or
+pipx install git+https://github.com/chauduyphanvu/audible-deals
+```
+
+To work on the code instead, clone the repository and install it in editable mode:
+
 ```bash
 git clone https://github.com/chauduyphanvu/audible-deals.git
 cd audible-deals
