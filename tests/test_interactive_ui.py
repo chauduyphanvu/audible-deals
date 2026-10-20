@@ -20,7 +20,7 @@ from audible_deals.cli import cli
 from audible_deals.cli import interactive as interactive_mod
 from audible_deals.cli.interactive import choose_ui
 from audible_deals.config_store import load_config
-from tests.conftest import make_product, make_raw
+from tests.conftest import bare_env, make_product, make_raw
 
 
 class Stream:
@@ -310,11 +310,7 @@ class TestImports:
             [sys.executable, "-c", code],
             capture_output=True,
             text=True,
-            env={
-                "PATH": os.environ.get("PATH", ""),
-                "HOME": str(tmp_path),
-                "DEALS_HOME": str(tmp_path / "d"),
-            },
+            env=bare_env(HOME=str(tmp_path), DEALS_HOME=str(tmp_path / "d")),
         )
 
         assert result.stdout.strip().endswith("[]"), result.stdout + result.stderr

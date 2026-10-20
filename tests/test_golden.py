@@ -558,5 +558,7 @@ def test_every_new_json_payload_declares_its_schema_version():
         "detail",
         "compare",
     ):
-        shape = json.loads((GOLDEN_DIR / "json" / f"{name}.json").read_text())
+        shape = json.loads(
+            (GOLDEN_DIR / "json" / f"{name}.json").read_text(encoding="utf-8")
+        )
         assert shape["schema_version"] == "int", name

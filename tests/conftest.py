@@ -5,6 +5,10 @@ from __future__ import annotations
 import copy
 import itertools
 import json
+import os
+import stat
+import sys
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
@@ -12,6 +16,38 @@ import pytest
 
 from audible_deals.client import CatalogSearchResult, SeriesProductsBatch
 from audible_deals.product import Product
+
+# ---------------------------------------------------------------------------
+# Platform helpers
+# ---------------------------------------------------------------------------
+
+
+def skip_on_windows(reason: str):
+    """``skipif(win32)`` for the few tests that are genuinely POSIX-only."""
+    return pytest.mark.skipif(sys.platform == "win32", reason=reason)
+
+
+#: The generators for cron, systemd and launchd files only ever run on Linux
+#: and macOS, and their tests compare against text built from POSIX paths.
+posix_scheduler_text = skip_on_windows(
+    "cron, systemd and launchd files are written on Linux/macOS; "
+    "the expected text holds POSIX path literals"
+)
+
+
+def assert_mode(path: Path, expected: int) -> None:
+    """Assert POSIX permission bits (Windows has no 0600/0700 to compare)."""
+    if sys.platform != "win32":
+        assert stat.S_IMODE(path.stat().st_mode) == expected, oct(
+            stat.S_IMODE(path.stat().st_mode)
+        )
+
+
+def bare_env(**extra: str) -> dict[str, str]:
+    """A minimal environment for a child Python (Windows needs SYSTEMROOT to start it)."""
+    keep = {k: os.environ[k] for k in ("PATH", "SYSTEMROOT") if k in os.environ}
+    return {**keep, **extra}
+
 
 # ---------------------------------------------------------------------------
 # Product factory

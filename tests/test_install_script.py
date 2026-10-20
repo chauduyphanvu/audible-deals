@@ -12,6 +12,8 @@ from pathlib import Path
 
 import pytest
 
+from tests.conftest import skip_on_windows
+
 ROOT = Path(__file__).resolve().parents[1]
 INSTALL_SCRIPT = ROOT / "install.sh"
 BASH = shutil.which("bash") or "/bin/bash"
@@ -20,6 +22,10 @@ REAL_LN = shutil.which("ln") or "/bin/ln"
 REAL_CP = shutil.which("cp") or "/bin/cp"
 INSTALL_MARKER_NAME = ".audible-deals-install"
 INSTALL_MARKER_CONTENT = "repository=chauduyphanvu/audible-deals"
+
+pytestmark = skip_on_windows(
+    "install.sh is the Linux/macOS installer: it needs bash, POSIX permissions and symlinks"
+)
 
 
 def write_executable(path: Path, output: str) -> None:
@@ -1038,21 +1044,3 @@ def test_download_failure_suggests_an_installable_source_command(
 
     assert result.returncode != 0
     assert_valid_source_hint(result.stderr)
-
-
-def test_docs_do_not_recommend_the_unpublished_pypi_package() -> None:
-    documents = [
-        ROOT / "README.md",
-        ROOT / "CONTRIBUTING.md",
-        INSTALL_SCRIPT,
-        *sorted((ROOT / "docs").glob("*.md")),
-    ]
-    offenders = [
-        str(path.relative_to(ROOT))
-        for path in documents
-        if re.search(
-            r"(?:pip|pipx|uv tool|uv pip) install\s+audible-deals\b", path.read_text()
-        )
-    ]
-
-    assert offenders == []

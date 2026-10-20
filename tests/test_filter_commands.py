@@ -216,7 +216,7 @@ def test_last_clear_filter_keeps_every_published_name():
 
 
 def test_docs_mention_every_registry_flag():
-    docs = (ROOT / "docs" / "commands.md").read_text()
+    docs = (ROOT / "docs" / "commands.md").read_text(encoding="utf-8")
     for spec in FILTERS:
         assert spec.flag in docs, f"docs/commands.md does not document {spec.flag}"
         for alias in spec.aliases:

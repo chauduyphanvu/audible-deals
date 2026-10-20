@@ -21,11 +21,13 @@ from audible_deals.scheduler import (
     generate_systemd_service,
     generate_windows_task_command,
 )
+from tests.conftest import posix_scheduler_text
 
 CMD = ["/usr/bin/deals", "track", "run"]
 LOG = Path("/data/track.log")
 
 
+@posix_scheduler_text
 class TestSystemd:
     def test_service_sets_the_environment(self):
         unit = generate_systemd_service(CMD, LOG, Path("/home/me/deals-data"))
@@ -42,6 +44,7 @@ class TestSystemd:
         assert 'Environment="DEALS_HOME=/data/my \\"dir\\"\\\\x%%h"' in unit
 
 
+@posix_scheduler_text
 class TestCron:
     def test_line_sets_the_environment_for_the_command(self):
         line = generate_cron_line(CMD, 3600, LOG, Path("/home/me/deals-data"))
@@ -76,6 +79,7 @@ class TestCron:
         assert (tmp_path / "log").read_text().strip() == directory
 
 
+@posix_scheduler_text
 class TestLaunchd:
     def test_plist_has_environment_variables(self):
         plist = generate_launchd_plist(CMD, 3600, LOG, Path("/Users/me/data"))

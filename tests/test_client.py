@@ -5,7 +5,6 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import stat
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -26,7 +25,7 @@ from audible_deals.product import (
     parse_product,
 )
 from audible_deals.taste import build_profile
-from tests.conftest import make_product
+from tests.conftest import assert_mode, make_product
 
 
 def _make_429_exc(retry_after: str | None = None) -> Exception:
@@ -490,20 +489,16 @@ class TestImportAuthValidation:
             dc.import_auth(src)
 
     def test_import_sets_owner_only_directory_and_file_modes(self, tmp_path):
-        import stat
-
         source = tmp_path / "source.json"
         source.write_text(json.dumps({"access_token": "at", "refresh_token": "rt"}))
         auth_file = tmp_path / "private" / "auth.json"
 
         AuthStore(auth_file, "us").import_auth(source)
 
-        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+        assert_mode(auth_file.parent, 0o700)
+        assert_mode(auth_file, 0o600)
 
     def test_external_login_uses_callback_without_network(self, tmp_path, monkeypatch):
-        import stat
-
         callback_calls = []
         auth_file = tmp_path / "private" / "auth.json"
 
@@ -525,12 +520,10 @@ class TestImportAuthValidation:
             "access_token": "at",
             "refresh_token": "rt",
         }
-        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+        assert_mode(auth_file.parent, 0o700)
+        assert_mode(auth_file, 0o600)
 
     def test_credential_login_sets_owner_only_modes(self, tmp_path, monkeypatch):
-        import stat
-
         auth_file = tmp_path / "private" / "auth.json"
         callbacks = []
 
@@ -547,8 +540,8 @@ class TestImportAuthValidation:
         AuthStore(auth_file, "us").login("user", "password")
 
         assert callbacks == [_captcha_callback]
-        assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
-        assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+        assert_mode(auth_file.parent, 0o700)
+        assert_mode(auth_file, 0o600)
 
     def test_captcha_callback_opens_browser_and_normalizes_answer(
         self, monkeypatch, capsys
@@ -1403,7 +1396,7 @@ class TestBugfixClientRefreshedAuthPersistence:
         assert saved["access_token"] == "new-access"
         assert saved["refresh_token"] == "new-refresh"
         assert saved["expires"] == 200
-        assert stat.S_IMODE(store.auth_file.stat().st_mode) == 0o600
+        assert_mode(store.auth_file, 0o600)
         assert list(store.auth_file.parent.glob(".tmp-*")) == []
 
     def test_unchanged_auth_is_not_rewritten(self, api, monkeypatch):
@@ -1547,7 +1540,6 @@ class TestBugfixClientRefreshedAuthPersistence:
 def test_saving_a_login_never_changes_the_process_umask(tmp_path, monkeypatch):
     """The login used to be written under a process-wide umask change (shared with
     every other thread); it is now written through our own 0600 writer."""
-    import stat
 
     import audible_deals.auth_store as auth_store_mod
 
@@ -1566,8 +1558,8 @@ def test_saving_a_login_never_changes_the_process_umask(tmp_path, monkeypatch):
 
     auth_store_mod.AuthStore(auth_file, "us").login("user", "password")
 
-    assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
-    assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
+    assert_mode(auth_file, 0o600)
+    assert_mode(auth_file.parent, 0o700)
 
 
 class TestBugfixProductBasePriceNonNumeric:

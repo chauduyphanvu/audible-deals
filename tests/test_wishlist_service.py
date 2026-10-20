@@ -6,7 +6,6 @@ import contextlib
 import copy
 import json
 import math
-import stat
 import threading
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -34,7 +33,7 @@ from audible_deals.wishlist_service import (
     sync_products,
     update_targets,
 )
-from tests.conftest import make_product
+from tests.conftest import assert_mode, make_product
 
 
 def _track_concurrent_lock_entries(monkeypatch):
@@ -271,7 +270,7 @@ def test_repair_preserves_order_and_creates_exact_owner_only_backup(tmp_config):
     assert load_wishlist() == [valid_book, valid_author]
     assert result.removed == 1
     assert result.backup.read_bytes() == original
-    assert stat.S_IMODE(result.backup.stat().st_mode) == 0o600
+    assert_mode(result.backup, 0o600)
 
 
 def test_repair_rejects_changed_source_with_typed_error(tmp_config):

@@ -12,4 +12,4 @@ def test_current_guidance_uses_for_me():
         root / "docs" / "automation.md",
     ]
     for path in guidance:
-        assert "for-you" not in path.read_text(), path
+        assert "for-you" not in path.read_text(encoding="utf-8"), path

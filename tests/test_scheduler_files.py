@@ -25,6 +25,7 @@ from audible_deals.scheduler import (
     parse_windows_task_command,
 )
 from audible_deals.state_store import save_install_record
+from tests.conftest import posix_scheduler_text
 
 LOG = Path("/tmp/deals/track.log")
 
@@ -88,6 +89,7 @@ def test_the_plist_means_the_same_as_the_old_template(cmd, interval, log, home):
     assert new == old
 
 
+@posix_scheduler_text
 def test_the_plist_is_a_valid_launchd_definition():
     plist = plistlib.loads(
         generate_launchd_plist(

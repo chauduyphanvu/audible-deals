@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import contextlib
 import json
-import stat
 
 import click
 import pytest
@@ -18,7 +17,7 @@ from audible_deals.cli import cli
 from audible_deals.serialization import (
     serialize_product as _serialize_product,
 )
-from tests.conftest import make_product, put_raw_session
+from tests.conftest import assert_mode, make_product, put_raw_session
 
 
 def _routes_run(runner, args, **kwargs):
@@ -1321,7 +1320,7 @@ def test_bugfixwishlist_confirmed_repair_preserves_valid_data_order_and_exact_ba
     assert wishlist_mod.load_wishlist() == [valid_book, valid_author]
     backup = tmp_config / "wishlist.json.bak"
     assert backup.read_bytes() == original
-    assert stat.S_IMODE(backup.stat().st_mode) == 0o600
+    assert_mode(backup, 0o600)
 
 
 def test_bugfixwishlist_repair_uses_next_available_backup_name(tmp_config):

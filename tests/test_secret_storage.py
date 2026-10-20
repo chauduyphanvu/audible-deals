@@ -32,6 +32,7 @@ from audible_deals.config_store import (
 )
 from audible_deals.exit_codes import AuthRequiredError
 from audible_deals.secret_store import SecretStoreError
+from tests.conftest import assert_mode, bare_env
 from tests.webhook_server import RecordingServer
 
 WEBHOOK = "https://hooks.example.test/services/T000/B000/secret-token-123"
@@ -270,7 +271,7 @@ class TestLoginInTheKeychain:
         self._login(monkeypatch, AuthStore(ours, "us"), data)
 
         assert ours.read_bytes() == sdk_file.read_bytes()
-        assert oct(ours.stat().st_mode & 0o777) == "0o600"
+        assert_mode(ours, 0o600)
 
     def test_keyring_mode_leaves_only_a_reference_on_disk(
         self, tmp_config, vault, monkeypatch
@@ -286,7 +287,7 @@ class TestLoginInTheKeychain:
         assert reference["secret_storage"] == "keyring"
         assert reference["account"] == "auth" and reference["locale_code"] == "us"
         assert reference["expires"] == data["expires"]
-        assert oct(paths.auth_file().stat().st_mode & 0o777) == "0o600"
+        assert_mode(paths.auth_file(), 0o600)
         stored = json.loads(secret_store.get("auth"))
         assert stored["access_token"] == data["access_token"]
         assert auth_file_is_reference()
@@ -648,7 +649,7 @@ class TestSwitching:
 
         assert result.exit_code == 0, result.output
         assert paths.auth_file().read_text() == original_auth
-        assert oct(paths.auth_file().stat().st_mode & 0o777) == "0o600"
+        assert_mode(paths.auth_file(), 0o600)
         restored = load_config()
         assert restored.pop("secret_storage") == "file"
         assert restored == original_config
@@ -835,11 +836,7 @@ def test_file_mode_never_imports_the_keyring_package(tmp_path):
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        env={
-            "PATH": __import__("os").environ.get("PATH", ""),
-            "HOME": str(tmp_path),
-            "DEALS_HOME": str(tmp_path / "d"),
-        },
+        env=bare_env(HOME=str(tmp_path), DEALS_HOME=str(tmp_path / "d")),
     )
 
     assert result.stdout.strip().endswith("False"), result.stderr
@@ -860,7 +857,7 @@ def test_the_secret_modules_stay_off_the_startup_path(tmp_path):
         [sys.executable, "-c", code],
         capture_output=True,
         text=True,
-        env={"PATH": __import__("os").environ.get("PATH", ""), "HOME": str(tmp_path)},
+        env=bare_env(HOME=str(tmp_path)),
     )
 
     assert result.stdout.strip().endswith("[]"), result.stdout + result.stderr

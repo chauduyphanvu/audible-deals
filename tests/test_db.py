@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import subprocess
 import sys
 import textwrap
@@ -123,7 +124,7 @@ class TestOpening:
             capture_output=True,
             text=True,
             check=True,
-            env={**env, "SYSTEMROOT": ""},
+            env={**env, "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")},
         )
         assert out.stdout.strip().splitlines()[-1] == "False"
         assert not (tmp_path / "untouched").exists()
@@ -435,7 +436,7 @@ class TestConcurrentOpens:
         procs = [
             subprocess.Popen(
                 [sys.executable, "-c", self.SCRIPT, f"P{i}"],
-                env={**env, "SYSTEMROOT": ""},
+                env={**env, "SYSTEMROOT": os.environ.get("SYSTEMROOT", "")},
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,

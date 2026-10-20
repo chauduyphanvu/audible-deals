@@ -40,7 +40,7 @@ from audible_deals.state_store import (
     save_track_state,
 )
 from audible_deals.webhooks import format_webhook_message
-from tests.conftest import make_product
+from tests.conftest import make_product, posix_scheduler_text
 
 
 def _seed_track_state(runs=(), install=None):
@@ -79,6 +79,7 @@ class TestTrackCommandResolution:
 
 
 class TestLaunchdPlist:
+    @posix_scheduler_text
     def test_contains_label_interval_and_command(self):
         out = generate_launchd_plist(
             ["/usr/local/bin/deals", "track", "run"], 21600, Path("/tmp/track.log")
@@ -98,6 +99,7 @@ class TestLaunchdPlist:
 
 
 class TestSystemdUnits:
+    @posix_scheduler_text
     def test_service_exec_and_log(self):
         out = generate_systemd_service(
             ["/usr/bin/deals", "track", "run"], Path("/tmp/track.log")
@@ -119,6 +121,7 @@ class TestSystemdUnits:
 
 
 class TestCronLine:
+    @posix_scheduler_text
     def test_minutes_schedule(self):
         line = generate_cron_line(["/usr/bin/deals", "track", "run"], 1800, Path("/l"))
         assert line.startswith("*/30 * * * * ")

@@ -33,11 +33,12 @@ def test_version_is_a_release_version() -> None:
 
 
 def test_init_has_exactly_one_version_line() -> None:
-    assert len(VERSION_LINE.findall(INIT_FILE.read_text())) == 1
+    assert len(VERSION_LINE.findall(INIT_FILE.read_text(encoding="utf-8"))) == 1
 
 
 def test_pyproject_takes_its_version_from_the_package() -> None:
-    config = tomllib.loads((ROOT / "pyproject.toml").read_text())
+    with (ROOT / "pyproject.toml").open("rb") as handle:
+        config = tomllib.load(handle)
 
     assert "version" not in config["project"]
     assert "version" in config["project"]["dynamic"]
@@ -53,14 +54,14 @@ def test_no_second_version_literal_ships_with_the_package() -> None:
     offenders = [
         str(path.relative_to(ROOT))
         for path in sorted((ROOT / "src" / "audible_deals").rglob("*.py"))
-        if path != INIT_FILE and pattern.search(path.read_text())
+        if path != INIT_FILE and pattern.search(path.read_text(encoding="utf-8"))
     ]
 
     assert offenders == []
 
 
 def test_release_workflow_only_rewrites_the_package_version() -> None:
-    workflow = RELEASE_WORKFLOW.read_text()
+    workflow = RELEASE_WORKFLOW.read_text(encoding="utf-8")
 
     assert "src/audible_deals/__init__.py" in workflow
     assert "git add src/audible_deals/__init__.py" in workflow
@@ -80,7 +81,7 @@ def test_release_workflow_only_rewrites_the_package_version() -> None:
 def test_release_workflow_version_step_updates_the_version_line(
     tmp_path: Path,
 ) -> None:
-    lines = RELEASE_WORKFLOW.read_text().splitlines()
+    lines = RELEASE_WORKFLOW.read_text(encoding="utf-8").splitlines()
     start = next(i for i, line in enumerate(lines) if "Update version in src/" in line)
     run_at = next(i for i in range(start, len(lines)) if lines[i].strip() == "run: |")
     script = []
