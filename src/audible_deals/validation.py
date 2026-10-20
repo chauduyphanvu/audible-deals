@@ -108,6 +108,7 @@ def validate_webhook_url(
         AddressGuard,
         BlockedAddressError,
         system_resolver,
+        uses_proxy,
     )
 
     parsed = urllib.parse.urlparse(url)
@@ -133,10 +134,17 @@ def validate_webhook_url(
         )
     if allow_private is None:
         allow_private = _config_allows_private_webhooks()
+    guard = AddressGuard(
+        allow_private=allow_private, resolver=resolver or system_resolver
+    )
     try:
-        AddressGuard(
-            allow_private=allow_private, resolver=resolver or system_resolver
-        ).addresses(hostname, port or (443 if parsed.scheme == "https" else 80))
+        if uses_proxy(parsed.scheme, hostname):
+            # As when sending: the proxy resolves the name (it may be the only
+            # resolver that knows it), so only what the URL's text gives away
+            # is checked here.
+            guard.check_name(hostname)
+        else:
+            guard.addresses(hostname, port or (443 if parsed.scheme == "https" else 80))
     except socket.gaierror as e:
         raise click.BadParameter(
             f"Cannot resolve webhook host {hostname!r}: {e}",

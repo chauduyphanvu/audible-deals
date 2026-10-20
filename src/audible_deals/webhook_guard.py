@@ -17,7 +17,8 @@ from __future__ import annotations
 
 import ipaddress
 import socket
-from collections.abc import Callable, Sequence
+import urllib.request
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 
 Resolver = Callable[[str, int], Sequence[str]]
@@ -40,6 +41,20 @@ def system_resolver(host: str, port: int) -> list[str]:
         if address not in seen:
             seen.append(address)
     return seen
+
+
+def uses_proxy(
+    scheme: str, hostname: str, proxies: Mapping[str, str] | None = None
+) -> bool:
+    """Whether an HTTP proxy takes a request to *hostname* over *scheme*.
+
+    The proxy variables (``HTTPS_PROXY`` and friends) decide, minus the hosts
+    ``NO_PROXY`` exempts. Entering a webhook and sending to it ask this same
+    question, because the answer decides who resolves the name: the proxy, or
+    this machine.
+    """
+    chosen = urllib.request.getproxies() if proxies is None else proxies
+    return bool(chosen.get(scheme)) and not urllib.request.proxy_bypass(hostname)
 
 
 def is_public_address(address: str) -> bool:

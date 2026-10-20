@@ -336,6 +336,118 @@ class TestThroughAProxy:
         assert len(server.requests) == 1
 
 
+class TestEnteringAUrlBehindAProxy:
+    """The same rule as sending: the proxy resolves the name, so a host only the
+    proxy can look up can be saved, and what the text of the URL gives away is
+    still refused."""
+
+    @pytest.fixture(autouse=True)
+    def _proxy_environment(self, monkeypatch):
+        import socket
+
+        for name in (
+            "http_proxy",
+            "https_proxy",
+            "all_proxy",
+            "no_proxy",
+            "HTTP_PROXY",
+            "HTTPS_PROXY",
+            "ALL_PROXY",
+            "NO_PROXY",
+        ):
+            monkeypatch.delenv(name, raising=False)
+        self.lookups = []
+
+        def getaddrinfo(host, port, *args, **kwargs):
+            self.lookups.append(host)
+            raise socket.gaierror(-2, "Name or service not known")
+
+        monkeypatch.setattr(socket, "getaddrinfo", getaddrinfo)
+        self.monkeypatch = monkeypatch
+
+    def proxy(self, value="http://proxy.example:3128", name="https_proxy"):
+        self.monkeypatch.setenv(name, value)
+
+    def test_without_a_proxy_an_unresolvable_host_is_refused(self):
+        with pytest.raises(click.BadParameter, match="Cannot resolve webhook host"):
+            validate_webhook_url("https://only-the-proxy-can-resolve.example/hook")
+
+        assert self.lookups == ["only-the-proxy-can-resolve.example"]
+
+    def test_with_one_the_name_is_left_to_the_proxy(self):
+        self.proxy()
+
+        validate_webhook_url("https://only-the-proxy-can-resolve.example/hook")
+
+        assert self.lookups == []
+
+    def test_the_proxy_for_the_other_scheme_does_not_count(self):
+        self.proxy()  # https only
+
+        with pytest.raises(click.BadParameter, match="Cannot resolve"):
+            validate_webhook_url("http://only-the-proxy-can-resolve.example/hook")
+
+    @pytest.mark.parametrize(
+        "url",
+        [
+            "https://10.0.0.5/hook",
+            "https://169.254.169.254/latest",
+            "https://[::1]/hook",
+            "https://localhost/hook",
+            "https://hooks.localhost/hook",
+        ],
+    )
+    def test_a_url_that_names_a_private_place_is_still_refused(self, url):
+        self.proxy()
+
+        with pytest.raises(click.BadParameter, match="non-public|not on the public"):
+            validate_webhook_url(url)
+
+        assert self.lookups == []
+
+    def test_the_opt_in_lets_a_private_address_through(self):
+        self.proxy()
+
+        validate_webhook_url("https://192.168.1.20/ntfy", allow_private=True)
+
+    def test_hosts_in_no_proxy_are_resolved_and_checked_here(self):
+        self.proxy()
+        self.monkeypatch.setenv("no_proxy", "internal.example")
+
+        with pytest.raises(click.BadParameter, match="Cannot resolve"):
+            validate_webhook_url("https://internal.example/hook")
+
+        assert self.lookups == ["internal.example"]
+
+    def test_config_set_saves_a_host_only_the_proxy_can_resolve(self, tmp_config):
+        self.proxy()
+
+        result = CliRunner().invoke(
+            cli,
+            [
+                "config",
+                "set",
+                "webhook",
+                "https://only-the-proxy-can-resolve.example/h",
+            ],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert self.lookups == []
+
+    def test_entering_and_sending_agree(self, server):
+        """One rule, one helper: both ask whether a proxy takes this URL."""
+        from audible_deals.webhook_guard import uses_proxy
+
+        self.proxy(f"http://127.0.0.1:{server.port}", name="http_proxy")
+        assert uses_proxy("http", "hooks.example") is True
+        assert uses_proxy("https", "hooks.example") is False
+        self.monkeypatch.setenv("no_proxy", "hooks.example")
+        assert uses_proxy("http", "hooks.example") is False
+        assert uses_proxy("http", "other.example") is True
+        assert uses_proxy("http", "x", {}) is False
+
+
 class TestDefaultsFromTheConfig:
     def _wishlist_hit(self, mock_client):
         wishlist_mod.save_wishlist(

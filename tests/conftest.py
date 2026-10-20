@@ -337,6 +337,18 @@ def _database_templates(tmp_path_factory):
 
 
 @pytest.fixture(autouse=True)
+def _no_proxy_environment(monkeypatch):
+    """Tests decide for themselves whether a proxy is in play.
+
+    Whether a webhook host is resolved here or by a proxy depends on these
+    variables, so a developer's (or a sandbox's) own settings must not leak in.
+    """
+    for name in ("http_proxy", "https_proxy", "all_proxy", "no_proxy"):
+        monkeypatch.delenv(name, raising=False)
+        monkeypatch.delenv(name.upper(), raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_data_dir(request, tmp_path, monkeypatch):
     """Point every test at its own data directory (never the real one).
 

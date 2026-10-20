@@ -24,6 +24,7 @@ from audible_deals.webhook_guard import (
     BlockedAddressError,
     Resolver,
     system_resolver,
+    uses_proxy,
 )
 
 logger = logging.getLogger(__name__)
@@ -125,8 +126,7 @@ class WebhookClient:
         if self._injected or not self._proxies:
             return self._opener
         parsed = urllib.parse.urlparse(url)
-        proxy = self._proxies.get(parsed.scheme)
-        if not proxy or urllib.request.proxy_bypass(parsed.hostname or ""):
+        if not uses_proxy(parsed.scheme, parsed.hostname or "", self._proxies):
             return self._opener
         # The proxy resolves the name, so no lookup here: only what the text of
         # the URL gives away (an address literal, localhost) is checked.
