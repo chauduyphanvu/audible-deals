@@ -189,7 +189,11 @@ def coerce_config_value(key: str, raw: str):
     if key == "webhook":
         from audible_deals.validation import validate_webhook_url
 
-        validate_webhook_url(raw, param_hint="'webhook'")  # config set has no --webhook
+        try:
+            validate_webhook_url(raw)
+        except click.BadParameter as exc:
+            exc.param_hint = "'webhook'"  # config set has no --webhook option
+            raise
         return raw
     if key == "webhook_headers":
         from audible_deals.webhooks import parse_webhook_headers
