@@ -136,7 +136,7 @@ deals monitor test sci-fi-steals
 
 The first successful monitor run is a silent baseline. Later runs alert on new matches and price drops. Monitor definitions live in `monitors.json` and each monitor's independent snapshot in `state.db`; enabled monitors rotate through a shared 60 catalog-page-call budget per scheduled run.
 
-Runs share a cross-process lock with `notify`, so overlapping schedules exit cleanly. A run that fails, including one whose webhook could not be delivered, is recorded with its error and shown by `deals track status`; the alert is sent again by the next run. Authentication failures are recorded and can trigger a one-time reauthentication alert. `deals doctor` reports three or more consecutive tracking failures.
+Runs share a cross-process lock with `notify`, so overlapping schedules exit cleanly. A run that fails, including one whose webhook could not be delivered, is recorded with its error and shown by `deals track status`; the alert is sent again by the next run. Authentication failures are recorded and can trigger a one-time reauthentication alert. `deals doctor` reports three or more consecutive tracking failures, and warns when the installed schedule runs a program that no longer exists (for example after the tool was moved or reinstalled elsewhere); re-run `deals track install` to fix it. Schedule files are written atomically.
 
 ## Recap
 

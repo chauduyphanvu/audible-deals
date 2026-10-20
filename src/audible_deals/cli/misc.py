@@ -771,6 +771,16 @@ def _track_checks() -> list[_Row]:
                     f"every {install_info.get('every', '?')} via {install_info.get('method', '?')}",
                 )
             )
+            missing = scheduler.missing_executable()
+            if missing is not None:
+                rows.append(
+                    (
+                        "Scheduled command",
+                        "WARN",
+                        f"The schedule runs {missing}, which no longer exists "
+                        "(moved or uninstalled?). Re-run 'deals track install'.",
+                    )
+                )
         else:
             rows.append(
                 (

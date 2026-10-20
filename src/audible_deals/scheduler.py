@@ -4,14 +4,16 @@ from __future__ import annotations
 
 import logging
 import os
+import plistlib
+import re
 import shlex
 import shutil
 import subprocess
 import sys
 from pathlib import Path
-from xml.sax.saxutils import escape
 
 from audible_deals import paths
+from audible_deals.storage import _atomic_write
 
 logger = logging.getLogger(__name__)
 
@@ -58,48 +60,41 @@ def launchd_plist_path() -> Path:
 def generate_launchd_plist(
     cmd: list[str], interval_s: int, log_path: Path, data_dir: Path | None = None
 ) -> str:
-    args = "\n".join(f"        <string>{escape(c)}</string>" for c in cmd)
-    env = (
-        f"""    <key>EnvironmentVariables</key>
-    <dict>
-        <key>{ENV_HOME}</key>
-        <string>{escape(str(data_dir))}</string>
-    </dict>
-"""
-        if data_dir is not None
-        else ""
+    """The launchd agent definition, built with plistlib (so values are escaped)."""
+    definition: dict[str, object] = {
+        "Label": LAUNCHD_LABEL,
+        "ProgramArguments": list(cmd),
+    }
+    if data_dir is not None:
+        definition["EnvironmentVariables"] = {ENV_HOME: str(data_dir)}
+    definition.update(
+        {
+            "StartInterval": interval_s,
+            "RunAtLoad": False,
+            "StandardOutPath": str(log_path),
+            "StandardErrorPath": str(log_path),
+        }
     )
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{LAUNCHD_LABEL}</string>
-    <key>ProgramArguments</key>
-    <array>
-{args}
-    </array>
-{env}    <key>StartInterval</key>
-    <integer>{interval_s}</integer>
-    <key>RunAtLoad</key>
-    <false/>
-    <key>StandardOutPath</key>
-    <string>{escape(str(log_path))}</string>
-    <key>StandardErrorPath</key>
-    <string>{escape(str(log_path))}</string>
-</dict>
-</plist>
-"""
+    return plistlib.dumps(definition, fmt=plistlib.FMT_XML, sort_keys=False).decode(
+        "utf-8"
+    )
+
+
+def _write_unit(path: Path, content: str) -> None:
+    """Write a unit/plist file atomically (a reader never sees half of it)."""
+    _atomic_write(path, content)
+    try:
+        path.chmod(0o644)  # config, not a secret; launchd and systemd read it as you
+    except OSError:
+        pass
 
 
 def _launchd_install(
     interval_s: int, log_path: Path, data_dir: Path | None = None
 ) -> str:
     plist = launchd_plist_path()
-    plist.parent.mkdir(parents=True, exist_ok=True)
-    plist.write_text(
-        generate_launchd_plist(track_command(), interval_s, log_path, data_dir),
-        encoding="utf-8",
+    _write_unit(
+        plist, generate_launchd_plist(track_command(), interval_s, log_path, data_dir)
     )
     domain = f"gui/{os.getuid()}"
     _run(["launchctl", "bootout", domain, str(plist)], check=False)
@@ -179,14 +174,11 @@ def _systemd_install(
     interval_s: int, log_path: Path, data_dir: Path | None = None
 ) -> str:
     unit_dir = systemd_unit_dir()
-    unit_dir.mkdir(parents=True, exist_ok=True)
-    (unit_dir / f"{SYSTEMD_UNIT}.service").write_text(
+    _write_unit(
+        unit_dir / f"{SYSTEMD_UNIT}.service",
         generate_systemd_service(track_command(), log_path, data_dir),
-        encoding="utf-8",
     )
-    (unit_dir / f"{SYSTEMD_UNIT}.timer").write_text(
-        generate_systemd_timer(interval_s), encoding="utf-8"
-    )
+    _write_unit(unit_dir / f"{SYSTEMD_UNIT}.timer", generate_systemd_timer(interval_s))
     _run(["systemctl", "--user", "daemon-reload"])
     _run(["systemctl", "--user", "enable", "--now", f"{SYSTEMD_UNIT}.timer"])
     return f"systemd user timer {SYSTEMD_UNIT}.timer"
@@ -342,6 +334,111 @@ def _schtasks_install(
 def _schtasks_uninstall() -> bool:
     proc = _run(["schtasks", "/Delete", "/F", "/TN", SCHTASKS_NAME], check=False)
     return proc.returncode == 0
+
+
+# ---------------------------------------------------------------------------
+# What an installed schedule runs (for `deals doctor`)
+# ---------------------------------------------------------------------------
+
+
+def parse_launchd_command(plist_bytes: bytes) -> list[str]:
+    """``ProgramArguments`` of a launchd agent definition."""
+    try:
+        data = plistlib.loads(plist_bytes)
+    except Exception:  # plistlib raises several unrelated types on bad input
+        return []
+    arguments = data.get("ProgramArguments") if isinstance(data, dict) else None
+    return [str(a) for a in arguments] if isinstance(arguments, list) else []
+
+
+def parse_systemd_command(service_text: str) -> list[str]:
+    """The ``ExecStart=`` command of a systemd service unit."""
+    for line in service_text.splitlines():
+        if line.startswith("ExecStart="):
+            try:
+                return shlex.split(line[len("ExecStart=") :])
+            except ValueError:
+                return []
+    return []
+
+
+def parse_cron_command(line: str) -> list[str]:
+    """The command of one of our crontab lines (schedule and redirects removed)."""
+    body = line.replace(CRON_MARKER, "")
+    body = body.replace("\\%", "%")  # cron needs a literal % escaped
+    fields = body.split(None, 5)
+    if len(fields) < 6:
+        return []
+    try:
+        tokens = shlex.split(fields[5])
+    except ValueError:
+        return []
+    command: list[str] = []
+    for token in tokens:
+        if token in (">>", ">"):
+            break
+        if not command and re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*=.*", token):
+            continue  # DEALS_HOME=... in front of the command
+        command.append(token)
+    return command
+
+
+def parse_windows_task_command(task_to_run: str) -> list[str]:
+    """The program and arguments inside our ``cmd.exe ... /C "..."`` task command."""
+    text = task_to_run.strip()
+    match = re.search(r'/C\s+"(.*)"\s*$', text)
+    inner = match.group(1) if match else text
+    if " && " in inner:  # the `set "DEALS_HOME=..."` prefix
+        inner = inner.split(" && ", 1)[1]
+    inner = inner.split(" >> ", 1)[0]  # the log redirect
+    return re.findall(r'"([^"]*)"', inner)
+
+
+def scheduled_command() -> list[str] | None:
+    """The command the installed schedule runs, or ``None`` when it cannot be read."""
+    try:
+        if sys.platform == "darwin":
+            plist = launchd_plist_path()
+            return parse_launchd_command(plist.read_bytes()) or None
+        if sys.platform.startswith("linux"):
+            service = systemd_unit_dir() / f"{SYSTEMD_UNIT}.service"
+            if service.exists():
+                return (
+                    parse_systemd_command(service.read_text(encoding="utf-8")) or None
+                )
+            if shutil.which("crontab"):
+                for line in _read_crontab():
+                    if CRON_MARKER in line:
+                        return parse_cron_command(line) or None
+            return None
+        if sys.platform == "win32":
+            proc = _run(
+                ["schtasks", "/Query", "/TN", SCHTASKS_NAME, "/V", "/FO", "LIST"],
+                check=False,
+            )
+            for line in proc.stdout.splitlines():
+                if line.strip().lower().startswith("task to run:"):
+                    return (
+                        parse_windows_task_command(line.split(":", 1)[1].strip())
+                        or None
+                    )
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def missing_executable() -> str | None:
+    """The program the installed schedule runs, when it no longer exists."""
+    command = scheduled_command()
+    if not command:
+        return None
+    program = command[0]
+    found = (
+        os.path.isfile(program) and os.access(program, os.X_OK)
+        if os.path.isabs(program) or os.sep in program
+        else shutil.which(program) is not None
+    )
+    return None if found else program
 
 
 # ---------------------------------------------------------------------------
