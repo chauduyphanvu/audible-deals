@@ -245,7 +245,8 @@
     "--purge-older-than",
     "--verbose",
     "--yes",
-    "-v"
+    "-v",
+    "-y"
   ],
   "deals import-auth": [
     "--color",

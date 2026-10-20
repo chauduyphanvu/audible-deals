@@ -56,7 +56,11 @@ logger = logging.getLogger(__name__)
     help="Show what would be purged without deleting",
 )
 @click.option(
-    "--yes", is_flag=True, default=False, help="Skip confirmation prompt for purge"
+    "--yes",
+    "-y",
+    is_flag=True,
+    default=False,
+    help="Skip the confirmation prompt for --purge-older-than",
 )
 @click.pass_context
 def history(ctx, asin, last_ref, json_flag, all_flag, purge_days, dry_run, yes):

@@ -1,22 +1,28 @@
-"""CLI for finding Audible audiobook deals.
+"""The ``deals`` command line.
 
-Usage:
-    deals login                    Authenticate with Audible
-    deals import-auth PATH         Import auth from audible-cli or Libation
-    deals categories [--parent ID] List categories
-    deals search QUERY [options]   Search catalog with filters
-    deals find [options]           Browse & filter deals (main command)
-    deals detail SELECTOR          Show detailed product info
-    deals open SELECTOR            Open Audible page in browser
-    deals compare SELECTOR ...     Side-by-side comparison
-    deals wishlist add/remove/list/sync/repair Manage your watchlist
-    deals watch                    Check wishlist for price drops
-    deals notify [--webhook URL]   Send notifications for deals at target
-    deals profile save/list/delete Manage saved search profiles
-    deals monitor add/list/show/remove Manage saved-search monitors
-    deals history SELECTOR         View price history with sparkline
-    deals recap [--days N]         Recap of recent price changes
-    deals completions SHELL        Generate shell completions
+This module holds only what every command shares; each command lives in its own
+submodule and is imported the first time it is used, so ``deals --help`` and
+``deals --version`` load none of them.
+
+* ``_COMMAND_SPECS`` is the registry: command name -> (module, attribute, short
+  help, deprecated). ``deals --help`` is generated from it, grouped by
+  ``_COMMAND_GROUPS``.
+* ``DealsGroup`` is the root group. It loads a command on demand, attaches the
+  options that are accepted before or after any subcommand (``--locale``,
+  ``-v``, ``--color``; see ``global_options``), remembers the raw arguments (so
+  an error can still honor ``--json``), and turns every failure into a one-line
+  error with a documented exit status (``errors``, ``exit_codes``).
+* ``cli`` (below) is the group object itself: before any subcommand runs it
+  sets up logging, loads the saved config and settles the marketplace. A bare
+  ``deals`` prints a local-only starting dashboard.
+
+Modules: ``catalog`` (find, search), ``foryou``, ``library``, ``series``,
+``last``, ``wishlist`` (also ``watch``), ``history``, ``recap``, ``notify``,
+``track``, ``monitor``, ``config`` (also ``profile``), ``cache`` and ``misc``
+(login, detail, compare, categories, doctor, completions, ...). ``options``
+declares the shared option sets, ``helpers`` the pieces most commands need
+(client, selectors, output), and ``json_output`` (one level up) the
+machine-readable payloads.
 """
 
 from __future__ import annotations
@@ -229,8 +235,8 @@ def _force_utf8_output() -> None:
 _force_utf8_output()
 
 
-class _HandleAuthErrors(click.Group):
-    """Catch RuntimeError from missing auth and show a friendly message."""
+class DealsGroup(click.Group):
+    """The root group: lazy command loading and one-line, coded error handling."""
 
     def get_command(self, ctx, cmd_name):
         command = super().get_command(ctx, cmd_name)
@@ -333,7 +339,7 @@ def _apply_root_color(ctx, param, value):
     return _apply_color(ctx, param, value)
 
 
-@click.group(cls=_HandleAuthErrors, invoke_without_command=True)
+@click.group(cls=DealsGroup, invoke_without_command=True)
 @click.option(
     "--version",
     is_flag=True,
