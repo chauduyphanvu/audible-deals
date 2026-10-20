@@ -41,11 +41,15 @@ jobs:
       - name: Run tests
         run: pytest tests/ -v
 
-      - name: Update version in pyproject.toml
+      # src/audible_deals/__init__.py is the only place the version lives:
+      # pyproject.toml reads it (hatch dynamic version) and `deals --version`
+      # prints it.
+      - name: Update version in src/audible_deals/__init__.py
         env:
           VERSION: ${{ inputs.version }}
         run: |
-          sed -i "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          sed -i "s/^__version__ = .*/__version__ = \"${VERSION}\"/" src/audible_deals/__init__.py
+          grep -Fx "__version__ = \"${VERSION}\"" src/audible_deals/__init__.py
 
       - name: Build package
         run: |
@@ -64,7 +68,7 @@ jobs:
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add pyproject.toml
+          git add src/audible_deals/__init__.py
           if git diff --cached --quiet; then
             echo "Version already at ${VERSION}, skipping commit"
           else

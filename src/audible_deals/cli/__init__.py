@@ -320,13 +320,9 @@ class DealsGroup(click.Group):
 def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> None:
     if not value or ctx.resilient_parsing:
         return
-    try:
-        from importlib.metadata import version as _pkg_version
+    from audible_deals import __version__
 
-        v = _pkg_version("audible-deals")
-    except Exception:
-        v = "0.11.1"  # fallback for PyInstaller frozen builds
-    click.echo(f"deals, version {v}")
+    click.echo(f"deals, version {__version__}")
     ctx.exit()
 
 
