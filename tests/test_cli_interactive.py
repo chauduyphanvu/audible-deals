@@ -769,6 +769,68 @@ class TestInteractiveBrowseVerbs:
         assert "Invalid input" in out
 
 
+class TestInteractiveInvalidInputRendering:
+    """The invalid-input hint is trusted markup and must render, not print tags."""
+
+    def _recording_console(self, monkeypatch):
+        from io import StringIO
+
+        from rich.console import Console
+
+        import audible_deals.cli.interactive as interactive_mod
+        from audible_deals.presentation import terminal as display_mod
+
+        recording = Console(
+            file=StringIO(), force_terminal=False, record=True, width=200
+        )
+        monkeypatch.setattr(display_mod, "console", recording)
+        monkeypatch.setattr(interactive_mod, "console", recording)
+        return recording
+
+    @pytest.mark.parametrize("bad_input", ["xyz", "c 1", "w", "hide 1"])
+    def test_invalid_input_hint_has_no_literal_dim_tags(
+        self, tmp_config, monkeypatch, bad_input
+    ):
+        from audible_deals.cli.interactive import _interactive_browse
+
+        inputs = iter([bad_input, "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        recording = self._recording_console(monkeypatch)
+
+        _interactive_browse([make_product(asin="DIM01")])
+
+        text = recording.export_text()
+        assert "Invalid input. Enter a number" in text
+        assert "[dim]" not in text
+        assert "[/dim]" not in text
+
+    def test_invalid_input_hint_is_styled_dim(self, tmp_config, monkeypatch):
+        from audible_deals.cli.interactive import _interactive_browse
+
+        inputs = iter(["xyz", "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        recording = self._recording_console(monkeypatch)
+
+        _interactive_browse([make_product(asin="DIM02")])
+
+        # Rendered as markup: the dim style is applied to the hint text.
+        styled = recording.export_text(styles=True)
+        assert "\x1b[2mInvalid input." in styled
+
+    def test_user_derived_text_is_still_escaped(self, tmp_config, monkeypatch):
+        from audible_deals.cli.interactive import _interactive_browse
+
+        # User input that looks like Rich markup must be shown literally.
+        inputs = iter(["w [bold]x", "q"])
+        monkeypatch.setattr("click.prompt", lambda *a, **kw: next(inputs))
+        recording = self._recording_console(monkeypatch)
+
+        _interactive_browse([make_product(asin="DIM03")])
+
+        text = recording.export_text()
+        assert "[bold]x" in text
+
+
 class TestInteractiveTargetPrice:
     def test_typo_target_price_warns_and_sets_no_target(self, tmp_config):
         """A non-numeric typo warns instead of silently adding with no target."""

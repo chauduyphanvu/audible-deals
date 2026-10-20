@@ -67,7 +67,11 @@ class InteractiveCommand:
 
 
 class InteractiveCommandParseError(ValueError):
-    pass
+    """Unparseable prompt input.
+
+    The message is always a trusted markup constant (``INTERACTIVE_INVALID_INPUT``)
+    and is printed as markup; never put user-derived text in it.
+    """
 
 
 def parse_interactive_command(text: str) -> InteractiveCommand:
@@ -364,7 +368,9 @@ def _interactive_browse(
             console.print(f"[dim]{safe_markup(exc.format_message())}[/dim]")
             continue
         except InteractiveCommandParseError as exc:
-            console.print(safe_markup(exc))
+            # The parse error text is a trusted constant carrying its own
+            # markup; escaping it would show literal "[dim]" tags to the user.
+            console.print(str(exc))
             continue
         if not browser.dispatch(command):
             break

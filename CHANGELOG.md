@@ -12,6 +12,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Fixed
 - A `config.json`, `profiles.json`, `monitors.json` or `dismissed_asins.json` that could not be parsed (for example after a typo while hand-editing) was silently replaced with an empty file the next time a command saved it, deleting every saved profile, monitor, or default. Commands that would write to such a file now stop with a one-line error naming the file and the line and column of the problem, and leave it untouched. Commands that only read it print a one-line warning (the traceback appears only with `-vv`).
+- Interactive mode printed the literal text `[dim]...[/dim]` around its "Invalid input" hint.
 
 ## [0.11.1] - 2026-08-31
 
