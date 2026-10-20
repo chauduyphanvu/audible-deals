@@ -98,6 +98,10 @@ def convert(exc: Exception, ctx: click.Context) -> CliError | None:
         return CliError(
             f"Filesystem error: {safe_text(exc)}", ExitCode.ERROR, json_mode=json_mode
         )
+    if _is_known(exc, "audible_deals.secret_store", "SecretStoreError"):
+        return CliError(
+            safe_text(exc, keep_newlines=True), ExitCode.ERROR, json_mode=json_mode
+        )
     if _is_known(exc, "audible_deals.storage", "StateFileError"):
         return CliError(safe_text(exc), ExitCode.ERROR, json_mode=json_mode)
     if _is_known(exc, "sqlite3", "Error"):

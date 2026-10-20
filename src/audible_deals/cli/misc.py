@@ -23,6 +23,7 @@ from audible_deals.cli.options import json_option
 from audible_deals.config_store import (
     CONFIG_SCHEMA,
     config_numeric_errors,
+    load_config,
     load_monitors,
 )
 from audible_deals.constants import product_url
@@ -898,6 +899,64 @@ def _render_doctor_rows(rows: list[_Row]) -> int:
     return failures
 
 
+def _secret_checks() -> list[_Row]:
+    """Where secrets live, and whether the keychain (if used) works."""
+    from audible_deals import secret_store
+    from audible_deals.auth_state import auth_file_is_reference
+
+    config = load_config()
+    mode = secret_store.mode_of(config)
+    auth_in_keychain = auth_file_is_reference()
+    if (
+        mode == "file"
+        and not auth_in_keychain
+        and not secret_store.config_references(config)
+    ):
+        return [("Secret storage", "PASS", "files in the data directory (mode 600)")]
+
+    rows: list[_Row] = []
+    usable, detail = secret_store.available()
+    if mode == "keyring":
+        rows.append(
+            ("Secret storage", "PASS", f"keyring ({detail})")
+            if usable
+            else ("Secret storage", "FAIL", detail)
+        )
+    else:
+        rows.append(
+            (
+                "Secret storage",
+                "WARN",
+                "files, but some secrets are still in the keychain; move them "
+                "with 'deals config set secret-storage file'",
+            )
+        )
+    if usable and auth_in_keychain:
+        try:
+            present = secret_store.get(secret_store.AUTH_ACCOUNT) is not None
+        except secret_store.SecretStoreError as exc:
+            rows.append(("Login in keychain", "FAIL", str(exc)))
+        else:
+            rows.append(
+                (
+                    "Login in keychain",
+                    "PASS" if present else "FAIL",
+                    "" if present else "missing: run 'deals login' to sign in again",
+                )
+            )
+    if mode == "keyring" and load_install_record():
+        rows.append(
+            (
+                "Keychain and background runs",
+                "WARN",
+                "Scheduled runs read the keychain too and may not be able to "
+                "(locked keychain, no desktop session). If 'deals track status' "
+                "shows keychain errors, use 'deals config set secret-storage file'.",
+            )
+        )
+    return rows
+
+
 @click.command()
 @json_option("Output the checks as JSON (exit status 1 when a check fails)")
 @click.pass_context
@@ -908,6 +967,7 @@ def doctor(ctx, json_flag):
     rows, auth_ok = _auth_checks()
     rows.append(_connectivity_check(ctx, auth_ok))
     rows.extend(_config_checks())
+    rows.extend(_secret_checks())
     rows.extend(_database_checks())
     rows.extend(_store_checks())
     rows.extend(_track_checks())

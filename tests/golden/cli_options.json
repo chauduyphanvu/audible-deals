@@ -82,7 +82,9 @@
     "--color",
     "--locale",
     "--verbose",
-    "-v"
+    "--yes",
+    "-v",
+    "-y"
   ],
   "deals detail": [
     "--color",

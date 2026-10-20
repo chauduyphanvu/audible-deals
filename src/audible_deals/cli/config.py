@@ -6,7 +6,7 @@ import textwrap
 
 import click
 
-from audible_deals import json_output
+from audible_deals import json_output, secret_store
 from audible_deals.cli.helpers import _CL
 from audible_deals.cli.options import (
     _complete_profile_names,
@@ -64,13 +64,67 @@ def _config_set_help() -> str:
     )
 
 
+_SECRET_KEYS = {
+    "webhook": secret_store.WEBHOOK_ACCOUNT,
+    "webhook_headers": secret_store.HEADERS_ACCOUNT,
+}
+
+
+def _switch_secret_storage(target: str, yes: bool) -> None:
+    """``config set secret-storage``: move the secrets, then record the choice."""
+    from audible_deals import secret_migration
+
+    plan = secret_migration.plan_for(target)
+    if target == "keyring":
+        # Say so now if there is no keychain, before asking anything.
+        secret_store.ensure_available()
+    if plan.count:
+        if target == "keyring":
+            destination = (
+                "into the OS keychain, leaving only references in auth.json "
+                "and config.json."
+            )
+        else:
+            destination = (
+                "into plain files in the data directory (auth.json stays readable "
+                "only by you) and removes them from the keychain."
+            )
+        click.echo("This moves:")
+        for item in plan.describe():
+            click.echo(f"  - {item}")
+        click.echo(destination)
+        if not yes and not click.confirm("Continue?"):
+            console.print("[dim]Cancelled. Nothing was changed.[/dim]")
+            return
+    report = secret_migration.migrate(target)
+    console.print(f"[green]Config set:[/green] secret_storage = {target}")
+    for item in report.moved:
+        console.print(f"  moved: {safe_markup(item)}")
+    if report.leftovers:
+        note(
+            "Could not remove these keychain entries (remove them in your keychain "
+            f"app, service '{secret_store.SERVICE}'): {', '.join(report.leftovers)}"
+        )
+    if target == "keyring":
+        note(
+            "Background runs (deals track) read the keychain too; if the keychain "
+            "is locked or unavailable when they run, they fail. 'deals doctor' "
+            "checks this."
+        )
+
+
 @config_cmd.command("set", help=_config_set_help())
 @click.argument("key")
 @click.argument("value")
-def config_set(key, value):
+@click.option("--yes", "-y", is_flag=True, help="Do not ask before moving secrets")
+def config_set(key, value, yes):
     norm_key = validate_config_key(key)
     coerced = coerce_config_value(norm_key, value)
+    if norm_key == "secret_storage":
+        _switch_secret_storage(coerced, yes)
+        return
     removed_key = None
+    previous_secret = None
     with config_transaction() as cfg:
         if norm_key in {"skip_plus", "only_plus"} and coerced:
             opposite = "only_plus" if norm_key == "skip_plus" else "skip_plus"
@@ -84,11 +138,22 @@ def config_set(key, value):
                 )
             except ValueError as exc:
                 raise click.ClickException(str(exc)) from None
+        if norm_key in _SECRET_KEYS:
+            previous_secret = cfg.get(norm_key)
+            coerced = secret_store.protect(
+                coerced, _SECRET_KEYS[norm_key], mode=secret_store.mode_of(cfg)
+            )
         cfg[norm_key] = coerced
         if norm_key == "language" and coerced:
             cfg["all_languages"] = False
         elif norm_key == "all_languages" and coerced:
             cfg.pop("language", None)
+    if (
+        norm_key in _SECRET_KEYS
+        and not _is_secret_reference(coerced)
+        and _is_secret_reference(previous_secret)
+    ):
+        secret_store.discard(previous_secret)  # the old keychain entry is orphaned
     console.print(
         f"[green]Config set:[/green] {norm_key} = "
         f"{safe_markup(_config_value(norm_key, coerced, False))}"
@@ -111,7 +176,7 @@ def config_set(key, value):
 def config_get(key, show_secrets, json_flag):
     """Get a global default value."""
     norm_key = validate_config_key(key)
-    cfg = load_config()
+    cfg = _with_secrets(load_config()) if show_secrets else load_config()
     if json_flag:
         shown = cfg if show_secrets else json_output.redact_config(cfg)
         click.echo(
@@ -140,7 +205,7 @@ def config_get(key, show_secrets, json_flag):
 @json_option("Output the global defaults as JSON")
 def config_list(show_secrets=False, json_flag=False):
     """List all set global defaults."""
-    cfg = load_config()
+    cfg = _with_secrets(load_config()) if show_secrets else load_config()
     if json_flag:
         shown = cfg if show_secrets else json_output.redact_config(cfg)
         click.echo(
@@ -158,6 +223,21 @@ def config_list(show_secrets=False, json_flag=False):
         console.print(
             f"  {safe_markup(k)} = {safe_markup(_config_value(k, v, show_secrets))}"
         )
+
+
+def _is_secret_reference(value: object) -> bool:
+    if isinstance(value, list):
+        return len(value) == 1 and secret_store.is_reference(value[0])
+    return secret_store.is_reference(value)
+
+
+def _with_secrets(cfg: dict) -> dict:
+    """*cfg* with keychain references replaced by the secrets they name."""
+    shown = dict(cfg)
+    for key in _SECRET_KEYS:
+        if key in shown:
+            shown[key] = secret_store.resolve(shown[key])
+    return shown
 
 
 def _config_value(key: str, value, show_secrets: bool) -> str:
@@ -187,15 +267,22 @@ def config_reset(key, yes):
             console.print("[dim]Cancelled.[/dim]")
             return
         with config_transaction() as cfg:
+            orphaned = [cfg.get(key) for key in _SECRET_KEYS]
             cfg.clear()
+        for value in orphaned:
+            secret_store.discard(value)
         console.print("[green]All global defaults cleared.[/green]")
         return
     norm_key = validate_config_key(key)
     removed = False
+    orphaned_value = None
     with config_transaction() as cfg:
         if norm_key in cfg:
+            orphaned_value = cfg[norm_key] if norm_key in _SECRET_KEYS else None
             del cfg[norm_key]
             removed = True
+    if removed and orphaned_value is not None:
+        secret_store.discard(orphaned_value)
     if removed:
         console.print(f"[green]Config key '{norm_key}' removed.[/green]")
     else:

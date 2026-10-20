@@ -59,6 +59,9 @@ _excludes = [
     'uvloop',
     'blib2to3',
     'multiprocessing',
+    # Optional keychain support (`pip install audible-deals[keyring]`) is not bundled:
+    # it pulls in platform-specific backends that would grow every binary.
+    'keyring',
 ]
 
 a = Analysis(

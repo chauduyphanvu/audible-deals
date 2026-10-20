@@ -508,8 +508,8 @@ class TestImportAuthValidation:
         auth_file = tmp_path / "private" / "auth.json"
 
         class FakeAuth:
-            def to_file(self, path):
-                path.write_text("saved")
+            def to_dict(self):
+                return {"access_token": "at", "refresh_token": "rt"}
 
         def fake_external(*, locale, login_url_callback):
             callback_calls.append((locale, login_url_callback("oauth-url")))
@@ -521,7 +521,10 @@ class TestImportAuthValidation:
         store.login_external(login_url_callback=lambda url: f"callback:{url}")
 
         assert callback_calls == [("us", "callback:oauth-url")]
-        assert auth_file.read_text() == "saved"
+        assert json.loads(auth_file.read_text()) == {
+            "access_token": "at",
+            "refresh_token": "rt",
+        }
         assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
         assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
 
@@ -532,8 +535,8 @@ class TestImportAuthValidation:
         callbacks = []
 
         class FakeAuth:
-            def to_file(self, path):
-                path.write_text("saved")
+            def to_dict(self):
+                return {"access_token": "at", "refresh_token": "rt"}
 
         def fake_login(username, password, *, locale, with_username, captcha_callback):
             callbacks.append(captcha_callback)
@@ -1541,58 +1544,30 @@ class TestBugfixClientRefreshedAuthPersistence:
         assert store._auth_file_fingerprint == hashlib.sha256(written[1]).digest()
 
 
-def test_bugfixclient_restrictive_umask_is_process_wide_and_restores_original(
-    monkeypatch,
-):
+def test_saving_a_login_never_changes_the_process_umask(tmp_path, monkeypatch):
+    """The login used to be written under a process-wide umask change (shared with
+    every other thread); it is now written through our own 0600 writer."""
+    import stat
+
     import audible_deals.auth_store as auth_store_mod
 
-    current_umask = 0o022
-    calls = []
-    first_entered = threading.Event()
-    second_attempted = threading.Event()
-    second_entered = threading.Event()
-    release_first = threading.Event()
+    def forbidden(value):
+        raise AssertionError("os.umask must not be called")
 
-    def fake_umask(value):
-        nonlocal current_umask
-        previous = current_umask
-        current_umask = value
-        calls.append((value, previous))
-        return previous
+    monkeypatch.setattr(auth_store_mod.os, "umask", forbidden)
+    assert not hasattr(auth_store_mod, "_restrictive_umask")
 
-    monkeypatch.setattr(auth_store_mod.os, "umask", fake_umask)
+    class FakeAuth:
+        def to_dict(self):
+            return {"access_token": "at", "refresh_token": "rt"}
 
-    def first():
-        with auth_store_mod._restrictive_umask():
-            first_entered.set()
-            assert release_first.wait(1)
+    monkeypatch.setattr("audible.Authenticator.from_login", lambda *a, **kw: FakeAuth())
+    auth_file = tmp_path / "private" / "auth.json"
 
-    def second():
-        assert first_entered.wait(1)
-        second_attempted.set()
-        with auth_store_mod._restrictive_umask():
-            second_entered.set()
+    auth_store_mod.AuthStore(auth_file, "us").login("user", "password")
 
-    first_thread = threading.Thread(target=first)
-    second_thread = threading.Thread(target=second)
-    first_thread.start()
-    second_thread.start()
-    assert first_entered.wait(1)
-    assert second_attempted.wait(1)
-    assert not second_entered.is_set()
-    release_first.set()
-    for thread in (first_thread, second_thread):
-        thread.join(1)
-        assert not thread.is_alive()
-
-    assert second_entered.is_set()
-    assert current_umask == 0o022
-    assert calls == [
-        (0o177, 0o022),
-        (0o022, 0o177),
-        (0o177, 0o022),
-        (0o022, 0o177),
-    ]
+    assert stat.S_IMODE(auth_file.stat().st_mode) == 0o600
+    assert stat.S_IMODE(auth_file.parent.stat().st_mode) == 0o700
 
 
 class TestBugfixProductBasePriceNonNumeric:

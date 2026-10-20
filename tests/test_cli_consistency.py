@@ -46,6 +46,7 @@ def _option(command, name):
 #: with its -y/--yes.
 CONFIRMING = [
     ("config", "reset"),
+    ("config", "set"),
     ("history",),
     ("monitor", "remove"),
     ("wishlist", "purge"),
@@ -68,7 +69,7 @@ def test_every_confirmation_is_listed():
         for path in root.rglob("*.py")
     )
 
-    # config reset, history, monitor remove, and two in wishlist.
+    # config reset, config set (secret-storage), history, monitor remove, two in wishlist.
     assert asked == len(CONFIRMING)
 
 

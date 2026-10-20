@@ -7,6 +7,7 @@ import datetime
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from audible_deals import secret_store
 from audible_deals.automation_models import (
     MonitorDefinition,
     MonitorEvent,
@@ -251,6 +252,7 @@ def deliver_monitor_events(
     destination = monitor.webhook if override else global_webhook
     if not destination:
         return
+    destination = secret_store.resolve(destination)  # a keychain reference, maybe
     body, payload_headers = format_monitor_webhook_payload(
         [event.to_dict() for event in events],
         monitor.webhook_format or global_format,

@@ -37,6 +37,9 @@ _EXTRA_CONFIG_SCHEMA: dict[str, type] = {
     # Let webhooks reach servers on your own network (self-hosted ntfy, Home
     # Assistant). Off by default: webhook hosts must resolve to public addresses.
     "webhook_allow_private": bool,
+    # Where secrets (the login, webhook URLs and headers) are kept: "file" (the
+    # data directory) or "keyring" (the OS keychain; see secret_store.py).
+    "secret_storage": str,
     # Minutes a catalog page may be reused (0 turns the cache off).
     "cache_ttl": int,
     # Re-price titles seen before that a scan did not return.
@@ -158,6 +161,14 @@ def coerce_config_value(key: str, raw: str):
         if raw not in LOCALE_DOMAIN:
             raise click.ClickException(
                 f"Invalid locale '{raw}'. Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
+            )
+        return raw
+    if key == "secret_storage":
+        from audible_deals.secret_store import MODES
+
+        if raw not in MODES:
+            raise click.ClickException(
+                f"Invalid secret-storage '{raw}'. Valid: {', '.join(MODES)}"
             )
         return raw
     if key == "webhook_format":

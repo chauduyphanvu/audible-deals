@@ -9,7 +9,7 @@ from typing import Any
 
 import click
 
-from audible_deals import constants, json_output
+from audible_deals import constants, json_output, secret_store
 from audible_deals.automation_models import MonitorDefinition
 from audible_deals.cli.helpers import (
     _CL,
@@ -246,7 +246,15 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
         "query": query or "",
         "profile": profile_name,
         "settings": settings_to_dict(settings),
-        "webhook": webhook,
+        "webhook": (
+            secret_store.protect(
+                webhook,
+                secret_store.monitor_account(name),
+                mode=secret_store.mode_of(ctx.obj.get("config")),
+            )
+            if webhook
+            else webhook
+        ),
         "webhook_format": webhook_format,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
@@ -380,6 +388,7 @@ def remove(name, yes):
     if not yes and not click.confirm(f"Remove monitor '{safe_text(name)}'?"):
         console.print("[dim]Cancelled.[/dim]")
         return
+    stored = load_monitors().get(name)
     try:
         remove_monitor(name)
     except LockHeldError as exc:
@@ -388,6 +397,8 @@ def remove(name, yes):
         ) from exc
     except MonitorNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
+    if isinstance(stored, dict):
+        secret_store.discard(stored.get("webhook"))  # its keychain entry, if any
     console.print(f"[green]Monitor '{safe_markup(name)}' removed[/green]")
 
 

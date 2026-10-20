@@ -7,7 +7,7 @@ import logging
 
 import click
 
-from audible_deals import constants, json_output, paths, scheduler
+from audible_deals import constants, json_output, paths, scheduler, secret_store
 from audible_deals.automation_models import TrackRunRequest
 from audible_deals.cli.errors import describe
 from audible_deals.cli.helpers import (
@@ -99,9 +99,12 @@ def _run_track_once(ctx, cooldown, *, reload_config: bool = False):
     cfg = ctx.obj.get("config", {})
     if errors := config_numeric_errors(cfg):
         raise click.ClickException(errors[0])
-    webhook = cfg.get("webhook")
+    # In keyring mode the config holds references; this is where they are opened.
+    webhook = secret_store.resolve(cfg.get("webhook"))
     webhook_format = cfg.get("webhook_format") or "generic"
-    webhook_headers = _parse_cfg_webhook_headers(cfg.get("webhook_headers") or [])
+    webhook_headers = _parse_cfg_webhook_headers(
+        secret_store.resolve(cfg.get("webhook_headers") or [])
+    )
     webhook_client = WebhookClient(allow_private=webhook_allow_private(cfg))
     request = TrackRunRequest(
         locale=ctx.obj["locale"],
@@ -280,11 +283,16 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
 
         validate_webhook_url(webhook)
         with config_transaction() as cfg:
-            cfg["webhook"] = webhook
+            mode = secret_store.mode_of(cfg)
+            cfg["webhook"] = secret_store.protect(
+                webhook, secret_store.WEBHOOK_ACCOUNT, mode=mode
+            )
             if webhook_format:
                 cfg["webhook_format"] = webhook_format
             if webhook_headers:
-                cfg["webhook_headers"] = list(webhook_headers)
+                cfg["webhook_headers"] = secret_store.protect(
+                    list(webhook_headers), secret_store.HEADERS_ACCOUNT, mode=mode
+                )
         console.print("[green]Webhook saved to config.[/green]")
     elif webhook_format:
         raise click.UsageError("--webhook-format requires --webhook")
