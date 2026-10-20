@@ -9,7 +9,11 @@ import math
 import click
 
 from audible_deals import paths
-from audible_deals.constants import LOCALE_DOMAIN, WEBHOOK_FORMATS
+from audible_deals.constants import (
+    CATALOG_CACHE_MAX_TTL_MINUTES,
+    LOCALE_DOMAIN,
+    WEBHOOK_FORMATS,
+)
 from audible_deals.filter_specs import (
     CONFIG_FILTER_SCHEMA,
     SPEC_BY_KEY,
@@ -30,6 +34,10 @@ _EXTRA_CONFIG_SCHEMA: dict[str, type] = {
     "webhook": str,
     "webhook_format": str,
     "webhook_headers": list,
+    # Minutes a catalog page may be reused (0 turns the cache off).
+    "cache_ttl": int,
+    # Re-price titles seen before that a scan did not return.
+    "known_candidates": bool,
 }
 CONFIG_SCHEMA: dict[str, type] = {**CONFIG_FILTER_SCHEMA, **_EXTRA_CONFIG_SCHEMA}
 
@@ -38,6 +46,7 @@ CONFIG_SCHEMA: dict[str, type] = {**CONFIG_FILTER_SCHEMA, **_EXTRA_CONFIG_SCHEMA
 _NUMERIC_BOUNDS: dict[str, tuple[float | None, float | None]] = {
     **config_bounds(),
     "credit_price": (0, None),
+    "cache_ttl": (0, CATALOG_CACHE_MAX_TTL_MINUTES),
 }
 
 

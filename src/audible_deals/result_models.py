@@ -114,6 +114,10 @@ class CatalogScanProgress:
     total: int
     completed: int
     items: int
+    #: Pages answered by the catalog cache so far (they cost no API call).
+    cached: int = 0
+    #: The products on the page that just arrived, for a live view.
+    new_products: tuple[Product, ...] = ()
 
 
 # Recipe field groups come from the filter registry (see filter_specs); the

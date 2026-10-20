@@ -4,15 +4,20 @@ from __future__ import annotations
 
 import dataclasses
 import logging
-import math
 import unicodedata
 from collections.abc import Sequence
 from typing import Protocol
 
-from audible_deals.client import CatalogSearchRequest, DealsClient
-from audible_deals.constants import DEEP_SORT_ORDERS, MAX_PAGE_SIZE, SORT_OPTIONS
+from audible_deals.client import CatalogSearchRequest, CatalogSearchResult, DealsClient
+from audible_deals.constants import DEEP_SORT_ORDERS, SORT_OPTIONS
+from audible_deals.pagination import page_count
 from audible_deals.product import Product
 from audible_deals.result_models import CatalogScanPlan, CatalogScanProgress
+from audible_deals.scan_cache import (
+    CATALOG_ENDPOINT,
+    ScanCache,
+    catalog_products_params,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -131,22 +136,131 @@ def rank_catalog_relevance(products: list[Product], query: str) -> list[Product]
     return sorted(products, key=tier)
 
 
+@dataclasses.dataclass
+class ScanReport:
+    """What a scan did, filled in by :func:`execute_catalog_scan`."""
+
+    #: The user pressed Ctrl-C and the scan returned what it had gathered.
+    interrupted: bool = False
+    pages_done: int = 0
+    pages_total: int = 0
+
+
+def _plan_requests(
+    plan: CatalogScanPlan, cache: ScanCache | None
+) -> list[tuple[CatalogSearchRequest, tuple[int, str, str, str]]]:
+    """Every catalog request the plan makes, with ``(query index, kind, query, category)``."""
+    planned: list[tuple[CatalogSearchRequest, tuple[int, str, str, str]]] = []
+    remaining_probes = list(plan.exact_probe_queries)
+    for query_index, query in enumerate(plan.queries):
+        for category_id in plan.category_ids or ():
+            for sort_order in plan.sort_orders:
+                planned.append(
+                    (
+                        CatalogSearchRequest(
+                            keywords=query,
+                            category_id=category_id,
+                            sort_by=sort_order,
+                            max_pages=plan.pages,
+                            cache=cache,
+                        ),
+                        (query_index, "broad", query, category_id),
+                    )
+                )
+        if query in remaining_probes:
+            remaining_probes.remove(query)
+            for category_id in plan.category_ids or ():
+                planned.append(
+                    (
+                        CatalogSearchRequest(
+                            title=query,
+                            category_id=category_id,
+                            sort_by="Relevance",
+                            max_pages=1,
+                            optional=True,
+                            cache=cache,
+                        ),
+                        (query_index, "exact", query, category_id),
+                    )
+                )
+    return planned
+
+
+def cached_pages_for(
+    request: CatalogSearchRequest, locale: str, cache: ScanCache
+) -> int:
+    """How many of one request's pages the cache can answer right now."""
+
+    def lookup(page: int):
+        return cache.lookup(
+            locale,
+            CATALOG_ENDPOINT,
+            catalog_products_params(
+                keywords=request.keywords,
+                title=request.title,
+                category_id=request.category_id,
+                sort_by=request.sort_by,
+                page=page,
+            ),
+        )
+
+    first = lookup(0)
+    if first is None:
+        return 0
+    try:
+        total = first[0]["total"]
+        pages = page_count(total, request.max_pages) if first[0]["products"] else 1
+    except (KeyError, TypeError):
+        return 0
+    return 1 + sum(1 for page in range(1, pages) if lookup(page) is not None)
+
+
+def estimate_cached_calls(
+    plan: CatalogScanPlan, locale: str, cache: ScanCache | None
+) -> int:
+    """How many of the plan's page requests the cache would answer (0 when unknown).
+
+    An unresolved category (``plan.category_ids`` is ``None``) cannot be looked
+    up, and neither can a page whose predecessor is not cached, so this is a
+    floor: the live-call figure derived from it is a ceiling.
+    """
+    if cache is None or cache.refresh or plan.category_ids is None:
+        return 0
+    return sum(
+        cached_pages_for(request, locale, cache)
+        for request, _ in _plan_requests(plan, None)
+    )
+
+
 def execute_catalog_scan(
     client: DealsClient,
     plan: CatalogScanPlan,
     callback: CatalogScanProgressCallback | None = None,
+    *,
+    cache: ScanCache | None = None,
+    report: ScanReport | None = None,
+    allow_partial: bool = False,
 ) -> list[Product]:
+    """Run the plan and return its products, best matches first.
+
+    A *cache* lets fresh stored pages stand in for requests. With
+    *allow_partial*, Ctrl-C returns the pages gathered so far (and marks the
+    *report*) instead of raising, so the caller can still show them.
+    """
     if plan.category_ids is None or plan.total_calls is None:
         raise ValueError("catalog scan categories have not been resolved")
 
     total = plan.total_calls
     completed = 0
     item_asins: set[str] = set()
-    requests: list[CatalogSearchRequest] = []
-    metadata: list[tuple[int, str, str, str]] = []
-    remaining_probes = list(plan.exact_probe_queries)
+    planned = _plan_requests(plan, cache)
+    requests = [request for request, _ in planned]
+    metadata = [meta for _, meta in planned]
+    gathered: list[dict[int, tuple[list[Product], int]]] = [{} for _ in requests]
 
-    def report(description: str) -> None:
+    def report_progress(
+        description: str, new_products: tuple[Product, ...] = ()
+    ) -> None:
         if callback is not None:
             callback(
                 CatalogScanProgress(
@@ -154,6 +268,8 @@ def execute_catalog_scan(
                     total=total,
                     completed=completed,
                     items=len(item_asins),
+                    cached=cache.use().pages_cached if cache is not None else 0,
+                    new_products=new_products,
                 )
             )
 
@@ -167,44 +283,31 @@ def execute_catalog_scan(
         request = requests[request_index]
         query = request.title or request.keywords
         description = f"Searching '{query}'" if query else "Scanning catalog"
+        gathered[request_index][page_num] = (products, segment_total)
         item_asins.update(product.asin for product in products)
         completed += 1
         if page_num == 1:
-            actual = (
-                min(request.max_pages, math.ceil(segment_total / MAX_PAGE_SIZE))
-                if segment_total
-                else 1
+            total -= request.max_pages - page_count(segment_total, request.max_pages)
+        report_progress(description, tuple(products))
+
+    interrupted = False
+    try:
+        segment_results = client.search_segments(requests, page_fetched)
+    except KeyboardInterrupt:
+        if not allow_partial:
+            raise
+        # Pages reach page_fetched in order within each segment, so what was
+        # gathered is a usable prefix of every segment.
+        interrupted = True
+        segment_results = [
+            CatalogSearchResult(
+                tuple(
+                    (products, page, page_total)
+                    for page, (products, page_total) in sorted(pages.items())
+                )
             )
-            total -= request.max_pages - actual
-        report(description)
-
-    for query_index, query in enumerate(plan.queries):
-        for category_id in plan.category_ids:
-            for sort_order in plan.sort_orders:
-                requests.append(
-                    CatalogSearchRequest(
-                        keywords=query,
-                        category_id=category_id,
-                        sort_by=sort_order,
-                        max_pages=plan.pages,
-                    )
-                )
-                metadata.append((query_index, "broad", query, category_id))
-        if query in remaining_probes:
-            remaining_probes.remove(query)
-            for category_id in plan.category_ids:
-                requests.append(
-                    CatalogSearchRequest(
-                        title=query,
-                        category_id=category_id,
-                        sort_by="Relevance",
-                        max_pages=1,
-                        optional=True,
-                    )
-                )
-                metadata.append((query_index, "exact", query, category_id))
-
-    segment_results = client.search_segments(requests, page_fetched)
+            for pages in gathered
+        ]
     broad_by_query: list[list[Product]] = [[] for _ in plan.queries]
     exact_by_query: list[list[Product]] = [[] for _ in plan.queries]
     broad_seen: list[set[str]] = [set() for _ in plan.queries]
@@ -246,13 +349,10 @@ def execute_catalog_scan(
                 result_asins.add(product.asin)
                 results.append(product)
 
-    if callback is not None:
-        callback(
-            CatalogScanProgress(
-                description="Catalog scan complete",
-                total=completed,
-                completed=completed,
-                items=len(item_asins),
-            )
-        )
+    if report is not None:
+        report.interrupted = interrupted
+        report.pages_done = completed
+        report.pages_total = total
+    total = completed
+    report_progress("Scan interrupted" if interrupted else "Catalog scan complete")
     return results

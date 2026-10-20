@@ -16,6 +16,7 @@ from audible_deals import constants as _constants
 from audible_deals import genres as _genres
 from audible_deals import paths as _paths
 from audible_deals import product as _product
+from audible_deals import scan_cache as _scan_cache
 from audible_deals.audible_transport import AudibleTransport as _AudibleTransport
 from audible_deals.auth_store import AuthStore as _AuthStore
 from audible_deals.pagination import (
@@ -24,6 +25,7 @@ from audible_deals.pagination import (
     prefetch_in_order,
     read_serially,
 )
+from audible_deals.scan_cache import ScanCache
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +61,16 @@ def _parse_api_products(raw_products: object, locale: str) -> list[_product.Prod
     return products
 
 
+def cached_top_categories(locale: str) -> list[dict[str, str]] | None:
+    """The stored top-level category list for *locale*, when fresh (7 days)."""
+    cached = _cache_store.get(
+        _CATEGORIES_NAMESPACE, locale, max_age_s=_constants.CATEGORIES_CACHE_TTL
+    )
+    if isinstance(cached, list) and all(isinstance(item, dict) for item in cached):
+        return cached
+    return None
+
+
 @dataclass(frozen=True)
 class CatalogSearchRequest:
     keywords: str = ""
@@ -67,6 +79,8 @@ class CatalogSearchRequest:
     sort_by: str = "Relevance"
     max_pages: int = 10
     optional: bool = False
+    #: Opt-in catalog cache; ``None`` always fetches live.
+    cache: ScanCache | None = field(default=None, compare=False, repr=False)
 
 
 @dataclass(frozen=True)
@@ -190,28 +204,56 @@ class DealsClient:
         sort_by: str = "Relevance",
         num_results: int = _constants.MAX_PAGE_SIZE,
         page: int | None = None,
+        cache: ScanCache | None = None,
     ) -> tuple[list[_product.Product], int]:
-        """Search the Audible catalog. Returns (products, total_results)."""
-        if page is None:
-            page = 0
-        params: dict[str, Any] = {
-            "num_results": min(num_results, _constants.MAX_PAGE_SIZE),
-            "page": page,
-            "products_sort_by": sort_by,
-            "response_groups": _constants.CATALOG_RESPONSE_GROUPS,
-        }
-        if keywords:
-            params["keywords"] = keywords
-        if title:
-            params["title"] = title
-        if category_id:
-            params["category_id"] = category_id
+        """Search the Audible catalog. Returns (products, total_results).
 
-        resp = self._transport.request("1.0/catalog/products", **params)
+        With a *cache*, a fresh stored copy of the page is used instead of a
+        request, and a successful live response is stored for later.
+        """
+        params = _scan_cache.catalog_products_params(
+            keywords=keywords,
+            title=title,
+            category_id=category_id,
+            sort_by=sort_by,
+            page=0 if page is None else page,
+            num_results=num_results,
+        )
+        if cache is not None and (hit := self._cached_page(cache, params)) is not None:
+            return hit
+
+        resp = self._transport.request(_scan_cache.CATALOG_ENDPOINT, **params)
 
         products = _parse_api_products(resp.get("products", []), self.locale)
         total = resp.get("total_results", len(products))
+        if cache is not None:
+            cache.note_page(products, None)
+            if isinstance(total, int) and not isinstance(total, bool):
+                cache.store(
+                    self.locale,
+                    _scan_cache.CATALOG_ENDPOINT,
+                    params,
+                    {"total": total, "products": _scan_cache.pack_products(products)},
+                )
+        return products, total
 
+    def _cached_page(
+        self, cache: ScanCache, params: dict[str, Any]
+    ) -> tuple[list[_product.Product], int] | None:
+        """A fresh cached search page, or ``None`` (a miss, or an unreadable entry)."""
+        entry = cache.lookup(self.locale, _scan_cache.CATALOG_ENDPOINT, params)
+        if entry is None:
+            return None
+        value, age = entry
+        try:
+            products = _scan_cache.unpack_products(value["products"])
+            total = value["total"]
+            if isinstance(total, bool) or not isinstance(total, int):
+                raise ValueError("cached total is not an integer")
+        except (KeyError, TypeError, ValueError):
+            logger.debug("ignoring unreadable cached page", exc_info=True)
+            return None
+        cache.note_page(products, age)
         return products, total
 
     def search_pages(
@@ -275,12 +317,17 @@ class DealsClient:
         def fetch(index: int, logical_page: int):
             request = requests[index]
             api_page = logical_page - 1
+            # Fakes and older callers of search_catalog take no cache argument.
+            extra: dict[str, Any] = (
+                {} if request.cache is None else {"cache": request.cache}
+            )
             products, total = self.search_catalog(
                 keywords=request.keywords,
                 title=request.title,
                 category_id=request.category_id,
                 sort_by=request.sort_by,
                 page=api_page,
+                **extra,
             )
             return index, logical_page, products, total
 
@@ -353,13 +400,18 @@ class DealsClient:
             results.append(CatalogSearchResult(tuple(ordered), errors[index]))
         return results
 
-    def get_library_asins(self) -> set[str]:
+    def get_library_asins(self, *, cache: ScanCache | None = None) -> set[str]:
         """Fetch all ASINs in the user's Audible library.
 
-        Cached on the client instance so repeated calls don't re-fetch.
+        Cached on the client instance so repeated calls don't re-fetch. With a
+        *cache*, a list stored within the last day is used instead (unless the
+        cache is refreshing), and a fresh fetch replaces it.
         """
         if self._library_cache is not None:
             return self._library_cache
+        if cache is not None and (stored := cache.library_lookup(self.locale)):
+            self._library_cache = stored
+            return stored
 
         def fetch(page: int) -> tuple[list[str], int]:
             resp = self._transport.request(
@@ -377,6 +429,8 @@ class DealsClient:
 
         logger.debug("library asins fetched count=%d", len(asins))
         self._library_cache = asins
+        if cache is not None:
+            cache.library_store(self.locale, asins)
         return asins
 
     def get_library_pages(self) -> Iterator[tuple[list[_product.Product], int]]:
@@ -493,9 +547,16 @@ class DealsClient:
     def get_category_name(self, category_id: str) -> str:
         """Look up a category's display name by ID."""
         _validate_category_id(category_id)
+        if (
+            known := _scan_cache.category_name_lookup(self.locale, category_id)
+        ) is not None:
+            return known
         try:
             resp = self._transport.request(f"1.0/catalog/categories/{category_id}")
-            return resp.get("category", {}).get("name", category_id)
+            name = resp.get("category", {}).get("name", category_id)
+            if isinstance(name, str) and name and name != category_id:
+                _scan_cache.category_name_store(self.locale, category_id, name)
+            return name
         except Exception:
             logger.warning(
                 "get_category_name failed for %s", category_id, exc_info=True
@@ -504,14 +565,7 @@ class DealsClient:
 
     def _load_categories_cache(self) -> list[dict[str, str]] | None:
         """Top-level categories from the disk cache, when fresh."""
-        cached = _cache_store.get(
-            _CATEGORIES_NAMESPACE,
-            self.locale,
-            max_age_s=_constants.CATEGORIES_CACHE_TTL,
-        )
-        if isinstance(cached, list) and all(isinstance(item, dict) for item in cached):
-            return cached
-        return None
+        return cached_top_categories(self.locale)
 
     def _save_categories_cache(self, categories: list[dict[str, str]]) -> None:
         """Persist top-level categories to the disk cache."""
@@ -554,27 +608,49 @@ class DealsClient:
             raise ValueError(f"Product not found: {asin}")
         return results[0]
 
-    def _get_series_child_asins(self, series_asin: str) -> list[str]:
-        resp = self._transport.request(
-            f"1.0/catalog/products/{series_asin}",
-            response_groups="relationships",
-        )
+    def _get_series_child_asins(
+        self, series_asin: str, cache: ScanCache | None = None
+    ) -> list[str]:
+        endpoint = f"1.0/catalog/products/{series_asin}"
+        params = {"response_groups": "relationships"}
+        if cache is not None:
+            entry = cache.lookup(self.locale, endpoint, params)
+            if entry is not None:
+                children = (
+                    entry[0].get("children") if isinstance(entry[0], dict) else None
+                )
+                if isinstance(children, list) and all(
+                    isinstance(a, str) for a in children
+                ):
+                    return children
+        resp = self._transport.request(endpoint, **params)
         product_data = resp.get("product")
-        if not product_data:
-            return []
-        return [
-            r["asin"]
-            for r in product_data.get("relationships", [])
-            if r.get("relationship_to_product") == "child" and r.get("asin")
-        ]
+        children = (
+            [
+                r["asin"]
+                for r in product_data.get("relationships", [])
+                if r.get("relationship_to_product") == "child" and r.get("asin")
+            ]
+            if product_data
+            else []
+        )
+        if cache is not None:
+            cache.store(self.locale, endpoint, params, {"children": children})
+        return children
 
-    def get_series_products_many(self, series_asins: list[str]) -> SeriesProductsBatch:
-        """Fetch multiple series with bounded relationship and product batches."""
+    def get_series_products_many(
+        self, series_asins: list[str], *, cache: ScanCache | None = None
+    ) -> SeriesProductsBatch:
+        """Fetch multiple series with bounded relationship and product batches.
+
+        With a *cache*, relationship lists and product batches are served from
+        (and stored in) the catalog cache.
+        """
         unique_series = list(dict.fromkeys(series_asins))
         children: dict[str, list[str]] = {}
         failures: dict[str, Exception] = {}
         for series_asin, child_asins, error in self._settle(
-            self._get_series_child_asins, unique_series
+            lambda asin: self._get_series_child_asins(asin, cache), unique_series
         ):
             if error is not None:
                 failures[series_asin] = error
@@ -591,7 +667,7 @@ class DealsClient:
         fetched: list[_product.Product] = []
         failed_batches: list[tuple[tuple[str, ...], Exception]] = []
         for batch, batch_products, error in self._settle(
-            lambda batch: self._fetch_products_batch(list(batch)), batches
+            lambda batch: self._fetch_products_batch(list(batch), cache), batches
         ):
             if error is not None:
                 failed_batches.append((batch, error))
@@ -629,16 +705,34 @@ class DealsClient:
             product_failures,
         )
 
-    def _fetch_products_batch(self, batch: list[str]) -> list[_product.Product]:
-        resp = self._transport.request(
-            "1.0/catalog/products",
-            asins=",".join(batch),
-            num_results=len(batch),
-            response_groups=_constants.CATALOG_RESPONSE_GROUPS,
-        )
-        results = []
-        for parsed in _parse_api_products(resp.get("products", []), self.locale):
-            results.append(parsed)
+    def _fetch_products_batch(
+        self, batch: list[str], cache: ScanCache | None = None
+    ) -> list[_product.Product]:
+        params: dict[str, Any] = {
+            "asins": ",".join(batch),
+            "num_results": len(batch),
+            "response_groups": _constants.CATALOG_RESPONSE_GROUPS,
+        }
+        if cache is not None:
+            entry = cache.lookup(self.locale, _scan_cache.CATALOG_ENDPOINT, params)
+            if entry is not None:
+                try:
+                    cached = _scan_cache.unpack_products(entry[0]["products"])
+                except (KeyError, TypeError, ValueError):
+                    logger.debug("ignoring unreadable cached batch", exc_info=True)
+                else:
+                    cache.note_page(cached, entry[1])
+                    return cached
+        resp = self._transport.request(_scan_cache.CATALOG_ENDPOINT, **params)
+        results = _parse_api_products(resp.get("products", []), self.locale)
+        if cache is not None:
+            cache.note_page(results, None)
+            cache.store(
+                self.locale,
+                _scan_cache.CATALOG_ENDPOINT,
+                params,
+                {"products": _scan_cache.pack_products(results)},
+            )
         return results
 
     def get_products_batch(self, asins: list[str]) -> list[_product.Product]:

@@ -162,6 +162,8 @@ def test_config_schema_is_registry_filters_plus_named_extras():
         "webhook": str,
         "webhook_format": str,
         "webhook_headers": list,
+        "cache_ttl": int,
+        "known_candidates": bool,
     }
     assert CONFIG_SCHEMA == {**config_filters, **extras}
 

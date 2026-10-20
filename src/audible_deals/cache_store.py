@@ -16,29 +16,39 @@ from audible_deals import db
 logger = logging.getLogger(__name__)
 
 
-def get(namespace: str, key: str, *, max_age_s: float | None = None) -> Any | None:
-    """The cached value, or ``None`` when absent, stale (older than *max_age_s*) or unreadable."""
+def get_entry(
+    namespace: str, key: str, *, max_age_s: float | None = None
+) -> tuple[Any, float] | None:
+    """``(value, age in seconds)``, or ``None`` when absent, stale or unreadable."""
     try:
-        row = (
-            db.cache()
-            .execute(
-                "SELECT value, stored_at FROM cache_entries WHERE namespace = ? AND key = ?",
-                (namespace, key),
+        with db.exclusive():
+            row = (
+                db.cache()
+                .execute(
+                    "SELECT value, stored_at FROM cache_entries "
+                    "WHERE namespace = ? AND key = ?",
+                    (namespace, key),
+                )
+                .fetchone()
             )
-            .fetchone()
-        )
         if row is None:
             logger.debug("cache miss: %s/%s", namespace, key)
             return None
-        age = time.time() - row[1]
+        age = max(0.0, time.time() - row[1])
         if max_age_s is not None and age >= max_age_s:
             logger.debug("cache stale: %s/%s (age=%.0fs)", namespace, key, age)
             return None
         logger.debug("cache hit: %s/%s (age=%.0fs)", namespace, key, age)
-        return json.loads(row[0])
+        return json.loads(row[0]), age
     except Exception:
         logger.debug("cache read failed: %s/%s", namespace, key, exc_info=True)
         return None
+
+
+def get(namespace: str, key: str, *, max_age_s: float | None = None) -> Any | None:
+    """The cached value, or ``None`` when absent, stale (older than *max_age_s*) or unreadable."""
+    entry = get_entry(namespace, key, max_age_s=max_age_s)
+    return None if entry is None else entry[0]
 
 
 def put(namespace: str, key: str, value: Any) -> None:
@@ -59,6 +69,33 @@ def put(namespace: str, key: str, value: Any) -> None:
         logger.debug("cache write failed: %s/%s", namespace, key, exc_info=True)
 
 
+def prune(prefix: str, *, max_age_s: float, keep: int) -> int:
+    """Trim the namespaces starting with *prefix*.
+
+    Drops entries older than *max_age_s*, then everything but the newest *keep*.
+    Returns how many were removed; never raises.
+    """
+    scope = {"n": len(prefix), "prefix": prefix}
+    try:
+        with db.transaction(db.cache()) as conn:
+            removed = conn.execute(
+                "DELETE FROM cache_entries WHERE substr(namespace, 1, :n) = :prefix "
+                "AND stored_at < :cutoff",
+                {**scope, "cutoff": time.time() - max_age_s},
+            ).rowcount
+            removed += conn.execute(
+                "DELETE FROM cache_entries WHERE substr(namespace, 1, :n) = :prefix "
+                "AND (namespace, key) NOT IN (SELECT namespace, key FROM cache_entries "
+                "WHERE substr(namespace, 1, :n) = :prefix "
+                "ORDER BY stored_at DESC LIMIT :keep)",
+                {**scope, "keep": keep},
+            ).rowcount
+        return removed
+    except Exception:
+        logger.debug("cache prune failed: %s", prefix, exc_info=True)
+        return 0
+
+
 def clear(namespace: str | None = None) -> int:
     """Drop cached entries (all, or one namespace). Returns how many were removed."""
     with db.transaction(db.cache()) as conn:
@@ -71,7 +108,13 @@ def clear(namespace: str | None = None) -> int:
 
 def summary() -> dict[str, tuple[int, float]]:
     """``{namespace: (entries, newest stored_at)}`` for ``deals cache info``."""
-    rows = db.cache().execute(
-        "SELECT namespace, COUNT(*), MAX(stored_at) FROM cache_entries GROUP BY namespace"
-    )
+    with db.exclusive():
+        rows = (
+            db.cache()
+            .execute(
+                "SELECT namespace, COUNT(*), MAX(stored_at) FROM cache_entries "
+                "GROUP BY namespace"
+            )
+            .fetchall()
+        )
     return {namespace: (count, newest) for namespace, count, newest in rows}

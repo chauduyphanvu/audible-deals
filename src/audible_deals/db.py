@@ -410,6 +410,19 @@ atexit.register(close_all)
 
 
 @contextlib.contextmanager
+def exclusive() -> Iterator[None]:
+    """Hold the process-wide connection lock for a block of reads.
+
+    The connections are shared between threads and sqlite3 does not serialize
+    statements on one connection (identical SQL from two threads can trip over
+    the shared statement cache), so threads that read outside a transaction
+    take this first. ``transaction`` already holds it.
+    """
+    with _guard:
+        yield
+
+
+@contextlib.contextmanager
 def transaction(
     conn: sqlite3.Connection, *, write: bool = True
 ) -> Iterator[sqlite3.Connection]:
