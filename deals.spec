@@ -56,7 +56,6 @@ _excludes = [
     'setuptools',
     'pkg_resources',
     'Crypto',
-    'sqlite3',
     'uvloop',
     'blib2to3',
     'multiprocessing',
