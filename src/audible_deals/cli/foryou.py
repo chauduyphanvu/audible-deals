@@ -12,13 +12,16 @@ from inspect import cleandoc
 import click
 
 from audible_deals import taste
+from audible_deals.catalog_workflow import cached_pages_for
 from audible_deals.cli.helpers import (
     _CL,
     _credit_price,
     _currency,
     _get_client,
+    _report_cache_use,
     _report_partial_series_outcomes,
     _resolve_output_quiet,
+    _scan_cache,
 )
 from audible_deals.cli.options import filter_options, output_options, scope_values
 from audible_deals.client import CatalogSearchRequest, DealsClient
@@ -46,6 +49,7 @@ from audible_deals.result_publication import (
     publish_discovery,
 )
 from audible_deals.results_cache import load_dismissed_asins
+from audible_deals.scan_cache import ScanCache
 from audible_deals.serialization import validate_export_path
 from audible_deals.series_identity import (
     normalize_identity_text,
@@ -77,8 +81,64 @@ def _scan_plan(profile: dict) -> tuple[list[str], list[dict], list[dict]]:
     return authors, genres, series
 
 
+def _catalog_requests(
+    authors: list[str], genres: list[dict], cache: ScanCache | None = None
+) -> list[CatalogSearchRequest]:
+    """The author and genre searches ``for-me`` makes, in the order it makes them."""
+    requests = [
+        CatalogSearchRequest(
+            keywords=author,
+            sort_by="Relevance",
+            max_pages=_PAGES_PER_SCAN,
+            cache=cache,
+        )
+        for author in authors
+    ]
+    requests.extend(
+        CatalogSearchRequest(
+            category_id=genre["id"],
+            sort_by="BestSellers",
+            max_pages=_PAGES_PER_SCAN,
+            cache=cache,
+        )
+        for genre in genres
+    )
+    return requests
+
+
+def _cached_for_me_calls(
+    locale: str,
+    authors: list[str],
+    genres: list[dict],
+    series: list[dict],
+    cache: ScanCache | None,
+) -> int:
+    """How many of the planned requests a stored copy would answer."""
+    if cache is None or cache.refresh:
+        return 0
+    cached = sum(
+        cached_pages_for(request, locale, cache)
+        for request in _catalog_requests(authors, genres)
+    )
+    cached += sum(
+        1
+        for item in series
+        if cache.lookup(
+            locale,
+            f"1.0/catalog/products/{item['series_asin']}",
+            {"response_groups": "relationships"},
+        )
+        is not None
+    )
+    return cached
+
+
 def _for_me_plan(
-    profile: dict, authors: list[str], genres: list[dict], series: list[dict]
+    profile: dict,
+    authors: list[str],
+    genres: list[dict],
+    series: list[dict],
+    cached_calls: int = 0,
 ) -> dict:
     catalog_calls = (len(authors) + len(genres)) * _PAGES_PER_SCAN
     relationship_calls = len(series)
@@ -91,7 +151,8 @@ def _for_me_plan(
         "series": [item["name"] for item in series],
         "authors": list(authors),
         "genres": [item["name"] for item in genres],
-        "known_api_calls": catalog_calls + relationship_calls,
+        "known_api_calls": max(0, catalog_calls + relationship_calls - cached_calls),
+        "cached_calls": cached_calls,
         "series_product_batches": "additional when a relationship has children",
     }
 
@@ -112,8 +173,10 @@ def _print_for_me_plan(plan: dict) -> None:
         console.print(f"  Authors: {safe_markup(', '.join(authors))}")
     if genres:
         console.print(f"  Genres: {safe_markup(', '.join(genres))}")
+    cached_note = f" ({plan['cached_calls']} cached)" if plan["cached_calls"] else ""
     console.print(
-        f"  Known API calls: {plan['known_api_calls']} + series product batches"
+        f"  Known API calls: {plan['known_api_calls']}{cached_note} "
+        "+ series product batches"
     )
 
 
@@ -155,6 +218,7 @@ def _fetch_candidates(
     owned: set[str],
     *,
     show_progress: bool = True,
+    cache: ScanCache | None = None,
 ) -> tuple[
     list[Product],
     dict[str, taste.SeriesMatch],
@@ -214,7 +278,7 @@ def _fetch_candidates(
         done = 0
 
         series_batch = dc.get_series_products_many(
-            [item["series_asin"] for item in series]
+            [item["series_asin"] for item in series], cache=cache
         )
         for s in series:
             target_identity = normalize_identity_text(
@@ -249,22 +313,7 @@ def _fetch_candidates(
             done += 1
             progress.update(task, completed=done, items=len(candidates_by_edition))
 
-        catalog_requests = [
-            CatalogSearchRequest(
-                keywords=author,
-                sort_by="Relevance",
-                max_pages=_PAGES_PER_SCAN,
-            )
-            for author in authors
-        ]
-        catalog_requests.extend(
-            CatalogSearchRequest(
-                category_id=genre["id"],
-                sort_by="BestSellers",
-                max_pages=_PAGES_PER_SCAN,
-            )
-            for genre in genres
-        )
+        catalog_requests = _catalog_requests(authors, genres, cache)
         catalog_results = dc.search_segments(catalog_requests)
 
         for author, segment in zip(
@@ -337,7 +386,10 @@ def _fetch_candidates(
     "--refresh",
     is_flag=True,
     default=False,
-    help="Rebuild the taste profile (refetches your library)",
+    help=(
+        "Rebuild the taste profile (refetches your library) and ignore "
+        "cached catalog pages"
+    ),
 )
 @filter_options(Scope.FOR_ME)
 @output_options("output", "json", "quiet", "show_url", "dry_run")
@@ -369,6 +421,7 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
     quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
     settings = _resolve_for_me_settings(ctx, flags)
     dc = _get_client(ctx.obj["locale"])
+    cache = _scan_cache(ctx, refresh)
 
     profile = None if refresh else taste.load_cached_profile()
     if dry_run:
@@ -382,7 +435,13 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
             raise click.ClickException(
                 "Could not derive a taste profile from your library."
             )
-        plan = _for_me_plan(profile, authors, genres, series)
+        plan = _for_me_plan(
+            profile,
+            authors,
+            genres,
+            series,
+            _cached_for_me_calls(ctx.obj["locale"], authors, genres, series, cache),
+        )
         if json_flag:
             click.echo(json.dumps(plan, indent=2, ensure_ascii=False, allow_nan=False))
         else:
@@ -416,6 +475,8 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
                 )
             profile = taste.build_profile(lib_products)
             taste.save_profile(profile)
+            if cache is not None:
+                cache.library_store(ctx.obj["locale"], (p.asin for p in lib_products))
             profile_message = (
                 f"Taste profile built from {len(lib_products)} books "
                 "(cached for 24h; --refresh to rebuild)."
@@ -439,8 +500,10 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
             series,
             owned,
             show_progress=not json_flag,
+            cache=cache,
         )
 
+    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
     _report_partial_series_outcomes(
         failures,
         incomplete,
@@ -529,6 +592,7 @@ def for_me(ctx, refresh, output, json_flag, quiet, show_url, dry_run, **flags):
             show_url=show_url,
             credit_price=credit_price,
             candidates=tuple(ranked_candidates),
+            cached_asins=cache.cached_asins() if cache is not None else frozenset(),
             session_spec=ResultSessionSpec(
                 producer="for-me",
                 locale=ctx.obj["locale"],

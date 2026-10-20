@@ -1,5 +1,6 @@
 {
   "api_calls": "int",
+  "cached_calls": "int",
   "catalog_call_limit": "int",
   "category": "str",
   "dry_run": "bool",

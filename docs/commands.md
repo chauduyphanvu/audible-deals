@@ -54,6 +54,21 @@ deals search --genre romance --max-price 3
 
 Use `--deep` to scan three catalog sort orders for broader coverage. It makes roughly three times as many API calls. Use `--dry-run` to preview the work without fetching anything.
 
+### Cached results
+
+`find`, `search`, `for-me` and `series` keep the catalog pages they fetch in `cache.db` for two hours, so repeating or tweaking a search (a different `--max-price`, `--sort` or filter over the same scan) costs no API calls. When a run used cached pages it says so and how old they are:
+
+```text
+Using cached results: prices up to 14 min old (8 of 10 pages). Add --refresh for live prices; cached prices are not added to your history.
+```
+
+- `--refresh` ignores the cache for that run and stores the fresh pages (`for-me --refresh` also rebuilds the taste profile).
+- `deals config set cache-ttl MINUTES` changes the lifetime; `0` turns the cache off (it also turns off the stored list of owned titles). `deals config reset cache-ttl` restores two hours.
+- Cached pages cost no API call: progress shows `N cached`, and `--dry-run` reports `cached_calls` and counts only the pages that would reach Audible in `api_calls` (and against the `--allow-large-scan` limit). The estimate looks up exact pages, so it only knows about a genre when the category list is stored.
+- Prices read from the cache are not recorded in your price history, the same rule `deals last` follows. Errors are never cached.
+- `track run`, `notify`, `watch`, `wishlist` and monitors always read live prices.
+- `--skip-owned` reuses the list of titles you own for 24 hours; `deals library` and `--refresh` update it.
+
 ### Filters
 
 | Flag | Purpose |
@@ -94,6 +109,7 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 | `--deep` | Scan three server-side sort orders |
 | `--subcategories` | Scan each resolved subcategory separately on `find` |
 | `--dry-run` | Preview sort orders, pages, and API calls |
+| `--refresh` | Ignore cached catalog pages and fetch live prices |
 | `--show-url` | Include Audible URLs in the table |
 | `-i, --interactive` | Browse the results interactively |
 | `--profile NAME` | Load a saved profile on `find` or `search` |
@@ -262,7 +278,7 @@ deals config reset max-price
 deals config reset
 ```
 
-Any filter with a numeric, text, or yes/no value can be a global default (`deals config set --help` lists the keys); release dates and the repeatable exclude filters are profile-only. Precedence is `explicit CLI > profile > global config > built-in default`. For `skip-plus` and `only-plus`, a higher layer's true value disables the lower opposite; false values follow normal precedence without conflicting. Both true in one layer is invalid. Setting either to `true` with `deals config set` removes and reports the opposite persisted key; setting it to `false` leaves the opposite key unchanged. Existing same-layer conflicts are diagnosed rather than silently rewritten. Set a default marketplace with `deals config set locale uk`.
+Any filter with a numeric, text, or yes/no value can be a global default (`deals config set --help` lists the keys); release dates and the repeatable exclude filters are profile-only. Precedence is `explicit CLI > profile > global config > built-in default`. For `skip-plus` and `only-plus`, a higher layer's true value disables the lower opposite; false values follow normal precedence without conflicting. Both true in one layer is invalid. Setting either to `true` with `deals config set` removes and reports the opposite persisted key; setting it to `false` leaves the opposite key unchanged. Existing same-layer conflicts are diagnosed rather than silently rewritten. Set a default marketplace with `deals config set locale uk`. `deals config set cache-ttl MINUTES` sets how long cached catalog pages are reused (see [Cached results](#cached-results)).
 
 ### Credit-aware recommendations
 
@@ -371,7 +387,7 @@ Everything the tool records for you lives in two SQLite databases (standard libr
 | Path | Contents |
 |------|----------|
 | `state.db` | Your records: per-marketplace price history (newest 365 entries per ASIN), the last result session, ASINs already seen for `--exclude-seen`, globally dismissed ASINs, recently surfaced products eligible for background refresh, monitor baselines, alert cooldowns, and background-tracking state and run history |
-| `cache.db` | Rebuildable data: category lists (7 days) and the `for-me` taste profile (24 hours). Safe to delete at any time |
+| `cache.db` | Rebuildable data: catalog pages (2 hours by default), the list of titles you own (24 hours), category lists and names (7 days) and the `for-me` taste profile (24 hours). Safe to delete at any time |
 
 ```bash
 deals cache info          # where data lives and how much is in each database

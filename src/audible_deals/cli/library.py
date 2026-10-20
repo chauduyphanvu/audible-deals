@@ -10,7 +10,12 @@ from pathlib import Path
 
 import click
 
-from audible_deals.cli.helpers import _currency, _get_client, _resolve_output_quiet
+from audible_deals.cli.helpers import (
+    _currency,
+    _get_client,
+    _resolve_output_quiet,
+    _scan_cache,
+)
 from audible_deals.client import DealsClient
 from audible_deals.filtering import filter_products, sort_local
 from audible_deals.presentation.products import display_products
@@ -224,6 +229,9 @@ def library(
     dc = _get_client(ctx.obj["locale"])
     with dc:
         all_products = fetch_library_with_progress(dc, show_progress=not json_flag)
+    # A full fetch is the freshest owned list there is; keep it for --skip-owned.
+    if (cache := _scan_cache(ctx, refresh=True)) is not None:
+        cache.library_store(ctx.obj["locale"], (p.asin for p in all_products))
     outcome = filter_products(
         all_products,
         FilterContext(

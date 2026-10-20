@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from unittest.mock import ANY
 
 from click.testing import CliRunner
 
@@ -416,7 +417,9 @@ class TestSeriesCommand:
         result = runner.invoke(cli, ["series"])
         assert result.exit_code == 0, result.output
         assert "Alpha Book 3" in result.output
-        mock_client.get_series_products_many.assert_called_once_with(["SER_ALPHA"])
+        mock_client.get_series_products_many.assert_called_once_with(
+            ["SER_ALPHA"], cache=ANY
+        )
         mock_client.search_pages.assert_not_called()
 
     def test_series_reports_partial_lookup_failures(self, tmp_config, mock_client):
@@ -530,7 +533,7 @@ class TestSeriesCommand:
         result = runner.invoke(cli, ["series"])
         assert result.exit_code == 0, result.output
         assert "Alpha Book 3" in result.output
-        mock_client.get_series_products_many.assert_called_once_with([])
+        mock_client.get_series_products_many.assert_called_once_with([], cache=ANY)
         assert mock_client.search_pages.call_count == 1
 
     def test_series_min_books_filters(self, tmp_config, mock_client):
@@ -593,7 +596,9 @@ class TestSeriesCommand:
         result = runner.invoke(cli, ["series", "--series", "Alpha"])
         assert result.exit_code == 0, result.output
 
-        mock_client.get_series_products_many.assert_called_once_with(["SER_ALPHA"])
+        mock_client.get_series_products_many.assert_called_once_with(
+            ["SER_ALPHA"], cache=ANY
+        )
         assert "Alpha Book 3" in result.output
 
     def test_series_skips_owned(self, tmp_config, mock_client):

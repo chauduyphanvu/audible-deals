@@ -89,11 +89,21 @@ def catalog_scan_progress(
         )
 
         def update(event: CatalogScanProgress) -> None:
-            progress.update(
-                task,
-                total=event.total,
-                completed=event.completed,
-                items=event.items,
-            )
+            if event.cached:
+                # Pages answered by the cache cost no API call; say so.
+                progress.update(
+                    task,
+                    total=event.total,
+                    completed=event.completed,
+                    items=event.items,
+                    description=f"{safe_markup(description)} · {event.cached} cached",
+                )
+            else:
+                progress.update(
+                    task,
+                    total=event.total,
+                    completed=event.completed,
+                    items=event.items,
+                )
 
         yield update

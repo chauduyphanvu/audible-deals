@@ -13,8 +13,10 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _report_cache_use,
     _report_partial_series_outcomes,
     _resolve_output_quiet,
+    _scan_cache,
 )
 from audible_deals.cli.options import filter_options, output_options, scope_values
 from audible_deals.client import CatalogSearchRequest, DealsClient
@@ -41,6 +43,7 @@ from audible_deals.result_publication import (
     record_prices_safely,
 )
 from audible_deals.results_cache import load_dismissed_asins
+from audible_deals.scan_cache import ScanCache
 from audible_deals.serialization import validate_export_path
 from audible_deals.series_identity import (
     group_series_books,
@@ -95,6 +98,7 @@ def _fetch_series_candidates(
     *,
     pages: int,
     show_progress: bool = True,
+    cache: ScanCache | None = None,
 ) -> tuple[list[Product], dict[str, tuple[str, ...]], tuple[str, ...], tuple[str, ...]]:
     """Fetch catalog entries for each invested series, skipping owned books.
 
@@ -122,6 +126,7 @@ def _fetch_series_candidates(
                 sort_by="Relevance",
                 max_pages=pages,
                 optional=True,
+                cache=cache,
             )
         )
     with create_scan_progress(disable=not show_progress) as progress:
@@ -131,7 +136,8 @@ def _fetch_series_candidates(
             items=0,
         )
         direct_batch = dc.get_series_products_many(
-            [series_asin for series_asin in series_asins if series_asin]
+            [series_asin for series_asin in series_asins if series_asin],
+            cache=cache,
         )
         fallback_results = dc.search_segments(fallback_requests)
         fallback_by_index = dict(zip(fallback_indices, fallback_results, strict=True))
@@ -299,7 +305,7 @@ def _series_gaps_report(
     help="Filter to a specific series name (substring match)",
 )
 @filter_options(Scope.SERIES)
-@output_options("output", "json", "quiet", "interactive")
+@output_options("output", "json", "quiet", "refresh", "interactive")
 @click.option(
     "--gaps",
     "gaps_mode",
@@ -316,6 +322,7 @@ def series(
     output,
     json_flag,
     quiet,
+    refresh,
     interactive,
     gaps_mode,
     **flags,
@@ -380,6 +387,7 @@ def series(
     dc = _get_client(ctx.obj["locale"])
     cur = _currency(ctx)
     dismissed_asins = load_dismissed_asins()
+    cache = _scan_cache(ctx, refresh)
 
     with dc:
         # 1. Fetch library
@@ -387,6 +395,8 @@ def series(
             console.print("[dim]Fetching library...[/dim]")
         lib_products = dc.get_library()
         owned_asins = {p.asin for p in lib_products}
+        if cache is not None:
+            cache.library_store(ctx.obj["locale"], owned_asins)
 
         # 2. Identify invested series (user owns min_books+ books)
         invested = _invested_series(
@@ -428,9 +438,11 @@ def series(
                 owned_asins,
                 pages=pages,
                 show_progress=not json_flag,
+                cache=cache,
             )
         )
 
+    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
     _report_partial_series_outcomes(
         failures,
         incomplete,
@@ -470,7 +482,8 @@ def series(
 
     if gaps_mode:
         # Keep history without caching or applying the flat-view limit.
-        record_prices_safely(list(result.products))
+        cached = cache.cached_asins() if cache is not None else frozenset()
+        record_prices_safely([p for p in result.products if p.asin not in cached])
         _series_gaps_report(
             list(result.products),
             invested_sorted,
@@ -494,6 +507,7 @@ def series(
             interactive=interactive,
             credit_price=_credit_price(ctx),
             candidates=tuple(eligible_candidates),
+            cached_asins=cache.cached_asins() if cache is not None else frozenset(),
             session_spec=ResultSessionSpec(
                 producer="series",
                 locale=ctx.obj["locale"],

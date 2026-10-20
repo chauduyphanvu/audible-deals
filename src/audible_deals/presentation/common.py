@@ -21,6 +21,18 @@ def rating_str(rating: float, num_ratings: int = 0) -> str:
     return f"{rating:.1f}{suffix}"
 
 
+def age_str(seconds: float) -> str:
+    """A rough, human age: ``under a minute``, ``14 min``, ``3 h``, ``2 days``."""
+    seconds = max(0.0, seconds)
+    if seconds < 60:
+        return "under a minute"
+    if seconds < 2 * 3600:
+        return f"{round(seconds / 60)} min"
+    if seconds < 2 * 86400:
+        return f"{round(seconds / 3600)} h"
+    return f"{round(seconds / 86400)} days"
+
+
 def discount_str(pct: int | None) -> str:
     if pct is None or pct <= 0:
         return ""

@@ -112,6 +112,7 @@ _OUTPUT_HELP = {
     "show_url": "Show Audible URL for each item in the table",
     "dry_run": "Show what would be scanned without making API calls",
     "interactive": "Browse results interactively",
+    "refresh": "Ignore cached catalog pages and fetch live prices",
     "profile": "Load a saved search profile (overrides defaults, CLI flags take precedence)",
 }
 
@@ -122,8 +123,8 @@ def output_options(
     """Decorator adding the output/run options that are not filters.
 
     *names* picks from ``output``, ``json``, ``quiet``, ``show_url``,
-    ``dry_run``, ``interactive`` (the plain ``-i`` flag of commands without a
-    persisted preference) and ``profile``. ``validate_output_early`` checks the
+    ``dry_run``, ``refresh``, ``interactive`` (the plain ``-i`` flag of
+    commands without a persisted preference) and ``profile``. ``validate_output_early`` checks the
     ``-o`` path while parsing instead of in the command body.
     """
     unknown = set(names) - set(_OUTPUT_HELP)
@@ -163,6 +164,12 @@ def output_options(
             is_flag=True,
             default=False,
             help=_OUTPUT_HELP["dry_run"],
+        ),
+        "refresh": lambda: click.option(
+            "--refresh",
+            is_flag=True,
+            default=False,
+            help=_OUTPUT_HELP["refresh"],
         ),
         "interactive": lambda: click.option(
             "--interactive",

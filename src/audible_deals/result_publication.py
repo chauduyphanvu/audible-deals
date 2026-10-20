@@ -61,10 +61,13 @@ class ResultPublicationRequest:
     show_url: bool = False
     credit_price: float | None = None
     candidates: tuple[Product, ...] = ()
+    #: Products whose price came from the cache; their prices are not history.
+    cached_asins: frozenset[str] = frozenset()
     json_writer: Callable[[str], object] = print
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "candidates", tuple(self.candidates))
+        object.__setattr__(self, "cached_asins", frozenset(self.cached_asins))
 
 
 @dataclass(frozen=True)
@@ -162,7 +165,11 @@ def publish_discovery(
 
     def commit_presentation() -> None:
         observation_date = datetime.datetime.fromisoformat(session.timestamp).date()
-        record_prices_safely(surfaced, observation_date=observation_date)
+        # A price read from the cache is old news, not today's observation.
+        record_prices_safely(
+            [p for p in surfaced if p.asin not in request.cached_asins],
+            observation_date=observation_date,
+        )
         mark_refresh_eligible_safely(surfaced)
         try:
             save_result_session(session)

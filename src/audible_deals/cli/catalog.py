@@ -10,9 +10,11 @@ import click
 
 from audible_deals.catalog_workflow import (
     CatalogQueryError,
+    ScanReport,
     bind_catalog_categories,
     build_find_scan_plan,
     build_search_scan_plan,
+    estimate_cached_calls,
     execute_catalog_scan,
     normalized_search_text,
 )
@@ -20,11 +22,15 @@ from audible_deals.cli.helpers import (
     _CL,
     _credit_price,
     _currency,
+    _estimated_cached_calls,
     _get_client,
     _load_profile,
+    _report_cache_use,
+    _report_interruption,
     _resolve_categories,
     _resolve_output_quiet,
     _resolve_skip_snapshots,
+    _scan_cache,
 )
 from audible_deals.cli.options import (
     filter_options,
@@ -68,8 +74,11 @@ from audible_deals.settings import (
 logger = logging.getLogger(__name__)
 
 
-def _enforce_catalog_call_limit(plan, allow_large_scan: bool) -> None:
-    estimate = plan.total_calls
+def _enforce_catalog_call_limit(
+    plan, allow_large_scan: bool, *, cached_calls: int = 0
+) -> None:
+    """Refuse a scan over the call cap; pages a stored copy answers are free."""
+    estimate = None if plan.total_calls is None else plan.total_calls - cached_calls
     if (
         estimate is not None
         and estimate > MAX_CATALOG_CALLS_PER_SCAN
@@ -178,6 +187,7 @@ def _search_title(queries: list[str], category_name: str) -> str:
     "show_url",
     "profile",
     "dry_run",
+    "refresh",
     validate_output_early=True,
 )
 @click.pass_context
@@ -192,6 +202,7 @@ def search(
     show_url,
     profile_name,
     dry_run,
+    refresh,
     **flags,
 ):
     """Search the Audible catalog by keyword."""
@@ -218,6 +229,10 @@ def search(
         raise click.UsageError(str(exc)) from None
     queries = list(plan.queries)
     credit_price = _credit_price(ctx)
+    cache = _scan_cache(ctx, refresh)
+    cached_calls = _estimated_cached_calls(
+        ctx, plan, cache, genre=effective_genre, category=category
+    )
 
     if dry_run:
         requested_category = category or effective_genre
@@ -233,14 +248,16 @@ def search(
                 limit=s.limit,
                 profile_name=profile_name,
                 active_filters=tuple(active_filter_labels(s)),
+                cached_calls=cached_calls,
             ),
             json_flag=json_flag,
             json_writer=click.echo,
         )
         return
 
-    _enforce_catalog_call_limit(plan, allow_large_scan)
+    _enforce_catalog_call_limit(plan, allow_large_scan, cached_calls=cached_calls)
     dc = _get_client(ctx.obj["locale"])
+    scan_report = ScanReport()
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
@@ -248,7 +265,7 @@ def search(
         )
 
         skip_asins, owned_snapshot, seen_snapshot, dismissed_snapshot = (
-            _resolve_skip_snapshots(dc, s.skip_owned, s.exclude_seen)
+            _resolve_skip_snapshots(dc, s.skip_owned, s.exclude_seen, cache)
         )
 
         plan = bind_catalog_categories(plan, [category])
@@ -258,7 +275,16 @@ def search(
             else f"Searching {len(queries)} queries"
         )
         with catalog_scan_progress(plan, description, disable=json_flag) as progress:
-            all_products = execute_catalog_scan(dc, plan, progress)
+            all_products = execute_catalog_scan(
+                dc,
+                plan,
+                progress,
+                cache=cache,
+                report=scan_report,
+                allow_partial=True,
+            )
+    _report_interruption(scan_report, json_flag=json_flag)
+    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
 
     cur = _currency(ctx)
     search_title = _search_title(queries, category_name)
@@ -285,6 +311,7 @@ def search(
             show_url=show_url,
             credit_price=credit_price,
             candidates=tuple(all_products),
+            cached_asins=cache.cached_asins() if cache is not None else frozenset(),
             session_spec=ResultSessionSpec(
                 producer="search",
                 locale=ctx.obj["locale"],
@@ -327,6 +354,8 @@ def search(
                 f"\n  [dim]Tip: Use --author '{safe_markup(author_query)}' "
                 "for exact author filtering.[/dim]"
             )
+    if scan_report.interrupted:
+        ctx.exit(130)
 
 
 @click.command()
@@ -351,6 +380,7 @@ def search(
     "show_url",
     "profile",
     "dry_run",
+    "refresh",
     validate_output_early=True,
 )
 @click.pass_context
@@ -365,6 +395,7 @@ def find(
     show_url,
     profile_name,
     dry_run,
+    refresh,
     **flags,
 ):
     """Find deals: browse the catalog filtered by price and genre.
@@ -411,6 +442,14 @@ def find(
         pages=s.pages,
     )
     credit_price = _credit_price(ctx)
+    cache = _scan_cache(ctx, refresh)
+    cached_calls = (
+        0
+        if subcategories
+        else _estimated_cached_calls(
+            ctx, plan, cache, genre=effective_genre, category=category
+        )
+    )
     if dry_run:
         requested_category = category or effective_genre
         render_catalog_dry_run(
@@ -424,6 +463,7 @@ def find(
                 limit=s.limit,
                 profile_name=profile_name,
                 active_filters=tuple(active_filter_labels(s)),
+                cached_calls=cached_calls,
             ),
             json_flag=json_flag,
             json_writer=click.echo,
@@ -431,8 +471,9 @@ def find(
         return
 
     if not subcategories:
-        _enforce_catalog_call_limit(plan, allow_large_scan)
+        _enforce_catalog_call_limit(plan, allow_large_scan, cached_calls=cached_calls)
     dc = _get_client(ctx.obj["locale"])
+    scan_report = ScanReport()
 
     with dc:
         category, category_name, exclude_category_ids = _resolve_categories(
@@ -445,7 +486,7 @@ def find(
             child_ids = [c["id"] for c in children if c.get("id")]
 
         skip_asins, owned_snapshot, seen_snapshot, dismissed_snapshot = (
-            _resolve_skip_snapshots(dc, s.skip_owned, s.exclude_seen)
+            _resolve_skip_snapshots(dc, s.skip_owned, s.exclude_seen, cache)
         )
 
         desc_parts = []
@@ -472,9 +513,22 @@ def find(
 
         plan = bind_catalog_categories(plan, scan_category_ids)
         if subcategories:
-            _enforce_catalog_call_limit(plan, allow_large_scan)
+            _enforce_catalog_call_limit(
+                plan,
+                allow_large_scan,
+                cached_calls=estimate_cached_calls(plan, ctx.obj["locale"], cache),
+            )
         with catalog_scan_progress(plan, description, disable=json_flag) as progress:
-            all_products = execute_catalog_scan(dc, plan, progress)
+            all_products = execute_catalog_scan(
+                dc,
+                plan,
+                progress,
+                cache=cache,
+                report=scan_report,
+                allow_partial=True,
+            )
+    _report_interruption(scan_report, json_flag=json_flag)
+    _report_cache_use(cache, json_flag=json_flag, quiet=quiet)
 
     cur = _currency(ctx)
     find_title = f"Deals under {cur}{s.max_price:.2f}"
@@ -505,6 +559,7 @@ def find(
             show_url=show_url,
             credit_price=credit_price,
             candidates=tuple(all_products),
+            cached_asins=cache.cached_asins() if cache is not None else frozenset(),
             session_spec=ResultSessionSpec(
                 producer="find",
                 locale=ctx.obj["locale"],
@@ -543,3 +598,5 @@ def find(
             json_writer=click.echo,
         )
     )
+    if scan_report.interrupted:
+        ctx.exit(130)

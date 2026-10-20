@@ -20,9 +20,17 @@ class CatalogDryRunSummary:
     limit: int | None
     profile_name: str | None
     active_filters: tuple[str, ...]
+    #: Page requests a stored copy would answer (they cost no API call).
+    cached_calls: int = 0
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "active_filters", tuple(self.active_filters))
+
+    @property
+    def api_calls(self) -> int | None:
+        """Requests that would reach Audible: the plan minus the cached pages."""
+        total = self.plan.total_calls
+        return None if total is None else max(0, total - self.cached_calls)
 
     def to_dict(self) -> dict:
         plan = self.plan
@@ -38,12 +46,13 @@ class CatalogDryRunSummary:
             "sort_orders": list(plan.sort_orders),
             "pages_per_sort": plan.pages,
             "max_items": plan.max_items,
-            "api_calls": plan.total_calls,
+            "api_calls": self.api_calls,
+            "cached_calls": self.cached_calls,
             "catalog_call_limit": MAX_CATALOG_CALLS_PER_SCAN,
             "requires_large_scan_override": (
                 None
-                if plan.total_calls is None
-                else plan.total_calls > MAX_CATALOG_CALLS_PER_SCAN
+                if self.api_calls is None
+                else self.api_calls > MAX_CATALOG_CALLS_PER_SCAN
             ),
         }
 
@@ -88,8 +97,14 @@ def render_catalog_dry_run(
         console.print("  API calls: unknown (depends on subcategory count)")
     else:
         console.print(f"  Max items: ~{plan.max_items}")
-        console.print(f"  API calls: {plan.total_calls}")
-        if plan.total_calls > MAX_CATALOG_CALLS_PER_SCAN:
+        cached_note = (
+            f" ({summary.cached_calls} cached)" if summary.cached_calls else ""
+        )
+        console.print(f"  API calls: {summary.api_calls}{cached_note}")
+        if (
+            summary.api_calls is not None
+            and summary.api_calls > MAX_CATALOG_CALLS_PER_SCAN
+        ):
             console.print(
                 "  [yellow]Warning: a live run requires --allow-large-scan "
                 f"(limit: {MAX_CATALOG_CALLS_PER_SCAN} calls).[/yellow]"
