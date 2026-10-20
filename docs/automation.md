@@ -223,6 +223,16 @@ deals notify \
 
 Microsoft retired the Office 365 connectors that took MessageCards; the replacement is a Workflows webhook ("When a Teams webhook request is received"), which expects an Adaptive Card. `--webhook-format teams` now sends that. Payload shapes for every format are pinned by the captured requests in `tests/fixtures/webhooks`.
 
+### Known limits
+
+Webhook services cap the size of one message, and `deals` does not split or shorten a payload: a notification with a very long list of hits can be rejected by the service.
+
+- **Discord** accepts at most 2000 characters in a message, which is roughly 15 to 20 hits.
+- **ntfy** accepts a message body of up to 4096 bytes.
+- **Slack** (about 40,000 characters) and **Teams** (about 28 KB per card) are far less likely to be reached.
+
+A rejected delivery is not lost: the run is recorded as failed (`deals track status` shows the error), the alert is not marked as sent, and the next run tries again. If you routinely have this many titles at target, tighten the targets, use `--cooldown` so each title is reported once, or use the `generic` format and let your own receiver do the splitting.
+
 ### Authentication headers
 
 Add repeatable headers for services such as Home Assistant, n8n, or a private endpoint:
