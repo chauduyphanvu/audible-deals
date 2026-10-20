@@ -67,13 +67,24 @@ CATALOG_CACHE_DEFAULT_TTL_MINUTES = 120
 CATALOG_CACHE_MAX_TTL_MINUTES = 7 * 24 * 60
 LIBRARY_CACHE_TTL = 86400  # the cached list of owned titles
 
+# What parse_product reads, and the response group that carries it:
+#   product_attrs        title, subtitle, publisher_name, runtime_length_min,
+#                        language, release_date
+#   contributors         authors, narrators
+#   rating               rating
+#   category_ladders     category_ladders
+#   series               series
+#   product_plan_details, product_plans   plans (Audible Plus)
+#   price                price, list_price
+# The description group (publisher/merchandising summaries) and the media
+# group (images, sample URLs) are large and nothing here displays or stores
+# them, so they are not requested. tests/test_product_fields.py fails when the
+# parser starts reading a field outside this list.
 CATALOG_RESPONSE_GROUPS = ",".join(
     [
         "product_attrs",
-        "product_desc",
         "contributors",
         "rating",
-        "media",
         "category_ladders",
         "series",
         "product_plan_details",
