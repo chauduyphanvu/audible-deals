@@ -413,6 +413,98 @@ def test_config_secrets_are_redacted_unless_explicitly_requested(
     assert "<redacted>" in set_hidden.output
 
 
+SECRET_VALUES = (
+    "hunter2",  # a header value
+    "a:b:c",  # a header value with colons in it
+    "tok-123",  # the webhook's token
+)
+
+
+def test_text_and_json_config_output_share_one_redaction_rule():
+    from audible_deals import json_output
+    from audible_deals.cli.config import _config_value
+
+    headers = [
+        "Authorization: Bearer hunter2",
+        "X-Token: a:b:c",
+        "no colon here",
+        7,
+    ]
+    cases = [
+        ("webhook", "https://example.com/tok-123"),
+        ("webhook_headers", headers),
+        ("webhook_headers", "Authorization: Bearer hunter2"),
+        ("webhook_headers", ["keyring:webhook_headers"]),
+        ("webhook", "keyring:webhook"),
+        ("webhook_headers", []),
+    ]
+    for key, value in cases:
+        shown = json_output.redact_config_value(key, value)
+        text = _config_value(key, value, False)
+        assert json_output.redact_config({key: value}) == {key: shown}
+        assert text == (shown if isinstance(shown, str) else repr(shown))
+        for secret in SECRET_VALUES:
+            assert secret not in text and secret not in json.dumps(shown)
+    # other keys are untouched in both
+    assert json_output.redact_config_value("max_price", 5) == 5
+    assert _config_value("max_price", 5, False) == "5"
+
+
+@pytest.mark.parametrize("mode", ["file", "keyring"])
+def test_no_config_command_prints_a_header_value_or_secret_in_either_format(
+    tmp_config, monkeypatch, mode
+):
+    from audible_deals import secret_store
+
+    monkeypatch.setattr(
+        "audible_deals.validation.validate_webhook_url", lambda _value: None
+    )
+    vault = {}
+    monkeypatch.setattr(
+        secret_store, "put", lambda account, value: vault.update({account: value})
+    )
+    monkeypatch.setattr(secret_store, "get", lambda account: vault.get(account))
+    monkeypatch.setattr(
+        secret_store, "remove", lambda account: vault.pop(account, None)
+    )
+    monkeypatch.setattr(secret_store, "ensure_available", lambda: None)
+    runner = CliRunner()
+    if mode == "keyring":
+        paths.config_file().write_text(json.dumps({"secret_storage": "keyring"}))
+    outputs = [
+        runner.invoke(cli, ["config", "set", "webhook", "https://example.com/tok-123"]),
+        runner.invoke(
+            cli,
+            ["config", "set", "webhook_headers", "Authorization: Bearer hunter2"],
+        ),
+        runner.invoke(
+            cli, ["config", "set", "webhook_headers", "X-Token: a:b:c", "--yes"]
+        ),
+    ]
+    for args in (
+        ["config", "list"],
+        ["config", "list", "--json"],
+        ["config", "get", "webhook"],
+        ["config", "get", "webhook", "--json"],
+        ["config", "get", "webhook_headers"],
+        ["config", "get", "webhook_headers", "--json"],
+    ):
+        outputs.append(runner.invoke(cli, args))
+
+    for result in outputs:
+        assert result.exit_code == 0, result.output
+        combined = result.stdout + result.stderr
+        for secret in SECRET_VALUES + ("example.com",):
+            assert secret not in combined, (secret, combined)
+    if mode == "keyring":
+        assert vault  # the secrets really are in the (fake) keychain
+        stored = " ".join(vault.values())
+        assert "tok-123" in stored
+        assert not any(
+            secret in paths.config_file().read_text() for secret in SECRET_VALUES
+        )
+
+
 def test_config_and_profile_transactions_preserve_concurrent_updates(
     tmp_config, monkeypatch
 ):

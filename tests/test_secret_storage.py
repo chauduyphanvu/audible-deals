@@ -519,6 +519,26 @@ class TestWebhookSecrets:
         assert json.loads(request["body"])["count"] == 1
         assert "hunter2" not in paths.config_file().read_text()
 
+    def test_a_keychain_failure_in_a_track_run_is_recorded_in_its_history(
+        self, tmp_config, vault, mock_client
+    ):
+        save_config(
+            {
+                "secret_storage": "keyring",
+                "webhook_allow_private": True,
+                "webhook": "keyring:webhook",  # the keychain has no such entry
+            }
+        )
+
+        result = run("track", "run")
+        status = json.loads(run("track", "status", "--json", "--history").stdout)
+
+        assert result.exit_code == 1
+        assert "keychain has no entry" in result.stderr
+        assert status["last_run"]["error"].startswith("SecretStoreError: ")
+        assert "keychain has no entry" in status["last_run"]["error"]
+        assert len(status["history"]) == 1
+
     def test_a_monitor_webhook_is_a_reference_and_is_cleaned_up(
         self, tmp_config, vault
     ):
@@ -543,6 +563,109 @@ class TestWebhookSecrets:
         run("monitor", "remove", "cheap", "-y")
 
         assert vault.accounts() == []
+
+    def test_a_rejected_monitor_add_never_touches_an_existing_monitors_secret(
+        self, tmp_config, vault
+    ):
+        save_config({"secret_storage": "keyring", "webhook_allow_private": True})
+        first = run(
+            "monitor",
+            "add",
+            "cheap",
+            "--query",
+            "a",
+            "--webhook",
+            "http://127.0.0.1:9/first",
+        )
+        assert first.exit_code == 0, first.output
+
+        again = run(
+            "monitor",
+            "add",
+            "cheap",
+            "--query",
+            "b",
+            "--webhook",
+            "http://127.0.0.1:9/second",
+        )
+
+        assert again.exit_code == 1
+        assert "already exists" in again.stderr
+        assert secret_store.get("monitor:cheap:webhook") == "http://127.0.0.1:9/first"
+        assert vault.accounts() == ["monitor:cheap:webhook"]
+
+    def test_an_over_budget_monitor_add_writes_no_secret(
+        self, tmp_config, vault, monkeypatch
+    ):
+        import audible_deals.cli.monitor as cli_monitor
+
+        save_config({"secret_storage": "keyring", "webhook_allow_private": True})
+        monkeypatch.setattr(cli_monitor, "MAX_MONITOR_API_CALLS_PER_RUN", 0)
+
+        result = run(
+            "monitor",
+            "add",
+            "big",
+            "--query",
+            "a",
+            "--webhook",
+            "http://127.0.0.1:9/hook",
+        )
+
+        assert result.exit_code == 2
+        assert vault.accounts() == []
+        assert load_monitors() == {}
+
+    def test_a_busy_run_lock_writes_no_secret(self, tmp_config, vault, monkeypatch):
+        from audible_deals import monitor_service
+        from audible_deals.locking import LockHeldError
+
+        save_config({"secret_storage": "keyring", "webhook_allow_private": True})
+
+        def busy():
+            raise LockHeldError("held")
+
+        monkeypatch.setattr(monitor_service, "run_lock", busy)
+
+        result = run(
+            "monitor",
+            "add",
+            "x",
+            "--query",
+            "a",
+            "--webhook",
+            "http://127.0.0.1:9/hook",
+        )
+
+        assert result.exit_code == 1
+        assert "Another run is in progress" in result.stderr
+        assert vault.accounts() == []
+
+    def test_a_failed_save_takes_the_new_secret_back_out_of_the_keychain(
+        self, tmp_config, vault, monkeypatch
+    ):
+        from audible_deals import monitor_service
+
+        save_config({"secret_storage": "keyring", "webhook_allow_private": True})
+
+        def broken(monitors):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(monitor_service, "save_monitors", broken)
+
+        result = run(
+            "monitor",
+            "add",
+            "x",
+            "--query",
+            "a",
+            "--webhook",
+            "http://127.0.0.1:9/hook",
+        )
+
+        assert result.exit_code == 1
+        assert vault.accounts() == []
+        assert load_monitors() == {}
 
     def test_monitor_alerts_are_sent_to_the_resolved_url(self, tmp_config, vault):
         from audible_deals.automation_models import MonitorDefinition, MonitorEvent
@@ -655,6 +778,42 @@ class TestSwitching:
         assert restored == original_config
         assert load_monitors() == original_monitors
         assert vault.items == {}  # nothing is left behind in the keychain
+
+    def test_back_to_files_removes_the_entries_the_references_name(
+        self, tmp_config, vault
+    ):
+        """Hand-renamed references: the keychain entry to delete is the one named."""
+        save_config(
+            {
+                "secret_storage": "keyring",
+                "webhook": "keyring:my-hook",
+                "webhook_headers": ["keyring:my-headers"],
+            }
+        )
+        secret_store.put("my-hook", WEBHOOK)
+        secret_store.put("my-headers", json.dumps([HEADER]))
+        secret_store.put("monitor:old-name:webhook", WEBHOOK + "/monitor")
+        paths.monitors_file().write_text(
+            json.dumps(
+                {
+                    "cheap": {
+                        "name": "cheap",
+                        "mode": "search",
+                        "query": "q",
+                        "webhook": "keyring:monitor:old-name:webhook",
+                    }
+                }
+            )
+        )
+
+        result = run("config", "set", "secret-storage", "file", "-y")
+
+        assert result.exit_code == 0, result.output
+        assert load_config()["webhook"] == WEBHOOK
+        assert load_config()["webhook_headers"] == [HEADER]
+        assert load_monitors()["cheap"]["webhook"] == WEBHOOK + "/monitor"
+        assert vault.accounts() == []  # nothing is left behind
+        assert "left in the keychain" not in result.output
 
     def test_it_asks_first_and_declining_changes_nothing(self, tmp_config, vault):
         original_auth = seed_everything(tmp_config)

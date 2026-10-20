@@ -9,6 +9,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
+from audible_deals import secret_store
 from audible_deals.automation_models import (
     MonitorDefinition,
     MonitorEvent,
@@ -304,13 +305,33 @@ def select_monitors_for_run(monitors: dict[str, dict], cursor: int) -> MonitorSe
     return MonitorSelection(tuple(selected), next_cursor)
 
 
-def add_monitor(definition: MonitorDefinition) -> None:
+def add_monitor(
+    definition: MonitorDefinition,
+    *,
+    protect_webhook: Callable[[str], str] | None = None,
+) -> None:
+    """Save a new monitor.
+
+    ``protect_webhook`` turns the webhook URL into what the file should hold (in
+    keyring mode it stores the URL in the keychain and returns the reference). It
+    runs last, once the name is known to be free, so a monitor that is refused
+    never writes (or overwrites) a keychain entry, and the entry is taken back out
+    if the monitors file cannot be saved.
+    """
     with run_lock():
         monitors = load_monitors_for_update()
         if definition.name in monitors:
             raise MonitorExistsError(f"Monitor '{definition.name}' already exists.")
-        monitors[definition.name] = definition.to_dict()
-        save_monitors(monitors)
+        stored = definition
+        if protect_webhook is not None and definition.webhook:
+            stored = replace(definition, webhook=protect_webhook(definition.webhook))
+        monitors[definition.name] = stored.to_dict()
+        try:
+            save_monitors(monitors)
+        except BaseException:
+            if stored.webhook != definition.webhook:
+                secret_store.discard(stored.webhook)
+            raise
         delete_monitor_state(definition.name)
 
 

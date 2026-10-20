@@ -246,15 +246,7 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
         "query": query or "",
         "profile": profile_name,
         "settings": settings_to_dict(settings),
-        "webhook": (
-            secret_store.protect(
-                webhook,
-                secret_store.monitor_account(name),
-                mode=secret_store.mode_of(ctx.obj.get("config")),
-            )
-            if webhook
-            else webhook
-        ),
+        "webhook": webhook,  # the keychain only learns it once the add is certain
         "webhook_format": webhook_format,
         "created_at": datetime.datetime.now().isoformat(timespec="seconds"),
     }
@@ -263,8 +255,14 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
         raise click.UsageError(
             f"Monitor would use {estimate} catalog calls; limit is {MAX_MONITOR_API_CALLS_PER_RUN} per run."
         )
+    storage_mode = secret_store.mode_of(ctx.obj.get("config"))
     try:
-        add_monitor(MonitorDefinition.from_dict(definition))
+        add_monitor(
+            MonitorDefinition.from_dict(definition),
+            protect_webhook=lambda url: secret_store.protect(
+                url, secret_store.monitor_account(name), mode=storage_mode
+            ),
+        )
     except LockHeldError as exc:
         raise click.ClickException(
             f"Another run is in progress, try again: {exc}"

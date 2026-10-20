@@ -241,20 +241,10 @@ def _with_secrets(cfg: dict) -> dict:
 
 
 def _config_value(key: str, value, show_secrets: bool) -> str:
-    if show_secrets or key not in {"webhook", "webhook_headers"}:
+    if show_secrets or key not in json_output.SECRET_CONFIG_KEYS:
         return repr(value)
-    if key == "webhook":
-        return "<redacted>"
-    if not isinstance(value, (list, tuple)):
-        return "<redacted>"
-    names = []
-    for item in value:
-        if not isinstance(item, str):
-            continue
-        name, separator, _ = item.partition(":")
-        if separator and name.strip():
-            names.append(f"{name.strip()}: <redacted>")
-    return repr(names) if names else "<redacted>"
+    shown = json_output.redact_config_value(key, value)  # same rule as --json
+    return shown if isinstance(shown, str) else repr(shown)
 
 
 @config_cmd.command("reset")

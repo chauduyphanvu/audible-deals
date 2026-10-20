@@ -211,6 +211,13 @@ def _to_keychain(plan: Plan) -> Report:
     return report
 
 
+def _referenced(value: object, default: str) -> str:
+    """The account the reference *value* (a string or a one-item list) names."""
+    if isinstance(value, list) and len(value) == 1:
+        value = value[0]
+    return secret_store.reference_account(value) or default
+
+
 def _to_files(plan: Plan) -> Report:
     report = Report("file")
     if plan.count:
@@ -229,10 +236,26 @@ def _to_files(plan: Plan) -> Report:
             )
     webhook_value = secret_store.resolve(webhook) if plan.webhook else None
     headers_value = secret_store.resolve(headers) if plan.headers else None
+    stored_monitors = load_monitors()
     monitor_hooks = {
-        name: secret_store.resolve(load_monitors()[name]["webhook"])
+        name: secret_store.resolve(stored_monitors[name]["webhook"])
         for name in plan.monitors
     }
+    # The entries to delete afterwards are the ones the references name (a
+    # reference edited by hand need not follow the usual account naming).
+    accounts = []
+    if plan.auth:
+        accounts.append(secret_store.AUTH_ACCOUNT)
+    if plan.webhook:
+        accounts.append(_referenced(webhook, secret_store.WEBHOOK_ACCOUNT))
+    if plan.headers:
+        accounts.append(_referenced(headers, secret_store.HEADERS_ACCOUNT))
+    accounts += [
+        _referenced(
+            stored_monitors[name]["webhook"], secret_store.monitor_account(name)
+        )
+        for name in plan.monitors
+    ]
 
     # 2. Write the files.
     with run_lock():
@@ -258,14 +281,6 @@ def _to_files(plan: Plan) -> Report:
             save_monitors(monitors)
 
     # 3. The keychain copies are no longer referenced: remove them.
-    accounts = []
-    if plan.auth:
-        accounts.append(secret_store.AUTH_ACCOUNT)
-    if plan.webhook:
-        accounts.append(secret_store.WEBHOOK_ACCOUNT)
-    if plan.headers:
-        accounts.append(secret_store.HEADERS_ACCOUNT)
-    accounts += [secret_store.monitor_account(name) for name in plan.monitors]
     for account in accounts:
         try:
             secret_store.remove(account)

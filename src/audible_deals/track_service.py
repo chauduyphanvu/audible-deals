@@ -65,6 +65,8 @@ class TrackRuntime:
     load_notify_state: Callable[[], dict] = load_notify_state
     save_notify_state: Callable[[dict], None] = save_notify_state
     lock: Callable = run_lock
+    #: Completes the request just before the run, inside the recorded section.
+    prepare_request: Callable[[TrackRunRequest], TrackRunRequest] | None = None
     #: Called once the run lock is held, before any work (log rotation).
     on_start: Callable[[], object] = lambda: None
     today: Callable[[], datetime.date] = datetime.date.today
@@ -289,8 +291,17 @@ def _run_locked(
 
 
 def run_track(request: TrackRunRequest, runtime: TrackRuntime) -> TrackRunResult:
+    """One tracked run; every failure is written to the run history first.
+
+    ``runtime.prepare_request`` completes the request just before the run (the
+    CLI opens the webhook's keychain references there). It runs inside the
+    recorded section, so a failure in it, a locked keychain say, is recorded like
+    any other; the request used for that record is the one without secrets.
+    """
     started = runtime.monotonic()
     try:
+        if runtime.prepare_request is not None:
+            request = runtime.prepare_request(request)
         with runtime.lock():
             runtime.on_start()
             return _run_locked(request, runtime, runtime.load_track_state(), started)

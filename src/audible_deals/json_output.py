@@ -205,24 +205,34 @@ def plain(value: Any) -> Any:
 # -- config and profiles -----------------------------------------------------
 
 
+#: The config keys whose values are secrets (a URL carries its token; headers carry theirs).
+SECRET_CONFIG_KEYS = frozenset({"webhook", "webhook_headers"})
+
+
+def redact_config_value(key: str, value: Any) -> Any:
+    """What may be shown of the config setting *key*: never a secret.
+
+    A webhook is ``<redacted>``; the headers keep their names (``Name: <redacted>``).
+    The one place that decides this, for ``config`` text output and ``--json`` alike.
+    Other keys are returned unchanged.
+    """
+    if key == "webhook":
+        return _REDACTED
+    if key == "webhook_headers":
+        names = []
+        if isinstance(value, (list, tuple)):
+            for item in value:
+                if isinstance(item, str):
+                    name, separator, _ = item.partition(":")
+                    if separator and name.strip():
+                        names.append(f"{name.strip()}: {_REDACTED}")
+        return names or _REDACTED
+    return value
+
+
 def redact_config(config: Mapping[str, Any]) -> dict[str, Any]:
     """The config with webhook URLs and header values replaced."""
-    result: dict[str, Any] = {}
-    for key, value in config.items():
-        if key == "webhook":
-            result[key] = _REDACTED
-        elif key == "webhook_headers":
-            names = []
-            if isinstance(value, (list, tuple)):
-                for item in value:
-                    if isinstance(item, str):
-                        name, separator, _ = item.partition(":")
-                        if separator and name.strip():
-                            names.append(f"{name.strip()}: {_REDACTED}")
-            result[key] = names or _REDACTED
-        else:
-            result[key] = value
-    return result
+    return {key: redact_config_value(key, value) for key, value in config.items()}
 
 
 # -- products ----------------------------------------------------------------

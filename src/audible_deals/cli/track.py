@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import dataclasses
 import datetime
 import logging
 
@@ -99,22 +100,29 @@ def _run_track_once(ctx, cooldown, *, reload_config: bool = False):
     cfg = ctx.obj.get("config", {})
     if errors := config_numeric_errors(cfg):
         raise click.ClickException(errors[0])
-    # In keyring mode the config holds references; this is where they are opened.
-    webhook = secret_store.resolve(cfg.get("webhook"))
-    webhook_format = cfg.get("webhook_format") or "generic"
-    webhook_headers = _parse_cfg_webhook_headers(
-        secret_store.resolve(cfg.get("webhook_headers") or [])
-    )
     webhook_client = WebhookClient(allow_private=webhook_allow_private(cfg))
     request = TrackRunRequest(
         locale=ctx.obj["locale"],
         currency=_currency(ctx),
         credit_price=_credit_price(ctx),
         cooldown=cooldown,
-        webhook=webhook,
-        webhook_format=webhook_format,
-        webhook_headers=webhook_headers,
+        webhook=None,
+        webhook_format=cfg.get("webhook_format") or "generic",
+        webhook_headers={},
     )
+
+    def open_secrets(base: TrackRunRequest) -> TrackRunRequest:
+        # In keyring mode the config holds references; this is where they are
+        # opened, inside run_track's recorded section: a keychain that cannot be
+        # read becomes a failed run in `deals track status`, not a silent skip.
+        return dataclasses.replace(
+            base,
+            webhook=secret_store.resolve(cfg.get("webhook")),
+            webhook_headers=_parse_cfg_webhook_headers(
+                secret_store.resolve(cfg.get("webhook_headers") or [])
+            ),
+        )
+
     runtime = TrackRuntime(
         get_client=_get_client,
         record_products=_safe_record_prices,
@@ -133,6 +141,7 @@ def _run_track_once(ctx, cooldown, *, reload_config: bool = False):
         save_notify_state=save_notify_state,
         lock=run_lock,
         on_start=lambda: rotate_log(paths.track_log_file()),
+        prepare_request=open_secrets,
     )
     try:
         return run_track(request, runtime)
@@ -140,6 +149,8 @@ def _run_track_once(ctx, cooldown, *, reload_config: bool = False):
         raise click.ClickException(str(exc)) from exc
     except LockHeldError:
         raise
+    except secret_store.SecretStoreError:
+        raise  # its message says what to do; the run is already in the history
     except Exception as e:
         if exit_code_for(e) is not None:
             raise  # authentication / request failures keep their own exit status
