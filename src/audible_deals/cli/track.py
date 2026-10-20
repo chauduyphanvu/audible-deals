@@ -17,7 +17,11 @@ from audible_deals.cli.helpers import (
     _resolve_skip_asins,
 )
 from audible_deals.cli.options import json_option
-from audible_deals.config_store import config_numeric_errors, load_monitors
+from audible_deals.config_store import (
+    config_numeric_errors,
+    load_monitors,
+    webhook_allow_private,
+)
 from audible_deals.exit_codes import exit_code_for
 from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import MonitorRuntime
@@ -94,7 +98,7 @@ def track_run(ctx, cooldown):
     webhook = cfg.get("webhook")
     webhook_format = cfg.get("webhook_format") or "generic"
     webhook_headers = _parse_cfg_webhook_headers(cfg.get("webhook_headers") or [])
-    webhook_client = WebhookClient()
+    webhook_client = WebhookClient(allow_private=webhook_allow_private(cfg))
     request = TrackRunRequest(
         locale=ctx.obj["locale"],
         currency=_currency(ctx),

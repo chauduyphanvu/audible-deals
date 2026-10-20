@@ -223,6 +223,21 @@ deals notify \
 
 `Content-Type` cannot be overridden. Deliveries make up to three attempts with a short backoff.
 
+### Where a webhook may point
+
+A webhook host must resolve to public internet addresses. The check runs when you enter the URL (`--webhook`, `deals config set webhook`) and again **when the webhook is sent**, on the address the connection actually uses: `deals` resolves the name once, refuses a non-public address (loopback, private ranges, link-local and cloud metadata addresses, carrier-grade NAT), and connects to the address it checked, so a name that resolves to a public address when you set it up but to `127.0.0.1` later (DNS rebinding) is refused. TLS still verifies the certificate against the host name. Redirects are never followed.
+
+To send to a server on your own network, such as a self-hosted ntfy or Home Assistant, opt in:
+
+```bash
+deals config set webhook-allow-private true
+deals notify --webhook http://192.168.1.20:8080/deals --webhook-format ntfy
+```
+
+With the setting on, any address is allowed for every webhook, including the monitor webhooks you configure, so only use URLs you trust. Turn it off again with `deals config reset webhook-allow-private`.
+
+If an HTTP proxy is configured (`HTTPS_PROXY` and friends, honoring `NO_PROXY`), the proxy opens the connection, so `deals` cannot pin it: it checks the target's addresses right before handing the request to the proxy, but a name that changes between that check and the proxy's own lookup cannot be excluded.
+
 ### Custom templates
 
 ```bash

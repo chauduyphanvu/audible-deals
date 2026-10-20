@@ -97,6 +97,7 @@ def run_recap(
     currency,
     extra_headers=None,
     locale="us",
+    allow_private=False,
 ):
     logger.info(
         "recap days=%s show_new=%s atl=%s atl_all=%s", days, show_new, atl, atl_all
@@ -145,7 +146,7 @@ def run_recap(
             if extra_headers:
                 headers = {**headers, **extra_headers}
             try:
-                WebhookClient().post(webhook, body, headers)
+                WebhookClient(allow_private=allow_private).post(webhook, body, headers)
             except WebhookDeliveryError as exc:
                 raise click.ClickException(str(exc)) from exc
             console.print("[green]Sent recap to webhook[/green]")

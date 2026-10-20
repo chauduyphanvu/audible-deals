@@ -34,6 +34,9 @@ _EXTRA_CONFIG_SCHEMA: dict[str, type] = {
     "webhook": str,
     "webhook_format": str,
     "webhook_headers": list,
+    # Let webhooks reach servers on your own network (self-hosted ntfy, Home
+    # Assistant). Off by default: webhook hosts must resolve to public addresses.
+    "webhook_allow_private": bool,
     # Minutes a catalog page may be reused (0 turns the cache off).
     "cache_ttl": int,
     # Re-price titles seen before that a scan did not return.
@@ -74,6 +77,11 @@ def save_monitors(monitors: dict[str, dict]) -> None:
 
 def load_config() -> dict:
     return load_json_file(paths.config_file(), dict, "config")
+
+
+def webhook_allow_private(config: dict | None) -> bool:
+    """Whether the config lets webhooks reach non-public addresses."""
+    return isinstance(config, dict) and config.get("webhook_allow_private") is True
 
 
 def config_numeric_errors(config: dict) -> list[str]:

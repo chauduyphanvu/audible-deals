@@ -27,6 +27,7 @@ from audible_deals.filter_specs import (
     Scope,
     config_key_aliases,
 )
+from audible_deals.notices import note
 from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.settings import (
     profile_validation_error,
@@ -94,6 +95,11 @@ def config_set(key, value):
     )
     if removed_key:
         console.print(f"[yellow]Removed conflicting config key:[/yellow] {removed_key}")
+    if norm_key == "webhook_allow_private" and coerced:
+        note(
+            "Webhooks may now reach servers on your own network (localhost, LAN). "
+            "Only use webhook URLs you trust."
+        )
 
 
 @config_cmd.command("get")

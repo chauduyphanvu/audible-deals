@@ -14,6 +14,7 @@ from audible_deals.cli.helpers import (
     _get_client,
 )
 from audible_deals.cli.options import json_option
+from audible_deals.config_store import webhook_allow_private
 from audible_deals.constants import WEBHOOK_FORMATS
 from audible_deals.exit_codes import ExitCode
 from audible_deals.locking import LockHeldError, run_lock
@@ -111,7 +112,9 @@ def notify(
     runtime = NotificationRuntime(
         get_client=_get_client,
         record_products=_safe_record_prices,
-        webhook_client=WebhookClient(),
+        webhook_client=WebhookClient(
+            allow_private=webhook_allow_private(ctx.obj.get("config"))
+        ),
     )
     try:
         with run_lock():

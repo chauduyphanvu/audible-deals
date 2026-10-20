@@ -2256,7 +2256,9 @@ class TestWebhookNoRedirect:
 
         try:
             with pytest.raises(WebhookDeliveryError, match="Webhook failed"):
-                WebhookClient(sleep=lambda seconds: None).post(
+                WebhookClient(
+                    sleep=lambda seconds: None, allow_private=True, proxies={}
+                ).post(
                     f"http://127.0.0.1:{port}/hook",
                     b"body",
                     {
