@@ -1,0 +1,14 @@
+{
+  "captured_with": "deals recap --atl --webhook URL --webhook-format FORMAT (price history seeded for the same titles); the fake Audible API, a local HTTP server as the webhook",
+  "format": "ntfy",
+  "kind": "recap",
+  "request": {
+    "body": "Audible Recap (last 7 days)\n• Tom & Jerry <Live> | A *Bold* _Move_ ~Strike~ `code` @everyone — $12.00 -> $4.48 (-63%)\n• Why [Brackets](Matter) — and Ünïcode — $9.50 -> $8.98 (-5%)\nWishlist at target: 3\nAt all-time low:\n• Tom & Jerry <Live> | A *Bold* _Move_ ~Strike~ `code` @everyone — $4.48\n• Why [Brackets](Matter) — and Ünïcode — $8.98",
+    "headers": {
+      "Content-Type": "text/plain; charset=utf-8",
+      "Priority": "default",
+      "Tags": "book",
+      "Title": "Audible Recap (last 7 days)"
+    }
+  }
+}

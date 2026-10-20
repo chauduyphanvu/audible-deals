@@ -190,10 +190,15 @@ deals notify \
   --webhook https://discord.com/api/webhooks/... \
   --webhook-format discord
 
-# Microsoft Teams
+# Microsoft Teams (Power Automate Workflows webhook)
+deals notify \
+  --webhook https://prod-00.westus.logic.azure.com:443/workflows/... \
+  --webhook-format teams
+
+# Microsoft Teams, old Office 365 connector
 deals notify \
   --webhook https://example.webhook.office.com/... \
-  --webhook-format teams
+  --webhook-format teams-legacy
 
 # ntfy
 deals notify \
@@ -204,12 +209,13 @@ deals notify \
 | Format | Request body |
 |--------|--------------|
 | `generic` | The same JSON object printed to standard output |
-| `slack` | A `text` field with Slack mrkdwn |
-| `discord` | A `content` field with Markdown links |
-| `teams` | A legacy MessageCard for tenants that still support O365 connectors |
-| `ntfy` | Plain text with `Title`, `Tags`, and `Priority` headers |
+| `slack` | A `text` field with Slack mrkdwn; `&`, `<`, `>` in titles are escaped and a `\|` in a title is replaced so it cannot end the link early |
+| `discord` | A `content` field with Markdown links (titles are escaped) and `allowed_mentions` set so a title can never ping `@everyone` or a user |
+| `teams` | An Adaptive Card message for **Power Automate Workflows** webhooks. A URL on `*.webhook.office.com` (or an `outlook.office.com/webhook/` URL) is a retired Office 365 connector and automatically gets a MessageCard instead |
+| `teams-legacy` | A MessageCard, always (for connector webhooks that still work in your tenant) |
+| `ntfy` | Plain text with `Title`, `Tags`, and `Priority` headers (a non-ASCII title is sent as an RFC 2047 encoded word, which ntfy decodes) |
 
-Teams Workflows webhooks require Adaptive Cards and are not supported by the legacy `teams` format.
+Microsoft retired the Office 365 connectors that took MessageCards; the replacement is a Workflows webhook ("When a Teams webhook request is received"), which expects an Adaptive Card. `--webhook-format teams` now sends that. Payload shapes for every format are pinned by the captured requests in `tests/fixtures/webhooks`.
 
 ### Authentication headers
 

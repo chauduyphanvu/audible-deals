@@ -704,14 +704,36 @@ class TestWebhookFormats:
         assert "content" in data
         assert "My Book" in data["content"]
 
-    def test_teams_format_has_messagecardtype(self):
+    def test_teams_format_is_an_adaptive_card_for_workflows(self):
         from audible_deals.webhooks import format_webhook_payload
 
         body, headers = format_webhook_payload(self._hits(), "teams")
         assert headers["Content-Type"] == "application/json"
         data = json.loads(body)
+        assert data["type"] == "message"
+        (attachment,) = data["attachments"]
+        assert attachment["contentType"] == "application/vnd.microsoft.card.adaptive"
+        assert attachment["content"]["type"] == "AdaptiveCard"
+        assert "My Book" in str(data)
+
+    def test_teams_legacy_format_is_a_messagecard(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, headers = format_webhook_payload(self._hits(), "teams-legacy")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
         assert data["@type"] == "MessageCard"
         assert "My Book" in str(data)
+
+    def test_teams_on_a_connector_url_keeps_the_messagecard(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, _ = format_webhook_payload(
+            self._hits(),
+            "teams",
+            url="https://contoso.webhook.office.com/webhookb2/abc/IncomingWebhook/x",
+        )
+        assert json.loads(body)["@type"] == "MessageCard"
 
     def test_ntfy_format_is_plaintext(self):
         from audible_deals.webhooks import format_webhook_payload
@@ -1501,10 +1523,19 @@ class TestFormatRecapPayload:
         assert "content" in data
         assert "My Recap Book" in data["content"]
 
-    def test_teams_has_messagecardtype(self):
+    def test_teams_is_an_adaptive_card(self):
         from audible_deals.webhooks import format_recap_payload
 
         body, headers = format_recap_payload(self._payload(), "teams")
+        assert headers["Content-Type"] == "application/json"
+        data = json.loads(body)
+        assert data["attachments"][0]["content"]["type"] == "AdaptiveCard"
+        assert "My Recap Book" in str(data)
+
+    def test_teams_legacy_has_messagecardtype(self):
+        from audible_deals.webhooks import format_recap_payload
+
+        body, headers = format_recap_payload(self._payload(), "teams-legacy")
         assert headers["Content-Type"] == "application/json"
         data = json.loads(body)
         assert data["@type"] == "MessageCard"
@@ -2494,7 +2525,7 @@ class TestTrackFailurePathLocking:
         assert load_track_state().runs == []
 
 
-@pytest.mark.parametrize("fmt", ["slack", "discord", "teams"])
+@pytest.mark.parametrize("fmt", ["slack", "discord", "teams", "teams-legacy"])
 def test_webhook_formats_render_large_integer_target(fmt):
     from audible_deals.webhooks import format_webhook_payload
 

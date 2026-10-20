@@ -1,0 +1,22 @@
+{
+  "captured_with": "deals recap --atl --webhook URL --webhook-format FORMAT (price history seeded for the same titles); the fake Audible API, a local HTTP server as the webhook",
+  "format": "teams-legacy",
+  "kind": "recap",
+  "request": {
+    "body": {
+      "@context": "https://schema.org/extensions",
+      "@type": "MessageCard",
+      "sections": [
+        {
+          "text": "• Tom & Jerry \\<Live\\> \\| A \\*Bold\\* \\_Move\\_ \\~Strike\\~ \\`code\\` @everyone — $12.00 -> $4.48 (-63%)  \n• Why \\[Brackets\\]\\(Matter\\) — and Ünïcode — $9.50 -> $8.98 (-5%)  \nWishlist at target: 3  \nAt all-time low:  \n• Tom & Jerry \\<Live\\> \\| A \\*Bold\\* \\_Move\\_ \\~Strike\\~ \\`code\\` @everyone — $4.48  \n• Why \\[Brackets\\]\\(Matter\\) — and Ünïcode — $8.98"
+        }
+      ],
+      "summary": "Audible Recap (last 7 days)",
+      "themeColor": "0078D7",
+      "title": "Audible Recap (last 7 days)"
+    },
+    "headers": {
+      "Content-Type": "application/json"
+    }
+  }
+}

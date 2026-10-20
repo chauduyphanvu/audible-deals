@@ -139,7 +139,7 @@ def run_recap(
                 return
             try:
                 body, headers = format_recap_payload(
-                    payload, webhook_format, currency=currency
+                    payload, webhook_format, currency=currency, url=webhook
                 )
             except ValueError as e:
                 raise click.ClickException(str(e)) from e

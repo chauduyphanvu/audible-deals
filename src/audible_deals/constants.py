@@ -161,4 +161,7 @@ GENRE_ALIASES: dict[str, str] = {
 
 _ASIN_RE = re.compile(r"^[A-Za-z0-9]{2,14}$")
 
-WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "ntfy")
+#: ``teams`` is an Adaptive Card for Power Automate Workflows webhooks (a URL on
+#: the retired Office 365 connector hosts automatically keeps MessageCard);
+#: ``teams-legacy`` always sends MessageCard.
+WEBHOOK_FORMATS = ("generic", "slack", "discord", "teams", "teams-legacy", "ntfy")

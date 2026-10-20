@@ -181,6 +181,7 @@ def deliver_hits(
         currency=currency,
         template=template,
         extras=extras,
+        url=url,
     )
     webhook_client.post(url, body, {**payload_headers, **headers})
 
@@ -202,6 +203,7 @@ def deliver_monitor_events(
         monitor.webhook_format or global_format,
         locale=monitor.locale,
         currency=LOCALE_CURRENCY.get(monitor.locale, "$"),
+        url=destination,
     )
     headers = {} if override else global_headers
     webhook_client.post(destination, body, {**payload_headers, **headers})
@@ -218,6 +220,7 @@ def deliver_auth_error(
         f"Background tracking failed: {error}\nRun 'deals login' to re-authenticate.",
         fmt,
         title="audible-deals needs attention",
+        url=url,
     )
     webhook_client.post(url, body, {**payload_headers, **headers})
 

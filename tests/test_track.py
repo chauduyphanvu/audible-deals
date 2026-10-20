@@ -138,10 +138,19 @@ class TestFormatWebhookMessage:
 
     def test_discord(self):
         body, _ = format_webhook_message("hi", "discord", title="T")
-        assert json.loads(body) == {"content": "**T**\nhi"}
+        assert json.loads(body) == {
+            "content": "**T**\nhi",
+            "allowed_mentions": {"parse": []},
+        }
 
-    def test_teams(self):
+    def test_teams_is_an_adaptive_card(self):
         body, _ = format_webhook_message("hi", "teams", title="T")
+        card = json.loads(body)["attachments"][0]["content"]
+        assert card["type"] == "AdaptiveCard"
+        assert [block["text"] for block in card["body"]] == ["T", "hi"]
+
+    def test_teams_legacy_is_a_messagecard(self):
+        body, _ = format_webhook_message("hi", "teams-legacy", title="T")
         payload = json.loads(body)
         assert payload["@type"] == "MessageCard"
         assert payload["sections"] == [{"text": "hi"}]
