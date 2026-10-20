@@ -65,6 +65,8 @@ class TrackRuntime:
     load_notify_state: Callable[[], dict] = load_notify_state
     save_notify_state: Callable[[dict], None] = save_notify_state
     lock: Callable = run_lock
+    #: Called once the run lock is held, before any work (log rotation).
+    on_start: Callable[[], object] = lambda: None
     today: Callable[[], datetime.date] = datetime.date.today
     now: Callable[[], datetime.datetime] = datetime.datetime.now
     monotonic: Callable[[], float] = time.monotonic
@@ -290,6 +292,7 @@ def run_track(request: TrackRunRequest, runtime: TrackRuntime) -> TrackRunResult
     started = runtime.monotonic()
     try:
         with runtime.lock():
+            runtime.on_start()
             return _run_locked(request, runtime, runtime.load_track_state(), started)
     except LockHeldError:
         raise

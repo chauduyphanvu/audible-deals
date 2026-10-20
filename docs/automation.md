@@ -111,6 +111,8 @@ deals track run --every 30m
 
 It does exactly what a scheduled `deals track run` does (wishlist and author watches, extra tracked titles, monitors, alerts, run history), once per interval (at least 10 minutes), until you press Ctrl+C or send SIGTERM (for a service manager). It uses the same run lock as scheduled runs, `notify` and `recap`, so a loop and a scheduler never work at the same time: a run that finds the lock held is skipped with a note, and the next one happens a normal interval later. If a run fails (Audible or the webhook is down, the login expired), it is reported on one line and recorded in the run history, and the next attempt waits twice as long each time, with some random jitter, up to an hour, until a run succeeds. The config file is read again before every run, so changes apply without restarting it. Stopping it with Ctrl+C exits with status 0.
 
+Everything a scheduled run prints goes to `track.log` in the data directory (`deals track log` shows the end of it, reading only the last part of the file). When a run starts and the log is larger than 1 MB, the older content moves to `track.log.1` (and `.1` to `.2`, `.2` to `.3`; the oldest is dropped) and `track.log` starts again, so the log stays small without a log-rotation setup.
+
 Each run:
 
 - refreshes every wishlist item and author watch regardless of recent-result eligibility;

@@ -46,6 +46,7 @@ from audible_deals.state_store import (
     save_notify_state,
     save_track_state,
 )
+from audible_deals.track_log import rotate_log, tail_lines
 from audible_deals.track_loop import human_seconds, run_every, stop_on_sigterm
 from audible_deals.track_service import TrackRuntime, run_track
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
@@ -128,6 +129,7 @@ def _run_track_once(ctx, cooldown, *, reload_config: bool = False):
         load_notify_state=load_notify_state,
         save_notify_state=save_notify_state,
         lock=run_lock,
+        on_start=lambda: rotate_log(paths.track_log_file()),
     )
     try:
         return run_track(request, runtime)
@@ -423,6 +425,5 @@ def track_log(lines):
     if not log_file.exists():
         console.print(f"[dim]No log yet at {safe_markup(log_file)}[/dim]")
         return
-    content = log_file.read_text(encoding="utf-8", errors="replace").splitlines()
-    for line in content[-lines:]:
+    for line in tail_lines(log_file, lines):
         click.echo(safe_text(line))
