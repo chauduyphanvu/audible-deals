@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import errno
 import json
+import socket
 from unittest import mock
 
 import httpx
@@ -16,6 +18,7 @@ from audible_deals.exit_codes import (
     ExitCode,
     exit_code_for,
     is_auth_failure,
+    network_reason,
 )
 from tests.conftest import make_raw
 
@@ -265,6 +268,177 @@ class TestClassification:
             exit_code_for(RuntimeError("Not authenticated. Run 'deals login'")) is None
         )
         assert exit_code_for(ValueError("whatever")) is None
+
+
+NETWORK_FAILURES = [
+    (lambda: httpx.ConnectError("refused"), "could not connect"),
+    (lambda: httpx.ConnectTimeout("slow"), "timed out"),
+    (lambda: httpx.ReadTimeout("slow"), "timed out"),
+    (lambda: httpx.PoolTimeout("busy"), "timed out"),
+    (lambda: httpx.ReadError("dropped"), "network error"),
+    (lambda: httpx.RemoteProtocolError("garbled"), "network error"),
+    (lambda: httpx.ProxyError("no"), "the proxy refused the request"),
+    (lambda: ConnectionRefusedError(111, "Connection refused"), "could not connect"),
+    (lambda: ConnectionResetError(104, "Connection reset"), "connection lost"),
+    (lambda: TimeoutError("timed out"), "timed out"),
+    (
+        lambda: socket.gaierror(-2, "Name or service not known"),
+        "could not look up the server name",
+    ),
+    (
+        lambda: OSError(errno.ENETUNREACH, "Network is unreachable"),
+        "network unreachable",
+    ),
+]
+NETWORK_IDS = [type(make()).__name__ for make, _ in NETWORK_FAILURES]
+
+
+@pytest.fixture
+def no_retry_wait(monkeypatch):
+    monkeypatch.setattr("audible_deals.audible_transport._RETRY_DELAYS", (0.0, 0.0))
+
+
+@pytest.mark.usefixtures("no_retry_wait")
+class TestNetworkFailures:
+    """A connection that never produced a response is a failed Audible request."""
+
+    @pytest.mark.parametrize(("make", "reason"), NETWORK_FAILURES, ids=NETWORK_IDS)
+    def test_exit_4_with_a_short_reason(self, api, make, reason):
+        _catalog(api, error=make())
+
+        result = run("find", "--max-price", "5", "--pages", "1")
+
+        assert result.exit_code == ExitCode.REQUEST, result.output
+        assert f"Error: Audible request failed ({reason})" in result.stderr
+        assert "Unexpected" not in result.stderr
+        assert "Filesystem error" not in result.stderr
+
+    @pytest.mark.parametrize(("make", "reason"), NETWORK_FAILURES, ids=NETWORK_IDS)
+    def test_the_json_error_carries_exit_4_and_the_reason(self, api, make, reason):
+        _catalog(api, error=make())
+
+        result = run("find", "--max-price", "5", "--pages", "1", "--json")
+
+        assert result.exit_code == ExitCode.REQUEST
+        error = json.loads(result.stderr.strip().splitlines()[-1])["error"]
+        assert error["code"] == 4
+        assert reason in error["message"]
+        assert result.stdout == ""
+
+    def test_a_background_run_exits_4_and_records_the_failure(self, api):
+        (api.tmp_path / "wishlist.json").write_text(
+            json.dumps(
+                [{"asin": "B0WATCH001", "title": "T", "max_price": 1.0, "added": ""}]
+            )
+        )
+        _catalog(api, error=httpx.ConnectError("refused"))
+
+        result = run("track", "run")
+        status = json.loads(run("track", "status", "--json").stdout)
+
+        assert result.exit_code == ExitCode.REQUEST, result.output
+        assert status["last_run"]["error"].startswith("ConnectError")
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            FileNotFoundError(2, "No such file or directory"),
+            PermissionError(13, "Permission denied"),
+            OSError(errno.ENOSPC, "No space left on device"),
+        ],
+        ids=["missing", "permission", "disk-full"],
+    )
+    def test_local_filesystem_errors_stay_filesystem_errors(self, api, error):
+        _catalog(api, products=[_cheap()])
+
+        with mock.patch(
+            "audible_deals.cli.catalog.execute_catalog_scan", side_effect=error
+        ):
+            result = run("find", "--max-price", "5", "--pages", "1")
+
+        assert result.exit_code == ExitCode.ERROR
+        assert "Filesystem error" in result.stderr
+
+    def test_a_closed_output_pipe_is_still_not_a_network_error(self):
+        assert network_reason(BrokenPipeError(32, "Broken pipe")) is None
+        assert exit_code_for(BrokenPipeError(32, "Broken pipe")) is None
+
+    def test_responses_with_an_error_status_are_not_network_failures(self):
+        assert network_reason(audible_exceptions.BadRequest(_response(400), {})) is None
+
+
+class TestRetryMessages:
+    @pytest.fixture(autouse=True)
+    def _instant_retries(self, monkeypatch):
+        monkeypatch.setattr("audible_deals.audible_transport._RETRY_DELAYS", (0.0, 0.0))
+
+    def _flaky(self, api, failures, error):
+        calls = {"n": 0}
+
+        def get(endpoint, **params):
+            calls["n"] += 1
+            if calls["n"] <= failures:
+                raise error
+            return {"products": [_cheap()], "total_results": 1}
+
+        api.get_mock.side_effect = get
+
+    def test_warnings_say_what_happened_not_which_endpoint(self, api):
+        self._flaky(api, 2, httpx.ConnectError("refused"))
+
+        result = run("find", "--max-price", "5", "--pages", "1")
+
+        assert result.exit_code == 0, result.output
+        warnings = [
+            line for line in result.stderr.splitlines() if line.startswith("Warning:")
+        ]
+        assert warnings == [
+            "Warning: Audible request failed (could not connect); "
+            "retrying in 1s (attempt 2 of 3)",
+            "Warning: Audible request failed (could not connect); "
+            "retrying in 1s (attempt 3 of 3)",
+        ]
+        assert "1.0/catalog" not in result.stderr
+        assert "API GET" not in result.stderr
+
+    def test_http_failures_name_the_status(self, api):
+        class Busy(Exception):
+            status_code = 503
+
+        self._flaky(api, 1, Busy("busy"))
+
+        result = run("find", "--max-price", "5", "--pages", "1")
+
+        assert "Warning: Audible request failed (HTTP 503); retrying" in result.stderr
+
+    def test_rate_limits_are_called_that(self, api):
+        class Limited(Exception):
+            status_code = 429
+
+        self._flaky(api, 1, Limited("slow down"))
+
+        result = run("find", "--max-price", "5", "--pages", "1")
+
+        assert "Audible request failed (Audible is limiting requests)" in result.stderr
+
+    def test_v_adds_the_endpoint_and_the_raw_error(self, api):
+        self._flaky(api, 1, httpx.ConnectError("raw detail"))
+
+        result = run("-v", "find", "--max-price", "5", "--pages", "1")
+
+        assert "API GET 1.0/catalog/products failed (attempt 1/3): raw detail" in (
+            result.stderr
+        )
+
+    def test_giving_up_is_reported_once_by_the_command(self, api):
+        self._flaky(api, 99, httpx.ReadTimeout("slow"))
+
+        result = run("find", "--max-price", "5", "--pages", "1")
+
+        assert result.exit_code == 4
+        assert result.stderr.count("Audible request failed (timed out)") == 3
+        assert result.stderr.strip().splitlines()[-1].startswith("Error: Audible")
+        assert "giving up" not in result.stderr
 
 
 def test_no_command_passes_a_bare_number_to_exit():

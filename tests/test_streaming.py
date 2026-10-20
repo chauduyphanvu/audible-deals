@@ -248,6 +248,36 @@ class TestCatalogScanProgressLive:
         assert "1 cached" in stream.getvalue()
 
 
+class TestFailedScanClearsTheBar:
+    PLAN = bind_catalog_categories(build_find_scan_plan("", pages=2), [""])
+    ERASE_PREVIOUS_LINE = "\x1b[1A\x1b[2K"
+
+    def _run(self, monkeypatch, *, fail):
+        console, stream = interactive_console()
+        monkeypatch.setattr(terminal, "console", console)
+        try:
+            with terminal.catalog_scan_progress(self.PLAN, "Scanning") as update:
+                update(CatalogScanProgress("Scanning", 2, 1, 1))
+                if fail:
+                    raise RuntimeError("the scan failed")
+        except RuntimeError:
+            pass
+        return stream.getvalue()
+
+    def test_a_finished_scan_leaves_its_bar_on_screen(self, monkeypatch):
+        written = self._run(monkeypatch, fail=False)
+
+        assert "Scanning" in written
+        assert not written.endswith(self.ERASE_PREVIOUS_LINE)
+
+    def test_a_failed_scan_takes_its_bar_off_before_the_error_prints(self, monkeypatch):
+        written = self._run(monkeypatch, fail=True)
+
+        assert "Scanning" in written
+        # the last thing Rich wrote moved up over the bar and erased it
+        assert written.endswith(self.ERASE_PREVIOUS_LINE)
+
+
 class TestWhenToStream:
     SETTINGS = Settings(max_price=5.0)
 

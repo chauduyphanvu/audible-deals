@@ -13,7 +13,7 @@ from typing import IO
 
 import click
 
-from audible_deals.exit_codes import ExitCode, exit_code_for
+from audible_deals.exit_codes import ExitCode, exit_code_for, network_reason
 
 
 class CliError(click.ClickException):
@@ -60,6 +60,9 @@ def message_for(exc: BaseException, code: ExitCode) -> str:
         if "deals login" in text:
             return text
         return "Audible rejected the saved login. Run 'deals login' to sign in again."
+    reason = network_reason(exc)
+    if reason is not None:
+        return f"Audible request failed ({reason}). Check your network connection, then try again."
     return (
         "Audible request failed. Check your network connection and "
         "authentication, then try again."

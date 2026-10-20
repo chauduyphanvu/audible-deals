@@ -186,7 +186,13 @@ def catalog_scan_progress(
         task = progress.add_task(
             safe_markup(description), total=plan.total_calls, items=0
         )
-        yield _progress_updater(progress, task, description)
+        try:
+            yield _progress_updater(progress, task, description)
+        except BaseException:
+            # The scan failed: take the half-finished bar off the screen rather
+            # than leave it above the error message that is about to print.
+            progress.live.transient = True
+            raise
 
 
 @contextlib.contextmanager

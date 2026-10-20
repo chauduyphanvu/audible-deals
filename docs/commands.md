@@ -396,7 +396,7 @@ Every command uses the same statuses, so scripts and cron jobs can tell outcomes
 | 1 | Error: a failed command, unusable data, or an unexpected problem |
 | 2 | Usage error: a bad option or argument |
 | 3 | Authentication required or rejected: run `deals login` |
-| 4 | The Audible request failed (network, server, rate limit) |
+| 4 | The Audible request failed: no connection, a timeout, a server error or a rate limit (the message gives the short reason) |
 | 10 | Nothing matched, for commands run with `--exit-code` |
 | 130 | Interrupted with Ctrl-C |
 
@@ -443,7 +443,7 @@ DEALS_LOG_FILE=~/.cache/deals.log deals notify --webhook https://example.com/hoo
 
 `-v` and `--locale` are accepted before or after any command, including subcommands such as `deals wishlist add`. When both positions are used, the one after the command wins.
 
-`DEALS_LOG_FILE` captures DEBUG records even without `-v`, which is useful for scheduled runs. The log rotates at 5 MB and keeps three backups. Transient API failures are retried twice with jittered exponential backoff.
+`DEALS_LOG_FILE` captures DEBUG records even without `-v`, which is useful for scheduled runs. The log rotates at 5 MB and keeps three backups. Transient API failures (no connection, a timeout, a server error, a rate limit) are retried twice with jittered exponential backoff; each retry prints a line like `Warning: Audible request failed (could not connect); retrying in 1s (attempt 2 of 3)`, and `-v` adds the endpoint and the raw error.
 
 ## Local data
 
