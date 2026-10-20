@@ -1,0 +1,19 @@
+{
+  "author_watches": [
+    {
+      "added": "str",
+      "author": "str",
+      "max_price": "float",
+      "type": "str"
+    }
+  ],
+  "items": [
+    {
+      "added": "str",
+      "asin": "str",
+      "locale": "str",
+      "max_price": "float",
+      "title": "str"
+    }
+  ]
+}

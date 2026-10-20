@@ -1,0 +1,9 @@
+{
+  "GOLDWISH01": [
+    {
+      "date": "str",
+      "price": "float",
+      "title": "str"
+    }
+  ]
+}
