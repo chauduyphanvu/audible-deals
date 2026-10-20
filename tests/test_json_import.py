@@ -313,6 +313,24 @@ class TestSetsImport:
         assert load_dismissed_asins() == {"A1"}
         assert summary()["skipped"] == {"dismissed_asins entries that were not text": 3}
 
+    def test_duplicate_asins_are_merged_without_a_warning(self, tmp_config, caplog):
+        put("seen_asins.json", ["S1", "S2", "S1", "S1"])
+        put("dismissed_asins.json", ["D1", "D1"])
+
+        with caplog.at_level(logging.WARNING, logger="audible_deals.json_import"):
+            assert load_seen_asins() == {"S1", "S2"}
+
+        assert load_dismissed_asins() == {"D1"}
+        assert summary()["skipped"] == {}
+        assert summary()["notes"] == []
+        assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
+
+    def test_only_entries_that_are_not_text_are_counted(self, tmp_config):
+        put("seen_asins.json", ["A1", "A1", 2, None, "A2", "A2"])
+
+        assert load_seen_asins() == {"A1", "A2"}
+        assert summary()["skipped"] == {"seen_asins entries that were not text": 2}
+
     @pytest.mark.parametrize("content", ["not json", '{"asin": "A1"}'])
     def test_unusable_files_import_as_empty_and_are_kept(self, tmp_config, content):
         put("seen_asins.json", content)

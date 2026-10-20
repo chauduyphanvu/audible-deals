@@ -232,9 +232,13 @@ def _parse_asin_list(path: Path, out: Imported) -> set[str]:
     data = _read_json(path, list, out)
     if not data:
         return set()
-    valid = {_text(item) for item in data if isinstance(item, str)}
-    out.skip(f"{path.stem} entries that were not text", len(data) - len(valid))
-    return valid
+    # A list may repeat an ASIN (it is a set; the repeats merge silently); only
+    # entries that are not text at all are unusable.
+    out.skip(
+        f"{path.stem} entries that were not text",
+        sum(1 for item in data if not isinstance(item, str)),
+    )
+    return {_text(item) for item in data if isinstance(item, str)}
 
 
 def _parse_eligibility(path: Path, out: Imported) -> None:

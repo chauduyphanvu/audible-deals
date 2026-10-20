@@ -373,6 +373,145 @@ class TestCorruption:
         payloads = sorted(p.read_bytes() for p in tmp_config.glob("state.db.corrupt-*"))
         assert payloads == [b"first" * 800, b"second" * 800]
 
+    def test_a_database_another_process_already_replaced_is_not_moved_aside(
+        self, tmp_config, monkeypatch
+    ):
+        """Two processes find the same damaged file; the slower one must not
+        quarantine the healthy database the faster one has just created."""
+        import os
+
+        paths.state_db_file().write_bytes(b"definitely not sqlite" * 50)
+        real_connect = db._connect
+        opened = []
+
+        def losing_the_race(path):
+            opened.append(path)
+            if len(opened) > 1:
+                return real_connect(path)
+            try:
+                real_connect(path)  # fails: the file is damaged
+            finally:
+                # ...while the other process sets up a fresh database and moves
+                # it into place before this one gets to the quarantine.
+                fresh = path.with_name("fresh.tmp")
+                other = real_connect(fresh)
+                db._prepare(other, "state", fresh)
+                with db.transaction(other):
+                    other.execute("INSERT INTO seen (asin) VALUES ('KEEPME')")
+                other.close()
+                os.replace(fresh, path)
+
+        monkeypatch.setattr(db, "_connect", losing_the_race)
+
+        conn = db.state()
+
+        assert conn.execute("SELECT asin FROM seen").fetchall() == [("KEEPME",)]
+        assert not list(tmp_config.glob("state.db.corrupt-*"))
+        assert len(opened) == 2  # the damaged file, then the other process's fresh one
+
+    def test_processes_racing_on_one_damaged_database_keep_the_fresh_one(
+        self, tmp_path
+    ):
+        env = {
+            **os.environ,
+            "DEALS_HOME": str(tmp_path / "race"),
+        }
+        (tmp_path / "race").mkdir()
+        (tmp_path / "race" / "state.db").write_bytes(b"definitely not sqlite" * 50)
+        script = textwrap.dedent(
+            """
+            import sys
+            from audible_deals import db
+            conn = db.state()
+            with db.transaction(conn):
+                conn.execute("INSERT OR IGNORE INTO seen (asin) VALUES (?)", (sys.argv[1],))
+            print("ok")
+            """
+        )
+        procs = [
+            subprocess.Popen(
+                [sys.executable, "-c", script, f"P{i}"],
+                env=env,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+            )
+            for i in range(8)
+        ]
+        results = [proc.communicate(timeout=120) for proc in procs]
+
+        assert [out.strip() for out, _ in results] == ["ok"] * 8, results
+        race = tmp_path / "race"
+        assert len(list(race.glob("state.db.corrupt-*"))) == 1  # one move, not eight
+        import sqlite3
+
+        conn = sqlite3.connect(race / "state.db")
+        try:
+            rows = {r[0] for r in conn.execute("SELECT asin FROM seen")}
+        finally:
+            conn.close()
+        assert rows == {f"P{i}" for i in range(8)}  # nobody's write was moved away
+
+    @pytest.mark.parametrize(
+        "error",
+        [
+            "IntegrityError",
+            "ProgrammingError",
+            "DataError",
+            "NotSupportedError",
+            "InternalError",
+        ],
+    )
+    def test_other_database_errors_are_not_corruption(self, error):
+        import sqlite3
+
+        assert not db._is_corruption(getattr(sqlite3, error)("something went wrong"))
+        assert not db._is_corruption(sqlite3.DatabaseError("something went wrong"))
+        assert not db._is_corruption(sqlite3.OperationalError("database is locked"))
+
+    def test_real_corruption_is_recognized(self, tmp_path):
+        import sqlite3
+
+        garbage = tmp_path / "garbage.db"
+        garbage.write_bytes(b"definitely not sqlite" * 50)
+        conn = sqlite3.connect(garbage)
+        try:
+            with pytest.raises(sqlite3.DatabaseError) as raised:
+                conn.execute("SELECT * FROM sqlite_master").fetchall()
+        finally:
+            conn.close()
+
+        assert db._is_corruption(raised.value)
+        assert db._is_corruption(sqlite3.DatabaseError("file is not a database"))
+        assert db._is_corruption(
+            sqlite3.DatabaseError("database disk image is malformed")
+        )
+
+    def test_a_healthy_database_is_never_quarantined_for_another_error(
+        self, tmp_config, monkeypatch
+    ):
+        import sqlite3
+
+        conn = db.state()
+        with db.transaction(conn):
+            conn.execute("INSERT INTO seen (asin) VALUES ('PRECIOUS')")
+        db.close_all()
+
+        def broken(conn, kind, path):
+            raise sqlite3.IntegrityError("UNIQUE constraint failed: meta.key")
+
+        with monkeypatch.context() as patched:
+            patched.setattr(db, "_prepare", broken)
+            with pytest.raises(db.StateDatabaseError, match="Cannot open"):
+                db.state()
+
+        assert not list(tmp_config.glob("state.db.corrupt-*"))
+        raw = sqlite3.connect(paths.state_db_file())
+        try:
+            assert raw.execute("SELECT asin FROM seen").fetchall() == [("PRECIOUS",)]
+        finally:
+            raw.close()
+
     def test_an_unreadable_cache_database_is_simply_recreated(self, tmp_config, caplog):
         paths.cache_db_file().write_bytes(b"garbage" * 500)
 

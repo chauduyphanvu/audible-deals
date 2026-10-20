@@ -230,13 +230,26 @@ def _path_for(kind: Kind) -> Path:
 
 
 def _is_corruption(exc: Exception) -> bool:
+    """Whether *exc* says the file is damaged (never for anything else).
+
+    Moving ``state.db`` aside is drastic, so only SQLite's own "corrupt" and "not a
+    database" results qualify. Locked, read-only and cannot-open (OperationalError),
+    constraint failures (IntegrityError) and programming errors are not damage.
+    """
     import sqlite3
 
-    # "file is not a database" / "database disk image is malformed" arrive as the
-    # plain DatabaseError; locked, read-only and cannot-open are OperationalError.
-    return isinstance(exc, sqlite3.DatabaseError) and not isinstance(
-        exc, sqlite3.OperationalError
-    )
+    if not isinstance(exc, sqlite3.DatabaseError):
+        return False
+    name = getattr(exc, "sqlite_errorname", None)
+    if name is not None:
+        # SQLITE_CORRUPT and its extended forms (SQLITE_CORRUPT_VTAB, ...)
+        return name.startswith("SQLITE_CORRUPT") or name == "SQLITE_NOTADB"
+    # No result code (an error raised by hand): the plain DatabaseError with the
+    # two messages SQLite uses.
+    if type(exc) is not sqlite3.DatabaseError:
+        return False
+    message = str(exc).lower()
+    return "file is not a database" in message or "malformed" in message
 
 
 def _connect(path: Path) -> sqlite3.Connection:
@@ -329,6 +342,15 @@ def _sidecars(path: Path) -> list[Path]:
     return [path.with_name(path.name + suffix) for suffix in ("-wal", "-shm")]
 
 
+def _file_id(path: Path) -> tuple[int, int] | None:
+    """Which file *path* is right now (it changes when another process replaces it)."""
+    try:
+        status = path.stat()
+    except OSError:
+        return None
+    return status.st_dev, status.st_ino
+
+
 def _quarantine(path: Path, kind: Kind, reason: Exception) -> None:
     """Move an unreadable database (and its WAL files) out of the way."""
     stamp = time.strftime("%Y%m%dT%H%M%S")
@@ -371,8 +393,9 @@ def _open(kind: Kind, path: Path) -> sqlite3.Connection:
     import sqlite3
 
     last: Exception | None = None
-    for _attempt in range(2):
+    for _attempt in range(3):
         conn: sqlite3.Connection | None = None
+        seen = _file_id(path)  # the file this attempt is about to open
         try:
             conn = _connect(path)
             _prepare(conn, kind, path)
@@ -391,7 +414,13 @@ def _open(kind: Kind, path: Path) -> sqlite3.Connection:
                     "wait for it to finish and try again.",
                 ) from exc
             last = exc
-            _quarantine(path, kind, exc)
+            # Two processes can find the same damaged file. Whoever gets the lock
+            # first moves it aside and builds a fresh one; the other must notice
+            # the file at the path is no longer the one it failed on, or it would
+            # move that healthy new database away too.
+            with advisory_lock(paths.migration_lock_file(), wait=True):
+                if _file_id(path) == seen:
+                    _quarantine(path, kind, exc)
     raise StateDatabaseError(
         path, f"{path} is unreadable ({last}) even after recreating it."
     )
