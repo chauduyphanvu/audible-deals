@@ -101,6 +101,8 @@ deals track uninstall
 
 The installer uses launchd on macOS, a systemd user timer or cron on Linux, and Task Scheduler on Windows. The minimum interval is 10 minutes. The job is pinned to the data directory in use when you install (it sets `DEALS_HOME` for the job), so it reads and writes the same data you see interactively even if `XDG_CONFIG_HOME` is only set in your shell; `deals track install` prints that directory. Re-run it after moving your data.
 
+On Linux without a systemd user session (a container, WSL without systemd, an ssh session whose login did not start one) the timer cannot be installed. `deals track install` then removes whatever it wrote and, if `crontab` exists, installs the crontab entry instead and says so (`Note: ... a crontab entry was installed instead`). Without cron it stops with nothing installed and suggests `deals track run --every 6h` (with your interval), which keeps tracking in the foreground.
+
 ### Running without a scheduler
 
 On a machine that is always on, or where you would rather not install a schedule, run the same job in the foreground:

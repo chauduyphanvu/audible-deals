@@ -42,7 +42,7 @@ Breaking and behavior changes since 0.11.1.
 
 **Automation and notifications**
 - `deals track run --every 30m` runs the background job in the foreground for people without a scheduler: the same run lock as scheduled runs, exponential backoff with jitter after failures (capped at an hour), config re-read before each run, a clean stop on Ctrl+C or SIGTERM.
-- `deals track install` writes the data directory into the scheduled job (launchd, systemd, cron, Task Scheduler) and prints it. `deals doctor` warns when the installed schedule points at a program that no longer exists.
+- `deals track install` writes the data directory into the scheduled job (launchd, systemd, cron, Task Scheduler) and prints it. Where systemd has no user session (containers, WSL, ssh), it no longer leaves unit files behind: it uses a crontab entry instead and says so, or, without cron, stops with the `deals track run --every ...` command to use. `deals doctor` warns when the installed schedule points at a program that no longer exists.
 - `track.log` rotates at 1 MB (`track.log.1` to `.3`) and `deals track log` reads only the end of the file.
 - Optional keychain storage of secrets: `deals config set secret-storage keyring|file` (extra `keyring`) moves the login and webhook URLs and headers between the data directory and the OS keychain, after a confirmation and with every secret verified before any file changes. Not bundled in the pre-built binaries; the default (`file`) never imports `keyring`.
 - `--webhook-format teams-legacy`, and `webhook-allow-private` (see Upgrade notes).

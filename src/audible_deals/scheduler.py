@@ -13,6 +13,7 @@ import sys
 from pathlib import Path
 
 from audible_deals import paths
+from audible_deals.logging_setup import NOTE
 from audible_deals.storage import _atomic_write
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,36 @@ ENV_HOME = paths.ENV_HOME
 
 class SchedulerError(Exception):
     """Raised when installing/removing the OS schedule fails."""
+
+
+class NoSystemdBusError(SchedulerError):
+    """systemd is installed but this session has no user manager to talk to.
+
+    Typical in containers, WSL without systemd, and ssh sessions where the
+    login did not start ``systemd --user``.
+    """
+
+
+_NO_BUS_SIGNS = ("failed to connect", "bus_address", "xdg_runtime_dir")
+
+
+def _interval_text(interval_s: int) -> str:
+    """*interval_s* the way ``--every`` is written (``6h``, ``1h30m``, ``45m``)."""
+    hours, rest = divmod(interval_s, 3600)
+    minutes, seconds = divmod(rest, 60)
+    return (
+        (f"{hours}h" if hours else "")
+        + (f"{minutes}m" if minutes else "")
+        + (f"{seconds}s" if seconds else "")
+    ) or "0s"
+
+
+def _foreground_hint(interval_s: int) -> str:
+    return (
+        f"To keep tracking without a system scheduler, run "
+        f"'deals track run --every {_interval_text(interval_s)}' in a terminal, "
+        "tmux or a service of your own."
+    )
 
 
 def track_command() -> list[str]:
@@ -162,26 +193,55 @@ WantedBy=timers.target
 """
 
 
+#: What ``systemctl --user is-system-running`` prints while a user manager is
+#: there to take a timer (a degraded one still runs timers). "offline" and
+#: "unknown" mean there is none, and stderr then says the bus cannot be reached.
+_USABLE_STATES = frozenset({"running", "degraded", "starting", "initializing"})
+
+
 def _systemd_available() -> bool:
     if not shutil.which("systemctl"):
         return False
     proc = _run(["systemctl", "--user", "is-system-running"], check=False)
-    # Degraded systemd still schedules timers; only a missing user bus disqualifies
-    return proc.returncode == 0 or bool(proc.stdout.strip())
+    return proc.returncode == 0 or proc.stdout.strip() in _USABLE_STATES
 
 
 def _systemd_install(
     interval_s: int, log_path: Path, data_dir: Path | None = None
 ) -> str:
     unit_dir = systemd_unit_dir()
-    _write_unit(
-        unit_dir / f"{SYSTEMD_UNIT}.service",
-        generate_systemd_service(track_command(), log_path, data_dir),
-    )
-    _write_unit(unit_dir / f"{SYSTEMD_UNIT}.timer", generate_systemd_timer(interval_s))
-    _run(["systemctl", "--user", "daemon-reload"])
-    _run(["systemctl", "--user", "enable", "--now", f"{SYSTEMD_UNIT}.timer"])
+    units = {
+        unit_dir / f"{SYSTEMD_UNIT}.service": generate_systemd_service(
+            track_command(), log_path, data_dir
+        ),
+        unit_dir / f"{SYSTEMD_UNIT}.timer": generate_systemd_timer(interval_s),
+    }
+    before = {path: _read_bytes(path) for path in units}
+    try:
+        for path, content in units.items():
+            _write_unit(path, content)
+        _run(["systemctl", "--user", "daemon-reload"])
+        _run(["systemctl", "--user", "enable", "--now", f"{SYSTEMD_UNIT}.timer"])
+    except SchedulerError as exc:
+        # An install that did not work leaves nothing behind: the files it wrote
+        # go, and a schedule that was already there comes back as it was.
+        for path, previous in before.items():
+            if previous is None:
+                path.unlink(missing_ok=True)
+            else:
+                path.write_bytes(previous)
+        _run(["systemctl", "--user", "daemon-reload"], check=False)
+        if any(sign in str(exc).lower() for sign in _NO_BUS_SIGNS):
+            raise NoSystemdBusError(str(exc)) from exc
+        raise
     return f"systemd user timer {SYSTEMD_UNIT}.timer"
+
+
+def _read_bytes(path: Path) -> bytes | None:
+    try:
+        return path.read_bytes()
+    except FileNotFoundError:
+        return None
 
 
 def _systemd_uninstall() -> bool:
@@ -253,7 +313,10 @@ def _write_crontab(lines: list[str]) -> None:
 
 def _cron_install(interval_s: int, log_path: Path, data_dir: Path | None = None) -> str:
     if not shutil.which("crontab"):
-        raise SchedulerError("Neither systemd user units nor crontab are available")
+        raise SchedulerError(
+            "Neither systemd user units nor crontab are available here. "
+            + _foreground_hint(interval_s)
+        )
     lines = [ln for ln in _read_crontab() if CRON_MARKER not in ln]
     lines.append(generate_cron_line(track_command(), interval_s, log_path, data_dir))
     _write_crontab(lines)
@@ -458,11 +521,41 @@ def install(interval_s: int, log_path: Path, data_dir: Path | None = None) -> st
         return _launchd_install(interval_s, log_path, data_dir)
     if sys.platform.startswith("linux"):
         if _systemd_available():
-            return _systemd_install(interval_s, log_path, data_dir)
+            try:
+                return _systemd_install(interval_s, log_path, data_dir)
+            except NoSystemdBusError:
+                return _cron_instead(
+                    interval_s,
+                    log_path,
+                    data_dir,
+                    "systemd could not be reached from this session (no user bus: "
+                    "typical in a container, WSL or an ssh session)",
+                )
+        if shutil.which("systemctl"):
+            return _cron_instead(
+                interval_s,
+                log_path,
+                data_dir,
+                "systemd has no user manager running in this session",
+            )
         return _cron_install(interval_s, log_path, data_dir)
     if sys.platform == "win32":
         return _schtasks_install(interval_s, log_path, data_dir)
     raise SchedulerError(f"Unsupported platform: {sys.platform}")
+
+
+def _cron_instead(
+    interval_s: int, log_path: Path, data_dir: Path | None, why: str
+) -> str:
+    """Install the crontab entry when systemd cannot be used, and say so."""
+    if not shutil.which("crontab"):
+        raise SchedulerError(
+            f"{why[0].upper()}{why[1:]}, and crontab is not installed, so nothing "
+            f"was installed. {_foreground_hint(interval_s)}"
+        )
+    description = _cron_install(interval_s, log_path, data_dir)
+    logger.log(NOTE, "%s, so a crontab entry was installed instead.", why)
+    return description
 
 
 def uninstall() -> bool:
