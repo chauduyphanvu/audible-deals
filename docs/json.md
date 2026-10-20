@@ -20,7 +20,7 @@ The shapes are pinned by `tests/golden/json`, so they cannot change by accident.
 
 | Command | Output |
 |---------|--------|
-| `find`, `search`, `last`, `library`, `series` | [list of products](#products) |
+| `find`, `search`, `for-me`, `last`, `library`, `series` | [list of products](#products) |
 | `find --dry-run` | [scan plan](#scan-plan) |
 | `library --stats` | [library statistics](#library-statistics) |
 | `series --gaps` | [series gaps](#series-gaps) |
@@ -32,6 +32,7 @@ The shapes are pinned by `tests/golden/json`, so they cannot change by accident.
 | `detail`, `compare` | [detail and compare](#detail-and-compare) |
 | `categories` | [categories](#categories) |
 | `doctor` | [doctor](#doctor) |
+| `cache info` | [cache info](#cache-info) |
 | `track status` | [track status](#track-status) |
 | `monitor list`, `monitor show` | [monitors](#monitors) |
 | `config list`, `config get` | [config](#config) |
@@ -289,6 +290,40 @@ Each entry of `products` is a product plus `verdict`. At least two products must
 ```
 
 `status` is `pass`, `warn` or `fail`. The names of the checks may change between releases; key off `status`, `ok` and the counts.
+
+## Cache info
+
+`cache info --json` reports where the data lives and what each database holds. It is one of the older outputs, so it has no `schema_version` (version 1 by definition):
+
+```json
+{
+  "data_dir": "/home/me/.config/audible-deals",
+  "data_dir_reason": "default ~/.config/audible-deals",
+  "state_db": {
+    "path": "/home/me/.config/audible-deals/state.db",
+    "schema": 2,
+    "bytes": 135776,
+    "rows": {"price_history": 412, "products": 96, "seen": 240, "dismissed": 3, "...": 0},
+    "last_result_session_saved_at": "2026-10-20T10:27:40+00:00",
+    "json_import": {
+      "at": "2026-10-20T10:27:40+00:00",
+      "sources": ["history", "seen_asins.json"],
+      "counts": {"price_history": 412, "seen": 240},
+      "skipped": {},
+      "notes": [],
+      "renames_pending": []
+    }
+  },
+  "cache_db": {
+    "path": "/home/me/.config/audible-deals/cache.db",
+    "schema": 1,
+    "bytes": 45136,
+    "namespaces": {"categories": {"entries": 1, "newest": "2026-10-20T10:27:40+00:00"}}
+  }
+}
+```
+
+`state_db.rows` has one count per table. `json_import` is the record of the one-time import of the JSON files earlier releases kept (see [Local data](commands.md#local-data)): which sources it read, how many records it brought in, how many entries it skipped and why, and any `.migrated` renames still pending. It is `null` if no import has run. `cache_db` is disposable: `deals cache clear` empties it.
 
 ## Track status
 

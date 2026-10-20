@@ -541,6 +541,19 @@ def test_compare_json_structure(mock_client, tmp_config):
     check_golden("json/compare.json", structure([payload]))
 
 
+def test_cache_info_json_structure(tmp_config):
+    from audible_deals import cache_store
+    from audible_deals.results_cache import save_seen_asins
+
+    save_seen_asins({"B0CACHEGD1"})
+    cache_store.put("categories", "us", [{"id": "1", "name": "A"}])
+
+    payload = _stdout_json(CliRunner().invoke(cli, ["cache", "info", "--json"]))
+
+    assert payload["cache_db"]["namespaces"]["categories"]["entries"] == 1
+    check_golden("json/cache_info.json", structure([payload]))
+
+
 def test_every_new_json_payload_declares_its_schema_version():
     # The older outputs keep their (list or unversioned) shapes and are schema
     # version 1 by definition; everything added since carries the number.
