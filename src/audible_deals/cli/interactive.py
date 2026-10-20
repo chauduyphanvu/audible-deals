@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import math
 from collections.abc import Mapping
 from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
@@ -10,7 +9,8 @@ from typing import Literal
 
 import click
 
-from audible_deals.filtering import _SORT_KEYS, sort_local
+from audible_deals import browse_actions
+from audible_deals.filtering import _SORT_KEYS
 from audible_deals.presentation.products import (
     display_comparison,
     display_product_detail,
@@ -18,15 +18,12 @@ from audible_deals.presentation.products import (
 )
 from audible_deals.presentation.reports import display_price_history
 from audible_deals.presentation.terminal import console, safe_markup
-from audible_deals.price_history import load_price_history
 from audible_deals.product import Product
-from audible_deals.results_cache import save_dismissed_asins, update_session_view
 from audible_deals.selectors import _expand_ref_string
 from audible_deals.wishlist import (
     WishlistMutationError,
     warn_wishlist_issues,
 )
-from audible_deals.wishlist_service import add_products, plan_product_add
 
 INTERACTIVE_HINT = (
     "\n  [dim]Enter # or @# for details, 'o #/@#' open, 'w #/@#[,#-#]' wishlist, "
@@ -38,7 +35,7 @@ INTERACTIVE_INVALID_INPUT = (
     "'h #', 's <key>', 'n #[,#-#]', '?', or 'q'.[/dim]"
 )
 
-_VALID_SORT_KEYS = sorted(_SORT_KEYS.keys())
+_VALID_SORT_KEYS = browse_actions.VALID_SORT_KEYS
 
 
 def _wishlist_operation(operation, *args, **kwargs):
@@ -196,7 +193,7 @@ class InteractiveBrowser:
         if not self._positions_in_bounds(command.positions):
             return True
         product = self.products[command.positions[0]]
-        entries = load_price_history(product.asin, product.locale)
+        entries = browse_actions.history_entries(product)
         if not entries:
             console.print(
                 f"[dim]No price history for {safe_markup(product.asin)}[/dim]"
@@ -210,27 +207,17 @@ class InteractiveBrowser:
             return True
 
         selected = [self.products[position] for position in command.positions]
-        plan = _wishlist_operation(
-            plan_product_add, (product.asin for product in selected)
-        )
-        warn_wishlist_issues(plan.issues)
-        stored_asins = set(plan.already_present)
-        pending_asins = set(plan.pending_asins)
-        seen_pending: set[str] = set()
-        pending_products: list[Product] = []
-        for product in selected:
-            if product.asin in stored_asins or product.asin in seen_pending:
-                console.print(
-                    f"[dim]{safe_markup(product.asin)} already on wishlist[/dim]"
-                )
-            elif product.asin in pending_asins:
-                seen_pending.add(product.asin)
-                pending_products.append(product)
-        if not pending_products:
+        selection = _wishlist_operation(browse_actions.select_for_wishlist, selected)
+        warn_wishlist_issues(selection.issues)
+        for product in selection.already:
+            console.print(f"[dim]{safe_markup(product.asin)} already on wishlist[/dim]")
+        if not selection.pending:
             return True
 
         target_price = self._prompt_target_price()
-        result = _wishlist_operation(add_products, pending_products, target_price)
+        result = _wishlist_operation(
+            browse_actions.add_to_wishlist, selection.pending, target_price
+        )
         warn_wishlist_issues(result.issues)
         for event in result.events:
             product = event.product
@@ -259,19 +246,10 @@ class InteractiveBrowser:
             ).strip()
         except EOFError:
             raw = ""
-        if not raw:
-            return None
-        try:
-            parsed = float(raw)
-        except ValueError:
-            console.print("[dim]Invalid price, no target set[/dim]")
-            return None
-        if math.isfinite(parsed) and parsed > 0:
-            return parsed
-        console.print(
-            "[dim]Target must be a finite number greater than 0, no target set[/dim]"
-        )
-        return None
+        target = browse_actions.parse_target_price(raw)
+        if target.problem:
+            console.print(f"[dim]{target.problem}[/dim]")
+        return target.price
 
     def _handle_sort(self, command: InteractiveCommand) -> bool:
         sort_key = command.sort_key
@@ -281,13 +259,7 @@ class InteractiveBrowser:
                 f"Valid: {', '.join(_VALID_SORT_KEYS)}[/dim]"
             )
             return True
-        self.products[:] = sort_local(self.products, sort_key)
-        try:
-            update_session_view(
-                [product.asin for product in self.products], sort=sort_key
-            )
-        except Exception:
-            pass
+        self.products[:] = browse_actions.resort(self.products, sort_key)
         console.print()
         display_products(
             self.products,
@@ -307,17 +279,11 @@ class InteractiveBrowser:
             return True
         asins = {self.products[position].asin for position in command.positions}
         try:
-            save_dismissed_asins(asins)
+            remaining = browse_actions.dismiss(self.products, asins)
         except Exception as exc:
             console.print(f"[red]Could not dismiss selection: {safe_markup(exc)}[/red]")
             return True
-        self.products[:] = [
-            product for product in self.products if product.asin not in asins
-        ]
-        try:
-            update_session_view([product.asin for product in self.products])
-        except Exception:
-            pass
+        self.products[:] = remaining
         console.print(f"[dim]Globally dismissed {len(asins)} title(s).[/dim]")
         console.print()
         display_products(

@@ -9,7 +9,7 @@ import pytest
 from click.testing import CliRunner
 
 import audible_deals.wishlist as wishlist_mod
-from audible_deals import paths
+from audible_deals import browse_actions, paths
 from audible_deals.cli import cli
 from audible_deals.result_models import (
     DiscoveryResult,
@@ -322,7 +322,7 @@ class TestInteractiveBrowserDispatcher:
             interactive_mod.console, "print", lambda value="": output.append(value)
         )
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "load_price_history",
             lambda asin, locale: [{"price": 1}],
         )
@@ -331,8 +331,8 @@ class TestInteractiveBrowserDispatcher:
             "display_price_history",
             lambda entries, asin, currency: histories.append((entries, asin, currency)),
         )
-        monkeypatch.setattr(interactive_mod, "save_dismissed_asins", hidden.append)
-        monkeypatch.setattr(interactive_mod, "update_session_view", lambda *args: None)
+        monkeypatch.setattr(browse_actions, "save_dismissed_asins", hidden.append)
+        monkeypatch.setattr(browse_actions, "update_session_view", lambda *args: None)
         monkeypatch.setattr(
             interactive_mod, "display_products", lambda *args, **kwargs: None
         )
@@ -368,7 +368,7 @@ class TestInteractiveBrowserDispatcher:
         browser = self._browser()
         rendered = []
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "update_session_view",
             lambda *args, **kwargs: (_ for _ in ()).throw(OSError("read only")),
         )
@@ -402,7 +402,7 @@ class TestInteractiveBrowserDispatcher:
         before = raw_session()
         rendered = []
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "save_dismissed_asins",
             lambda *args: (_ for _ in ()).throw(OSError("read only")),
         )
@@ -559,12 +559,12 @@ class TestInteractiveBrowseWishlist:
         product = make_product(asin="RACE1", title="Raced")
         output = []
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "plan_product_add",
             lambda asins: WishlistAddPlan(tuple(asins), (), (), 0),
         )
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "add_products",
             lambda products, target: WishlistAddResult(
                 (),
@@ -587,7 +587,7 @@ class TestInteractiveBrowseWishlist:
 
         product = make_product(asin="EXISTS1")
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "plan_product_add",
             lambda asins: WishlistAddPlan((), tuple(asins), (), 1),
         )
@@ -595,7 +595,7 @@ class TestInteractiveBrowseWishlist:
             click, "prompt", lambda *args, **kwargs: pytest.fail("prompted")
         )
         monkeypatch.setattr(
-            interactive_mod,
+            browse_actions,
             "add_products",
             lambda *args, **kwargs: pytest.fail("added"),
         )
@@ -742,11 +742,10 @@ class TestInteractiveBrowseVerbs:
         assert "Beta Book" in out
 
     def test_history_no_entries_prints_message(self, tmp_config, monkeypatch):
-        import audible_deals.cli.interactive as interactive_mod
         from audible_deals.cli.interactive import _interactive_browse
 
         monkeypatch.setattr(
-            interactive_mod, "load_price_history", lambda asin, locale: []
+            browse_actions, "load_price_history", lambda asin, locale: []
         )
         p = make_product(asin="IH01", title="History Book", price=5.0)
         inputs = iter(["h 1", "q"])
