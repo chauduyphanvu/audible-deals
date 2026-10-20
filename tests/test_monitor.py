@@ -7,13 +7,12 @@ import json
 import pytest
 from click.testing import CliRunner
 
+import audible_deals.monitor_service as monitor_service
 from audible_deals import constants
+from audible_deals.automation_models import MonitorDefinition, MonitorEvent
 from audible_deals.catalog_workflow import build_monitor_scan_plan
 from audible_deals.cli import cli
 from audible_deals.cli import monitor as monitor_module
-import audible_deals.monitor_service as monitor_service
-from audible_deals.automation_models import MonitorDefinition, MonitorEvent
-from audible_deals.notification_service import deliver_monitor_events
 from audible_deals.config_store import (
     load_monitor_state,
     load_monitors,
@@ -21,6 +20,7 @@ from audible_deals.config_store import (
     save_monitors,
     save_profiles,
 )
+from audible_deals.notification_service import deliver_monitor_events
 from audible_deals.presentation.reports import display_track_history
 from audible_deals.presentation.terminal import console
 from audible_deals.product import Product

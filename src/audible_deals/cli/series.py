@@ -19,16 +19,15 @@ from audible_deals.cli.helpers import (
 )
 from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.parsing import parse_series_position
-from audible_deals.price_history import price_history_context
 from audible_deals.presentation.reports import display_series_gaps
 from audible_deals.presentation.terminal import (
     console,
     create_scan_progress,
     safe_markup,
 )
+from audible_deals.price_history import price_history_context
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
-from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.result_processing import (
     DiscoveryProcessingRequest,
     process_discovery,
@@ -40,6 +39,7 @@ from audible_deals.result_publication import (
     publish_discovery,
     record_prices_safely,
 )
+from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.serialization import validate_export_path
 from audible_deals.series_identity import (
     group_series_books,
@@ -134,10 +134,10 @@ def _fetch_series_candidates(
             [series_asin for series_asin in series_asins if series_asin]
         )
         fallback_results = dc.search_segments(fallback_requests)
-        fallback_by_index = dict(zip(fallback_indices, fallback_results))
+        fallback_by_index = dict(zip(fallback_indices, fallback_results, strict=True))
 
         for series_idx, ((target_identity, owned_books), series_asin) in enumerate(
-            zip(invested_sorted, series_asins)
+            zip(invested_sorted, series_asins, strict=True)
         ):
             sname = _representative_series_name(owned_books)
             try:

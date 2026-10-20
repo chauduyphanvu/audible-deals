@@ -111,7 +111,7 @@ def _read_cache_data() -> Any:
     try:
         return json.loads(constants.LAST_RESULTS_FILE.read_text(encoding="utf-8"))
     except (json.JSONDecodeError, OSError) as exc:
-        raise click.ClickException(f"Could not read last results cache: {exc}")
+        raise click.ClickException(f"Could not read last results cache: {exc}") from exc
 
 
 def load_result_session() -> result_models.ResultSession:

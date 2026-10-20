@@ -7,14 +7,14 @@ import datetime
 import json
 import math
 import os
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
 
 import click
 
 from audible_deals import constants
-from audible_deals.constants import LOCALE_DOMAIN, _ASIN_RE
+from audible_deals.constants import _ASIN_RE, LOCALE_DOMAIN
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
 from audible_deals.storage import _fsync_parent, load_json_file, save_json_file
@@ -140,12 +140,16 @@ def load_wishlist_for_mutation() -> list[dict]:
     except FileNotFoundError:
         return []
     except (OSError, UnicodeDecodeError) as exc:
-        raise WishlistMutationError(f"Cannot modify wishlist: could not read it: {exc}")
+        raise WishlistMutationError(
+            f"Cannot modify wishlist: could not read it: {exc}"
+        ) from exc
 
     try:
         data = json.loads(contents)
     except json.JSONDecodeError as exc:
-        raise WishlistMutationError(f"Cannot modify wishlist: malformed JSON: {exc}")
+        raise WishlistMutationError(
+            f"Cannot modify wishlist: malformed JSON: {exc}"
+        ) from exc
     if not isinstance(data, list):
         raise WishlistMutationError("Cannot modify wishlist: expected a JSON list.")
     return data
@@ -158,7 +162,9 @@ def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
     except FileNotFoundError:
         return [], None
     except OSError as exc:
-        raise WishlistMutationError(f"Cannot repair wishlist: could not read it: {exc}")
+        raise WishlistMutationError(
+            f"Cannot repair wishlist: could not read it: {exc}"
+        ) from exc
 
     try:
         data = json.loads(
@@ -167,7 +173,9 @@ def load_wishlist_for_repair() -> tuple[list[dict], bytes | None]:
             parse_float=_parse_finite_float,
         )
     except (json.JSONDecodeError, UnicodeDecodeError, ValueError) as exc:
-        raise WishlistMutationError(f"Cannot repair wishlist: malformed JSON: {exc}")
+        raise WishlistMutationError(
+            f"Cannot repair wishlist: malformed JSON: {exc}"
+        ) from exc
     if not isinstance(data, list):
         raise WishlistMutationError("Cannot repair wishlist: expected a JSON list.")
     return data, contents

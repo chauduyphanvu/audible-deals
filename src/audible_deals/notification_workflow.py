@@ -21,6 +21,8 @@ from audible_deals.price_history import (
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
 from audible_deals.webhooks import (
     format_recap_payload,
+)
+from audible_deals.webhooks import (
     parse_webhook_headers as _parse_wh_headers,
 )
 
@@ -32,7 +34,7 @@ def parse_webhook_headers(raw: tuple[str, ...]) -> dict[str, str]:
     try:
         return _parse_wh_headers(raw, strict=True)
     except ValueError as e:
-        raise click.UsageError(str(e))
+        raise click.UsageError(str(e)) from e
 
 
 def empty_recap_payload(days: int, include_atl: bool) -> dict:
@@ -144,7 +146,7 @@ def run_recap(
                     payload, webhook_format, currency=currency
                 )
             except ValueError as e:
-                raise click.ClickException(str(e))
+                raise click.ClickException(str(e)) from e
             if extra_headers:
                 headers = {**headers, **extra_headers}
             try:

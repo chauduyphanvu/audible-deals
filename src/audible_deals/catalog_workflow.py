@@ -22,7 +22,7 @@ class CatalogQueryError(ValueError):
 
 
 class CatalogScanProgressCallback(Protocol):
-    def __call__(self, event: CatalogScanProgress) -> None: ...
+    def __call__(self, event: CatalogScanProgress, /) -> None: ...
 
 
 def _sort_orders(sort: str, *, deep: bool, fallback: str) -> tuple[str, ...]:
@@ -210,7 +210,7 @@ def execute_catalog_scan(
     broad_seen: list[set[str]] = [set() for _ in plan.queries]
     exact_seen: list[set[str]] = [set() for _ in plan.queries]
 
-    for meta, segment_result in zip(metadata, segment_results):
+    for meta, segment_result in zip(metadata, segment_results, strict=True):
         query_index, kind, query, category_id = meta
         if segment_result.error is not None:
             logger.info(

@@ -196,14 +196,14 @@ def coerce_config_value(key: str, raw: str):
         except ValueError as e:
             raise click.ClickException(
                 f"Invalid webhook header {raw!r}: {e}. Use 'Name: Value' format."
-            )
+            ) from e
         return [raw]
     try:
         result = typ(raw)
     except (ValueError, TypeError) as e:
         raise click.ClickException(
             f"Invalid value for '{key}' (expected {typ.__name__}): {e}"
-        )
+        ) from e
     bounds = _NUMERIC_BOUNDS.get(key)
     if bounds is not None:
         lo, hi = bounds
@@ -219,7 +219,7 @@ def coerce_config_value(key: str, raw: str):
                 f"Value for '{key}' out of range: {result} (expected >= {rng})"
                 if hi is None
                 else f"Value for '{key}' out of range: {result} (expected {rng})"
-            )
+            ) from exc
     return result
 
 

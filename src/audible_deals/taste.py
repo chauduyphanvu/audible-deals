@@ -9,6 +9,7 @@ from __future__ import annotations
 import collections
 import datetime
 import logging
+from typing import Any
 
 from audible_deals import constants
 from audible_deals.metrics import value_score
@@ -61,38 +62,34 @@ def build_profile(lib_products: list[Product]) -> dict:
                 author_counts[a] += 1
         for n in p.narrators:
             narrator_counts[n] += 1
-        for cid, cname in zip(p.category_ids, p.categories):
+        for cid, cname in zip(p.category_ids, p.categories, strict=False):
             genre_counts[cid] += 1
             genre_names[cid] = cname
 
     series_map = group_series_books(lib_products)
 
-    series = sorted(
-        (
-            {
-                "name": next(
-                    (book.series_name for book in books if book.series_name), identity
-                ),
-                "owned": len(books),
-                "series_asin": next(
-                    (b.series_asin for b in books if b.series_asin), ""
-                ),
-                "books": [
-                    {
-                        "asin": book.asin,
-                        "title": book.title,
-                        "position": book.series_position,
-                    }
-                    for book in books
-                ],
-            }
-            for identity, books in series_map.items()
-            if len(books) >= MIN_SERIES_OWNED
-        ),
-        key=lambda s: -s["owned"],
-    )[:TOP_SERIES]
+    owned_series: list[dict[str, Any]] = [
+        {
+            "name": next(
+                (book.series_name for book in books if book.series_name), identity
+            ),
+            "owned": len(books),
+            "series_asin": next((b.series_asin for b in books if b.series_asin), ""),
+            "books": [
+                {
+                    "asin": book.asin,
+                    "title": book.title,
+                    "position": book.series_position,
+                }
+                for book in books
+            ],
+        }
+        for identity, books in series_map.items()
+        if len(books) >= MIN_SERIES_OWNED
+    ]
+    series = sorted(owned_series, key=lambda s: -s["owned"])[:TOP_SERIES]
 
-    profile = {
+    profile: dict[str, Any] = {
         "version": PROFILE_VERSION,
         "built_at": datetime.datetime.now().isoformat(timespec="seconds"),
         "library_size": len(lib_products),

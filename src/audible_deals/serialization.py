@@ -6,13 +6,14 @@ import csv
 import dataclasses
 import json as json_mod
 import logging
+from collections.abc import Sequence
 from dataclasses import asdict
 from pathlib import Path
 
 import click
 
-from audible_deals.product import Product
 from audible_deals.metrics import price_per_hour
+from audible_deals.product import Product
 
 logger = logging.getLogger(__name__)
 
@@ -66,7 +67,7 @@ def deserialize_product(d: dict) -> Product | None:
         return None
 
 
-def export_products(products: list[Product], path: Path) -> None:
+def export_products(products: Sequence[Product], path: Path) -> None:
     """Export products to file, detecting format from extension."""
     validate_export_path(path)
     suffix = path.suffix.lower()

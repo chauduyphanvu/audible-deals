@@ -12,7 +12,6 @@ import time
 from collections.abc import Iterator
 from pathlib import Path
 
-
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 
@@ -21,7 +20,6 @@ from audible_deals.constants import (  # noqa: E402
     CATALOG_RESPONSE_GROUPS,
     MAX_PAGE_SIZE,
 )
-
 
 _DEFAULT_CASES = (
     (1, False),

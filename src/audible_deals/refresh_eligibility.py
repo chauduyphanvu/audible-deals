@@ -24,7 +24,7 @@ def _lock_file() -> Path:
     return path.with_name(f".{path.name}.lock")
 
 
-def _date_string(value: datetime.date | str) -> str:
+def _date_string(value: object) -> str:
     if isinstance(value, datetime.datetime):
         value = value.date()
     if isinstance(value, datetime.date):

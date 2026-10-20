@@ -29,7 +29,6 @@ from audible_deals.constants import (
     WEBHOOK_FORMATS,
 )
 from audible_deals.locking import LockHeldError
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.monitor_service import (
     MAX_MONITOR_API_CALLS_PER_RUN,
     MonitorExistsError,
@@ -37,14 +36,18 @@ from audible_deals.monitor_service import (
     MonitorRuntime,
     MonitorServiceError,
     add_monitor,
-    estimate_monitor_calls as _estimate_monitor_calls,
     monitor_events,
     monitor_snapshot,
     remove_monitor,
-    scan_monitor as _scan_monitor,
     set_monitor_enabled,
     settings_to_dict,
     validated_monitor_definition,
+)
+from audible_deals.monitor_service import (
+    estimate_monitor_calls as _estimate_monitor_calls,
+)
+from audible_deals.monitor_service import (
+    scan_monitor as _scan_monitor,
 )
 from audible_deals.presentation.terminal import (
     catalog_scan_progress,
@@ -57,7 +60,12 @@ from audible_deals.settings import (
     SettingsResolutionRequest,
     resolve_settings,
 )
-from audible_deals.validation import validate_webhook_url
+from audible_deals.validation import (
+    NONNEGATIVE_FLOAT,
+    NONNEGATIVE_INT,
+    RATING_FLOAT,
+    validate_webhook_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -306,7 +314,9 @@ def add(ctx, name, profile_name, query, webhook, webhook_format, **flags):
     try:
         add_monitor(MonitorDefinition.from_dict(definition))
     except LockHeldError as exc:
-        raise click.ClickException(f"Another run is in progress, try again: {exc}")
+        raise click.ClickException(
+            f"Another run is in progress, try again: {exc}"
+        ) from exc
     except MonitorExistsError as exc:
         raise click.ClickException(str(exc)) from exc
     console.print(
@@ -383,7 +393,9 @@ def remove(name, yes):
     try:
         remove_monitor(name)
     except LockHeldError as exc:
-        raise click.ClickException(f"Another run is in progress, try again: {exc}")
+        raise click.ClickException(
+            f"Another run is in progress, try again: {exc}"
+        ) from exc
     except MonitorNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
     console.print(f"[green]Monitor '{safe_markup(name)}' removed[/green]")
@@ -393,7 +405,9 @@ def _set_enabled(name: str, enabled: bool) -> None:
     try:
         changed = set_monitor_enabled(name, enabled)
     except LockHeldError as exc:
-        raise click.ClickException(f"Another run is in progress, try again: {exc}")
+        raise click.ClickException(
+            f"Another run is in progress, try again: {exc}"
+        ) from exc
     except MonitorNotFoundError as exc:
         raise click.ClickException(str(exc)) from exc
     except MonitorServiceError as exc:
@@ -450,7 +464,7 @@ def test(name):
         console.print(f"[dim]{len(current)} match(es), {len(events)} event(s).[/dim]")
     if current:
         console.print("[bold]Current matches[/bold]")
-        currency = constants.LOCALE_CURRENCY.get(definition.get("locale"), "$")
+        currency = constants.LOCALE_CURRENCY.get(definition.get("locale") or "", "$")
         for product in current:
             title = product.get("full_title") or product.get("title", "")
             price = product.get("price")

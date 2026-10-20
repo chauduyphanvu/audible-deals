@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
 from audible_deals.filtering import (
@@ -12,8 +13,8 @@ from audible_deals.filtering import (
     sort_local,
 )
 from audible_deals.price_history import (
-    history_key,
     hist_percentiles,
+    history_key,
     load_price_history,
     price_drop_pcts,
 )
@@ -27,7 +28,6 @@ from audible_deals.result_models import (
 )
 from audible_deals.serialization import deserialize_product
 from audible_deals.settings import Settings
-
 
 RECIPE_DEFAULTS = ResultRecipe()
 RECIPE_FIELDS = tuple(field.name for field in dataclasses.fields(ResultRecipe))
@@ -47,8 +47,9 @@ class DiscoveryProcessingRequest:
 class SettingsFilterRequest:
     products: tuple[Product, ...]
     settings: Settings
-    skip_asins: frozenset[str] | None = None
-    exclude_category_ids: frozenset[str] = frozenset()
+    # Any sets; they are frozen when the filter context is built.
+    skip_asins: AbstractSet[str] | None = None
+    exclude_category_ids: AbstractSet[str] = frozenset()
     hist_below: int | None = None
     min_price_drop: float = 0.0
     require_history: bool = False

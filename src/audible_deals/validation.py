@@ -84,7 +84,7 @@ def validate_webhook_url(url: str) -> None:
         raise click.BadParameter(
             f"Cannot resolve webhook host {hostname!r}: {e}",
             param_hint="'--webhook'",
-        )
+        ) from e
     for _family, _type, _proto, _canonname, sockaddr in addrinfos:
         ip = ipaddress.ip_address(sockaddr[0])
         if not ip.is_global:

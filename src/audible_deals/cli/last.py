@@ -2,22 +2,30 @@
 
 from __future__ import annotations
 
-from pathlib import Path
 import datetime
 import math
+from pathlib import Path
 
 import click
 
 from audible_deals.cli.helpers import _credit_price, _currency, _resolve_output_quiet
+from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.presentation.result_output import (
     ResultPresentationRequest,
     emit_results,
 )
-from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.presentation.terminal import console, safe_markup
+from audible_deals.result_models import UNSET, RecipePatch
+from audible_deals.result_processing import RECIPE_FIELDS
 from audible_deals.result_publication import (
     mark_refresh_eligible_safely,
     record_prices_safely,
+)
+from audible_deals.result_refinement import (
+    CachedRefinementError,
+    CachedRefinementRequest,
+    FetchBoundPatch,
+    refine_cached_results,
 )
 from audible_deals.results_cache import (
     clear_dismissed_asins,
@@ -26,14 +34,6 @@ from audible_deals.results_cache import (
     load_dismissed_asins,
     load_result_session,
     save_result_session,
-)
-from audible_deals.result_models import RecipePatch, UNSET
-from audible_deals.result_processing import RECIPE_FIELDS
-from audible_deals.result_refinement import (
-    CachedRefinementError,
-    CachedRefinementRequest,
-    FetchBoundPatch,
-    refine_cached_results,
 )
 from audible_deals.serialization import (
     export_products,

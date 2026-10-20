@@ -21,22 +21,20 @@ from audible_deals.cli.helpers import (
     _report_partial_series_outcomes,
     _resolve_output_quiet,
 )
-from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.client import CatalogSearchRequest, DealsClient
 from audible_deals.constants import DEFAULT_LIMIT, LOCALE_LANGUAGES
+from audible_deals.presentation.terminal import (
+    console,
+    create_scan_progress,
+    safe_markup,
+)
 from audible_deals.price_history import (
     history_key,
     load_price_history,
     price_history_context,
 )
 from audible_deals.product import Product
-from audible_deals.presentation.terminal import (
-    console,
-    create_scan_progress,
-    safe_markup,
-)
 from audible_deals.result_models import FilterContext
-from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.result_processing import (
     DiscoveryProcessingRequest,
     process_discovery,
@@ -47,6 +45,7 @@ from audible_deals.result_publication import (
     ResultSessionSpec,
     publish_discovery,
 )
+from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.serialization import validate_export_path
 from audible_deals.series_identity import (
     normalize_identity_text,
@@ -56,6 +55,7 @@ from audible_deals.series_identity import (
     series_identity,
 )
 from audible_deals.settings import SettingsResolutionRequest, resolve_settings
+from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.wishlist import load_wishlist, partition_wishlist
 
 logger = logging.getLogger(__name__)
@@ -258,7 +258,9 @@ def _fetch_candidates(
         )
         catalog_results = dc.search_segments(catalog_requests)
 
-        for author, segment in zip(authors, catalog_results[: len(authors)]):
+        for author, segment in zip(
+            authors, catalog_results[: len(authors)], strict=False
+        ):
             for page_products, _, _ in segment.pages:
                 for p in page_products:
                     if any(author.lower() in a.lower() for a in p.authors):
@@ -713,7 +715,10 @@ def for_me(
 @click.pass_context
 def _deprecated_for_you(ctx, **kwargs):
     click.echo("Warning: `deals for-you` is deprecated; use `deals for-me`.", err=True)
-    return for_me.callback(**kwargs)
+    callback = for_me.callback
+    if callback is None:
+        raise RuntimeError("for-me command has no callback")
+    return callback(**kwargs)
 
 
 for_you = click.Command(

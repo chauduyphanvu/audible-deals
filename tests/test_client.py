@@ -1522,7 +1522,7 @@ class TestBugfixProductCategoryAlignment:
         }
         categories, category_ids = _extract_categories(raw)
         assert len(categories) == len(category_ids)
-        pairs = dict(zip(category_ids, categories))
+        pairs = dict(zip(category_ids, categories, strict=True))
         # The unnamed entry is dropped (no blank genre leaks into display/stats),
         # and the named entry keeps its correct id->name pairing.
         assert "ID_A" not in pairs

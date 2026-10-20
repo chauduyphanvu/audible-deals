@@ -5,6 +5,7 @@ from __future__ import annotations
 import collections
 import datetime
 import math
+from collections.abc import Mapping
 
 from rich.table import Table
 
@@ -38,7 +39,7 @@ def display_categories(
 
 def display_summary(
     shown: int,
-    filtered_out: dict[str, int],
+    filtered_out: Mapping[str, int],
     max_price: float | None = None,
     editions_removed: int = 0,
     series_collapsed: int = 0,

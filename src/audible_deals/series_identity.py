@@ -9,7 +9,6 @@ from decimal import Decimal
 
 from audible_deals.product import Product
 
-
 _NUMERIC_TOKEN = re.compile(r"\d+(?:\.\d+)?")
 
 

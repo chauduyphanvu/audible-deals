@@ -8,6 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ### Added
 - `--locale` and `-v/--verbose` are now accepted after the command as well as before it, on every command and subcommand (`deals find --locale uk`, `deals wishlist add ASIN -v`). If both positions are used, the one after the command wins.
+- Development: mypy is part of the `dev` extra and the CI lint job, ruff checks a wider rule set (`E`, `F`, `W`, `I`, `B`, `UP`), CI installs from `uv.lock`, and `tests/test_golden.py` pins every command's option names and the key structure of the JSON outputs.
 
 ### Changed
 - A zero-byte or whitespace-only data file (`config.json`, `profiles.json`, ...) is now treated as empty without a warning; there is nothing in it to lose.

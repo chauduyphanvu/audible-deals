@@ -12,7 +12,6 @@ import pytest
 from audible_deals.client import CatalogSearchResult, SeriesProductsBatch
 from audible_deals.product import Product
 
-
 # ---------------------------------------------------------------------------
 # Product factory
 # ---------------------------------------------------------------------------
@@ -195,10 +194,10 @@ def raw_api_product_minimal():
 @pytest.fixture
 def tmp_config(tmp_path, monkeypatch):
     """Redirect all config paths to a temp directory and fix Rich console for Click."""
-    from audible_deals.presentation import terminal as display_mod
     from rich.console import Console
 
     import audible_deals.constants as constants_mod
+    from audible_deals.presentation import terminal as display_mod
 
     monkeypatch.setattr(constants_mod, "AUTH_FILE", tmp_path / "auth.json")
     monkeypatch.setattr(
@@ -257,15 +256,15 @@ def tmp_config(tmp_path, monkeypatch):
 
 def _cli_console_modules():
     """All cli submodules that bind the shared Rich console by name."""
+    import audible_deals.cli.catalog as cli_catalog_mod
+    import audible_deals.cli.config as cli_config_mod
     import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.history as cli_history_mod
     import audible_deals.cli.interactive as cli_interactive_mod
-    import audible_deals.cli.misc as cli_misc_mod
-    import audible_deals.cli.catalog as cli_catalog_mod
-    import audible_deals.cli.config as cli_config_mod
     import audible_deals.cli.last as cli_last_mod
     import audible_deals.cli.library as cli_library_mod
+    import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.monitor as cli_monitor_mod
     import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.series as cli_series_mod
@@ -301,11 +300,11 @@ def _cli_console_modules():
 @pytest.fixture
 def mock_client(monkeypatch):
     """Patch _get_client to return a mock that doesn't hit the network."""
+    import audible_deals.cli.catalog as cli_catalog_mod
     import audible_deals.cli.foryou as cli_foryou_mod
     import audible_deals.cli.helpers as cli_helpers_mod
-    import audible_deals.cli.misc as cli_misc_mod
-    import audible_deals.cli.catalog as cli_catalog_mod
     import audible_deals.cli.library as cli_library_mod
+    import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.series as cli_series_mod
     import audible_deals.cli.track as cli_track_mod

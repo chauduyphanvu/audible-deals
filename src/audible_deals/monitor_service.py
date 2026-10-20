@@ -5,8 +5,9 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import logging
+from collections.abc import Callable
 from dataclasses import dataclass, replace
-from typing import Any, Callable
+from typing import Any, Literal
 
 from audible_deals.automation_models import (
     MonitorDefinition,
@@ -14,11 +15,6 @@ from audible_deals.automation_models import (
     MonitorRunResult,
     MonitorSelection,
     MonitorSnapshot,
-)
-from audible_deals.constants import (
-    LOCALE_DOMAIN,
-    MAX_CATALOG_CALLS_PER_SCAN,
-    WEBHOOK_FORMATS,
 )
 from audible_deals.catalog_workflow import (
     CatalogQueryError,
@@ -31,6 +27,11 @@ from audible_deals.config_store import (
     load_monitors_for_update,
     save_monitor_state,
     save_monitors,
+)
+from audible_deals.constants import (
+    LOCALE_DOMAIN,
+    MAX_CATALOG_CALLS_PER_SCAN,
+    WEBHOOK_FORMATS,
 )
 from audible_deals.locking import run_lock
 from audible_deals.result_processing import (
@@ -61,7 +62,7 @@ class MonitorNotFoundError(MonitorServiceError):
 class MonitorRuntime:
     get_client: Callable[[str], Any]
     resolve_categories: Callable[..., tuple]
-    resolve_skip_asins: Callable[..., set[str]]
+    resolve_skip_asins: Callable[..., set[str] | None]
     progress: Callable[..., Any]
     now: Callable[[], datetime.datetime] = datetime.datetime.now
 
@@ -220,6 +221,7 @@ def monitor_events(
         price = product.get("price")
         if price is None:
             continue
+        kind: Literal["new", "price_drop"]
         if old is None:
             kind = "new"
         elif (

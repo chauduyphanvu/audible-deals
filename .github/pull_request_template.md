@@ -12,7 +12,7 @@
 
 ## Checklist
 
-- [ ] Tests pass (`pytest tests/ -v`)
+- [ ] Tests, ruff, and mypy pass (`uv run pytest -q`, `uv run ruff check .`, `uv run ruff format --check .`, `uv run mypy`)
 - [ ] New/changed behavior has tests
 - [ ] README updated (if CLI usage changed)
 - [ ] Commit messages follow [conventional commits](https://www.conventionalcommits.org/)

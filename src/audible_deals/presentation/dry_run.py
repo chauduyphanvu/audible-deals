@@ -6,9 +6,9 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
+from audible_deals.constants import MAX_CATALOG_CALLS_PER_SCAN
 from audible_deals.presentation.terminal import console, safe_markup
 from audible_deals.result_models import CatalogScanPlan
-from audible_deals.constants import MAX_CATALOG_CALLS_PER_SCAN
 
 
 @dataclass(frozen=True)

@@ -6,6 +6,7 @@ Merges defaults <- config_file <- profile <- CLI flags in a single pass.
 from __future__ import annotations
 
 import logging
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass, field, fields
 from typing import Any
 
@@ -139,7 +140,8 @@ class SettingsResolutionRequest:
     config: dict[str, Any]
     profile: dict[str, Any] | None
     cli_flags: dict[str, Any]
-    explicit_options: frozenset[str] = field(default_factory=frozenset)
+    # Any set; __post_init__ stores it as a frozenset.
+    explicit_options: AbstractSet[str] = field(default_factory=frozenset)
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "explicit_options", frozenset(self.explicit_options))

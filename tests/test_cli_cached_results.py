@@ -13,8 +13,10 @@ from audible_deals.cli import cli
 from audible_deals.results_cache import (
     load_dismissed_asins,
     load_result_session,
-    load_seen_asins as _load_seen_asins,
     save_dismissed_asins,
+)
+from audible_deals.results_cache import (
+    load_seen_asins as _load_seen_asins,
 )
 from audible_deals.results_cache import (
     save_seen_asins as _save_seen_asins,

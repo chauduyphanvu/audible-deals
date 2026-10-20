@@ -12,7 +12,6 @@ from rich.table import Table
 
 from audible_deals.metrics import buy_verdict, price_per_hour
 from audible_deals.presentation import terminal
-from audible_deals.presentation.terminal import safe_markup
 from audible_deals.presentation.common import (
     _VERDICT_MARKUP,
     _buy_cell,
@@ -22,6 +21,7 @@ from audible_deals.presentation.common import (
     price_str,
     rating_str,
 )
+from audible_deals.presentation.terminal import safe_markup
 from audible_deals.product import Product
 
 
@@ -414,12 +414,16 @@ def _render_product_row(
         )
     row.append(rating_str(product.rating, product.num_ratings))
     if layout.show_buy_column:
-        row.append(_buy_cell(product, options.credit_price))
+        row.append(
+            _buy_cell(product, options.credit_price)
+            if options.credit_price is not None
+            else "[dim]-[/dim]"
+        )
     if layout.show_history_column:
         pct = options.hist_context.get(product.asin) if options.hist_context else None
         row.append(_hist_cell(pct))
     if layout.show_match_column:
-        row.append(safe_markup(options.match_context.get(product.asin, "")))
+        row.append(safe_markup((options.match_context or {}).get(product.asin, "")))
     if layout.show_url_column:
         row.append(safe_markup(product.url))
     return row

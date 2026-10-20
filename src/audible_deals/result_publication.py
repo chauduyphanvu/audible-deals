@@ -18,8 +18,9 @@ from audible_deals.presentation.result_output import (
 )
 from audible_deals.presentation.terminal import console, safe_markup, safe_text
 from audible_deals.price_history import (
-    history_key,
+    HistoryMap,
     hist_percentiles,
+    history_key,
     load_price_history,
     price_drop_pcts,
     record_prices,
@@ -101,7 +102,7 @@ def mark_refresh_eligible_safely(products: list[Product]) -> None:
 def _session_for_request(
     request: ResultPublicationRequest,
     visible: list[Product],
-    histories: dict[str, list[dict]],
+    histories: HistoryMap,
 ) -> ResultSession:
     spec = request.session_spec
     constraints = copy.deepcopy(spec.constraints)
@@ -145,7 +146,7 @@ def publish_discovery(
         else:
             console.print(f"[green]{safe_markup(export_message)}[/green]")
 
-    histories = request.result.histories
+    histories: HistoryMap | None = request.result.histories
     if histories is None:
         histories = {
             history_key(product.asin, product.locale): load_price_history(

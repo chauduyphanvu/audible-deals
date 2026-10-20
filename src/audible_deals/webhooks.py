@@ -9,8 +9,9 @@ from __future__ import annotations
 
 import json
 import logging
+from collections.abc import Callable
 from decimal import Decimal
-from typing import Callable
+from typing import Any
 
 from audible_deals.presentation.common import price_str
 
@@ -75,7 +76,7 @@ def _webhook_item_prefix(hit: dict) -> str:
     return f"[{hit['event']}] " if hit.get("event") else ""
 
 
-def _template_number(value: object) -> float | Decimal:
+def _template_number(value: Any) -> float | Decimal:
     try:
         return float(value or 0.0)
     except OverflowError:
@@ -105,12 +106,12 @@ def _render_webhook_template(
         except KeyError as e:
             raise ValueError(
                 f"Template references unknown key {{{e.args[0]}}}. Valid keys: {_TEMPLATE_KEYS}."
-            )
+            ) from e
         except (IndexError, ValueError) as e:
             raise ValueError(
                 f"Template format error: {e}. Valid keys: {_TEMPLATE_KEYS}. "
                 "Use {{ and }} for literal braces."
-            )
+            ) from e
     body = "\n".join(rendered_parts)
     return body.encode("utf-8"), {"Content-Type": "text/plain; charset=utf-8"}
 

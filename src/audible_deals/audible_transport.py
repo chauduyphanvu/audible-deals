@@ -161,6 +161,8 @@ class AudibleTransport:
                         total,
                     )
                 return response
+            # The final attempt always returns or re-raises above.
+            raise AssertionError("unreachable: retry loop ended without a result")
         finally:
             self._end_request()
 

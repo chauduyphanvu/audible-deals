@@ -4,17 +4,18 @@ from __future__ import annotations
 
 import datetime
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 
+from audible_deals.presentation.products import display_products
+from audible_deals.presentation.reports import display_summary
+from audible_deals.presentation.terminal import console
 from audible_deals.price_history import (
     history_key,
     load_price_history,
     price_history_context,
 )
-from audible_deals.presentation.products import display_products
-from audible_deals.presentation.reports import display_summary
-from audible_deals.presentation.terminal import console
 from audible_deals.product import Product
 from audible_deals.result_models import DiscoveryResult
 
@@ -66,8 +67,8 @@ def emit_results(request: ResultPresentationRequest) -> None:
             )
         )
     need_context = (not request.json_flag and not request.quiet) or request.interactive
-    atl_asins = request.result.atl_asins
-    hist_context = request.result.hist_context
+    atl_asins: AbstractSet[str] | None = request.result.atl_asins
+    hist_context: Mapping[str, int] | None = request.result.hist_context
     if need_context and atl_asins is None and hist_context is None:
         atl_asins, hist_context = price_history_context(
             filtered,

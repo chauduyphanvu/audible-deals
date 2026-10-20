@@ -4,8 +4,8 @@ from __future__ import annotations
 
 import copy
 import datetime
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Callable
 
 from audible_deals.automation_models import (
     MonitorDefinition,
@@ -54,6 +54,8 @@ def collect_target_hits(
     hit_asins: set[str] = set()
 
     def add_hit(product: Product, target: float, author: str | None = None) -> None:
+        if product.price is None:  # callers only pass priced products
+            return
         hit_asins.add(product.asin)
         verdict = (
             buy_verdict(product, credit_price) if credit_price is not None else None

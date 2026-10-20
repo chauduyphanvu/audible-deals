@@ -3,9 +3,10 @@
 from __future__ import annotations
 
 import datetime
+from collections.abc import Iterable
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Literal
+from typing import Literal
 
 from audible_deals.product import Product
 from audible_deals.wishlist import (

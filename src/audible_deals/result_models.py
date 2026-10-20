@@ -5,13 +5,14 @@ from __future__ import annotations
 import dataclasses
 import datetime
 import math
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from types import MappingProxyType
-from typing import Any, Mapping, Sequence
+from typing import Any
 
 from audible_deals import constants
 from audible_deals.product import Product
 from audible_deals.settings import resolve_plus_flags
-
 
 SESSION_VERSION = 2
 
@@ -302,12 +303,9 @@ class ResultRecipe:
             for field in dataclasses.fields(self)
             if not field.name.startswith("_")
         }
-        values.update(
-            {
-                key: _thaw_json(value)
-                for key, value in self._persisted_extra_fields.items()
-            }
-        )
+        # Set with object.__setattr__ in __post_init__ (not a dataclass field).
+        extra_fields: Mapping[str, Any] = vars(self)["_persisted_extra_fields"]
+        values.update({key: _thaw_json(value) for key, value in extra_fields.items()})
         return values
 
 
@@ -352,7 +350,7 @@ class ResultSession:
     constraints: dict[str, Any] = dataclasses.field(default_factory=dict)
     ranking_context: dict[str, Any] = dataclasses.field(default_factory=dict)
     timestamp: str = dataclasses.field(
-        default_factory=lambda: datetime.datetime.now(datetime.timezone.utc).isoformat()
+        default_factory=lambda: datetime.datetime.now(datetime.UTC).isoformat()
     )
     version: int = SESSION_VERSION
     legacy: bool = False
@@ -674,8 +672,9 @@ class FilterContext:
     exclude_authors: tuple[str, ...] = ()
     exclude_narrators: tuple[str, ...] = ()
     on_sale: bool = False
-    skip_asins: frozenset[str] | None = None
-    exclude_category_ids: frozenset[str] = frozenset()
+    # Any sets; __post_init__ stores them as frozensets.
+    skip_asins: AbstractSet[str] | None = None
+    exclude_category_ids: AbstractSet[str] = frozenset()
     genre: str = ""
     max_pph: float | None = None
     min_discount: int = 0
@@ -730,7 +729,7 @@ HistoryEntries = Mapping[str, tuple[Mapping[str, Any], ...]]
 
 
 def _freeze_histories(
-    histories: Mapping[str, list[dict] | tuple[Mapping[str, Any], ...]] | None,
+    histories: Mapping[str, Sequence[Mapping[str, Any]]] | None,
 ) -> HistoryEntries | None:
     if histories is None:
         return None
@@ -748,9 +747,10 @@ class DiscoveryResult:
     breakdown: Mapping[str, int] = dataclasses.field(default_factory=dict)
     editions_removed: int = 0
     series_collapsed: int = 0
-    histories: HistoryEntries | None = None
+    # Accepts lists or tuples; __post_init__ stores the read-only tuple form.
+    histories: Mapping[str, Sequence[Mapping[str, Any]]] | None = None
     match_reasons: Mapping[str, str] | None = None
-    atl_asins: frozenset[str] | None = None
+    atl_asins: AbstractSet[str] | None = None
     hist_context: Mapping[str, int] | None = None
 
     def __post_init__(self) -> None:
@@ -775,7 +775,7 @@ class DiscoveryResult:
         *,
         histories: Mapping[str, list[dict]] | None = None,
         match_reasons: Mapping[str, str] | None = None,
-        atl_asins: set[str] | None = None,
+        atl_asins: AbstractSet[str] | None = None,
         hist_context: Mapping[str, int] | None = None,
     ) -> DiscoveryResult:
         return cls(
@@ -783,7 +783,7 @@ class DiscoveryResult:
             breakdown=outcome.breakdown,
             editions_removed=outcome.editions_removed,
             series_collapsed=outcome.series_collapsed,
-            histories=histories,
+            histories=_freeze_histories(histories),
             match_reasons=match_reasons,
             atl_asins=atl_asins,
             hist_context=hist_context,

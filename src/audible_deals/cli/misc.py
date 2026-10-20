@@ -50,9 +50,8 @@ def _reject_json_constant(value: str):
 def _load_raw_json(path: Path, expected_type: type):
     data = json_mod.loads(path.read_text(), parse_constant=_reject_json_constant)
     if not isinstance(data, expected_type):
-        expected_name = {dict: "object", list: "array"}.get(
-            expected_type, expected_type.__name__
-        )
+        json_names: dict[type, str] = {dict: "object", list: "array"}
+        expected_name = json_names.get(expected_type, expected_type.__name__)
         raise ValueError(f"Expected a JSON {expected_name}, got {type(data).__name__}")
     return data
 
@@ -213,7 +212,7 @@ def categories(ctx, parent):
         try:
             cats = dc.get_categories(root=parent)
         except ValueError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
 
     title = "Subcategories" if parent else "Top-Level Categories"
     display_categories(cats, title=title)
@@ -249,7 +248,7 @@ def detail(ctx, asin, last_ref):
         try:
             product = dc.get_product(asin)
         except ValueError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
 
     display_product_detail(product, credit_price=_credit_price(ctx))
 
@@ -600,25 +599,26 @@ def _store_checks() -> list[_Row]:
             continue
         try:
             data = _load_raw_json(path, expected_type)
+            malformed_entries: list[str]
             if path == constants.PROFILES_FILE:
-                malformed = [
+                malformed_entries = [
                     name for name, value in data.items() if not isinstance(value, dict)
                 ]
             elif path == constants.MONITORS_FILE:
-                malformed = []
+                malformed_entries = []
                 for name, value in data.items():
                     try:
                         validated_monitor_definition(value)
                     except MonitorServiceError:
-                        malformed.append(name)
+                        malformed_entries.append(name)
             else:
-                malformed = []
-            if malformed:
+                malformed_entries = []
+            if malformed_entries:
                 rows.append(
                     (
                         check,
                         "FAIL",
-                        "Malformed entries: " + ", ".join(map(str, malformed)),
+                        "Malformed entries: " + ", ".join(map(str, malformed_entries)),
                     )
                 )
             else:
@@ -828,6 +828,8 @@ def completions(ctx, shell):
     from click.shell_completion import get_completion_class
 
     completion_class = get_completion_class(shell)
+    if completion_class is None:
+        raise click.ClickException(f"Unsupported shell: {shell}")
     completion = completion_class(
         ctx.find_root().command,
         {},

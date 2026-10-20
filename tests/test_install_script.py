@@ -3,12 +3,12 @@ from __future__ import annotations
 import hashlib
 import io
 import os
-from pathlib import Path
 import re
 import shlex
 import shutil
 import subprocess
 import tarfile
+from pathlib import Path
 
 import pytest
 

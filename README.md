@@ -96,8 +96,10 @@ Preview the documentation site locally with `uv run --extra docs mkdocs serve`. 
 ## Development
 
 ```bash
-pip install -e ".[dev]"
-pytest tests/ -v
+uv sync --extra dev
+uv run pytest -q
+uv run ruff check . && uv run ruff format --check .
+uv run mypy
 ```
 
 The tool uses the [audible](https://github.com/mkb79/Audible) Python package to query Audible’s catalog API. Results are filtered and re-sorted locally because the API does not support price sorting. Configuration, cached results, wishlists, monitor definitions and snapshots, and price history stay in `~/.config/audible-deals/`.

@@ -122,18 +122,18 @@ def _resolve_categories(
         try:
             category, category_name = dc.resolve_genre(genre)
         except ValueError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
     elif category:
         try:
             category_name = dc.get_category_name(category)
         except ValueError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
     for eg in exclude_genre:
         try:
             eid, _ = dc.resolve_genre(eg)
             exclude_category_ids.add(eid)
         except ValueError as e:
-            raise click.ClickException(str(e))
+            raise click.ClickException(str(e)) from e
     return category, category_name, exclude_category_ids
 
 

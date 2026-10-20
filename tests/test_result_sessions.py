@@ -8,41 +8,16 @@ import sys
 from io import StringIO
 
 import click
-from click.testing import CliRunner
 import pytest
+from click.testing import CliRunner
 from rich.console import Console
 
 from audible_deals import constants
 from audible_deals import wishlist as wishlist_store
 from audible_deals.cli import cli
-from audible_deals.result_processing import (
-    process_session_recipe as apply_result_recipe,
-    result_recipe,
-)
-from audible_deals.result_refinement import (
-    CachedRefinementRequest,
-    CachedRefinementValidationError,
-    FetchBoundPatch,
-    FetchBoundRefinementError,
-    refine_cached_results,
-)
-from audible_deals.result_publication import (
-    ResultPublicationRequest,
-    ResultSessionSpec,
-    publish_discovery,
-    record_prices_safely,
-)
-from audible_deals.refresh_eligibility import load_refresh_eligibility
 from audible_deals.presentation.products import display_products
 from audible_deals.price_history import load_price_history
-from audible_deals.results_cache import (
-    clear_dismissed_asins,
-    load_dismissed_asins,
-    load_result_session,
-    load_seen_asins,
-    save_dismissed_asins,
-    save_result_session,
-)
+from audible_deals.refresh_eligibility import load_refresh_eligibility
 from audible_deals.result_models import (
     DiscoveryResult,
     FilterContext,
@@ -51,6 +26,33 @@ from audible_deals.result_models import (
     ResultRecipe,
     ResultSession,
     ResultSessionValidationError,
+)
+from audible_deals.result_processing import (
+    process_session_recipe as apply_result_recipe,
+)
+from audible_deals.result_processing import (
+    result_recipe,
+)
+from audible_deals.result_publication import (
+    ResultPublicationRequest,
+    ResultSessionSpec,
+    publish_discovery,
+    record_prices_safely,
+)
+from audible_deals.result_refinement import (
+    CachedRefinementRequest,
+    CachedRefinementValidationError,
+    FetchBoundPatch,
+    FetchBoundRefinementError,
+    refine_cached_results,
+)
+from audible_deals.results_cache import (
+    clear_dismissed_asins,
+    load_dismissed_asins,
+    load_result_session,
+    load_seen_asins,
+    save_dismissed_asins,
+    save_result_session,
 )
 from audible_deals.selectors import resolve_selectors
 from audible_deals.serialization import serialize_product

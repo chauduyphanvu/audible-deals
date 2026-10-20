@@ -9,8 +9,9 @@ import logging
 import os
 import threading
 import webbrowser
+from collections.abc import Callable
 from pathlib import Path
-from typing import TYPE_CHECKING, Callable
+from typing import TYPE_CHECKING
 
 from audible_deals.constants import LOCALE_DOMAIN
 from audible_deals.locking import advisory_lock

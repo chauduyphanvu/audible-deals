@@ -31,7 +31,6 @@ except ImportError:
 
 import click
 
-
 _COMMAND_SPECS = {
     "login": (
         "audible_deals.cli.misc",
@@ -243,12 +242,12 @@ class _HandleAuthErrors(click.Group):
             raise
         except RuntimeError as e:
             if "Not authenticated" in str(e):
-                raise click.ClickException(_safe_text(e))
+                raise click.ClickException(_safe_text(e)) from e
             raise
         except BrokenPipeError:
             raise
         except OSError as e:
-            raise click.ClickException(f"Filesystem error: {_safe_text(e)}")
+            raise click.ClickException(f"Filesystem error: {_safe_text(e)}") from e
         except Exception as exc:
             if _is_state_file_error(exc):
                 raise click.ClickException(_safe_text(exc)) from exc
@@ -256,7 +255,7 @@ class _HandleAuthErrors(click.Group):
                 raise
             raise click.ClickException(
                 "Audible request failed. Check your network connection and authentication, then try again."
-            )
+            ) from exc
 
     def format_commands(self, ctx, formatter):
         """Render command help in workflows rather than one long alphabetic list."""

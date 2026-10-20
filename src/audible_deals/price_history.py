@@ -8,15 +8,22 @@ import logging
 import math
 import os
 import statistics
+from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import Any
 
 from audible_deals import constants, wishlist
+from audible_deals.constants import _ASIN_RE
 from audible_deals.locking import advisory_lock
 from audible_deals.product import Product
-from audible_deals.constants import _ASIN_RE
 from audible_deals.storage import _atomic_write, load_json_file
 
 logger = logging.getLogger(__name__)
+
+# Price entries as consumed by analysis code: read-only, so both the mutable
+# lists loaded from disk and the frozen copies stored on result objects fit.
+HistoryEntries = Sequence[Mapping[str, Any]]
+HistoryMap = Mapping[str, HistoryEntries]
 
 _MAX_HISTORY_ENTRIES = 365
 _MARKETPLACES_KEY = "marketplaces"
@@ -55,6 +62,12 @@ def _as_float(value) -> float | None:
         return None
     result = float(value)
     return result if math.isfinite(result) else None
+
+
+def _entry_date(entry: dict) -> str:
+    """Sort key: the entry's ISO date, or '' when missing or not text."""
+    date = entry.get("date")
+    return date if isinstance(date, str) else ""
 
 
 def _history_update_lock(hist_file: Path):
@@ -144,7 +157,7 @@ def record_prices(
         observed_on = datetime.date.fromisoformat(observation_date).isoformat()
     else:
         raise TypeError("observation_date must be a date or ISO date string")
-    priced = [p for p in products if _as_float(p.price) is not None]
+    priced = [(p, price) for p in products if (price := _as_float(p.price)) is not None]
     if not priced:
         logger.debug("record_prices: no priced products (input=%d)", len(products))
         return
@@ -157,7 +170,7 @@ def record_prices(
     legacy_archived = 0
     legacy_failed = 0
 
-    for p in priced:
+    for p, price in priced:
         if not _ASIN_RE.fullmatch(p.asin):
             bad_asin += 1
             continue
@@ -199,8 +212,10 @@ def record_prices(
                     "history at %s has invalid structure, resetting", hist_file
                 )
                 raw = {_MARKETPLACES_KEY: {}}
-            markets = raw.get(_MARKETPLACES_KEY)
-            if not isinstance(markets, dict):
+            stored_markets: object = raw.get(_MARKETPLACES_KEY)
+            if isinstance(stored_markets, dict):
+                markets: dict[str, Any] = stored_markets
+            else:
                 markets = {}
                 raw = {_MARKETPLACES_KEY: markets}
             entries = _marketplace_entries(raw, p.asin, p.locale)
@@ -210,15 +225,11 @@ def record_prices(
             entries.append(
                 {
                     "date": observed_on,
-                    "price": round(float(p.price), 2),
+                    "price": round(price, 2),
                     "title": p.title,
                 }
             )
-            entries.sort(
-                key=lambda entry: (
-                    entry.get("date") if isinstance(entry.get("date"), str) else ""
-                )
-            )
+            entries.sort(key=_entry_date)
             markets[p.locale] = entries[-_MAX_HISTORY_ENTRIES:]
             for market_locale, market_entries in list(markets.items()):
                 if isinstance(market_entries, list):
@@ -261,7 +272,7 @@ def load_price_history(asin: str, locale: str = "us") -> list[dict]:
     return _marketplace_entries(raw, asin, locale)
 
 
-def _numeric_prices(entries: list[dict]) -> list[float]:
+def _numeric_prices(entries: HistoryEntries) -> list[float]:
     """Extract the numeric prices from history entries, in order."""
     return [
         price
@@ -270,7 +281,7 @@ def _numeric_prices(entries: list[dict]) -> list[float]:
     ]
 
 
-def _latest_title(entries: list[dict]) -> str:
+def _latest_title(entries: HistoryEntries) -> str:
     """Return the title from the most recent entry that has one."""
     for e in reversed(entries):
         if isinstance(e.get("title"), str) and e["title"]:
@@ -278,7 +289,7 @@ def _latest_title(entries: list[dict]) -> str:
     return ""
 
 
-def _atl_latest(entries: list[dict]) -> tuple[float, float] | None:
+def _atl_latest(entries: HistoryEntries) -> tuple[float, float] | None:
     """Return (latest, prev_min) when the latest price is at the all-time low.
 
     Requires ≥2 numeric entries and a numeric latest price; returns None
@@ -300,7 +311,7 @@ def _atl_latest(entries: list[dict]) -> tuple[float, float] | None:
 
 
 def price_history_context(
-    products: list[Product], histories: dict[str, list[dict]] | None = None
+    products: list[Product], histories: HistoryMap | None = None
 ) -> tuple[set[str], dict[str, int]]:
     """Compute (atl_asins, hist_context) for priced products from their histories.
 
@@ -326,7 +337,7 @@ def price_history_context(
     return atl_asins, hist_context
 
 
-def _history_entries(p: Product, histories: dict[str, list[dict]] | None) -> list[dict]:
+def _history_entries(p: Product, histories: HistoryMap | None) -> HistoryEntries:
     """Entries from a preloaded map when given, else from disk."""
     if histories is not None:
         return histories.get(history_key(p.asin, p.locale), [])
@@ -334,7 +345,7 @@ def _history_entries(p: Product, histories: dict[str, list[dict]] | None) -> lis
 
 
 def hist_percentiles(
-    products: list[Product], histories: dict[str, list[dict]] | None = None
+    products: list[Product], histories: HistoryMap | None = None
 ) -> dict[str, int]:
     """Percentile rank (0–100) of current price within its history (≥5 entries required)."""
     result: dict[str, int] = {}
@@ -351,7 +362,7 @@ def hist_percentiles(
 
 
 def price_drop_pcts(
-    products: list[Product], histories: dict[str, list[dict]] | None = None
+    products: list[Product], histories: HistoryMap | None = None
 ) -> dict[str, float]:
     """Percent drop from last tracked price (negative means price went up).
 

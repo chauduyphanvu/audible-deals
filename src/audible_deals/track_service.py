@@ -6,8 +6,9 @@ import bisect
 import datetime
 import logging
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 
 from audible_deals import constants
 from audible_deals.automation_models import TrackRunRequest, TrackRunResult
@@ -121,20 +122,22 @@ def refresh_eligible_asins(
     candidates.sort()
     if not candidates:
         return [], None
-    cursor_key = None
+    cursor_key: tuple[str, str] | None = None
     if isinstance(cursor, dict):
-        surfaced_on = cursor.get("surfaced_on")
-        asin = cursor.get("asin")
+        cursor_date = cursor.get("surfaced_on")
+        cursor_asin = cursor.get("asin")
         try:
-            if isinstance(surfaced_on, str):
-                datetime.date.fromisoformat(surfaced_on)
+            if isinstance(cursor_date, str):
+                datetime.date.fromisoformat(cursor_date)
             else:
                 raise ValueError
         except ValueError:
             pass
         else:
-            if isinstance(asin, str) and constants._ASIN_RE.fullmatch(asin):
-                cursor_key = (surfaced_on, asin)
+            if isinstance(cursor_asin, str) and constants._ASIN_RE.fullmatch(
+                cursor_asin
+            ):
+                cursor_key = (cursor_date, cursor_asin)
     start = bisect.bisect_right(candidates, cursor_key) if cursor_key else 0
     if start == len(candidates):
         start = 0
@@ -297,12 +300,12 @@ def _run_locked(
     for definition in selection.monitors:
         monitor_checked += 1
         try:
-            result = run_monitor(
+            monitor_result = run_monitor(
                 definition,
                 runtime.monitor_runtime,
                 deliver=deliver,
             )
-            monitor_events_count += len(result.events)
+            monitor_events_count += len(monitor_result.events)
         except Exception as exc:
             logger.exception("monitor %s failed", definition.name)
             monitor_failures.append(f"{definition.name}: {type(exc).__name__}: {exc}")

@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import math
+from collections.abc import Mapping
+from collections.abc import Set as AbstractSet
+from dataclasses import dataclass
 from typing import Literal
 
 import click
@@ -121,9 +123,9 @@ class InteractiveBrowser:
         title: str = "Results",
         max_price: float | None = None,
         show_url: bool = False,
-        atl_asins: set[str] | None = None,
-        hist_context: dict[str, int] | None = None,
-        match_context: dict[str, str] | None = None,
+        atl_asins: AbstractSet[str] | None = None,
+        hist_context: Mapping[str, int] | None = None,
+        match_context: Mapping[str, str] | None = None,
     ) -> None:
         self.products = products
         self.currency = currency
@@ -340,9 +342,9 @@ def _interactive_browse(
     title: str = "Results",
     max_price: float | None = None,
     show_url: bool = False,
-    atl_asins: set[str] | None = None,
-    hist_context: dict[str, int] | None = None,
-    match_context: dict[str, str] | None = None,
+    atl_asins: AbstractSet[str] | None = None,
+    hist_context: Mapping[str, int] | None = None,
+    match_context: Mapping[str, str] | None = None,
 ) -> None:
     """Interactive mode: let user pick items to view details, open, or wishlist."""
     browser = InteractiveBrowser(

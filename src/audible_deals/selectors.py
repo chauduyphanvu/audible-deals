@@ -37,7 +37,7 @@ def _expand_ref_string(ref: str | int, label: str = "--last") -> list[int]:
             except ValueError:
                 raise click.ClickException(
                     f"Invalid {label} range {part!r}: must be two integers separated by '-'."
-                )
+                ) from None
             if start > end:
                 raise click.ClickException(
                     f"Invalid {label} range {part!r}: start must not exceed end."
@@ -53,7 +53,7 @@ def _expand_ref_string(ref: str | int, label: str = "--last") -> list[int]:
             except ValueError:
                 raise click.ClickException(
                     f"Invalid {label} value {part!r}: must be an integer or range like '1-3'."
-                )
+                ) from None
     return expanded
 
 
@@ -68,7 +68,7 @@ def parse_audible_url(value: str) -> tuple[str, str] | None:
         host = (parsed.hostname or "").lower().rstrip(".")
     except ValueError as exc:
         if value.lower().startswith(("http://", "https://")):
-            raise click.BadParameter(f"Invalid Audible URL {value!r}: {exc}")
+            raise click.BadParameter(f"Invalid Audible URL {value!r}: {exc}") from exc
         return None
     if parsed.scheme.lower() not in {"http", "https"}:
         return None
@@ -174,8 +174,9 @@ def resolve_selectors(
             unique.append(item)
             seen.add(item.asin)
 
+    resolved_locale: str | None
     if explicit_locale is not None:
-        locale = explicit_locale
+        resolved_locale = explicit_locale
     elif len(inferred) > 1:
         raise click.ClickException(
             "Selected products span conflicting Audible marketplaces: "
@@ -183,8 +184,8 @@ def resolve_selectors(
             + ". Pass --locale explicitly to choose one."
         )
     else:
-        locale = next(iter(inferred), None)
-    return unique, locale
+        resolved_locale = next(iter(inferred), None)
+    return unique, resolved_locale
 
 
 def resolve_last_references(refs: tuple[str | int, ...]) -> list[tuple[str, str]]:

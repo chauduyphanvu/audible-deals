@@ -13,8 +13,9 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _resolve_categories,
+    _resolve_skip_asins,
 )
-from audible_deals.cli.helpers import _resolve_categories, _resolve_skip_asins
 from audible_deals.config_store import (
     config_numeric_errors,
     load_monitors,
@@ -134,7 +135,7 @@ def track_run(ctx, cooldown):
     except WebhookDeliveryError as exc:
         raise click.ClickException(str(exc)) from exc
     except Exception as e:
-        raise click.ClickException(f"track run failed: {e}")
+        raise click.ClickException(f"track run failed: {e}") from e
     warn_wishlist_issues(result.wishlist_issues)
     console.print(f"[dim]{safe_markup(result.summary())}[/dim]")
 
@@ -198,7 +199,7 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
     try:
         description = scheduler.install(interval_s, constants.TRACK_LOG_FILE)
     except scheduler.SchedulerError as e:
-        raise click.ClickException(str(e))
+        raise click.ClickException(str(e)) from e
 
     state = load_track_state()
     state["install"] = {
@@ -221,7 +222,7 @@ def track_uninstall():
     try:
         removed = scheduler.uninstall()
     except scheduler.SchedulerError as e:
-        raise click.ClickException(str(e))
+        raise click.ClickException(str(e)) from e
     state = load_track_state()
     state.pop("install", None)
     save_track_state(state)

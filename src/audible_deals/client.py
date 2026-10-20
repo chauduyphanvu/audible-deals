@@ -8,10 +8,11 @@ import logging
 import math
 import re
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from collections.abc import Callable, Iterator
+from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Callable, Iterator
+from typing import Any
 
 from audible_deals import constants as _constants
 from audible_deals import product as _product
@@ -32,6 +33,9 @@ def _validate_category_id(value: str) -> None:
 
 
 _MAX_CONCURRENT_FETCHES = 4
+
+# One page of the user's library: (products, items on the page, reported total).
+_LibraryPage = tuple[list[_product.Product], int, Any]
 
 
 def _parse_api_products(raw_products: object, locale: str) -> list[_product.Product]:
@@ -366,7 +370,7 @@ class DealsClient:
         count to fetch remaining pages with up to four workers.
         """
 
-        def fetch(page: int):
+        def fetch(page: int) -> _LibraryPage:
             resp = self._transport.request(
                 "1.0/library",
                 num_results=_constants.MAX_PAGE_SIZE,
@@ -416,8 +420,8 @@ class DealsClient:
         pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
         try:
             next_page = 2
-            pending = {}
-            ready = {}
+            pending: dict[Future[_LibraryPage], int] = {}
+            ready: dict[int, Future[_LibraryPage]] = {}
             while next_page <= last_page and len(pending) < _MAX_CONCURRENT_FETCHES:
                 pending[pool.submit(fetch, next_page)] = next_page
                 next_page += 1
@@ -693,15 +697,15 @@ class DealsClient:
         else:
             pool = ThreadPoolExecutor(max_workers=_MAX_CONCURRENT_FETCHES)
             try:
-                futures = [
+                batch_futures = [
                     (tuple(batch), pool.submit(self._fetch_products_batch, batch))
                     for batch in batches
                 ]
-                for batch, future in futures:
+                for batch_asins, batch_future in batch_futures:
                     try:
-                        fetched.extend(future.result())
+                        fetched.extend(batch_future.result())
                     except Exception as exc:
-                        failed_batches.append((batch, exc))
+                        failed_batches.append((batch_asins, exc))
             finally:
                 pool.shutdown(wait=True, cancel_futures=True)
 
@@ -715,11 +719,11 @@ class DealsClient:
             )
             failed_asins: set[str] = set()
             series_errors: list[Exception] = []
-            for batch, exc in failed_batches:
-                affected = set(child_asins).intersection(batch)
+            for failed_batch, batch_error in failed_batches:
+                affected = set(child_asins).intersection(failed_batch)
                 if affected:
                     failed_asins.update(affected)
-                    series_errors.append(exc)
+                    series_errors.append(batch_error)
             if series_errors:
                 product_failures[series_asin] = tuple(series_errors)
             missing = tuple(

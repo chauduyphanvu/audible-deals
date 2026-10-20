@@ -5,8 +5,8 @@ from __future__ import annotations
 import contextlib
 import errno
 import os
+import sys
 import time
-
 
 _LEGACY_PARTIAL_STALE_SECONDS = 600
 
@@ -17,7 +17,7 @@ class LockHeldError(Exception):
 
 def _acquire(fd: int) -> None:
     """Acquire a non-blocking exclusive advisory lock for *fd*."""
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         os.lseek(fd, 0, os.SEEK_SET)
@@ -36,7 +36,7 @@ def _acquire(fd: int) -> None:
 
 
 def _release(fd: int) -> None:
-    if os.name == "nt":
+    if sys.platform == "win32":
         import msvcrt
 
         os.lseek(fd, 0, os.SEEK_SET)
@@ -154,7 +154,9 @@ def run_lock():
             except FileExistsError:
                 fd = _acquire_existing_lock(lock_file)
                 if fd is None:
-                    raise LockHeldError("lock file disappeared while acquiring")
+                    raise LockHeldError(
+                        "lock file disappeared while acquiring"
+                    ) from None
             else:
                 try:
                     _acquire(fd)

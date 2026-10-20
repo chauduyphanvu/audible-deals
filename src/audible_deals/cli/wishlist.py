@@ -18,18 +18,18 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_cli_selectors,
 )
-from audible_deals.validation import NONNEGATIVE_FLOAT
 from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
 from audible_deals.presentation.common import price_str
 from audible_deals.presentation.reports import display_watch_table, display_wishlist
 from audible_deals.presentation.terminal import console, safe_markup, safe_text
-from audible_deals.serialization import sanitize_csv_cell, validate_export_path
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
+from audible_deals.serialization import sanitize_csv_cell, validate_export_path
+from audible_deals.validation import NONNEGATIVE_FLOAT
 from audible_deals.wishlist import (
+    WishlistMutationError,
     load_wishlist,
     partition_wishlist,
-    WishlistMutationError,
     warn_wishlist_issues,
 )
 from audible_deals.wishlist_service import (

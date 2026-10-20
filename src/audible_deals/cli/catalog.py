@@ -2,13 +2,21 @@
 
 from __future__ import annotations
 
-import datetime
 import dataclasses
+import datetime
 import logging
 import shlex
 
 import click
 
+from audible_deals.catalog_workflow import (
+    CatalogQueryError,
+    bind_catalog_categories,
+    build_find_scan_plan,
+    build_search_scan_plan,
+    execute_catalog_scan,
+    normalized_search_text,
+)
 from audible_deals.cli.helpers import (
     _CL,
     _credit_price,
@@ -29,22 +37,14 @@ from audible_deals.constants import (
     MAX_CATALOG_CALLS_PER_SCAN,
     SORT_OPTIONS,
 )
-from audible_deals.catalog_workflow import (
-    CatalogQueryError,
-    bind_catalog_categories,
-    build_find_scan_plan,
-    build_search_scan_plan,
-    execute_catalog_scan,
-    normalized_search_text,
+from audible_deals.presentation.dry_run import (
+    CatalogDryRunSummary,
+    render_catalog_dry_run,
 )
 from audible_deals.presentation.terminal import (
     catalog_scan_progress,
     console,
     safe_markup,
-)
-from audible_deals.presentation.dry_run import (
-    CatalogDryRunSummary,
-    render_catalog_dry_run,
 )
 from audible_deals.product import Product
 from audible_deals.result_processing import (
@@ -244,7 +244,7 @@ def _validate_history_filter_options(
         except ValueError:
             raise click.UsageError(
                 f"{opt}: invalid date {value!r} (expected YYYY-MM-DD)"
-            )
+            ) from None
 
     normalized_after = _norm_date("--released-after", released_after)
     normalized_before = _norm_date("--released-before", released_before)
