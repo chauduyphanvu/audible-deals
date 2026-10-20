@@ -106,7 +106,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install -e .
+          pip install -e ".[tui]"
           pip install pyinstaller
 
       - name: Build binary (onedir via spec)
