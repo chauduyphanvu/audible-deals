@@ -15,6 +15,9 @@ from click.testing import CliRunner
 from audible_deals import db, paths
 from audible_deals.cli import cli
 
+# These tests are about creating and upgrading the databases themselves.
+pytestmark = pytest.mark.fresh_schema
+
 
 def _pragma(conn, name):
     return conn.execute(f"PRAGMA {name}").fetchone()[0]

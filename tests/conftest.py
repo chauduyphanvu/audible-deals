@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import itertools
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -249,12 +250,64 @@ def raw_api_product_minimal():
 # ---------------------------------------------------------------------------
 
 
+_tmp_counter = itertools.count()
+
+
+@pytest.fixture
+def tmp_path(tmp_path_factory):
+    """A fresh, empty directory per test, created without pytest's directory scan.
+
+    pytest's own ``tmp_path`` looks for the next free number by listing every
+    sibling directory, which grows with each test in the session; with a couple
+    of thousand tests that listing costs several seconds. A counter gives the
+    same isolation (every test gets its own new directory) without the scan.
+    """
+    path = tmp_path_factory.getbasetemp() / f"t{next(_tmp_counter):04d}"
+    path.mkdir()
+    return path
+
+
+def pytest_configure(config):
+    config.addinivalue_line(
+        "markers",
+        "fresh_schema: build the databases from scratch instead of copying the "
+        "session's schema-only template",
+    )
+
+
+@pytest.fixture(scope="session")
+def _database_templates(tmp_path_factory):
+    """Schema-only copies of both databases, built once with the real code.
+
+    Creating a database costs a few milliseconds (WAL setup plus every table);
+    hundreds of tests would pay that for nothing. Copying these bytes into a
+    test's own data directory gives the same empty databases much faster. The
+    JSON-import marker is deliberately absent, so a first open still imports.
+    """
+    from audible_deals import db
+
+    directory = tmp_path_factory.mktemp("db-templates")
+    templates = {}
+    for kind, name in (("state", "state.db"), ("cache", "cache.db")):
+        path = directory / name
+        conn = db._connect(path)
+        try:
+            db._apply_schema(conn, kind)
+            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        finally:
+            conn.close()
+        templates[name] = path.read_bytes()
+    return templates
+
+
 @pytest.fixture(autouse=True)
-def _isolated_data_dir(tmp_path, monkeypatch):
+def _isolated_data_dir(request, tmp_path, monkeypatch):
     """Point every test at its own data directory (never the real one).
 
     ``DEALS_HOME`` is read at call time, so one environment variable redirects
-    config, auth, the lock file and both SQLite databases.
+    config, auth, the lock file and both SQLite databases. A test that exercises
+    database creation itself opts out of the template copy with
+    ``@pytest.mark.fresh_schema``.
     """
     from audible_deals import db
 
@@ -264,6 +317,17 @@ def _isolated_data_dir(tmp_path, monkeypatch):
     # legacy data directory) lands in the sandbox, never in the real one.
     monkeypatch.setenv("HOME", str(tmp_path / "home"))
     monkeypatch.setenv("USERPROFILE", str(tmp_path / "home"))
+    if request.node.get_closest_marker("fresh_schema") is None:
+        templates = request.getfixturevalue("_database_templates")
+        real_connect = db._connect
+
+        def connect_from_template(path):
+            if not path.exists() and path.name in templates:
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_bytes(templates[path.name])
+            return real_connect(path)
+
+        monkeypatch.setattr(db, "_connect", connect_from_template)
     yield
     db.close_all()
 

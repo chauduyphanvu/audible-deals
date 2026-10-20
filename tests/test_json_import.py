@@ -29,6 +29,9 @@ from audible_deals.state_store import (
 )
 from audible_deals.storage import read_text
 
+# These tests are about creating and upgrading the databases themselves.
+pytestmark = pytest.mark.fresh_schema
+
 
 def put(name: str, content, *, directory: Path | None = None) -> Path:
     """Write a legacy file (text, bytes or JSON-able data) into the data directory."""
