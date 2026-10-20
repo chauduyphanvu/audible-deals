@@ -70,7 +70,7 @@ deals watch --exit-code
 
 ## Price history
 
-Flat discovery with `find`, `search`, `for-me`, or `series` caches its complete candidate pool for `last`, but records only finite-price rows surfaced after applying the result limit. `series --gaps` has no flat-view limit and records every finite-price gap that survives its filters. Terminal, `--quiet`, `--json`, and successful export output all count as surfaced, including quiet gaps; `--count` and `--dry-run` record neither history nor refresh eligibility. Each ASIN records at most one price per observation date; dated backfills remain chronological, idempotent, and capped at 365 entries.
+Flat discovery with `find`, `search`, `for-me`, or `series` caches its complete candidate pool for `last`, but records only finite-price rows surfaced after applying the result limit. `series --gaps` has no flat-view limit and records every finite-price gap that survives its filters. Terminal, `--quiet`, `--json`, and successful export output all count as surfaced, including quiet gaps; `--count` and `--dry-run` record neither history nor refresh eligibility. Prices that came from the catalog cache (see [Cached results](commands.md#cached-results)) are never recorded, and `track run`, `notify`, `watch` and monitors always read live prices. Each ASIN records at most one price per observation date; dated backfills remain chronological, idempotent, and capped at 365 entries.
 
 ```bash
 deals history B00R6S1RCY

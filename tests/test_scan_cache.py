@@ -554,3 +554,80 @@ class TestThreadSafety:
 
         assert not any(thread.is_alive() for thread in threads)
         assert misses == []
+
+
+class TestLiveOnlyCommands:
+    """track run, notify, watch, wishlist checks and monitors must see live prices."""
+
+    ALLOWED = {
+        "cli/catalog.py",  # find, search
+        "cli/foryou.py",  # for-me
+        "cli/series.py",  # series
+        "cli/library.py",  # library (refreshes the stored owned list)
+        "cli/helpers.py",  # the shared builder
+        "scan_cache.py",
+    }
+
+    def test_only_the_scan_commands_build_a_cache(self):
+        from pathlib import Path
+
+        import audible_deals
+
+        root = Path(audible_deals.__file__).parent
+        users = {
+            str(path.relative_to(root))
+            for path in root.rglob("*.py")
+            if "ScanCache.from_config(" in path.read_text(encoding="utf-8")
+            or "_scan_cache(" in path.read_text(encoding="utf-8")
+        }
+
+        assert users <= self.ALLOWED, f"unexpected cache users: {users - self.ALLOWED}"
+
+    def test_monitor_scans_pass_no_cache(self, tmp_config, monkeypatch):
+        from contextlib import contextmanager
+
+        from audible_deals.monitor_service import (
+            MonitorDefinition,
+            MonitorRuntime,
+            scan_monitor,
+        )
+        from tests.test_monitor_service import definition
+
+        seen_kwargs = []
+
+        class Client:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *args):
+                return False
+
+        @contextmanager
+        def progress(*args, **kwargs):
+            yield None
+
+        def fake_scan(*args, **kwargs):
+            seen_kwargs.append(kwargs)
+            return []
+
+        monkeypatch.setattr(
+            "audible_deals.monitor_service.execute_catalog_scan", fake_scan
+        )
+        runtime = MonitorRuntime(
+            get_client=lambda locale: Client(),
+            resolve_categories=lambda *args: ("", "", set()),
+            resolve_skip_asins=lambda *args: None,
+            progress=progress,
+        )
+
+        scan_monitor(MonitorDefinition.from_dict(definition("live", 1)), runtime)
+
+        assert seen_kwargs == [{}]
+
+    def test_the_wishlist_and_notify_paths_call_the_client_without_a_cache(self):
+        import inspect
+
+        from audible_deals import notification_service
+
+        source = inspect.getsource(notification_service.collect_target_hits)
+        assert "cache" not in source

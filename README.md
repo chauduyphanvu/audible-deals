@@ -102,7 +102,7 @@ uv run ruff check . && uv run ruff format --check .
 uv run mypy
 ```
 
-The tool uses the [audible](https://github.com/mkb79/Audible) Python package to query Audible’s catalog API. Results are filtered and re-sorted locally because the API does not support price sorting. Configuration, wishlists and monitor definitions stay as JSON files, and price history, cached results and monitor snapshots are kept in a local SQLite database, all under `~/.config/audible-deals/` (override with `DEALS_HOME`).
+The tool uses the [audible](https://github.com/mkb79/Audible) Python package to query Audible’s catalog API. Results are filtered and re-sorted locally because the API does not support price sorting. Catalog pages are cached for two hours (`--refresh` for live data), so refining a search costs no API calls. Configuration, wishlists and monitor definitions stay as JSON files, and price history, cached results and monitor snapshots are kept in a local SQLite database, all under `~/.config/audible-deals/` (override with `DEALS_HOME`).
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for development guidelines and [SECURITY.md](SECURITY.md) for reporting vulnerabilities.
 
