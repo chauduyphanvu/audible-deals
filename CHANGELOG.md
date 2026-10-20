@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- `--locale` and `-v/--verbose` are now accepted after the command as well as before it, on every command and subcommand (`deals find --locale uk`, `deals wishlist add ASIN -v`). If both positions are used, the one after the command wins.
+
 ### Changed
 - A zero-byte or whitespace-only data file (`config.json`, `profiles.json`, ...) is now treated as empty without a warning; there is nothing in it to lose.
 - `-v`/`-vv` now also apply to warnings emitted while loading saved configuration at startup.

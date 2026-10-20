@@ -296,11 +296,12 @@ Multi-value CSV fields are joined with a semicolon and space.
 
 ## Marketplace support
 
-Pass `--locale` before the command. Currency symbols, Audible URLs, and price-per-hour headings adjust automatically.
+Pass `--locale` before or after the command. Currency symbols, Audible URLs, and price-per-hour headings adjust automatically. If you give it in both places, the one after the command wins.
 
 ```bash
 deals --locale uk find --genre fantasy --max-price 3
-deals --locale de detail B00R6S1RCY
+deals find --genre fantasy --max-price 3 --locale uk
+deals detail B00R6S1RCY --locale de
 ```
 
 | Locale | Currency | Domain |
@@ -329,10 +330,12 @@ After reloading the shell, profiles, genres, and excluded genres support tab com
 
 ```bash
 deals -v find --genre sci-fi --max-price 5
-deals -vv find --genre sci-fi
+deals find --genre sci-fi -vv
 DEALS_DEBUG=1 deals find --genre sci-fi
 DEALS_LOG_FILE=~/.cache/deals.log deals notify --webhook https://example.com/hook
 ```
+
+`-v` and `--locale` are accepted before or after any command, including subcommands such as `deals wishlist add`. When both positions are used, the one after the command wins.
 
 `DEALS_LOG_FILE` captures DEBUG records even without `-v`, which is useful for scheduled runs. The log rotates at 5 MB and keeps three backups. Transient API failures are retried twice with jittered exponential backoff.
 

@@ -225,6 +225,10 @@ class _HandleAuthErrors(click.Group):
             return None
         module_name, attribute, _, _ = spec
         command = getattr(importlib.import_module(module_name), attribute)
+        from audible_deals.cli.global_options import attach_global_options
+
+        # --locale / -v are accepted after the subcommand as well as before it.
+        attach_global_options(command)
         self.add_command(command, cmd_name)
         return command
 
