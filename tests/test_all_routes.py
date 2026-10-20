@@ -54,6 +54,7 @@ result = CliRunner().invoke(cli, ["--help"])
 assert result.exit_code == 0, result.output
 assert "audible" not in sys.modules
 assert not any(name.startswith("audible_deals.cli.") for name in sys.modules)
+assert "textual" not in sys.modules and "audible_deals.tui" not in sys.modules
 """
     result = subprocess.run(
         [sys.executable, "-c", code], capture_output=True, text=True, check=False

@@ -55,6 +55,16 @@ pip install -e .
 
 Installing from source is recommended on Windows because the pre-built binary may not work on every system. Run `deals` from Command Prompt, PowerShell, or Windows Terminal. Do not double-click the executable; the terminal window will close as soon as the command finishes.
 
+## Optional: the full-screen results browser
+
+`deals find -i` (and `search`, `for-me`, `series`, `last`) can open a full-screen browser instead of a line-by-line prompt. It needs the `tui` extra:
+
+```bash
+uv tool install 'audible-deals[tui]'     # or: pip install 'audible-deals[tui]'
+```
+
+Without it, or when output is piped, `-i` uses the prompt browser. The pre-built binaries include the full-screen browser. See [Interactive mode](commands.md#interactive-mode).
+
 ## Authenticate
 
 The external browser flow works across platforms:

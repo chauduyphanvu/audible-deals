@@ -233,7 +233,37 @@ Seen results used by `--exclude-seen`, dismissed results, and the last-results c
 
 ## Interactive mode
 
-Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last`, then enter an action:
+Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last` to browse the results instead of just printing them. Two browsers share the same actions:
+
+### Full-screen browser
+
+When the optional `tui` extra is installed and both stdin and stdout are terminals, `-i` opens a full-screen browser (a table of the results with the same columns as the wide table):
+
+```bash
+uv tool install 'audible-deals[tui]'        # or: pip install 'audible-deals[tui]'
+deals find --genre sci-fi --max-price 5 -i
+```
+
+| Key | Action |
+|-----|--------|
+| Up / Down, `j` / `k` | Move |
+| Enter | Details of the title in a side pane (same content as `deals detail`) |
+| `/` | Filter the rows as you type (title, author, narrator, series; local only). Enter keeps the filter, Esc clears it |
+| `s` | Next sort (price, highest price, discount, rating, price per hour, value, length, date, bestsellers, title, author). The order is saved in the result session, so `@N` and `deals last` follow what you see |
+| Space | Mark or unmark a title (then moves down) |
+| `w` | Add the marked titles, or the current one, to the wishlist; a dialog asks for the target price (default: the current price; empty means no target) |
+| `o` | Open the Audible page |
+| `c` | Compare 2 to 4 marked titles |
+| `h` | Price history and sparkline in the side pane |
+| `n` | Not interested: dismiss the marked (or current) titles for good |
+| `?` | List the keys |
+| `q` | Quit (Esc quits too, after closing a pane or clearing the filter) |
+
+What you did (titles added, titles dismissed) is printed when the screen closes. The filter is only a view: it is never saved. The terminal is restored when you quit.
+
+### Prompt browser
+
+Without the extra, when either end is not a terminal (a pipe, a script), or with `deals config set interactive-ui prompt`, `-i` uses a line-by-line prompt instead:
 
 | Input | Action |
 |-------|--------|
@@ -245,6 +275,8 @@ Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last`, then enter an 
 | `s discount` | Re-sort in place |
 | `n 1-3` | Dismiss items globally and remove them from the current view immediately |
 | `q` | Quit |
+
+`deals config set interactive-ui auto` (the default) picks the full-screen browser whenever it can run; `prompt` always uses the prompt. If the full-screen browser fails to start, `deals` says so and falls back to the prompt.
 
 Dismissed ASINs are excluded from future `find`, `search`, `for-me`, `series`, monitor, and `last` results.
 

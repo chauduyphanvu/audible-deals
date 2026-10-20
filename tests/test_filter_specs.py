@@ -164,6 +164,7 @@ def test_config_schema_is_registry_filters_plus_named_extras():
         "webhook_headers": list,
         "webhook_allow_private": bool,
         "secret_storage": str,
+        "interactive_ui": str,
         "cache_ttl": int,
         "known_candidates": bool,
     }

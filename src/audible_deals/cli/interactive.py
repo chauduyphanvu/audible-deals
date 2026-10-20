@@ -300,6 +300,104 @@ class InteractiveBrowser:
         return True
 
 
+INTERACTIVE_UI_CHOICES = ("auto", "prompt")
+
+
+def interactive_ui_setting() -> str:
+    """``interactive-ui`` from the running command's config (``auto`` by default)."""
+    ctx = click.get_current_context(silent=True)
+    config = ctx.obj.get("config") if ctx is not None and ctx.obj else None
+    value = config.get("interactive_ui") if isinstance(config, dict) else None
+    return value if value in INTERACTIVE_UI_CHOICES else "auto"
+
+
+def choose_ui(
+    setting: str | None = None, *, stdin=None, stdout=None
+) -> Literal["tui", "prompt"]:
+    """Which browser ``-i`` opens: the full-screen one or the prompt loop.
+
+    The full-screen browser needs the optional ``textual`` package and a real
+    terminal on both ends; otherwise (including ``interactive-ui prompt``) the
+    prompt loop runs, as it always has. Nothing is imported to decide this.
+    """
+    import importlib.util
+    import os
+    import sys
+
+    if (setting or interactive_ui_setting()) == "prompt":
+        return "prompt"
+    try:
+        if importlib.util.find_spec("textual") is None:
+            return "prompt"
+    except (ImportError, ValueError):
+        return "prompt"
+    stdin = sys.stdin if stdin is None else stdin
+    stdout = sys.stdout if stdout is None else stdout
+    try:
+        if not (stdin.isatty() and stdout.isatty()):
+            return "prompt"
+    except (AttributeError, ValueError):
+        return "prompt"
+    if os.environ.get("TERM", "") == "dumb":
+        return "prompt"
+    return "tui"
+
+
+def _saved_sort() -> str | None:
+    """The sort the saved result session was last viewed with, if any."""
+    try:
+        from audible_deals.results_cache import load_result_session
+
+        return load_result_session().current_recipe.sort or None
+    except Exception:
+        return None
+
+
+def _run_full_screen(
+    products: list[Product],
+    currency: str,
+    credit_price: float | None,
+    *,
+    title: str,
+    max_price: float | None,
+    show_url: bool,
+    atl_asins: AbstractSet[str] | None,
+    hist_context: Mapping[str, int] | None,
+    match_context: Mapping[str, str] | None,
+) -> bool:
+    """Run the full-screen browser. ``False`` means it could not, use the prompt."""
+    from audible_deals.notices import warn
+
+    try:
+        from audible_deals.tui.app import run_results_app
+
+        summary = run_results_app(
+            products,
+            currency,
+            credit_price,
+            title=title,
+            max_price=max_price,
+            show_url=show_url,
+            atl_asins=atl_asins,
+            hist_context=hist_context,
+            match_context=match_context,
+            sort_key=_saved_sort(),
+        )
+    except Exception as exc:
+        ctx = click.get_current_context(silent=True)
+        if ctx is not None and ctx.obj and ctx.obj.get("verbose", 0) >= 2:
+            raise
+        warn(
+            f"The full-screen browser could not run ({type(exc).__name__}: {exc}); "
+            "using the prompt instead. Set 'deals config set interactive-ui prompt' "
+            "to always use the prompt."
+        )
+        return False
+    for line in summary:
+        console.print(f"[dim]{safe_markup(line)}[/dim]", highlight=False)
+    return True
+
+
 def _interactive_browse(
     products: list[Product],
     currency: str = "$",
@@ -311,8 +409,38 @@ def _interactive_browse(
     atl_asins: AbstractSet[str] | None = None,
     hist_context: Mapping[str, int] | None = None,
     match_context: Mapping[str, str] | None = None,
+    table_shown: bool = True,
 ) -> None:
-    """Interactive mode: let user pick items to view details, open, or wishlist."""
+    """Interactive mode: browse the results full-screen, or at a prompt.
+
+    ``table_shown`` says whether the results table was already printed (it is not
+    when the full-screen browser was expected, so a fallback prints it).
+    """
+    if choose_ui() == "tui" and _run_full_screen(
+        products,
+        currency,
+        credit_price,
+        title=title,
+        max_price=max_price,
+        show_url=show_url,
+        atl_asins=atl_asins,
+        hist_context=hist_context,
+        match_context=match_context,
+    ):
+        return
+    if not table_shown:
+        console.print()
+        display_products(
+            products,
+            max_price=max_price,
+            title=title,
+            currency=currency,
+            show_url=show_url,
+            atl_asins=atl_asins,
+            hist_context=hist_context,
+            credit_price=credit_price,
+            match_context=match_context,
+        )
     browser = InteractiveBrowser(
         products,
         currency,

@@ -40,6 +40,9 @@ _EXTRA_CONFIG_SCHEMA: dict[str, type] = {
     # Where secrets (the login, webhook URLs and headers) are kept: "file" (the
     # data directory) or "keyring" (the OS keychain; see secret_store.py).
     "secret_storage": str,
+    # Which browser `-i` opens: "auto" (full-screen when textual is installed and
+    # both ends are terminals) or "prompt" (always the line-by-line prompt).
+    "interactive_ui": str,
     # Minutes a catalog page may be reused (0 turns the cache off).
     "cache_ttl": int,
     # Re-price titles seen before that a scan did not return.
@@ -161,6 +164,12 @@ def coerce_config_value(key: str, raw: str):
         if raw not in LOCALE_DOMAIN:
             raise click.ClickException(
                 f"Invalid locale '{raw}'. Valid: {', '.join(sorted(LOCALE_DOMAIN))}"
+            )
+        return raw
+    if key == "interactive_ui":
+        if raw not in ("auto", "prompt"):
+            raise click.ClickException(
+                f"Invalid interactive-ui '{raw}'. Valid: auto, prompt"
             )
         return raw
     if key == "secret_storage":

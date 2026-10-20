@@ -67,19 +67,26 @@ def emit_results(request: ResultPresentationRequest) -> None:
             filtered,
             histories=_prior_histories(filtered, request.result.histories),
         )
+    # The full-screen browser shows the table itself, so it is not printed first.
+    full_screen = False
+    if request.interactive and filtered and not request.json_flag:
+        from audible_deals.cli.interactive import choose_ui
+
+        full_screen = choose_ui() == "tui"
     if not request.json_flag and not request.quiet:
-        console.print()
-        display_products(
-            filtered,
-            max_price=request.max_price,
-            title=request.title,
-            currency=request.currency,
-            show_url=request.show_url,
-            atl_asins=atl_asins,
-            hist_context=hist_context,
-            credit_price=request.credit_price,
-            match_context=request.result.match_reasons,
-        )
+        if not full_screen:
+            console.print()
+            display_products(
+                filtered,
+                max_price=request.max_price,
+                title=request.title,
+                currency=request.currency,
+                show_url=request.show_url,
+                atl_asins=atl_asins,
+                hist_context=hist_context,
+                credit_price=request.credit_price,
+                match_context=request.result.match_reasons,
+            )
         display_summary(
             len(filtered),
             request.result.breakdown,
@@ -114,4 +121,5 @@ def emit_results(request: ResultPresentationRequest) -> None:
             atl_asins=atl_asins,
             hist_context=hist_context,
             match_context=request.result.match_reasons,
+            table_shown=not full_screen,
         )
