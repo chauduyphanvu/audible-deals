@@ -299,7 +299,7 @@ def _print_version(ctx: click.Context, param: click.Parameter, value: bool) -> N
 
         v = _pkg_version("audible-deals")
     except Exception:
-        v = "0.12.0"  # fallback for PyInstaller frozen builds
+        v = "0.12.1"  # fallback for PyInstaller frozen builds
     click.echo(f"deals, version {v}")
     ctx.exit()
 

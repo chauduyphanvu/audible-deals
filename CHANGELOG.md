@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.12.1] - 2026-10-20
+
 ### Fixed
 - The one-line installer works again on Linux systems without `xz`, and pinning `VERSION` to a release before 0.12.0 works again. macOS and Linux archives are back to `.tar.gz`, and the v0.12.0 release now includes `.tar.gz` copies of its archives.
 
@@ -142,6 +144,7 @@ A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.12.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.12.1
 [0.12.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.12.0
 [0.11.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.1
 [0.11.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.0
