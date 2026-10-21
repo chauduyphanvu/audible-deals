@@ -14,7 +14,11 @@ jobs:
       fail-fast: false
       matrix:
         shards: [serial, "2", "3", "4"]
+        prep: [none, bytecode, preimport]
         rep: [1, 2]
+        exclude:
+          - { shards: serial, prep: bytecode }
+          - { shards: serial, prep: preimport }
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
       - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
@@ -24,14 +28,25 @@ jobs:
         with:
           enable-cache: false
       - run: uv sync --locked --extra dev --python 3.13
-      - name: Run tests (${{ matrix.shards }})
+      - name: Run tests (${{ matrix.shards }}, ${{ matrix.prep }})
         run: |
-          nproc; lscpu | grep -E 'Model name|Thread|Core|Socket'
-          if [ "${{ matrix.shards }}" = serial ]; then
-            /usr/bin/time -f "BENCH wall=%e user=%U sys=%S" uv run --no-sync pytest tests/ -v -p no:cacheprovider
+          lscpu | grep -E 'Model name'
+          cat > /tmp/run.sh <<'SH'
+          set -e
+          case "$PREP" in
+            bytecode) uv sync -q --locked --extra dev --python 3.13 --compile-bytecode --reinstall ;;
+            preimport) uv run --no-sync python -c "import compileall, pytest; compileall.compile_dir('src', quiet=1)" ;;
+          esac
+          if [ "$SHARDS" = serial ]; then
+            uv run --no-sync pytest tests/ -v -p no:cacheprovider
           else
-            /usr/bin/time -f "BENCH wall=%e user=%U sys=%S" uv run --no-sync python -c "import sys; sys.path.insert(0, '.github/scripts'); import run_tests; run_tests.cpu_count = lambda: ${{ matrix.shards }}; sys.argv = ['run_tests', '-v']; sys.exit(run_tests.main())"
+            uv run --no-sync python -c "import sys; sys.path.insert(0, '.github/scripts'); import run_tests; run_tests.cpu_count = lambda: $SHARDS; sys.argv = ['run_tests', '-v']; sys.exit(run_tests.main())"
           fi
+          SH
+          /usr/bin/time -f "BENCH wall=%e user=%U sys=%S" bash /tmp/run.sh
+        env:
+          SHARDS: ${{ matrix.shards }}
+          PREP: ${{ matrix.prep }}
 
   uv-cache:
     runs-on: ubuntu-latest
@@ -50,63 +65,15 @@ jobs:
           enable-cache: ${{ matrix.cache }}
       - run: /usr/bin/time -f "BENCH wall=%e user=%U sys=%S" uv sync --locked --extra dev --python 3.13
 
-  binaries:
+  setup-uv:
+    runs-on: ubuntu-latest
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
-        installer: [pip, uv]
-    runs-on: ${{ matrix.os }}
+        version: [latest, "0.13.4"]
+        rep: [1, 2]
     steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: "3.12"
-      - if: matrix.installer == 'uv'
-        uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
-        with:
-          enable-cache: false
-      - name: Install dependencies (pip)
-        if: matrix.installer == 'pip'
-        run: |
-          pip install -e .
-          pip install pyinstaller
-      - name: Install dependencies (uv)
-        if: matrix.installer == 'uv'
-        run: uv pip install --system -e . pyinstaller
-      - name: Build binary
-        shell: bash
-        env:
-          DEALS_ARTIFACT: deals-bench
-        run: pyinstaller deals.spec --noconfirm
-      - name: Smoke-test binary
-        shell: bash
-        run: |
-          ./dist/deals-bench/deals --version
-          ./dist/deals-bench/deals --help | head -5
-          pip list 2>/dev/null | grep -iE '^(pyinstaller|audible|rich|click) ' || true
-
-  package:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
-        with:
-          python-version: "3.12"
       - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
         with:
           enable-cache: false
-      - name: Old build (python -m build)
-        run: |
-          uv pip install build --system
-          /usr/bin/time -f "BENCH old wall=%e user=%U sys=%S" python -m build --outdir old-dist
-      - name: New build (uv build)
-        run: /usr/bin/time -f "BENCH new wall=%e user=%U sys=%S" uv build --out-dir new-dist
-      - name: Compare
-        run: |
-          ls -l old-dist new-dist
-          for f in old-dist/*.whl; do unzip -l "$f" | awk '{print $4}' | sort > old.txt; done
-          for f in new-dist/*.whl; do unzip -l "$f" | awk '{print $4}' | sort > new.txt; done
-          diff old.txt new.txt && echo "wheel contents identical"
-          tar tzf old-dist/*.tar.gz | sort > old-sd.txt; tar tzf new-dist/*.tar.gz | sort > new-sd.txt
-          diff old-sd.txt new-sd.txt && echo "sdist contents identical"
+          version: ${{ matrix.version == 'latest' && '' || matrix.version }}
