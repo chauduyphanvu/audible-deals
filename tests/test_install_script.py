@@ -32,7 +32,7 @@ def write_install_marker(directory: Path) -> None:
 
 
 def make_archive(path: Path, files: dict[str, bytes]) -> None:
-    with tarfile.open(path, "w:xz") as archive:
+    with tarfile.open(path, "w:gz") as archive:
         for name, contents in files.items():
             info = tarfile.TarInfo(f"bundle/{name}")
             info.size = len(contents)
@@ -288,8 +288,8 @@ def install_fixture(
     tmp_path: Path,
     files: dict[str, bytes] | None = None,
 ) -> tuple[Path, Path, Path, Path, dict[str, str]]:
-    archive = tmp_path / "release.tar.xz"
-    checksum = tmp_path / "release.tar.xz.sha256"
+    archive = tmp_path / "release.tar.gz"
+    checksum = tmp_path / "release.tar.gz.sha256"
     make_archive(
         archive,
         files
@@ -401,8 +401,8 @@ def test_existing_install_marker_allows_custom_path(tmp_path: Path) -> None:
 
 
 def test_custom_binary_without_marker_is_rejected_and_preserved(tmp_path: Path) -> None:
-    archive = tmp_path / "release.tar.xz"
-    checksum = tmp_path / "release.tar.xz.sha256"
+    archive = tmp_path / "release.tar.gz"
+    checksum = tmp_path / "release.tar.gz.sha256"
     make_archive(archive, {"deals": b"#!/bin/sh\nexit 0\n"})
     write_checksum(archive, checksum)
     lib_dir = tmp_path / "project" / "broad-directory"
@@ -454,8 +454,8 @@ def test_canonical_default_legacy_install_is_accepted(tmp_path: Path) -> None:
 def test_newline_lib_dir_is_rejected_without_touching_sentinel(
     tmp_path: Path, placement: str
 ) -> None:
-    archive = tmp_path / "release.tar.xz"
-    checksum = tmp_path / "release.tar.xz.sha256"
+    archive = tmp_path / "release.tar.gz"
+    checksum = tmp_path / "release.tar.gz.sha256"
     make_archive(archive, {"deals": b"#!/bin/sh\nexit 0\n"})
     write_checksum(archive, checksum)
     install_dir = tmp_path / "commands" / "bin"
@@ -482,8 +482,8 @@ def test_newline_lib_dir_is_rejected_without_touching_sentinel(
 def test_newline_install_dir_is_rejected_without_touching_sentinel(
     tmp_path: Path, placement: str
 ) -> None:
-    archive = tmp_path / "release.tar.xz"
-    checksum = tmp_path / "release.tar.xz.sha256"
+    archive = tmp_path / "release.tar.gz"
+    checksum = tmp_path / "release.tar.gz.sha256"
     make_archive(archive, {"deals": b"#!/bin/sh\nexit 0\n"})
     write_checksum(archive, checksum)
     lib_dir = tmp_path / "library" / "custom-location"
@@ -507,8 +507,8 @@ def test_newline_install_dir_is_rejected_without_touching_sentinel(
 
 
 def test_rejects_reverse_install_path_overlap(tmp_path: Path) -> None:
-    archive = tmp_path / "release.tar.xz"
-    checksum = tmp_path / "release.tar.xz.sha256"
+    archive = tmp_path / "release.tar.gz"
+    checksum = tmp_path / "release.tar.gz.sha256"
     make_archive(archive, {"deals": b"#!/bin/sh\nexit 0\n"})
     write_checksum(archive, checksum)
     install_dir = tmp_path / "commands" / "bin"
@@ -538,6 +538,7 @@ def test_explicit_version_bypasses_latest_lookup_and_normalizes_leading_v(
     assert len(urls) == 2
     assert all("/releases/latest" not in url for url in urls)
     assert all("/releases/download/v2.3.4/" in url for url in urls)
+    assert urls[0].endswith(".tar.gz")
     assert urls[1] == f"{urls[0]}.sha256"
     assert (
         subprocess.run(
@@ -650,7 +651,7 @@ def test_download_failure_preserves_install(tmp_path: Path) -> None:
 
 def test_checksum_mismatch_preserves_install(tmp_path: Path) -> None:
     lib_dir, install_dir, link, _, env = install_fixture(tmp_path)
-    Path(env["TEST_CHECKSUM"]).write_text(f"{'0' * 64}  release.tar.xz\n")
+    Path(env["TEST_CHECKSUM"]).write_text(f"{'0' * 64}  release.tar.gz\n")
 
     result = run_installer(tmp_path, env)
 
