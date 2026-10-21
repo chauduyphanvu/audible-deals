@@ -2307,7 +2307,10 @@ class TestWebhookNoRedirect:
         _RedirectServer.followed = False
         server = HTTPServer(("127.0.0.1", 0), _RedirectServer)
         port = server.server_address[1]
-        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        # The default 0.5s poll makes shutdown() wait half a second.
+        thread = threading.Thread(
+            target=server.serve_forever, kwargs={"poll_interval": 0.01}, daemon=True
+        )
         thread.start()
 
         try:

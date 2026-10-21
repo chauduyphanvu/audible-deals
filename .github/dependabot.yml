@@ -1,11 +1,16 @@
 version: 2
 updates:
+  # One pull request per ecosystem each week instead of one per package: every
+  # open dependency PR reruns CI and the docs build each time it is rebased.
   - package-ecosystem: pip
     directory: "/"
     schedule:
       interval: weekly
     commit-message:
       prefix: "chore"
+    groups:
+      python:
+        patterns: ["*"]
 
   - package-ecosystem: github-actions
     directory: "/"
@@ -13,3 +18,6 @@ updates:
       interval: weekly
     commit-message:
       prefix: "chore"
+    groups:
+      actions:
+        patterns: ["*"]
