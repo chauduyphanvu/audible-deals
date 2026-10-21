@@ -155,7 +155,7 @@ jobs:
 
   publish:
     needs: [validate-and-tag, build-binaries]
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-slim
     timeout-minutes: 10
     permissions:
       contents: write

@@ -25,7 +25,7 @@ jobs:
             archive_ext: zip
     runs-on: ${{ matrix.os }}
     env:
-      VERSION: 9.9.9-bench
+      VERSION: 9.9.9
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
 
@@ -69,3 +69,24 @@ jobs:
           out="$(./dist/${{ matrix.artifact }}/deals --version)"
           echo "$out"
           [ "$out" = "deals, version ${VERSION}" ]
+
+  # The CI test job as-is, but on the 1-vCPU runner (one shard there).
+  test-slim:
+    runs-on: ubuntu-slim
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12", "3.13"]
+        rep: [1, 2]
+    steps:
+      - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
+      - uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+      - uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39  # v8.2.0
+        with:
+          enable-cache: false
+      - run: uv sync --locked --extra dev --python ${{ matrix.python-version }}
+      - run: |
+          nproc; grep -m1 'model name' /proc/cpuinfo
+          /usr/bin/time -f "BENCH wall=%e user=%U sys=%S" uv run --no-sync python .github/scripts/run_tests.py -v || { echo "time missing?"; uv run --no-sync python .github/scripts/run_tests.py -v; }
