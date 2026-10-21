@@ -23,8 +23,8 @@ def shard_count() -> int:
 
 
 def shard(files: list[Path], count: int) -> list[list[Path]]:
-    # Largest file first onto the lightest shard. File size tracks collection
-    # and run time closely enough to keep the shards within a second or so.
+    # Largest file first onto the lightest shard. File size is a rough stand-in
+    # for collection and run time; it needs no stored timings.
     shards: list[tuple[int, list[Path]]] = [(0, []) for _ in range(count)]
     for path in sorted(files, key=lambda p: p.stat().st_size, reverse=True):
         i = min(range(count), key=lambda j: shards[j][0])
