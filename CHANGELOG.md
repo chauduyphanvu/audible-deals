@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Fixed
+- The one-line installer works again on Linux systems without `xz`, and pinning `VERSION` to a release before 0.12.0 works again. macOS and Linux archives are back to `.tar.gz`, and the v0.12.0 release now includes `.tar.gz` copies of its archives.
+
 ## [0.12.0] - 2026-10-20
 
 ### Added
