@@ -1,9 +1,8 @@
-"""Run the test suite as one pytest process per CPU, each on its own test files.
+"""Run the test suite as parallel pytest processes, each on its own test files.
 
-pytest-xdist would make every worker import and assertion-rewrite the whole
-suite, which on a cold CI runner costs about three times the CPU of a serial
-run. Splitting by file keeps that work to a single pass, so the runner's cores
-cut the wall time without adding much CPU.
+pytest-xdist makes every worker import and assertion-rewrite the whole suite,
+which on a cold CI runner costs about three times the CPU of a serial run.
+Splitting by file keeps that work to a single pass.
 
 Usage: python .github/scripts/run_tests.py [pytest args...]
 """
@@ -17,10 +16,14 @@ import tempfile
 from pathlib import Path
 
 
-def cpu_count() -> int:
+def shard_count() -> int:
     if hasattr(os, "sched_getaffinity"):
-        return len(os.sched_getaffinity(0))
-    return os.cpu_count() or 1
+        cpus = len(os.sched_getaffinity(0))
+    else:
+        cpus = os.cpu_count() or 1
+    # GitHub's 4-vCPU runners are 2 cores with 2 threads each: a fourth shard
+    # adds ~20% CPU time and no speed, since it only competes for a core.
+    return max(1, cpus - 1)
 
 
 def shard(files: list[Path], count: int) -> list[list[Path]]:
@@ -45,7 +48,7 @@ def main() -> int:
 
     with tempfile.TemporaryDirectory() as tmp:
         runs = []
-        for i, group in enumerate(shard(files, min(cpu_count(), len(files)))):
+        for i, group in enumerate(shard(files, min(shard_count(), len(files)))):
             log = open(Path(tmp, f"shard{i}.log"), "w+")
             proc = subprocess.Popen(
                 [

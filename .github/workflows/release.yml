@@ -80,8 +80,11 @@ jobs:
           git tag "v${VERSION}"
           git push origin "v${VERSION}"
 
+  # Runs alongside validate-and-tag rather than after it. It builds the
+  # dispatched commit with the same version edit validate-and-tag commits, so
+  # the source matches the tag; publish waits for both jobs, so nothing ships
+  # unless the tests pass.
   build-binaries:
-    needs: validate-and-tag
     strategy:
       matrix:
         include:
@@ -98,8 +101,14 @@ jobs:
     timeout-minutes: 20
     steps:
       - uses: actions/checkout@df4cb1c069e1874edd31b4311f1884172cec0e10  # v6.0.3
-        with:
-          ref: "v${{ inputs.version }}"
+
+      - name: Update version in pyproject.toml
+        shell: bash
+        env:
+          VERSION: ${{ inputs.version }}
+        run: |
+          sed -i.bak "s/^version = .*/version = \"${VERSION}\"/" pyproject.toml
+          rm pyproject.toml.bak
 
       - name: Set up Python
         uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405  # v6.2.0
