@@ -18,6 +18,7 @@ BASH = shutil.which("bash") or "/bin/bash"
 REAL_MV = shutil.which("mv") or "/bin/mv"
 REAL_LN = shutil.which("ln") or "/bin/ln"
 REAL_CP = shutil.which("cp") or "/bin/cp"
+REAL_UNAME = shutil.which("uname") or "/usr/bin/uname"
 INSTALL_MARKER_NAME = ".audible-deals-install"
 INSTALL_MARKER_CONTENT = "repository=chauduyphanvu/audible-deals"
 
@@ -93,6 +94,22 @@ exec {shlex.quote(REAL_CP)} "$TEST_ARCHIVE" "$output"
 """
     )
     curl.chmod(0o755)
+
+
+def make_uname_shim(directory: Path) -> None:
+    # Pin a platform install.sh ships a binary for, so these tests run the same
+    # on any host. It rejects Linux arm64 (CI's ARM runners) before downloading.
+    uname = directory / "uname"
+    uname.write_text(
+        f"""#!/bin/sh
+case "$1" in
+    -s) echo Linux ;;
+    -m) echo x86_64 ;;
+    *) exec {shlex.quote(REAL_UNAME)} "$@" ;;
+esac
+"""
+    )
+    uname.chmod(0o755)
 
 
 def make_mv_shim(directory: Path) -> None:
@@ -194,6 +211,7 @@ def base_environment(
     download_root.mkdir(exist_ok=True)
     install_dir.mkdir(parents=True, exist_ok=True)
     make_curl_shim(shim_dir)
+    make_uname_shim(shim_dir)
 
     env = os.environ.copy()
     env.update(

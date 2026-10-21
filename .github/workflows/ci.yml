@@ -35,7 +35,9 @@ jobs:
           uvx --from "$ruff" ruff format --check .
 
   test:
-    runs-on: ubuntu-latest
+    # Four physical cores, where ubuntu-latest has two cores with two threads
+    # each: the test shards finish ~25% sooner on the same 4 vCPUs.
+    runs-on: ubuntu-24.04-arm
     timeout-minutes: 10
     strategy:
       matrix:
