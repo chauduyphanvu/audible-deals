@@ -116,6 +116,45 @@ def collect_target_hits(
     return tuple(hits), extras, frozenset(hit_asins)
 
 
+def collect_wishlist_hits(
+    get_client: Callable[[str], DealsClient],
+    asin_items: list[dict],
+    author_items: list[dict],
+    record_products: Callable[[list[Product]], None],
+    *,
+    locale: str,
+    credit_price: float | None = None,
+) -> tuple[tuple[NotificationHit, ...], dict[str, dict], frozenset[str]]:
+    """Price each ASIN entry in its own marketplace and author watches in *locale*."""
+    hits: list[NotificationHit] = []
+    extras: dict[str, dict] = {}
+    hit_asins: set[str] = set()
+
+    def collect(items: list[dict], authors: list[dict], item_locale: str) -> None:
+        new_hits, new_extras, _ = collect_target_hits(
+            get_client(item_locale),
+            items,
+            authors,
+            record_products,
+            credit_price=credit_price,
+        )
+        for hit in new_hits:
+            if hit.asin not in hit_asins:
+                hits.append(hit)
+                hit_asins.add(hit.asin)
+                if hit.asin in new_extras:
+                    extras[hit.asin] = new_extras[hit.asin]
+
+    by_locale: dict[str, list[dict]] = {}
+    for item in asin_items:
+        by_locale.setdefault(item.get("locale", locale), []).append(item)
+    for item_locale, locale_items in by_locale.items():
+        collect(locale_items, [], item_locale)
+    if author_items:
+        collect([], author_items, locale)
+    return tuple(hits), extras, frozenset(hit_asins)
+
+
 def apply_cooldown(
     hits: tuple[NotificationHit, ...],
     cooldown: int,
@@ -234,35 +273,17 @@ def run_notification(
             wishlist_issues=tuple(inspection.issues),
         )
 
-    hits: list[NotificationHit] = []
-    extras: dict[str, dict] = {}
-    all_hit_asins: set[str] = set()
-
-    def collect(items: list[dict], authors: list[dict], locale: str) -> None:
-        new_hits, new_extras, _ = collect_target_hits(
-            runtime.get_client(locale),
-            items,
-            authors,
-            runtime.record_products,
-            credit_price=request.credit_price,
-        )
-        for hit in new_hits:
-            if hit.asin not in all_hit_asins:
-                hits.append(hit)
-                all_hit_asins.add(hit.asin)
-                if hit.asin in new_extras:
-                    extras[hit.asin] = new_extras[hit.asin]
-
-    by_locale: dict[str, list[dict]] = {}
-    for item in asin_items:
-        by_locale.setdefault(item.get("locale", request.locale), []).append(item)
-    for locale, locale_items in by_locale.items():
-        collect(locale_items, [], locale)
-    if author_items:
-        collect([], author_items, request.locale)
+    hits, extras, all_hit_asins = collect_wishlist_hits(
+        runtime.get_client,
+        asin_items,
+        author_items,
+        runtime.record_products,
+        locale=request.locale,
+        credit_price=request.credit_price,
+    )
 
     had_hits = bool(hits)
-    kept = tuple(hits)
+    kept = hits
     suppressed = 0
     today: datetime.date | None = None
     notify_state: dict | None = None
@@ -295,7 +316,7 @@ def run_notification(
             notify_state,
             kept,
             asin_items,
-            frozenset(all_hit_asins),
+            all_hit_asins,
             today,
         )
 

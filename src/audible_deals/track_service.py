@@ -28,7 +28,7 @@ from audible_deals.monitor_service import (
 from audible_deals.notification_service import (
     apply_cooldown,
     build_notify_state,
-    collect_target_hits,
+    collect_wishlist_hits,
     deliver_auth_error,
     deliver_hits,
     deliver_monitor_events,
@@ -215,12 +215,12 @@ def _run_locked(
     wishlist_asins = {item["asin"] for item in asin_items}
     today = runtime.today()
 
-    client = runtime.get_client(request.locale)
-    hits, extras, hit_asins = collect_target_hits(
-        client,
+    hits, extras, hit_asins = collect_wishlist_hits(
+        runtime.get_client,
         asin_items,
         author_items,
         runtime.record_products,
+        locale=request.locale,
         credit_price=request.credit_price,
     )
 
@@ -240,6 +240,7 @@ def _run_locked(
     if extra_asins:
         cursors[request.locale] = next_cursor
         state["refresh_cursors"] = cursors
+        client = runtime.get_client(request.locale)
         with client:
             products = client.get_products_batch(extra_asins)
         runtime.record_products(products)

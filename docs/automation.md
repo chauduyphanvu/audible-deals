@@ -109,7 +109,7 @@ The installer uses launchd on macOS, a systemd user timer or cron on Linux, and 
 
 Each run:
 
-- refreshes every wishlist item and author watch regardless of recent-result eligibility;
+- refreshes every wishlist item in its own marketplace, and every author watch, regardless of recent-result eligibility;
 - refreshes up to 200 eligible recent-result ASINs for the current marketplace;
 - records history and sends target-price alerts;
 - applies a one-day alert cooldown unless the price falls further; and

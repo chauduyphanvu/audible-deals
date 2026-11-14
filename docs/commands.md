@@ -191,7 +191,7 @@ deals compare B00EXAMPLE @2
 ```
 
 `--last` remains supported as a compatibility spelling. Single-item commands such as `detail`, `open`, and `history` reject ranges. Bulk commands deduplicate selections in first-seen order. A URL or cached row supplies its marketplace unless global `--locale` was explicitly provided.
-Wishlist additions retain that marketplace for later `watch`, `notify`, and price-history checks.
+Wishlist additions retain that marketplace for later `watch`, `notify`, scheduled `track run`, and price-history checks.
 
 Product lists use a full table at 120 columns and wider, a compact table from 80–119 columns, and wrapped cards below 80 columns. Optional Buy, history, Match, identifiers, series details, and URLs fold into secondary lines instead of disappearing.
 

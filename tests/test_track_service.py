@@ -201,9 +201,8 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
     )
 
     run_track(request(), track_runtime)
-    first = calls[1]
     run_track(request(), track_runtime)
-    second = calls[3]
+    first, second = calls
 
     assert first == [f"A{index:03d}" for index in range(200)]
     assert second[:50] == [f"A{index:03d}" for index in range(200, 250)]
@@ -212,6 +211,44 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
         "surfaced_on": today.isoformat(),
         "asin": "A149",
     }
+
+
+class MarketplaceClient(Client):
+    """Answers any ASIN in its own marketplace, like the real catalog."""
+
+    def __init__(self, locale, calls):
+        super().__init__()
+        self.locale = locale
+        self.calls = calls
+
+    def get_products_batch(self, asins):
+        self.calls.append((self.locale, list(asins)))
+        return [make_product(asin=asin, price=3, locale=self.locale) for asin in asins]
+
+
+def test_mixed_marketplace_wishlist_prices_each_entry_in_its_own_marketplace(
+    tmp_config,
+):
+    from audible_deals.price_history import load_price_history, record_prices
+
+    calls = []
+    wishlist = [
+        {"asin": "US1", "max_price": 5, "locale": "us"},
+        {"asin": "UK1", "max_price": 5, "locale": "uk"},
+    ]
+    track_runtime = replace(
+        runtime(None, Webhook(), wishlist=wishlist),
+        get_client=lambda locale: MarketplaceClient(locale, calls),
+        record_products=record_prices,
+    )
+
+    result = run_track(request(), track_runtime)
+
+    assert sorted(calls) == [("uk", ["UK1"]), ("us", ["US1"])]
+    assert result.wishlist_checked == 2
+    assert result.hits == 2
+    assert load_price_history("US1", "us") and not load_price_history("US1", "uk")
+    assert load_price_history("UK1", "uk") and not load_price_history("UK1", "us")
 
 
 def test_partial_monitor_failure_isolated_and_success_saved(tmp_config, monkeypatch):
