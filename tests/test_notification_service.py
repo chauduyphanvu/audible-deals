@@ -489,7 +489,57 @@ def test_below_credit_hit_respects_cooldown_until_the_price_falls_again():
 
     dropped = run(6)
     assert [hit.asin for hit in dropped.hits] == ["SALE1"]
-    assert dropped.pending_notify_state == {"SALE1": {"price": 5, "date": "2026-11-14"}}
+    assert dropped.pending_notify_state == {
+        "SALE1": {"price": 5, "date": "2026-11-14", "reason": "below_credit_price"}
+    }
+
+
+def _standing_run(wishlist_price, state, cooldown=1):
+    client = AccountClient(wishlist=[make_product(asin="SALE1", price=wishlist_price)])
+    return run_notification(
+        _credit_request(cooldown=cooldown),
+        _credit_runtime(
+            client,
+            load_notify_state=lambda: state,
+            today=lambda: datetime.date(2026, 11, 14),
+        ),
+    )
+
+
+def test_book_that_stays_below_the_credit_price_does_not_alert_again_after_cooldown():
+    alerted_long_ago = {
+        "SALE1": {"price": 5, "date": "2026-08-01", "reason": "below_credit_price"}
+    }
+
+    same_price = _standing_run(5, alerted_long_ago)
+    assert same_price.hits == ()
+    assert same_price.suppressed == 1
+    assert same_price.pending_notify_state is None
+
+    cheaper = _standing_run(4, alerted_long_ago)
+    assert [hit.price for hit in cheaper.hits] == [4]
+
+
+def test_book_that_rose_above_the_credit_price_alerts_on_the_next_dip():
+    alerted = {
+        "SALE1": {"price": 5, "date": "2026-11-13", "reason": "below_credit_price"}
+    }
+
+    risen = _standing_run(20, alerted)
+    assert risen.hits == ()
+    assert risen.pending_notify_state == {}
+
+    dipped = _standing_run(5, risen.pending_notify_state)
+    assert [hit.asin for hit in dipped.hits] == ["SALE1"]
+
+
+def test_target_alert_cooldown_entries_are_not_treated_as_standing():
+    # An entry written by a target-price alert keeps the dated cooldown.
+    target_entry = {"SALE1": {"price": 5, "date": "2026-08-01"}}
+
+    result = _standing_run(5, target_entry)
+
+    assert [hit.asin for hit in result.hits] == ["SALE1"]
 
 
 def test_audible_wishlist_failure_keeps_local_hits_and_cooldown_entries():

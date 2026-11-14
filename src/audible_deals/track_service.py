@@ -33,6 +33,7 @@ from audible_deals.notification_service import (
     deliver_auth_error,
     deliver_hits,
     deliver_monitor_events,
+    drop_lapsed_credit_entries,
     is_auth_error,
 )
 from audible_deals.product import Product
@@ -244,11 +245,12 @@ def _run_locked(
 
     suppressed = 0
     webhook_sent = False
-    if request.webhook and hits:
+    if request.webhook:
         notify_state = runtime.load_notify_state()
         if not isinstance(notify_state, dict):
             notify_state = {}
-        kept, suppressed = apply_cooldown(hits, request.cooldown, today, notify_state)
+        current_state = drop_lapsed_credit_entries(notify_state, collected)
+        kept, suppressed = apply_cooldown(hits, request.cooldown, today, current_state)
         if kept:
             deliver_hits(
                 kept,
@@ -260,15 +262,15 @@ def _run_locked(
                 runtime.webhook_client,
             )
             webhook_sent = True
-            runtime.save_notify_state(
-                build_notify_state(
-                    notify_state,
-                    kept,
-                    asin_items,
-                    cooldown_keep_asins(collected, notify_state),
-                    today,
-                )
+            current_state = build_notify_state(
+                current_state,
+                kept,
+                asin_items,
+                cooldown_keep_asins(collected, current_state),
+                today,
             )
+        if current_state != notify_state:
+            runtime.save_notify_state(current_state)
 
     monitor_checked = 0
     monitor_events_count = 0

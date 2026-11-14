@@ -519,3 +519,35 @@ def test_track_repeat_below_credit_alert_is_suppressed_by_cooldown(tmp_config):
     assert second.suppressed == 1
     assert len(webhook.calls) == 1
     assert "ACCT1" in notify_state
+
+
+def test_track_below_credit_alert_stays_quiet_until_the_book_rises_and_dips_again(
+    tmp_config,
+):
+    saved = [
+        {"ACCT1": {"price": 5, "date": "2026-01-01", "reason": "below_credit_price"}}
+    ]
+    webhook = Webhook()
+
+    def run(price):
+        client = WishlistClient(wishlist=[make_product(asin="ACCT1", price=price)])
+        return run_track(
+            credit_request("https://example.test"),
+            replace(
+                runtime(client, webhook, wishlist=[]),
+                load_notify_state=lambda: saved[-1],
+                save_notify_state=saved.append,
+            ),
+        )
+
+    months_later = run(5)
+    assert not months_later.webhook_sent
+    assert months_later.suppressed == 1
+
+    risen = run(20)
+    assert not risen.webhook_sent
+    assert saved[-1] == {}
+
+    dipped = run(5)
+    assert dipped.webhook_sent
+    assert len(webhook.calls) == 1

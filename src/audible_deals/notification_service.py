@@ -228,6 +228,23 @@ def cooldown_keep_asins(collected: WishlistHits, notify_state: dict) -> frozense
     return keep
 
 
+def drop_lapsed_credit_entries(notify_state: dict, collected: WishlistHits) -> dict:
+    """Forget below-credit alerts for books no longer below the credit price.
+
+    Without this, a book that rose and later dipped to the same price would
+    stay suppressed.
+    """
+    if collected.account_error:
+        return notify_state
+    return {
+        asin: entry
+        for asin, entry in notify_state.items()
+        if asin in collected.hit_asins
+        or not isinstance(entry, dict)
+        or entry.get("reason") != CREDIT_PRICE_REASON
+    }
+
+
 def apply_cooldown(
     hits: tuple[NotificationHit, ...],
     cooldown: int,
@@ -239,14 +256,24 @@ def apply_cooldown(
     for hit in hits:
         entry = notify_state.get(hit.asin)
         try:
+            # A book can sit below the credit price for months, so a
+            # below-credit alert repeats only when the price falls further.
+            standing = (
+                hit.reason == CREDIT_PRICE_REASON
+                and entry.get("reason") == CREDIT_PRICE_REASON
+            )
             if (
                 entry
                 and hit.price >= float(entry["price"])
-                and (today - datetime.date.fromisoformat(entry["date"])).days < cooldown
+                and (
+                    standing
+                    or (today - datetime.date.fromisoformat(entry["date"])).days
+                    < cooldown
+                )
             ):
                 suppressed += 1
                 continue
-        except (KeyError, ValueError, TypeError):
+        except (KeyError, ValueError, TypeError, AttributeError):
             pass
         kept.append(hit)
     return tuple(kept), suppressed
@@ -263,6 +290,8 @@ def build_notify_state(
     today_iso = today.isoformat()
     for hit in hits:
         updated[hit.asin] = {"price": hit.price, "date": today_iso}
+        if hit.reason is not None:
+            updated[hit.asin]["reason"] = hit.reason
     keep = {item["asin"] for item in asin_items} | set(keep_asins)
     return {key: value for key, value in updated.items() if key in keep}
 
@@ -362,11 +391,13 @@ def run_notification(
     suppressed = 0
     today: datetime.date | None = None
     notify_state: dict | None = None
+    current_state: dict = {}
     if request.cooldown is not None:
         today = runtime.today()
         loaded = runtime.load_notify_state()
         notify_state = loaded if isinstance(loaded, dict) else {}
-        kept, suppressed = apply_cooldown(kept, request.cooldown, today, notify_state)
+        current_state = drop_lapsed_credit_entries(notify_state, collected)
+        kept, suppressed = apply_cooldown(kept, request.cooldown, today, current_state)
 
     if kept and request.webhook:
         template = (
@@ -385,15 +416,18 @@ def run_notification(
             template=template,
         )
     pending_notify_state = None
-    if kept and notify_state is not None:
+    if notify_state is not None:
         assert today is not None
-        pending_notify_state = build_notify_state(
-            notify_state,
-            kept,
-            asin_items,
-            cooldown_keep_asins(collected, notify_state),
-            today,
-        )
+        if kept:
+            current_state = build_notify_state(
+                current_state,
+                kept,
+                asin_items,
+                cooldown_keep_asins(collected, current_state),
+                today,
+            )
+        if current_state != notify_state:
+            pending_notify_state = current_state
 
     return NotificationRunResult(
         hits=kept,

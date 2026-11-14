@@ -183,7 +183,7 @@ deals config set audible-wishlist true
 
 `deals notify` and scheduled `deals track run` then read your Audible wishlist in the current marketplace, one request per 50 books. A book alerts when its cash price is below your credit price, and the alert says so, for example “below your $11.25 credit”. A book at or above the credit price does not alert. Plus catalog titles and titles you dismissed are skipped. A book that also has a local wishlist entry follows that entry's target and marketplace instead. Local entries saved without a target use the same credit-price rule in the current marketplace, whether or not `audible-wishlist` is on.
 
-Repeat alerts follow the normal cooldown, so a book that stays below your credit price alerts again only after the cooldown ends or its price falls further. `track run` uses one day by default; `notify` suppresses repeats only when you pass `--cooldown`. One message lists at most 20 below-credit books, largest saving first, followed by a line such as “and 37 more below your credit price”. Target-price hits are always listed in full.
+A book that stays below your credit price alerts once, then again only if its price falls further, or after it rises above the credit price and drops back. `track run` always works this way; `notify` suppresses repeats only when you pass `--cooldown`. One message lists at most 20 below-credit books, largest saving first, followed by a line such as “and 37 more below your credit price”. Target-price hits are always listed in full.
 
 In JSON output and the `generic` webhook, a below-credit hit has `"reason": "below_credit_price"` and its `target` is your credit price. A message that hit the cap also has `"more_below_credit_price": 37`; `count` stays the number of listed deals.
 
