@@ -45,12 +45,14 @@ def finish_lines(cost: FinishCost, currency: str) -> list[str]:
             f"{credit} credit"
         )
     else:
-        lines.append(
+        line = (
             f"  [dim]Cheapest:[/dim] {_credit_mix(cost, currency)} "
             f"≈ {price_str(cost.best_total, currency)}"
-            f"[dim] at {credit} per credit[/dim] "
-            f"[green](saves {price_str(cost.saved, currency)})[/green]"
+            f"[dim] at {credit} per credit[/dim]"
         )
+        if cost.saved > 0:
+            line += f" [green](saves {price_str(cost.saved, currency)})[/green]"
+        lines.append(line)
     return lines
 
 

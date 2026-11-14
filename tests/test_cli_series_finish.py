@@ -102,10 +102,9 @@ class TestFooterVariants:
 
         result = _gaps()
 
-        assert (
-            "Cheapest: 1 credit + $5.00 cash ≈ $16.25 at $11.25 per credit "
-            "(saves $0.00)" in _text(result)
-        )
+        text = _text(result)
+        assert "Cheapest: 1 credit + $5.00 cash ≈ $16.25 at $11.25 per credit" in text
+        assert "saves" not in text
 
     def test_no_credit_line_without_credit_price(self, tmp_config, mock_client):
         _setup(mock_client, {"Alpha Series": [4.99, 20.0]})
