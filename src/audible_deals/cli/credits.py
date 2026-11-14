@@ -51,7 +51,8 @@ def _plan_json(plan: CreditPlan) -> dict:
     "--audible-wishlist",
     is_flag=True,
     default=False,
-    help="Also use your Audible account wishlist",
+    help="Also use your Audible account wishlist (on by default when the "
+    "audible-wishlist setting is true)",
 )
 @click.option(
     "--json", "json_flag", is_flag=True, default=False, help="Output as JSON to stdout"
@@ -74,6 +75,9 @@ def credits_cmd(ctx, n, audible_wishlist, json_flag):
     logger.info("credits n=%s audible_wishlist=%s", n, audible_wishlist)
     locale = ctx.obj["locale"]
     credit_price = _credit_price(ctx)
+    audible_wishlist = (
+        audible_wishlist or ctx.obj.get("config", {}).get("audible_wishlist") is True
+    )
     if json_flag:
         console.file = sys.stderr
 

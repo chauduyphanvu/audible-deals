@@ -6,6 +6,24 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- `deals credits [N]` plans your credits: which wishlist books to spend N credits on, which are cheaper in cash than a credit, and which to leave. `--audible-wishlist` includes your Audible account wishlist.
+- Alerts on your real Audible wishlist. With `credit-price` set, `deals config set audible-wishlist true` makes `notify` and scheduled `track run` check the wishlist in your Audible account and alert when a book costs less than one credit. No per-book targets are needed. A book alerts once, then again only if it gets cheaper or rises and drops back; one message lists at most 20 books.
+- Price grades. Result tables, `watch`, `detail`, and `history` grade a price against the book's own recorded history as `lowest`, `good`, `typical`, or `high`, and `history` adds a buy-or-wait verdict that says how many checks it rests on. A grade needs five earlier checks over at least 14 days.
+- `deals series --gaps` shows what it costs to finish each series in cash and, with `credit-price` set, the cheapest mix of credits and cash. `--json` gains a `finish` object per series.
+- Markdown export: `-o deals.md` wherever `-o` is accepted, and `deals last --markdown` prints a table that pastes into Reddit or GitHub.
+
+### Changed
+- Price history now records every priced book a scan downloads, not only the rows shown, and scheduled monitors record the books they scan. This costs no extra API calls. Background refresh still covers only books that were shown. Expect the `history/` folder to grow.
+- The History column replaces `vs hist` and the all-time-low star in result tables, and appears only when at least one row has enough history for a grade.
+- Wishlist entries saved without a target price now alert when `credit-price` is set and the book costs less than one credit. Previously they never alerted.
+- `deals detail` records the price it fetches.
+- `deals recap` and other history scans read the history folder once instead of twice.
+
+### Fixed
+- `deals track run` priced every wishlist entry in the run's marketplace. Entries are now priced, and their history recorded, in their own marketplace, as `deals notify` already did.
+- `deals last --json -o FILE` no longer prints the export notice to standard output ahead of the JSON.
+
 ## [0.12.1] - 2026-10-20
 
 ### Fixed

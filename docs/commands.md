@@ -304,7 +304,7 @@ deals credits 2 --audible-wishlist
 deals credits 3 --json
 ```
 
-By default it reads the books you track with `deals wishlist add`. Entries saved for another marketplace are skipped, and the command says how many. `--audible-wishlist` also includes your Audible account wishlist, with duplicates removed. `--json` prints the plan as JSON: `credits`, `credit_price`, `credit`, `cash`, `plus`, `wait`, `unavailable`, and `totals`. Without `credit-price`, the plan has no cash section and a hint on how to set it.
+By default it reads the books you track with `deals wishlist add`. Entries saved for another marketplace are skipped, and the command says how many. `--audible-wishlist` also includes your Audible account wishlist, with duplicates removed. It is on by default once `deals config set audible-wishlist true` is set. `--json` prints the plan as JSON: `credits`, `credit_price`, `credit`, `cash`, `plus`, `wait`, `unavailable`, and `totals`. Without `credit-price`, the plan has no cash section and a hint on how to set it.
 
 ## Library and exports
 

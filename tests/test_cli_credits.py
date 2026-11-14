@@ -241,6 +241,14 @@ class TestAudibleWishlist:
         assert [p["asin"] for p in plan["credit"]] == ["ACCOUNT"]
         client.get_products_batch.assert_not_called()
 
+    def test_audible_wishlist_setting_turns_the_flag_on(self, tmp_config, client):
+        config_store_mod.save_config({"credit_price": 11.25, "audible_wishlist": True})
+        client.get_wishlist.return_value = [_book("ACCOUNT", 35.0)]
+
+        plan = _plan(_run("--json"))
+
+        assert [p["asin"] for p in plan["credit"]] == ["ACCOUNT"]
+
     def test_owned_account_books_are_removed(self, tmp_config, client):
         client.get_wishlist.return_value = [_book("OWNED", 35.0), _book("NEW", 20.0)]
         client.get_library_asins.return_value = {"OWNED"}

@@ -7,6 +7,10 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - Find inexpensive audiobooks by genre, price, rating, length, narrator, author, series, and more.
 - Get personalized recommendations from the authors, narrators, genres, and unfinished series in your library.
 - Compare cash prices with the cost of an Audible credit.
+- Plan your credits: see which wishlist books deserve a credit and which are cheaper in cash.
+- Get an alert when a book on your Audible wishlist drops below what a credit costs you.
+- See whether a price is actually good, graded against the book's own price history on your account.
+- See what it costs to finish a series in cash or credits.
 - Track wishlist prices and receive Slack, Discord, Teams, ntfy, or generic webhook alerts.
 - Monitor saved catalog searches for new matches and price drops on the same schedule.
 - Widen, narrow, sort, and reset recent results locally without another API call.
@@ -77,6 +81,8 @@ automatically switches between wide tables, compact tables, and narrow cards.
 | Inspect or compare books | `deals detail`, `deals compare`, `deals open` |
 | Browse your library | `deals library` |
 | Manage tracked books | `deals wishlist`, `deals watch`, `deals history` |
+| Plan how to spend credits | `deals credits 3` |
+| Share a deal list | `deals last --markdown` |
 | Automate price checks | `deals track`, `deals notify`, `deals recap` |
 | Monitor a saved search | `deals monitor add --profile NAME`, `deals monitor add --query QUERY` |
 | Save preferences | `deals profile`, `deals config` |
