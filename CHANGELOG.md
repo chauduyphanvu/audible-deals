@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+## [0.13.0] - 2026-11-14
+
 ### Added
 - `deals credits [N]` plans your credits: which wishlist books to spend N credits on, which are cheaper in cash than a credit, and which to leave. `--audible-wishlist` includes your Audible account wishlist.
 - Alerts on your real Audible wishlist. With `credit-price` set, `deals config set audible-wishlist true` makes `notify` and scheduled `track run` check the wishlist in your Audible account and alert when a book costs less than one credit. No per-book targets are needed. A book alerts once, then again only if it gets cheaper or rises and drops back; one message lists at most 20 books.
@@ -162,6 +164,7 @@ A correctness/robustness audit of the whole CLI resolved 32 confirmed bugs, each
 - Shell completions (bash/zsh/fish)
 - CI/CD with GitHub Actions (test matrix: Python 3.11/3.12/3.13, automated releases)
 
+[0.13.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.13.0
 [0.12.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.12.1
 [0.12.0]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.12.0
 [0.11.1]: https://github.com/chauduyphanvu/audible-deals/releases/tag/v0.11.1
