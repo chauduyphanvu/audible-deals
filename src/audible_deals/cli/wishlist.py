@@ -24,7 +24,7 @@ from audible_deals.parsing import parse_interval
 from audible_deals.presentation.common import price_str
 from audible_deals.presentation.reports import display_watch_table, display_wishlist
 from audible_deals.presentation.terminal import console, safe_markup, safe_text
-from audible_deals.serialization import sanitize_csv_cell, validate_export_path
+from audible_deals.serialization import sanitize_csv_cell
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
 from audible_deals.wishlist import (
     load_wishlist,
@@ -269,6 +269,15 @@ def wishlist_update(ctx, asins, last_refs, max_price, clear_target):
 _WISHLIST_CSV_FIELDS = ["type", "asin", "title", "author", "max_price", "added"]
 
 
+def _validate_wishlist_export_path(path: Path | None) -> None:
+    """Reject formats the wishlist cannot export (Markdown covers product lists only)."""
+    if path is not None and path.suffix.lower() not in {".json", ".csv"}:
+        raise click.BadParameter(
+            f"Unsupported extension '{path.suffix.lower()}'. Use .json or .csv.",
+            param_hint="--output",
+        )
+
+
 def _export_wishlist(
     asin_items: list[dict],
     author_items: list[dict],
@@ -341,7 +350,7 @@ def _export_wishlist(
 @click.pass_context
 def wishlist_list(ctx, output, json_flag):
     """Show your wishlist."""
-    validate_export_path(output)
+    _validate_wishlist_export_path(output)
     cur = _currency(ctx)
     items = load_wishlist()
     asin_items, author_items = partition_wishlist(items)

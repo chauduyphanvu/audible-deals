@@ -138,7 +138,7 @@ def _common_filter_options(func):
             type=click.Path(path_type=Path),
             default=None,
             callback=_validate_output_path,
-            help="Export results to file (.json or .csv)",
+            help="Export results to file (.json, .csv, or .md)",
         ),
         click.option(
             "--json",

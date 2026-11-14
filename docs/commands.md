@@ -174,6 +174,7 @@ deals last --reset --max-price 3 --min-rating 4.5
 deals last --narrator "R.C. Bray" --min-ratings 100
 deals last --language english
 deals last -o last.csv
+deals last --sort discount -n 10 --markdown
 deals last --count
 deals last --clear-seen
 deals last --clear-dismissed
@@ -302,11 +303,13 @@ deals library --sort rating -n 20
 
 | Flag | Purpose |
 |------|---------|
-| `-o, --output FILE` | Write `.json` or `.csv` and suppress the table |
+| `-o, --output FILE` | Write `.json`, `.csv`, or `.md` (also `.markdown`) and suppress the table |
 | `--json` | Print JSON to standard output |
 | `-q, --quiet` | Suppress the table |
 
 Multi-value CSV fields are joined with a semicolon and space.
+
+The Markdown table pastes into Reddit and GitHub, and `deals last --markdown` prints just that table to standard output, so `deals last --markdown | pbcopy` works.
 
 ## Marketplace support
 

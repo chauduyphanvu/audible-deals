@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from click.testing import CliRunner
 
 from audible_deals.cli import cli
@@ -115,6 +116,18 @@ class TestRoutesSearchCommand:
         assert out_path.exists()
         data = json.loads(out_path.read_text())
         assert len(data) > 0
+
+    @pytest.mark.parametrize("suffix", ["md", "markdown"])
+    def test_search_markdown_export_is_utf8(self, tmp_config, mock_client, suffix):
+        products = [make_product(asin="B0MD", title="Café 東京", price=2.99)]
+        _routes_setup_search_mock(mock_client, products)
+        out_path = tmp_config / f"out.{suffix}"
+        result = _routes_run(CliRunner(), ["search", "test", "-o", str(out_path)])
+        assert result.exit_code == 0
+        text = out_path.read_bytes().decode("utf-8")
+        assert "[Café 東京](https://www.audible.com/pd/B0MD)" in text
+        assert text.splitlines()[-1].endswith("|")
+        assert "Exported 1 items" in result.output
 
     def test_search_deep(self, tmp_config, mock_client):
         products = [make_product(asin="B008", price=1.99)]

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import click
 import pytest
@@ -10,6 +11,7 @@ from click.testing import CliRunner
 
 import audible_deals.constants as constants_mod
 from audible_deals.cli import cli
+from audible_deals.presentation.markdown import render_markdown
 from audible_deals.results_cache import (
     load_dismissed_asins,
     load_result_session,
@@ -795,6 +797,214 @@ class TestLastCount:
         result = runner.invoke(cli, ["last", "--count"])
         assert result.exit_code == 0, result.output
         assert result.output.strip() == "0"
+
+
+class TestLastMarkdown:
+    PRODUCTS = [
+        make_product(
+            asin="MK1",
+            title="Red Rising",
+            price=4.99,
+            list_price=27.0,
+            series_name="",
+            series_position="",
+        ),
+        make_product(
+            asin="MK2",
+            title="Golden Son",
+            price=3.5,
+            list_price=7.0,
+            series_name="",
+            series_position="",
+        ),
+        make_product(
+            asin="MK3",
+            title="Morning Star",
+            price=9.0,
+            list_price=10.0,
+            series_name="",
+            series_position="",
+        ),
+        make_product(
+            asin="MK4",
+            title="Iron Gold",
+            price=2.0,
+            list_price=40.0,
+            series_name="",
+            series_position="",
+        ),
+    ]
+
+    def _seed(self, mock_client):
+        mock_client.search_pages.return_value = iter(
+            [(list(self.PRODUCTS), 1, len(self.PRODUCTS))]
+        )
+        result = CliRunner().invoke(
+            cli,
+            ["find", "--max-price", "50", "--pages", "1", "--all-languages", "-q"],
+        )
+        assert result.exit_code == 0, result.output
+        return load_result_session().title
+
+    def _by_asin(self, *asins):
+        by_asin = {p.asin: p for p in self.PRODUCTS}
+        return [by_asin[asin] for asin in asins]
+
+    def test_prints_only_the_table(self, mock_client, tmp_config):
+        title = self._seed(mock_client)
+
+        result = CliRunner().invoke(cli, ["last", "--markdown", "--sort", "price"])
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == render_markdown(
+            self._by_asin("MK4", "MK2", "MK1", "MK3"), title=title
+        )
+        assert result.stdout.endswith("|\n")
+        for noise in ("Next:", "deals found", "Found", "┃", "┏"):
+            assert noise not in result.stdout
+
+    def test_sample_output(self, mock_client, tmp_config):
+        self._seed(mock_client)
+
+        result = CliRunner().invoke(cli, ["last", "--markdown", "--sort", "discount"])
+
+        print(result.stdout)
+        assert result.stdout.splitlines()[2:5] == [
+            "| # | Book | Price | Hours | Rating |",
+            "|--:|:-----|------:|------:|:-------|",
+            "| 1 | [Iron Gold](https://www.audible.com/pd/MK4) by Author One"
+            " | $2.00 ~~$40.00~~ (-95%) | 10.0 | 4.5 (1,000) |",
+        ]
+
+    def test_respects_sort_and_limit_like_the_table_view(self, mock_client, tmp_config):
+        self._seed(mock_client)
+        runner = CliRunner()
+        args = ["last", "--sort", "discount", "-n", "2"]
+
+        table = runner.invoke(cli, args)
+        markdown = runner.invoke(cli, [*args, "--markdown"])
+
+        assert table.exit_code == 0 and markdown.exit_code == 0, markdown.output
+        markdown_titles = re.findall(r"\| \[([^\]]+)\]\(", markdown.stdout)
+        assert markdown_titles == ["Iron Gold", "Red Rising"]
+        table_titles = sorted(
+            (p.title for p in self.PRODUCTS if p.title in table.output),
+            key=table.output.index,
+        )
+        assert table_titles == markdown_titles
+        assert "(2 books)" in markdown.stdout
+
+    def test_refinements_persist_like_the_table_view(self, mock_client, tmp_config):
+        self._seed(mock_client)
+        runner = CliRunner()
+
+        markdown = runner.invoke(cli, ["last", "--markdown", "--max-price", "4"])
+        count = runner.invoke(cli, ["last", "--count"])
+
+        assert markdown.exit_code == 0, markdown.output
+        assert count.stdout.strip() == "2"
+        assert load_result_session().current_recipe.max_price == 4
+
+    def test_rejects_json(self, mock_client, tmp_config):
+        self._seed(mock_client)
+
+        result = CliRunner().invoke(cli, ["last", "--markdown", "--json"])
+
+        assert result.exit_code == 2
+        assert "--markdown cannot be combined with --json" in result.output
+
+    def test_output_file_keeps_stdout_to_the_table(self, mock_client, tmp_config):
+        title = self._seed(mock_client)
+        out_file = tmp_config / "last.csv"
+
+        result = CliRunner().invoke(
+            cli, ["last", "--markdown", "--sort", "price", "-o", str(out_file)]
+        )
+
+        assert result.exit_code == 0, result.output
+        assert result.stdout == render_markdown(
+            self._by_asin("MK4", "MK2", "MK1", "MK3"), title=title
+        )
+        assert "Exported 4 items" in result.stderr
+        assert out_file.read_text(encoding="utf-8").startswith("asin,title,")
+
+    @pytest.mark.parametrize("suffix", ["md", "markdown"])
+    def test_output_file_writes_utf8_markdown(self, mock_client, tmp_config, suffix):
+        mock_client.search_pages.return_value = iter(
+            [
+                (
+                    [
+                        make_product(
+                            asin="MKU",
+                            title="Café 東京",
+                            price=3.0,
+                            series_name="",
+                            series_position="",
+                        )
+                    ],
+                    1,
+                    1,
+                )
+            ]
+        )
+        runner = CliRunner()
+        seeded = runner.invoke(
+            cli, ["find", "--max-price", "50", "--pages", "1", "--all-languages", "-q"]
+        )
+        assert seeded.exit_code == 0, seeded.output
+        out_file = tmp_config / f"deals.{suffix}"
+
+        result = runner.invoke(cli, ["last", "-o", str(out_file)])
+
+        assert result.exit_code == 0, result.output
+        text = out_file.read_bytes().decode("utf-8")
+        assert text == render_markdown(
+            [
+                make_product(
+                    asin="MKU",
+                    title="Café 東京",
+                    price=3.0,
+                    series_name="",
+                    series_position="",
+                )
+            ],
+            title=load_result_session().title,
+        )
+        assert "Exported 1 items" in result.output
+        assert "Last results" not in result.output
+
+    def test_empty_results_exit_like_json(self, mock_client, tmp_config):
+        title = self._seed(mock_client)
+        runner = CliRunner()
+
+        as_json = runner.invoke(cli, ["last", "--json", "--max-price", "1"])
+        as_markdown = runner.invoke(cli, ["last", "--markdown", "--max-price", "1"])
+
+        assert as_json.exit_code == as_markdown.exit_code == 0
+        assert as_json.stdout == "[]\n"
+        assert as_markdown.stdout == render_markdown([], title=title)
+        assert as_markdown.stderr == as_json.stderr == ""
+
+    def test_legacy_cache_notice_is_not_printed(self, tmp_config):
+        constants_mod.LAST_RESULTS_FILE.write_text(
+            json.dumps(
+                [
+                    _serialize_product(
+                        make_product(asin="LG1", series_name="", series_position="")
+                    )
+                ]
+            )
+        )
+
+        result = CliRunner().invoke(cli, ["last", "--markdown"])
+
+        assert result.exit_code == 0, result.output
+        assert "Legacy" not in result.output
+        assert result.stdout.startswith("**Last results** (1 book)\n\n| # |")
+
+    def test_help_documents_the_flag(self):
+        result = CliRunner().invoke(cli, ["last", "--help"])
+        assert "--markdown" in result.output
 
 
 class TestSingleRefLastValidation:

@@ -54,6 +54,33 @@ class TestCatalogRegressions:
         assert result.exit_code != 0
         assert "Unsupported extension" in result.output
 
+    @pytest.mark.parametrize(
+        "command",
+        [
+            ["find", "--output", "bad.txt"],
+            ["search", "x", "--output", "bad.txt"],
+            ["library", "--output", "bad.txt"],
+            ["series", "--output", "bad.txt"],
+            ["for-me", "--output", "bad.txt"],
+            ["last", "--output", "bad.txt"],
+        ],
+    )
+    def test_bad_export_extension_message_lists_markdown(
+        self, mock_client, tmp_config, command
+    ):
+        result = CliRunner().invoke(cli, command)
+        assert result.exit_code != 0
+        assert "Unsupported extension '.txt'" in result.output
+        assert ".json, .csv, .md, or .markdown" in result.output
+
+    @pytest.mark.parametrize("suffix", ["md", "markdown"])
+    def test_wishlist_export_rejects_markdown(self, tmp_config, suffix):
+        result = CliRunner().invoke(
+            cli, ["wishlist", "list", "--output", f"wl.{suffix}"]
+        )
+        assert result.exit_code != 0
+        assert f"Unsupported extension '.{suffix}'. Use .json or .csv." in result.output
+
     def test_export_write_failure_prevents_scan_state_commits(
         self, mock_client, tmp_config
     ):
