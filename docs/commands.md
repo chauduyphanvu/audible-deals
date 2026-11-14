@@ -159,6 +159,18 @@ Use `--max-series` to cap the number of series scanned and `--pages` to control 
 
 The flat result view supports price, rating, length, sale, sort, limit, interactive, and export options, but omits unpriced books. `--gaps` retains and labels them unavailable; `--max-price` filters priced gaps without removing unavailable ones.
 
+Each series in `--gaps` ends with the cost of buying every missing book shown, and two or more series add an `All N series` total line. The `Cheapest` line appears once you set a [credit price](#credit-aware-recommendations) with `deals config set credit-price`; it buys each book with a credit when that is no more than its cash price and with cash otherwise. Unavailable books are left out of the total, and books included with Plus still count, since Plus borrows rather than owns. `--gaps --json` adds a `finish` object to each series entry.
+
+```text
+Expeditionary Force — own 2 of 7
+  missing  #3     Armageddon                                    $4.99
+  missing  #4     Zero Day                                      $20.00
+  missing  #5     Trouble                                       $24.99
+  missing  #6     Mutiny                                        unavailable
+  Finish: 3 books · $49.98 cash · 1 unavailable not included
+  Cheapest: 2 credits + $4.99 cash ≈ $27.49 at $11.25 per credit (saves $22.49)
+```
+
 ## Last results
 
 `deals last` reuses the complete candidate pool from the most recent `find`, `search`, `for-me`, or flat `series` view without making an API call. Refinements are cumulative: an explicit option replaces that part of the current recipe and is retained for the next invocation. Repeatable options replace their complete inherited list.

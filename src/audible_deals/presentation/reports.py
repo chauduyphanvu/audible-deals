@@ -10,6 +10,7 @@ from rich.table import Table
 
 from audible_deals.presentation import terminal
 from audible_deals.presentation.common import _buy_cell, price_str
+from audible_deals.presentation.series_finish import finish_lines, finish_total_line
 from audible_deals.presentation.terminal import safe_markup, safe_text
 from audible_deals.product import Product
 
@@ -370,6 +371,7 @@ def display_series_gaps(gaps: list[dict], currency: str = "$") -> None:
             "--max-price/--on-sale).[/dim]"
         )
         return
+    footers = []
     for entry in gaps:
         terminal.console.print(
             f"\n[bold]{safe_markup(entry.get('series', ''))}[/bold] "
@@ -388,6 +390,13 @@ def display_series_gaps(gaps: list[dict], currency: str = "$") -> None:
                 f"  [dim]missing[/dim]  {position_str:<6} "
                 f"{safe_markup(book.get('title', '')):<45} {rendered_price}{atl}"
             )
+        finish = entry.get("finish")
+        if finish is not None and finish.priced:
+            footers.append(finish)
+            for line in finish_lines(finish, currency):
+                terminal.console.print(line)
+    if len(footers) >= 2:
+        terminal.console.print(f"\n{finish_total_line(footers, currency)}")
 
 
 def display_track_history(runs: list[dict]) -> None:
