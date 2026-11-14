@@ -238,6 +238,54 @@ class TestWatchCommand:
         assert result.exit_code == 0, result.output
 
 
+class TestRecapReadsHistoryOnce:
+    def _count_loads(self, monkeypatch) -> list[str]:
+        import audible_deals.notification_workflow as workflow_mod
+        import audible_deals.price_history as history_mod
+
+        calls: list[str] = []
+        real = history_mod.load_all_price_histories
+
+        def counting(locale="us"):
+            calls.append(locale)
+            return real(locale)
+
+        monkeypatch.setattr(workflow_mod, "load_all_price_histories", counting)
+        monkeypatch.setattr(history_mod, "load_all_price_histories", counting)
+        return calls
+
+    def test_recap_with_only_old_history_loads_the_folder_once(
+        self, tmp_config, monkeypatch
+    ):
+        import datetime
+
+        old = (datetime.date.today() - datetime.timedelta(days=90)).isoformat()
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        (constants_mod.HISTORY_DIR / "OLDONLY01.json").write_text(
+            json.dumps(
+                {"marketplaces": {"us": [{"date": old, "price": 5.0, "title": "T"}]}}
+            )
+        )
+        calls = self._count_loads(monkeypatch)
+
+        result = CliRunner().invoke(cli, ["recap", "--days", "7"])
+
+        assert result.exit_code == 0, result.output
+        assert "No price history yet" not in result.output
+        assert calls == ["us"]
+
+    def test_recap_without_history_still_says_so_after_one_load(
+        self, tmp_config, monkeypatch
+    ):
+        calls = self._count_loads(monkeypatch)
+
+        result = CliRunner().invoke(cli, ["recap", "--days", "7"])
+
+        assert result.exit_code == 0, result.output
+        assert "No price history yet" in result.output
+        assert calls == ["us"]
+
+
 class TestRecapWithTitles:
     def _write_history(self, tmp_config, asin: str, entries: list[dict]) -> None:
 

@@ -70,13 +70,13 @@ deals watch --exit-code
 
 ## Price history
 
-Flat discovery with `find`, `search`, `for-me`, or `series` caches its complete candidate pool for `last`, but records only finite-price rows surfaced after applying the result limit. `series --gaps` has no flat-view limit and records every finite-price gap that survives its filters. Terminal, `--quiet`, `--json`, and successful export output all count as surfaced, including quiet gaps; `--count` and `--dry-run` record neither history nor refresh eligibility. Each ASIN records at most one price per observation date; dated backfills remain chronological, idempotent, and capped at 365 entries.
+Flat discovery with `find`, `search`, `for-me`, or `series` caches its complete candidate pool for `last` and records every finite-price book in that pool, whether or not a filter or the result limit hides it. Every price the scan already paid an API call for becomes history, at no extra API cost. Refresh eligibility is narrower: only finite-price rows that were shown receive it. `series --gaps` has no flat-view limit and records every finite-price gap that survives its filters. Terminal, `--quiet`, `--json`, and successful export output all count as shown, including quiet gaps; `--count` and `--dry-run` record neither history nor refresh eligibility. Each ASIN records at most one price per observation date; dated backfills remain chronological, idempotent, and capped at 365 entries.
 
 ```bash
 deals history B00R6S1RCY
 ```
 
-The history view includes relative dates and a sparkline. Result tables include a `vs hist` column after an ASIN has at least three price points, and mark an all-time low with a star. When `last` first surfaces a cached finite-price product, it backfills history at the original session date and marks refresh eligibility on the date shown. Unavailable products create neither record.
+The history view includes relative dates and a sparkline. Result tables include a `vs hist` column after an ASIN has at least three price points, and mark an all-time low with a star. When `last` first surfaces a cached finite-price product, it backfills the session's whole finite-price candidate pool at the original session date, which changes nothing for books already recorded, and marks refresh eligibility on the date shown for the newly shown products only. Unavailable products create neither record.
 
 ## Background tracking
 
@@ -111,11 +111,11 @@ Each run:
 
 - refreshes every wishlist item and author watch regardless of recent-result eligibility;
 - refreshes up to 200 eligible recent-result ASINs for the current marketplace;
-- records history and sends target-price alerts;
+- records history, including every priced book a monitor scans, and sends target-price alerts;
 - applies a one-day alert cooldown unless the price falls further; and
 - stores the last 10 run summaries in `track_state.json`.
 
-Finite-price products become refresh-eligible only when presented. Eligibility is marketplace-specific and lasts through 30 days after presentation. On first use, the store migrates only ASINs in both the legacy seen list and valid numeric history, using each marketplace's latest history date.
+Finite-price products become refresh-eligible only when presented; a book recorded from a scan but never shown is not refreshed in the background. Eligibility is marketplace-specific and lasts through 30 days after presentation. On first use, the store migrates only ASINs in both the legacy seen list and valid numeric history, using each marketplace's latest history date.
 
 Extra refreshes exclude wishlist and globally dismissed ASINs. Candidates are ordered by oldest presentation date and ASIN, then selected with a stable, wrapping cursor so changes cannot starve later entries. Wishlist entries remain active even when dismissed or older than 30 days. Background refreshes record history without extending eligibility.
 
@@ -128,7 +128,7 @@ deals monitor list
 deals monitor test sci-fi-steals
 ```
 
-The first successful monitor run is a silent baseline. Later runs alert on new matches and price drops. Monitor definitions and independent snapshots live in `monitors.json` and `monitor_state.json`; enabled monitors rotate through a shared 60 catalog-page-call budget per scheduled run.
+The first successful monitor run is a silent baseline. Later runs alert on new matches and price drops. Each run also records the price of every priced book its scan returned, matched or not, in the monitor's marketplace; `deals monitor test` records nothing. Monitor definitions and independent snapshots live in `monitors.json` and `monitor_state.json`; enabled monitors rotate through a shared 60 catalog-page-call budget per scheduled run.
 
 Runs share a cross-process lock with `notify`, so overlapping schedules exit cleanly. Authentication failures are recorded and can trigger a one-time reauthentication alert. `deals doctor` reports three or more consecutive tracking failures.
 

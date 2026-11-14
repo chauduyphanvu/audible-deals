@@ -220,6 +220,76 @@ class TestTrackRun:
         assert result.exit_code == 0, result.output
         assert mock_client.get_products_batch.call_count == 1
 
+    def _seed_monitor(self, mock_client):
+        config_store_mod.save_monitors(
+            {
+                "uk-steals": {
+                    "version": 1,
+                    "name": "uk-steals",
+                    "enabled": True,
+                    "locale": "uk",
+                    "mode": "find",
+                    "query": "",
+                    "settings": {
+                        "pages": 1,
+                        "limit": 0,
+                        "sort": "price",
+                        "max_price": 5.0,
+                        "skip_owned": False,
+                    },
+                }
+            }
+        )
+        mock_client.get_products_batch.return_value = []
+        scanned = [
+            make_product(
+                asin=f"B00MONUK0{i}",
+                price=price,
+                locale="uk",
+                series_name="",
+                series_position="",
+            )
+            for i, price in enumerate((3.0, 40.0), start=1)
+        ]
+        mock_client.search_pages.return_value = iter([(scanned, 1, 2)])
+
+    def test_monitor_scan_is_recorded_under_the_monitor_locale(
+        self, mock_client, tmp_config
+    ):
+        from audible_deals.price_history import load_price_history
+
+        self._seed_monitor(mock_client)
+
+        result = CliRunner().invoke(cli, ["track", "run"])
+
+        assert result.exit_code == 0, result.output
+        for asin in ("B00MONUK01", "B00MONUK02"):
+            assert load_price_history(asin, "uk")
+            assert load_price_history(asin, "us") == []
+        monitored = json.loads(constants_mod.MONITOR_STATE_FILE.read_text())
+        assert set(monitored["monitors"]["uk-steals"]["products"]) == {"B00MONUK01"}
+
+    def test_history_write_failure_does_not_fail_monitor_runs(
+        self, mock_client, tmp_config, monkeypatch
+    ):
+        def fail(*args, **kwargs):
+            raise OSError("disk full")
+
+        monkeypatch.setattr("audible_deals.result_publication.record_prices", fail)
+        self._seed_monitor(mock_client)
+
+        result = CliRunner().invoke(cli, ["track", "run"])
+
+        assert result.exit_code == 0, result.output
+        run = json.loads(constants_mod.TRACK_STATE_FILE.read_text())["run_history"][0]
+        assert run["error"] is None
+        assert not run.get("monitor_failures")
+        monitored = json.loads(constants_mod.MONITOR_STATE_FILE.read_text())
+        slot = monitored["monitors"]["uk-steals"]
+        assert slot["initialized"] is True
+        assert slot["last_error"] is None
+        assert not constants_mod.HISTORY_DIR.exists()
+
     def test_lock_held_skips_quietly(self, mock_client, tmp_config):
         self._seed_wishlist()
         runner = CliRunner()

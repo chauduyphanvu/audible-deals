@@ -20,7 +20,9 @@ from audible_deals.monitor_service import (
     select_monitors_for_run,
     settings_from_dict,
 )
+from audible_deals.price_history import load_price_history
 from audible_deals.product import Product
+from audible_deals.result_publication import record_prices_safely
 from audible_deals.results_cache import save_dismissed_asins
 
 
@@ -200,3 +202,97 @@ def test_success_preserves_unknown_slot_fields_and_valid_siblings(
         "initialized": True,
         "products": {"S1": product("S1", 4)},
     }
+
+
+class _ScanClient:
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+
+@contextmanager
+def _scan_progress(*args, **kwargs):
+    yield None
+
+
+def _recording_runtime(record_products):
+    return MonitorRuntime(
+        get_client=lambda locale: _ScanClient(),
+        resolve_categories=lambda *args: ("", "", set()),
+        resolve_skip_asins=lambda *args: set(),
+        progress=_scan_progress,
+        record_products=record_products,
+    )
+
+
+def _uk_scan(monkeypatch):
+    products = [
+        Product(
+            asin="MONREC001", title="Match", price=2, length_minutes=60, locale="uk"
+        ),
+        Product(
+            asin="MONREC002", title="Pricey", price=30, length_minutes=60, locale="uk"
+        ),
+        Product(
+            asin="MONREC003",
+            title="Unpriced",
+            price=None,
+            length_minutes=60,
+            locale="uk",
+        ),
+    ]
+    monkeypatch.setattr(
+        "audible_deals.monitor_service.execute_catalog_scan", lambda *args: products
+    )
+    raw = definition("recorder", 1)
+    return MonitorDefinition.from_dict(
+        {**raw, "locale": "uk", "settings": {**raw["settings"], "max_price": 5}}
+    )
+
+
+def test_monitor_run_records_every_priced_scanned_product_under_its_locale(
+    tmp_config, monkeypatch
+):
+    monitor = _uk_scan(monkeypatch)
+
+    run_monitor(monitor, _recording_runtime(record_prices_safely))
+
+    assert [e["price"] for e in load_price_history("MONREC001", "uk")] == [2.0]
+    assert [e["price"] for e in load_price_history("MONREC002", "uk")] == [30.0]
+    assert load_price_history("MONREC003", "uk") == []
+    assert load_price_history("MONREC001", "us") == []
+    snapshot = load_monitor_state()["monitors"]["recorder"]
+    assert set(snapshot["products"]) == {"MONREC001"}
+
+
+def test_monitor_without_a_recording_hook_writes_no_history(tmp_config, monkeypatch):
+    monitor = _uk_scan(monkeypatch)
+    runtime = MonitorRuntime(
+        get_client=lambda locale: _ScanClient(),
+        resolve_categories=lambda *args: ("", "", set()),
+        resolve_skip_asins=lambda *args: set(),
+        progress=_scan_progress,
+    )
+
+    run_monitor(monitor, runtime)
+
+    assert not constants.HISTORY_DIR.exists()
+
+
+def test_history_write_failure_does_not_fail_the_monitor_run(tmp_config, monkeypatch):
+    monitor = _uk_scan(monkeypatch)
+
+    def fail(*args, **kwargs):
+        raise OSError("disk full")
+
+    monkeypatch.setattr("audible_deals.result_publication.record_prices", fail)
+
+    result = run_monitor(monitor, _recording_runtime(record_prices_safely))
+
+    assert result.baseline is True
+    snapshot = load_monitor_state()["monitors"]["recorder"]
+    assert snapshot["initialized"] is True
+    assert snapshot["last_error"] is None
+    assert set(snapshot["products"]) == {"MONREC001"}

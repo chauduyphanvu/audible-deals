@@ -33,6 +33,8 @@ from audible_deals.config_store import (
     save_monitors,
 )
 from audible_deals.locking import run_lock
+from audible_deals.price_history import recordable_products
+from audible_deals.product import Product
 from audible_deals.result_processing import (
     SettingsFilterRequest,
     process_settings_discovery,
@@ -64,6 +66,8 @@ class MonitorRuntime:
     resolve_skip_asins: Callable[..., set[str]]
     progress: Callable[..., Any]
     now: Callable[[], datetime.datetime] = datetime.datetime.now
+    # Recording is opt-in so previews such as `monitor test` never write history.
+    record_products: Callable[[list[Product]], None] = lambda products: None
 
 
 def settings_to_dict(settings: Settings) -> dict[str, Any]:
@@ -196,6 +200,7 @@ def scan_monitor(
         plan = bind_catalog_categories(plan, [category])
         with runtime.progress(plan, f"Checking monitor {definition.name}") as progress:
             products = execute_catalog_scan(client, plan, progress)
+    runtime.record_products(recordable_products(products))
     result = process_settings_discovery(
         SettingsFilterRequest(
             products=tuple(products),

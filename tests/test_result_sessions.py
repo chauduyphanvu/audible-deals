@@ -559,7 +559,55 @@ def test_safe_history_wrapper_forwards_observation_date(monkeypatch):
     }
 
 
-def test_publication_scopes_surface_effects_to_visible_products(tmp_config):
+def test_publication_records_finite_priced_candidates_once_per_marketplace(
+    tmp_config, monkeypatch
+):
+    first = make_product(asin="B00DEDUP01", price=4, series_name="")
+    repeat = make_product(asin="B00DEDUP01", price=3, series_name="")
+    uk = make_product(asin="B00DEDUP01", price=2, locale="uk", series_name="")
+    infinite = make_product(
+        asin="B00DEDUP02", price=float("inf"), list_price=None, series_name=""
+    )
+    unavailable = make_product(asin="B00DEDUP03", price=None, series_name="")
+    captured = {}
+
+    def fake_record(products, observation_date=None):
+        captured["products"] = products
+        captured["observation_date"] = observation_date
+
+    monkeypatch.setattr("audible_deals.result_publication.record_prices", fake_record)
+
+    outcome = publish_discovery(
+        ResultPublicationRequest(
+            result=DiscoveryResult((first,)),
+            title="Dedupe",
+            limit=0,
+            output=None,
+            json_flag=False,
+            quiet=True,
+            max_price=None,
+            currency="$",
+            candidates=(first, repeat, uk, infinite, unavailable),
+            session_spec=ResultSessionSpec(
+                producer="find",
+                locale="us",
+                recipe=result_recipe(limit=0),
+                source={"command": "deals find"},
+                constraints={"drop_zero_length": True},
+            ),
+        )
+    )
+
+    assert captured["products"] == [first, uk]
+    assert (
+        captured["observation_date"]
+        == datetime.datetime.fromisoformat(outcome.session.timestamp).date()
+    )
+
+
+def test_publication_records_every_priced_candidate_but_surfaces_only_visible(
+    tmp_config,
+):
     visible = make_product(asin="B00VISIBLE", price=4, series_name="")
     hidden = make_product(asin="B00HIDDEN1", price=5, series_name="")
     unavailable = make_product(asin="B00UNAVAIL", price=None, series_name="")
@@ -603,7 +651,7 @@ def test_publication_scopes_surface_effects_to_visible_products(tmp_config):
         unavailable.asin,
     }
     assert load_price_history(visible.asin) != []
-    assert load_price_history(hidden.asin) == []
+    assert load_price_history(hidden.asin) != []
     assert load_price_history(unavailable.asin) == []
     assert load_refresh_eligibility() == {
         "us": {visible.asin: datetime.date.today().isoformat()}
@@ -904,13 +952,63 @@ def test_count_ignores_limit_and_does_not_change_last_displayed_order(tmp_config
     assert load_result_session().visible_asins == ["COUNT001"]
 
 
-def test_last_newly_visible_backfills_original_date_and_marks_today(tmp_config):
+def test_last_newly_visible_backfills_every_priced_candidate_at_original_date(
+    tmp_config,
+):
     first = make_product(asin="B00LAST001", price=3, series_name="")
     hidden = make_product(asin="B00LAST002", price=8, series_name="")
+    filtered = make_product(asin="B00LAST004", price=20, series_name="")
     unavailable = make_product(asin="B00LAST003", price=None, series_name="")
     session = _session(
-        [first, hidden, unavailable],
+        [first, hidden, filtered, unavailable],
         visible=[first.asin],
+        recipe=result_recipe(limit=1, max_price=10),
+    )
+    session.timestamp = "2026-01-02T12:00:00+00:00"
+    save_result_session(session)
+
+    result = CliRunner().invoke(cli, ["last", "-n", "0", "--quiet"])
+
+    assert result.exit_code == 0, result.output
+    for product in (first, hidden, filtered):
+        assert [entry["date"] for entry in load_price_history(product.asin)] == [
+            "2026-01-02"
+        ]
+    assert load_price_history(unavailable.asin) == []
+    assert load_refresh_eligibility() == {
+        "us": {hidden.asin: datetime.date.today().isoformat()}
+    }
+
+
+def test_last_backfill_is_idempotent_across_repeated_widening(tmp_config):
+    first = make_product(asin="B00IDEM001", price=3, series_name="")
+    hidden = make_product(asin="B00IDEM002", price=8, series_name="")
+    session = _session(
+        [first, hidden],
+        visible=[first.asin],
+        recipe=result_recipe(limit=1),
+    )
+    session.timestamp = "2026-01-02T12:00:00+00:00"
+    save_result_session(session)
+    runner = CliRunner()
+
+    for limit in ("0", "1", "0"):
+        result = runner.invoke(cli, ["last", "-n", limit, "--quiet"])
+        assert result.exit_code == 0, result.output
+
+    for product in (first, hidden):
+        assert [entry["date"] for entry in load_price_history(product.asin)] == [
+            "2026-01-02"
+        ]
+
+
+def test_last_backfill_keeps_candidate_marketplaces_apart(tmp_config):
+    us = make_product(asin="B00MKT0001", price=3, locale="us", series_name="")
+    uk = make_product(asin="B00MKT0001", price=2, locale="uk", series_name="")
+    hidden = make_product(asin="B00MKT0002", price=8, series_name="")
+    session = _session(
+        [us, uk, hidden],
+        visible=[us.asin],
         recipe=result_recipe(limit=1),
     )
     session.timestamp = "2026-01-02T12:00:00+00:00"
@@ -919,14 +1017,8 @@ def test_last_newly_visible_backfills_original_date_and_marks_today(tmp_config):
     result = CliRunner().invoke(cli, ["last", "-n", "0", "--quiet"])
 
     assert result.exit_code == 0, result.output
-    assert [entry["date"] for entry in load_price_history(hidden.asin)] == [
-        "2026-01-02"
-    ]
-    assert load_price_history(first.asin) == []
-    assert load_price_history(unavailable.asin) == []
-    assert load_refresh_eligibility() == {
-        "us": {hidden.asin: datetime.date.today().isoformat()}
-    }
+    assert [e["price"] for e in load_price_history(us.asin, "us")] == [3.0]
+    assert [e["price"] for e in load_price_history(us.asin, "uk")] == [2.0]
 
 
 def test_last_count_and_unavailable_do_not_record_surface_state(tmp_config):
@@ -947,8 +1039,10 @@ def test_last_count_and_unavailable_do_not_record_surface_state(tmp_config):
     persisted = load_result_session()
     assert persisted.current_recipe.limit == 0
     assert persisted.visible_asins == [first.asin]
+    assert load_price_history(first.asin) == []
     assert load_price_history(hidden.asin) == []
     assert load_price_history(unavailable.asin) == []
+    assert not constants.HISTORY_DIR.exists()
     assert not constants.REFRESH_ELIGIBILITY_FILE.exists()
     assert not constants.SEEN_ASINS_FILE.exists()
 

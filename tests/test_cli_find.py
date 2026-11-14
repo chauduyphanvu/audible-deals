@@ -11,6 +11,7 @@ from click.testing import CliRunner
 import audible_deals.config_store as config_store_mod
 import audible_deals.constants as constants_mod
 from audible_deals.cli import cli
+from audible_deals.refresh_eligibility import load_refresh_eligibility
 from audible_deals.results_cache import load_result_session, save_dismissed_asins
 from tests.conftest import make_product
 
@@ -1004,3 +1005,65 @@ class TestHistoricalMedianBadgeFlagIndependence:
 
         assert plain == with_flag
         assert "F1" not in plain
+
+
+def _history_asins() -> set[str]:
+    if not constants_mod.HISTORY_DIR.exists():
+        return set()
+    return {path.stem for path in constants_mod.HISTORY_DIR.glob("*.json")}
+
+
+class TestScanHistoryRecording:
+    @pytest.mark.parametrize("command", [["find"], ["search", "test"]])
+    def test_records_every_priced_candidate_but_marks_only_shown_rows_eligible(
+        self, command, mock_client, tmp_config
+    ):
+        priced = [
+            make_product(
+                asin=f"REC{i}", price=float(i), series_name="", series_position=""
+            )
+            for i in range(1, 6)
+        ]
+        unpriced = make_product(
+            asin="RECNOPRICE", price=None, series_name="", series_position=""
+        )
+        mock_client.search_pages.return_value = iter([([*priced, unpriced], 1, 6)])
+
+        result = CliRunner().invoke(
+            cli,
+            [*command, "--pages", "1", "--all-languages", "--json", "-n", "2"],
+        )
+
+        assert result.exit_code == 0, result.output
+        shown = [item["asin"] for item in json.loads(result.stdout)]
+        assert len(shown) == 2
+        assert _history_asins() == {product.asin for product in priced}
+        today = datetime.date.today().isoformat()
+        assert load_refresh_eligibility() == {"us": {asin: today for asin in shown}}
+
+    def test_records_candidates_the_filters_drop(self, mock_client, tmp_config):
+        cheap = make_product(
+            asin="RECCHEAP", price=3.0, series_name="", series_position=""
+        )
+        pricey = make_product(
+            asin="RECPRICEY", price=40.0, series_name="", series_position=""
+        )
+        mock_client.search_pages.return_value = iter([([cheap, pricey], 1, 2)])
+
+        result = CliRunner().invoke(
+            cli,
+            ["find", "--pages", "1", "--all-languages", "--max-price", "10", "--json"],
+        )
+
+        assert result.exit_code == 0, result.output
+        assert [item["asin"] for item in json.loads(result.stdout)] == [cheap.asin]
+        assert _history_asins() == {cheap.asin, pricey.asin}
+        assert set(load_refresh_eligibility()["us"]) == {cheap.asin}
+
+    def test_dry_run_records_nothing(self, mock_client, tmp_config):
+        result = CliRunner().invoke(cli, ["find", "--pages", "1", "--dry-run"])
+
+        assert result.exit_code == 0, result.output
+        mock_client.search_pages.assert_not_called()
+        assert not constants_mod.HISTORY_DIR.exists()
+        assert not constants_mod.REFRESH_ELIGIBILITY_FILE.exists()

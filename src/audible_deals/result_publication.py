@@ -23,6 +23,7 @@ from audible_deals.price_history import (
     load_price_history,
     price_drop_pcts,
     record_prices,
+    recordable_products,
 )
 from audible_deals.product import Product
 from audible_deals.refresh_eligibility import mark_refresh_eligible
@@ -168,7 +169,9 @@ def publish_discovery(
 
     def commit_presentation() -> None:
         observation_date = datetime.datetime.fromisoformat(session.timestamp).date()
-        record_prices_safely(surfaced, observation_date=observation_date)
+        record_prices_safely(
+            recordable_products(request.candidates), observation_date=observation_date
+        )
         mark_refresh_eligible_safely(surfaced)
         try:
             save_result_session(session)
