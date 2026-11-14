@@ -9,7 +9,7 @@ audible-deals searches the Audible catalog, filters books by price and taste, an
 - Compare cash prices with the cost of an Audible credit.
 - Track wishlist prices and send alerts to Slack, Discord, Teams, ntfy, or a generic webhook.
 - Re-filter recent results without another API request.
-- Export results to JSON or CSV for further analysis.
+- Export results to JSON, CSV, or Markdown for analysis or sharing.
 
 ## Install
 

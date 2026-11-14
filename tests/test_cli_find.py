@@ -109,6 +109,35 @@ class TestFindCommand:
         assert len(data) == 1
         assert data[0]["asin"] == "J1"
 
+    @pytest.mark.parametrize("suffix", ["md", "markdown"])
+    def test_find_markdown_export_is_utf8_with_title(
+        self, mock_client, tmp_config, suffix
+    ):
+        products = [
+            make_product(
+                asin="MD1",
+                title="Café 東京",
+                price=3.0,
+                list_price=12.0,
+                series_name="",
+                series_position="",
+            )
+        ]
+        mock_client.search_pages.return_value = iter([(products, 1, 1)])
+        out_file = tmp_config / f"deals.{suffix}"
+
+        result = CliRunner().invoke(
+            cli, ["find", "--max-price", "10", "--pages", "1", "-o", str(out_file)]
+        )
+
+        assert result.exit_code == 0, result.output
+        text = out_file.read_bytes().decode("utf-8")
+        assert text.startswith(f"**{load_result_session().title}** (1 book)\n\n| # |")
+        assert (
+            "| 1 | [Café 東京](https://www.audible.com/pd/MD1) by Author One"
+            " | $3.00 ~~$12.00~~ (-75%) | 10.0 | 4.5 (1,000) |\n"
+        ) in text
+
     def test_find_limit(self, mock_client, tmp_config):
         products = [
             make_product(

@@ -13,6 +13,7 @@ import click
 
 from audible_deals.product import Product
 from audible_deals.metrics import price_per_hour
+from audible_deals.presentation.markdown import render_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -45,12 +46,16 @@ def serialize_product(p: Product) -> dict:
 
 PRODUCT_FIELDS: frozenset[str] = frozenset(f.name for f in dataclasses.fields(Product))
 
+_MARKDOWN_SUFFIXES = frozenset({".md", ".markdown"})
+_EXPORT_SUFFIXES = frozenset({".json", ".csv"}) | _MARKDOWN_SUFFIXES
+
 
 def validate_export_path(path: Path | None) -> None:
     """Reject unsupported export formats before command side effects."""
-    if path is not None and path.suffix.lower() not in {".json", ".csv"}:
+    if path is not None and path.suffix.lower() not in _EXPORT_SUFFIXES:
         raise click.BadParameter(
-            f"Unsupported extension '{path.suffix.lower()}'. Use .json or .csv.",
+            f"Unsupported extension '{path.suffix.lower()}'. "
+            "Use .json, .csv, .md, or .markdown.",
             param_hint="--output",
         )
 
@@ -66,8 +71,13 @@ def deserialize_product(d: dict) -> Product | None:
         return None
 
 
-def export_products(products: list[Product], path: Path) -> None:
-    """Export products to file, detecting format from extension."""
+def export_products(
+    products: list[Product], path: Path, *, title: str | None = None
+) -> None:
+    """Export products to file, detecting format from extension.
+
+    The title heads Markdown exports only.
+    """
     validate_export_path(path)
     suffix = path.suffix.lower()
     rows = [serialize_product(p) for p in products]
@@ -92,3 +102,5 @@ def export_products(products: list[Product], path: Path) -> None:
             writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
             writer.writeheader()
             writer.writerows(rows)
+    elif suffix in _MARKDOWN_SUFFIXES:
+        path.write_text(render_markdown(products, title=title), encoding="utf-8")

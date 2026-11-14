@@ -109,6 +109,17 @@ class TestLibraryCommand:
         assert "LCSV1" in content
         assert "CSV Book" in content
 
+    def test_library_markdown_export(self, mock_client, tmp_config):
+        products = [make_product(asin="LMD1", title="Markdown Book")]
+        _mock_library_pages(mock_client, products)
+        out_file = tmp_config / "library.md"
+        runner = CliRunner()
+        result = runner.invoke(cli, ["library", "-o", str(out_file)])
+        assert result.exit_code == 0, result.output
+        text = out_file.read_text(encoding="utf-8")
+        assert text.startswith("| # | Book | Price | Hours | Rating |\n")
+        assert "[Markdown Book](https://www.audible.com/pd/LMD1)" in text
+
     def test_library_empty(self, mock_client, tmp_config):
         _mock_library_pages(mock_client, [])
         runner = CliRunner()

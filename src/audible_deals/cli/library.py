@@ -148,7 +148,7 @@ def _emit_library_output(
     "--output",
     type=click.Path(path_type=Path),
     default=None,
-    help="Export to file (.json or .csv)",
+    help="Export to file (.json, .csv, or .md)",
 )
 @click.option(
     "--json", "json_flag", is_flag=True, default=False, help="Output as JSON to stdout"

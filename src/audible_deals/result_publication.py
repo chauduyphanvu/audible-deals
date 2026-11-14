@@ -138,7 +138,7 @@ def publish_discovery(
     )
 
     if request.output:
-        export_products(visible, request.output)
+        export_products(visible, request.output, title=request.title)
         export_message = f"Exported {len(visible)} items to {request.output}"
         if request.json_flag:
             print(safe_text(export_message), file=sys.stderr)

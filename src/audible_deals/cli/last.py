@@ -9,6 +9,7 @@ import math
 import click
 
 from audible_deals.cli.helpers import _credit_price, _currency, _resolve_output_quiet
+from audible_deals.presentation.markdown import render_markdown
 from audible_deals.presentation.result_output import (
     ResultPresentationRequest,
     emit_results,
@@ -122,6 +123,13 @@ def _option_given(ctx: click.Context, name: str) -> bool:
 @click.option("--reset", is_flag=True, help="Restore the producer's original recipe")
 @click.option("--output", "-o", type=click.Path(path_type=Path), default=None)
 @click.option("--json", "json_flag", is_flag=True, default=False)
+@click.option(
+    "--markdown",
+    "markdown_flag",
+    is_flag=True,
+    default=False,
+    help="Print only a Markdown table to stdout",
+)
 @click.option("--quiet", "-q", is_flag=True, default=False)
 @click.option("--show-url", is_flag=True, default=False)
 @click.option("--interactive", "-i", is_flag=True, default=False)
@@ -181,6 +189,7 @@ def last_cmd(
     reset,
     output,
     json_flag,
+    markdown_flag,
     quiet,
     show_url,
     interactive,
@@ -209,7 +218,10 @@ def last_cmd(
         deals last --max-price 8 --sort discount
         deals last --clear-filter language
         deals last --reset --max-price 10
+        deals last --sort discount -n 10 --markdown
     """
+    if json_flag and markdown_flag:
+        raise click.UsageError("--markdown cannot be combined with --json")
     validate_export_path(output)
     did_clear = False
     if clear_dismissed:
@@ -313,7 +325,13 @@ def last_cmd(
     if outcome.legacy_raw_count:
         click.echo(outcome.total_count)
         return
-    if session.legacy and not json_flag and not quiet and not count_only:
+    if (
+        session.legacy
+        and not json_flag
+        and not markdown_flag
+        and not quiet
+        and not count_only
+    ):
         console.print(
             "[yellow]Legacy limited cache: display, narrowing, and selectors work; "
             "run one new discovery scan to enable true widening.[/yellow]"
@@ -321,8 +339,11 @@ def last_cmd(
     assert outcome.visible_result is not None
     visible = outcome.visible_result.products
 
+    # Resolve before the export notice so it cannot land on stdout ahead of
+    # the JSON or Markdown document.
+    quiet = _resolve_output_quiet(ctx, output, json_flag or markdown_flag, quiet)
     if output:
-        export_products(visible, output)
+        export_products(visible, output, title=session.title)
         console.print(
             f"[green]Exported {len(visible)} items to {safe_markup(output)}[/green]"
         )
@@ -353,7 +374,11 @@ def last_cmd(
                 record_prices_safely(newly_visible, observation_date=observation_date)
             mark_refresh_eligible_safely(newly_visible)
 
-    quiet = _resolve_output_quiet(ctx, output, json_flag, quiet)
+    if markdown_flag:
+        click.echo(render_markdown(visible, title=session.title), nl=False)
+        commit_presentation()
+        return
+
     serialized = tuple(serialize_product(product) for product in visible)
     emit_results(
         ResultPresentationRequest(

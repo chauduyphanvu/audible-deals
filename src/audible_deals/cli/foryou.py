@@ -360,7 +360,7 @@ def _fetch_candidates(
     "-o",
     type=click.Path(path_type=Path),
     default=None,
-    help="Export results to file (.json or .csv)",
+    help="Export results to file (.json, .csv, or .md)",
 )
 @click.option(
     "--json",
