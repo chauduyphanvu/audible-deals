@@ -256,6 +256,22 @@ class TestTrackInstall:
         state = json.loads(constants_mod.TRACK_STATE_FILE.read_text())
         assert state["install"]["every"] == "2h"
         assert state["install"]["interval_s"] == 7200
+        assert "Audible wishlist" not in result.output
+
+    def test_install_reports_audible_wishlist_when_on(self, tmp_config, monkeypatch):
+        import audible_deals.cli.track as track_mod
+
+        monkeypatch.setattr(
+            track_mod.scheduler, "install", lambda interval_s, log_path: "fake"
+        )
+        config_store_mod.save_config({"credit_price": 11.25, "audible_wishlist": True})
+
+        result = CliRunner().invoke(cli, ["track", "install"])
+
+        assert result.exit_code == 0, result.output
+        assert "Audible wishlist: included, alerts below your $11.25 credit" in (
+            result.output
+        )
 
     def test_rejects_tiny_interval(self, tmp_config):
         runner = CliRunner()
@@ -357,6 +373,31 @@ class TestTrackStatus:
         assert "every 6h" in result.output
         assert "3 wishlist" in result.output
         assert "1 at" in result.output  # "1 at target" may wrap across lines
+
+    def test_audible_wishlist_line_only_when_switched_on(self, tmp_config, monkeypatch):
+        import audible_deals.cli.track as track_mod
+
+        monkeypatch.setattr(
+            track_mod.scheduler, "installed", lambda: (False, "nowhere")
+        )
+        runner = CliRunner()
+
+        config_store_mod.save_config({"credit_price": 11.25})
+        assert "Audible wishlist" not in runner.invoke(cli, ["track"]).output
+
+        config_store_mod.save_config({"credit_price": 11.25, "audible_wishlist": True})
+        result = runner.invoke(cli, ["track"])
+        assert result.exit_code == 0, result.output
+        assert "Audible wishlist:  included, alerts below your $11.25 credit" in (
+            result.output
+        )
+
+        config_store_mod.save_config({"audible_wishlist": True})
+        result = runner.invoke(cli, ["track", "status"])
+        assert (
+            "Audible wishlist:  skipped: run 'deals config set credit-price AMOUNT'"
+            in result.output
+        )
 
     def test_shows_error(self, tmp_config, monkeypatch):
         import audible_deals.cli.track as track_mod

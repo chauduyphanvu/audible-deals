@@ -9,6 +9,7 @@ import click
 
 from audible_deals.automation_models import NotificationRequest
 from audible_deals.cli.helpers import (
+    _audible_wishlist,
     _credit_price,
     _currency,
     _get_client,
@@ -20,10 +21,11 @@ from audible_deals.notification_service import (
     run_notification,
 )
 from audible_deals.notification_workflow import parse_webhook_headers
-from audible_deals.presentation.terminal import console
+from audible_deals.presentation.terminal import console, safe_text
 from audible_deals.result_publication import record_prices_safely as _safe_record_prices
 from audible_deals.validation import validate_webhook_url
 from audible_deals.webhook_client import WebhookClient, WebhookDeliveryError
+from audible_deals.webhooks import format_webhook_payload
 from audible_deals.wishlist import warn_wishlist_issues
 
 
@@ -83,6 +85,8 @@ def notify(
     if webhook:
         validate_webhook_url(webhook)
     extra_headers = parse_webhook_headers(webhook_headers) if webhook_headers else {}
+    credit_price = _credit_price(ctx)
+    audible_wishlist = _audible_wishlist(ctx, credit_price)
     runtime = NotificationRuntime(
         get_client=_get_client,
         record_products=_safe_record_prices,
@@ -94,16 +98,24 @@ def notify(
                 NotificationRequest(
                     locale=ctx.obj["locale"],
                     currency=_currency(ctx),
-                    credit_price=_credit_price(ctx),
+                    credit_price=credit_price,
                     webhook=webhook,
                     webhook_format=webhook_format,
                     webhook_template=webhook_template,
                     cooldown=cooldown,
                     webhook_headers=extra_headers,
+                    audible_wishlist=audible_wishlist,
                 ),
                 runtime,
             )
             warn_wishlist_issues(result.wishlist_issues)
+            if result.audible_wishlist_error:
+                click.echo(
+                    "Warning: could not check your Audible wishlist "
+                    f"({safe_text(result.audible_wishlist_error)}); "
+                    "checked the local wishlist only.",
+                    err=True,
+                )
             if result.empty_wishlist:
                 console.print(
                     "[dim]Wishlist is empty. Use 'deals wishlist add' first.[/dim]"
@@ -128,14 +140,10 @@ def notify(
                     f"[green]Sent {len(result.hits)} deal(s) to webhook[/green]"
                 )
             else:
-                deals = [hit.to_dict() for hit in result.hits]
-                click.echo(
-                    json_mod.dumps(
-                        {"deals": deals, "count": len(deals)},
-                        indent=2,
-                        allow_nan=False,
-                    )
+                body, _ = format_webhook_payload(
+                    [hit.to_dict() for hit in result.hits], "generic"
                 )
+                click.echo(body.decode("utf-8"))
             commit_notification_state(result, runtime)
             if exit_code:
                 ctx.exit(0 if result.had_hits else 1)

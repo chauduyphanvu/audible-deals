@@ -1640,6 +1640,60 @@ class TestCreditPriceConfig:
         assert result.exit_code != 0
 
 
+class TestAudibleWishlistConfig:
+    def test_enabling_without_credit_price_is_refused(self, tmp_config):
+        result = CliRunner().invoke(cli, ["config", "set", "audible-wishlist", "true"])
+
+        assert result.exit_code != 0
+        assert "deals config set credit-price" in result.output
+        assert "audible_wishlist" not in config_store_mod.load_config()
+
+    def test_set_list_get_and_reset(self, tmp_config):
+        runner = CliRunner()
+        config_store_mod.save_config({"credit_price": 11.25})
+
+        result = runner.invoke(cli, ["config", "set", "audible-wishlist", "true"])
+        assert result.exit_code == 0, result.output
+        assert config_store_mod.load_config()["audible_wishlist"] is True
+        assert (
+            "audible_wishlist = True" in runner.invoke(cli, ["config", "list"]).output
+        )
+        got = runner.invoke(cli, ["config", "get", "audible_wishlist"])
+        assert "audible_wishlist = True" in got.output
+
+        result = runner.invoke(cli, ["config", "reset", "audible-wishlist"])
+        assert result.exit_code == 0, result.output
+        assert config_store_mod.load_config() == {"credit_price": 11.25}
+
+    def test_disabling_needs_no_credit_price(self, tmp_config):
+        result = CliRunner().invoke(cli, ["config", "set", "audible-wishlist", "false"])
+
+        assert result.exit_code == 0, result.output
+        assert config_store_mod.load_config() == {"audible_wishlist": False}
+
+    def test_rejects_non_boolean(self, tmp_config):
+        config_store_mod.save_config({"credit_price": 11.25})
+
+        result = CliRunner().invoke(cli, ["config", "set", "audible-wishlist", "maybe"])
+
+        assert result.exit_code != 0
+        assert "Invalid boolean" in result.output
+
+    def test_listed_among_valid_keys_and_known_to_doctor(
+        self, tmp_config, mock_client, monkeypatch
+    ):
+        result = CliRunner().invoke(cli, ["config", "get", "audible-wishlistt"])
+        assert "audible-wishlist" in result.output
+
+        monkeypatch.setattr(constants_mod, "CONFIG_DIR", tmp_config)
+        constants_mod.CONFIG_FILE.write_text(
+            json.dumps({"credit_price": 11.25, "audible_wishlist": True})
+        )
+        doctor = CliRunner().invoke(cli, ["doctor"])
+        assert "Unknown config keys" in doctor.output
+        assert "audible_wishlist" not in doctor.output
+
+
 def test_corrupt_numeric_config_allows_doctor_and_recovery(tmp_config, mock_client):
     constants_mod.CONFIG_FILE.write_text('{"max_price": NaN}')
     runner = CliRunner()

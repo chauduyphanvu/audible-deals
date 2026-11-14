@@ -213,6 +213,7 @@ _CONFIG_SCHEMA: dict[str, type] = {
     "skip_plus": bool,
     "only_plus": bool,
     "credit_price": float,
+    "audible_wishlist": bool,
     "webhook": str,
     "webhook_format": str,
     "webhook_headers": list,

@@ -42,6 +42,20 @@ def _credit_price(ctx: click.Context) -> float | None:
     return float(value)
 
 
+def _audible_wishlist(ctx: click.Context, credit_price: float | None) -> bool:
+    """Whether runs check the Audible account wishlist ('deals config set audible-wishlist')."""
+    if ctx.obj.get("config", {}).get("audible_wishlist") is not True:
+        return False
+    if credit_price is None:
+        click.echo(
+            "Warning: audible-wishlist is on but no credit price is set, so your "
+            "Audible wishlist was skipped. Run 'deals config set credit-price AMOUNT'.",
+            err=True,
+        )
+        return False
+    return True
+
+
 def _resolve_skip_asins(
     dc: DealsClient, skip_owned: bool, exclude_seen: bool
 ) -> set[str] | None:

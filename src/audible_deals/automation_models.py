@@ -179,6 +179,10 @@ class MonitorEvent:
         }
 
 
+# A hit with this reason has no target of its own; its target is the credit price.
+CREDIT_PRICE_REASON = "below_credit_price"
+
+
 @dataclass(frozen=True)
 class NotificationHit:
     asin: str
@@ -189,6 +193,7 @@ class NotificationHit:
     author: str | None = None
     verdict: str | None = None
     effective_price: float | None = None
+    reason: str | None = None
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> NotificationHit:
@@ -201,6 +206,7 @@ class NotificationHit:
             author=data.get("author"),
             verdict=data.get("verdict"),
             effective_price=data.get("effective_price"),
+            reason=data.get("reason"),
         )
 
     def to_dict(self) -> dict[str, Any]:
@@ -216,6 +222,8 @@ class NotificationHit:
         if self.verdict is not None:
             result["verdict"] = self.verdict
             result["effective_price"] = self.effective_price
+        if self.reason is not None:
+            result["reason"] = self.reason
         return result
 
 
@@ -234,6 +242,8 @@ class TrackRunResult:
     monitor_events: int = 0
     monitor_failures: tuple[str, ...] = ()
     error: str | None = None
+    audible_wishlist_checked: int = 0
+    audible_wishlist_error: str | None = None
     wishlist_issues: tuple[Any, ...] = field(default_factory=tuple, repr=False)
     unknown_fields: dict[str, Any] = field(default_factory=dict, repr=False)
     present_fields: frozenset[str] | None = field(default=None, repr=False)
@@ -252,6 +262,13 @@ class TrackRunResult:
         "monitor_events",
         "monitor_failures",
         "error",
+        "audible_wishlist_checked",
+        "audible_wishlist_error",
+    )
+    # Written only when the Audible wishlist added books or failed, so run
+    # records keep their shape for everyone who has not opted in.
+    _AUDIBLE_WISHLIST_FIELDS = frozenset(
+        {"audible_wishlist_checked", "audible_wishlist_error"}
     )
 
     @classmethod
@@ -273,6 +290,8 @@ class TrackRunResult:
             monitor_events=data.get("monitor_events", 0),
             monitor_failures=tuple(failures),
             error=data.get("error"),
+            audible_wishlist_checked=data.get("audible_wishlist_checked", 0),
+            audible_wishlist_error=data.get("audible_wishlist_error"),
             unknown_fields={
                 key: _copy(value)
                 for key, value in data.items()
@@ -296,12 +315,15 @@ class TrackRunResult:
             "monitor_events": self.monitor_events,
             "monitor_failures": list(self.monitor_failures),
             "error": self.error,
+            "audible_wishlist_checked": self.audible_wishlist_checked,
+            "audible_wishlist_error": self.audible_wishlist_error,
         }
-        present = (
-            frozenset(self._FIELDS)
-            if self.present_fields is None
-            else self.present_fields
-        )
+        if self.present_fields is not None:
+            present = self.present_fields
+        elif self.audible_wishlist_checked or self.audible_wishlist_error:
+            present = frozenset(self._FIELDS)
+        else:
+            present = frozenset(self._FIELDS) - self._AUDIBLE_WISHLIST_FIELDS
         result = _copy(self.unknown_fields)
         result.update(
             {key: _copy(values[key]) for key in self._FIELDS if key in present}
@@ -309,10 +331,10 @@ class TrackRunResult:
         return result
 
     def summary(self) -> str:
-        text = (
-            f"Refreshed {self.wishlist_checked} wishlist + "
-            f"{self.extra_tracked_checked} tracked item(s); {self.hits} at target"
-        )
+        text = f"Refreshed {self.wishlist_checked} wishlist + "
+        if self.audible_wishlist_checked:
+            text += f"{self.audible_wishlist_checked} Audible wishlist + "
+        text += f"{self.extra_tracked_checked} tracked item(s); {self.hits} at target"
         if self.webhook_sent:
             text += " (webhook sent)"
         elif self.suppressed:
@@ -323,6 +345,8 @@ class TrackRunResult:
             )
         if self.monitor_failures:
             text += f" ({len(self.monitor_failures)} monitor failure(s))"
+        if self.audible_wishlist_error:
+            text += f"; Audible wishlist failed: {self.audible_wishlist_error}"
         return text
 
 
@@ -346,6 +370,7 @@ class NotificationRunResult:
     empty_wishlist: bool = False
     wishlist_issues: tuple[Any, ...] = ()
     pending_notify_state: dict | None = field(default=None, repr=False)
+    audible_wishlist_error: str | None = None
 
 
 @dataclass(frozen=True)
@@ -357,6 +382,7 @@ class TrackRunRequest:
     webhook: str | None
     webhook_format: str
     webhook_headers: dict[str, str]
+    audible_wishlist: bool = False
 
 
 @dataclass(frozen=True)
@@ -369,3 +395,4 @@ class NotificationRequest:
     webhook_template: Path | None = None
     cooldown: int | None = None
     webhook_headers: dict[str, str] = field(default_factory=dict)
+    audible_wishlist: bool = False

@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import copy
 import datetime
+import logging
 from dataclasses import dataclass
 from typing import Callable
 
 from audible_deals.automation_models import (
+    CREDIT_PRICE_REASON,
     MonitorDefinition,
     MonitorEvent,
     NotificationHit,
@@ -21,6 +23,7 @@ from audible_deals.filtering import filter_products
 from audible_deals.metrics import buy_verdict, effective_price
 from audible_deals.product import Product
 from audible_deals.result_models import FilterContext
+from audible_deals.results_cache import load_dismissed_asins
 from audible_deals.webhook_client import WebhookClient
 from audible_deals.webhooks import (
     format_monitor_webhook_payload,
@@ -28,6 +31,8 @@ from audible_deals.webhooks import (
     format_webhook_payload,
 )
 from audible_deals.wishlist import inspect_wishlist, load_wishlist
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -38,82 +43,55 @@ class NotificationRuntime:
     load_wishlist: Callable[[], list[dict]] = load_wishlist
     load_notify_state: Callable[[], dict] = load_notify_state
     save_notify_state: Callable[[dict], None] = save_notify_state
+    load_dismissed_asins: Callable[[], set[str]] = load_dismissed_asins
     today: Callable[[], datetime.date] = datetime.date.today
 
 
-def collect_target_hits(
-    client: DealsClient,
-    asin_items: list[dict],
-    author_items: list[dict],
-    record_products: Callable[[list[Product]], None],
-    credit_price: float | None = None,
-) -> tuple[tuple[NotificationHit, ...], dict[str, dict], frozenset[str]]:
-    targets = {item["asin"]: item.get("max_price") for item in asin_items}
-    hits: list[NotificationHit] = []
-    extras: dict[str, dict] = {}
-    hit_asins: set[str] = set()
+@dataclass(frozen=True)
+class WishlistHits:
+    hits: tuple[NotificationHit, ...]
+    extras: dict[str, dict]
+    hit_asins: frozenset[str]
+    account_asins: frozenset[str] = frozenset()
+    account_error: str | None = None
 
-    def add_hit(product: Product, target: float, author: str | None = None) -> None:
-        hit_asins.add(product.asin)
-        verdict = (
-            buy_verdict(product, credit_price) if credit_price is not None else None
-        )
-        effective = effective_price(product, credit_price)
-        hit = NotificationHit(
-            asin=product.asin,
-            title=product.title,
-            price=round(product.price, 2),
-            target=target,
-            url=product.url,
-            author=author,
-            verdict=verdict,
-            effective_price=round(effective, 2) if effective is not None else None,
-        )
-        hits.append(hit)
-        extras[product.asin] = {
-            "currency": product.currency,
-            "discount_pct": float(product.discount_pct or 0.0),
-        }
 
-    with client:
-        products = client.get_products_batch([item["asin"] for item in asin_items])
-        record_products(products)
-        for product in products:
-            target = targets.get(product.asin)
-            if (
-                target is not None
-                and product.price is not None
-                and product.price <= target
-            ):
-                add_hit(product, target)
+def is_auth_error(exc: Exception) -> bool:
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if status in (401, 403):
+        return True
+    message = str(exc).lower()
+    return "not authenticated" in message or "deals login" in message
 
-        for watch in author_items:
-            author = watch.get("author", "")
-            target = watch.get("max_price")
-            if not author or target is None:
-                continue
-            author_results: list[Product] = []
-            for page_products, _, _ in client.search_pages(
-                keywords=author,
-                sort_by="Relevance",
-                max_pages=2,
-            ):
-                author_results.extend(page_products)
-            outcome = filter_products(
-                author_results,
-                FilterContext(
-                    author=author,
-                    max_price=target,
-                    drop_zero_length=True,
-                ),
-            )
-            filtered = list(outcome.products)
-            record_products(filtered)
-            for product in filtered:
-                if product.asin not in hit_asins:
-                    add_hit(product, target, author=author)
 
-    return tuple(hits), extras, frozenset(hit_asins)
+def _alert_target(
+    product: Product, target: float | None, credit_price: float | None
+) -> tuple[float, str | None] | None:
+    """Return the (target, reason) a product alerts against, or None.
+
+    A book without its own target alerts when buying it with cash beats spending
+    a credit: not in the Plus catalog and strictly below the credit price.
+    """
+    if product.price is None:
+        return None
+    if target is not None:
+        return (target, None) if product.price <= target else None
+    if credit_price is not None and buy_verdict(product, credit_price) == "cash":
+        return credit_price, CREDIT_PRICE_REASON
+    return None
+
+
+def _fetch_account_wishlist(client: DealsClient) -> tuple[list[Product], str | None]:
+    try:
+        with client:
+            return client.get_wishlist(), None
+    except Exception as exc:
+        if is_auth_error(exc):
+            raise
+        logger.exception("Audible wishlist fetch failed")
+        return [], f"{type(exc).__name__}: {exc}"
 
 
 def collect_wishlist_hits(
@@ -124,35 +102,130 @@ def collect_wishlist_hits(
     *,
     locale: str,
     credit_price: float | None = None,
-) -> tuple[tuple[NotificationHit, ...], dict[str, dict], frozenset[str]]:
-    """Price each ASIN entry in its own marketplace and author watches in *locale*."""
+    account_wishlist: bool = False,
+    load_dismissed_asins: Callable[[], set[str]] = load_dismissed_asins,
+) -> WishlistHits:
+    """Collect hits for the local wishlist and, optionally, the Audible wishlist.
+
+    Each ASIN entry is priced in its own marketplace; author watches and the
+    Audible account wishlist use *locale*, the marketplace the credit price is
+    in, so only books priced there can alert below the credit price.
+    """
     hits: list[NotificationHit] = []
     extras: dict[str, dict] = {}
     hit_asins: set[str] = set()
 
-    def collect(items: list[dict], authors: list[dict], item_locale: str) -> None:
-        new_hits, new_extras, _ = collect_target_hits(
-            get_client(item_locale),
-            items,
-            authors,
-            record_products,
-            credit_price=credit_price,
+    def add(
+        product: Product,
+        alert: tuple[float, str | None] | None,
+        author: str | None = None,
+    ) -> None:
+        if alert is None or product.asin in hit_asins:
+            return
+        target, reason = alert
+        hit_asins.add(product.asin)
+        verdict = (
+            buy_verdict(product, credit_price) if credit_price is not None else None
         )
-        for hit in new_hits:
-            if hit.asin not in hit_asins:
-                hits.append(hit)
-                hit_asins.add(hit.asin)
-                if hit.asin in new_extras:
-                    extras[hit.asin] = new_extras[hit.asin]
+        effective = effective_price(product, credit_price)
+        hits.append(
+            NotificationHit(
+                asin=product.asin,
+                title=product.title,
+                price=round(product.price, 2),
+                target=target,
+                url=product.url,
+                author=author,
+                verdict=verdict,
+                effective_price=round(effective, 2) if effective is not None else None,
+                reason=reason,
+            )
+        )
+        extras[product.asin] = {
+            "currency": product.currency,
+            "discount_pct": float(product.discount_pct or 0.0),
+        }
+
+    account: dict[str, Product] = {}
+    account_error = None
+    if account_wishlist:
+        listed, account_error = _fetch_account_wishlist(get_client(locale))
+        if listed:
+            record_products(listed)
+        account = {product.asin: product for product in listed}
 
     by_locale: dict[str, list[dict]] = {}
     for item in asin_items:
         by_locale.setdefault(item.get("locale", locale), []).append(item)
-    for item_locale, locale_items in by_locale.items():
-        collect(locale_items, [], item_locale)
+    for item_locale, items in by_locale.items():
+        listed_here = account if item_locale == locale else {}
+        products = [listed_here[i["asin"]] for i in items if i["asin"] in listed_here]
+        missing = [i["asin"] for i in items if i["asin"] not in listed_here]
+        if missing:
+            client = get_client(item_locale)
+            with client:
+                fetched = client.get_products_batch(missing)
+            record_products(fetched)
+            products.extend(fetched)
+        targets = {item["asin"]: item.get("max_price") for item in items}
+        local_credit = credit_price if item_locale == locale else None
+        for product in products:
+            add(
+                product, _alert_target(product, targets.get(product.asin), local_credit)
+            )
+
     if author_items:
-        collect([], author_items, locale)
-    return tuple(hits), extras, frozenset(hit_asins)
+        client = get_client(locale)
+        with client:
+            for watch in author_items:
+                author = watch.get("author", "")
+                target = watch.get("max_price")
+                if not author or target is None:
+                    continue
+                author_results: list[Product] = []
+                for page_products, _, _ in client.search_pages(
+                    keywords=author,
+                    sort_by="Relevance",
+                    max_pages=2,
+                ):
+                    author_results.extend(page_products)
+                outcome = filter_products(
+                    author_results,
+                    FilterContext(
+                        author=author,
+                        max_price=target,
+                        drop_zero_length=True,
+                    ),
+                )
+                filtered = list(outcome.products)
+                record_products(filtered)
+                for product in filtered:
+                    add(product, (target, None), author=author)
+
+    if account:
+        local_asins = {item["asin"] for item in asin_items}
+        dismissed = load_dismissed_asins()
+        for asin, product in account.items():
+            if asin not in local_asins and asin not in dismissed:
+                add(product, _alert_target(product, None, credit_price))
+
+    return WishlistHits(
+        hits=tuple(hits),
+        extras=extras,
+        hit_asins=frozenset(hit_asins),
+        account_asins=frozenset(account),
+        account_error=account_error,
+    )
+
+
+def cooldown_keep_asins(collected: WishlistHits, notify_state: dict) -> frozenset[str]:
+    """ASINs whose cooldown entries survive besides local wishlist entries."""
+    keep = collected.hit_asins | collected.account_asins
+    if collected.account_error:
+        # The Audible wishlist is unknown this run; pruning its entries would
+        # let books still in cooldown alert again on the next successful run.
+        keep |= frozenset(notify_state)
+    return keep
 
 
 def apply_cooldown(
@@ -183,15 +256,15 @@ def build_notify_state(
     notify_state: dict,
     hits: tuple[NotificationHit, ...],
     asin_items: list[dict],
-    all_hit_asins: frozenset[str],
+    keep_asins: frozenset[str],
     today: datetime.date,
 ) -> dict:
     updated = copy.deepcopy(notify_state)
     today_iso = today.isoformat()
     for hit in hits:
         updated[hit.asin] = {"price": hit.price, "date": today_iso}
-    keep_asins = {item["asin"] for item in asin_items} | set(all_hit_asins)
-    return {key: value for key, value in updated.items() if key in keep_asins}
+    keep = {item["asin"] for item in asin_items} | set(keep_asins)
+    return {key: value for key, value in updated.items() if key in keep}
 
 
 def commit_notification_state(
@@ -265,7 +338,7 @@ def run_notification(
     inspection = inspect_wishlist(runtime.load_wishlist())
     asin_items = inspection.asin_items
     author_items = inspection.author_items
-    if not asin_items and not author_items:
+    if not asin_items and not author_items and not request.audible_wishlist:
         return NotificationRunResult(
             hits=(),
             had_hits=False,
@@ -273,17 +346,19 @@ def run_notification(
             wishlist_issues=tuple(inspection.issues),
         )
 
-    hits, extras, all_hit_asins = collect_wishlist_hits(
+    collected = collect_wishlist_hits(
         runtime.get_client,
         asin_items,
         author_items,
         runtime.record_products,
         locale=request.locale,
         credit_price=request.credit_price,
+        account_wishlist=request.audible_wishlist,
+        load_dismissed_asins=runtime.load_dismissed_asins,
     )
 
-    had_hits = bool(hits)
-    kept = hits
+    had_hits = bool(collected.hits)
+    kept = collected.hits
     suppressed = 0
     today: datetime.date | None = None
     notify_state: dict | None = None
@@ -301,7 +376,7 @@ def run_notification(
         )
         deliver_hits(
             kept,
-            extras,
+            collected.extras,
             request.webhook,
             request.webhook_format,
             request.currency,
@@ -316,7 +391,7 @@ def run_notification(
             notify_state,
             kept,
             asin_items,
-            all_hit_asins,
+            cooldown_keep_asins(collected, notify_state),
             today,
         )
 
@@ -326,4 +401,5 @@ def run_notification(
         suppressed=suppressed,
         wishlist_issues=tuple(inspection.issues),
         pending_notify_state=pending_notify_state,
+        audible_wishlist_error=collected.account_error,
     )

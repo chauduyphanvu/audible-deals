@@ -2087,6 +2087,243 @@ class TestCreditAdviceInNotify:
         assert "effective_price" not in hit
 
 
+def _target_hit(asin="T1", price=3.99, target=5.0):
+    return {
+        "asin": asin,
+        "title": f"Book {asin}",
+        "price": price,
+        "target": target,
+        "url": f"https://example.com/pd/{asin}",
+    }
+
+
+def _credit_hit(asin, price, credit=11.25):
+    return {
+        **_target_hit(asin, price, credit),
+        "verdict": "cash",
+        "effective_price": price,
+        "reason": "below_credit_price",
+    }
+
+
+class TestBelowCreditWording:
+    @pytest.mark.parametrize("fmt", ["slack", "discord", "teams"])
+    def test_chat_formats_say_why(self, fmt):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, _ = format_webhook_payload([_target_hit(), _credit_hit("C1", 4.99)], fmt)
+
+        text = str(json.loads(body))
+        assert "$4.99 (below your $11.25 credit)" in text
+        assert "target $11.25" not in text
+        assert "$3.99 (target $5.00)" in text
+
+    def test_ntfy_says_why_for_below_credit_hits_only(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, headers = format_webhook_payload(
+            [_target_hit(), _credit_hit("C1", 4.99)], "ntfy"
+        )
+
+        assert body.decode().splitlines() == [
+            "Audible Deals (2)",
+            "• Book T1 — $3.99 (https://example.com/pd/T1)",
+            "• Book C1 — $4.99, below your $11.25 credit (https://example.com/pd/C1)",
+        ]
+        assert headers["Title"] == "Audible Deals (2)"
+
+    def test_generic_payload_stays_backward_compatible(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, _ = format_webhook_payload(
+            [_target_hit(), _credit_hit("C1", 4.99)], "generic"
+        )
+
+        payload = json.loads(body)
+        assert set(payload) == {"deals", "count"}
+        assert payload["count"] == 2
+        target, credit = payload["deals"]
+        assert target == _target_hit()
+        assert credit["target"] == 11.25
+        assert isinstance(credit["target"], float)
+        assert credit["reason"] == "below_credit_price"
+
+    def test_template_target_is_the_credit_price(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, _ = format_webhook_payload(
+            [_credit_hit("C1", 4.99)],
+            "generic",
+            template="{title} {price:.2f} < {target:.2f}",
+        )
+
+        assert body.decode() == "Book C1 4.99 < 11.25"
+
+
+class TestBelowCreditCap:
+    def _hits(self):
+        # Savings rise with the index, so the cap must reverse this order.
+        credit = [_credit_hit(f"C{i:02d}", 11.0 - i * 0.25) for i in range(23)]
+        return [credit[0], _target_hit(), *credit[1:]]
+
+    def test_generic_lists_target_hits_then_twenty_largest_savings(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        payload = json.loads(format_webhook_payload(self._hits(), "generic")[0])
+
+        assert [deal["asin"] for deal in payload["deals"]] == [
+            "T1",
+            *(f"C{i:02d}" for i in range(22, 2, -1)),
+        ]
+        assert payload["count"] == 21
+        assert payload["more_below_credit_price"] == 3
+
+    @pytest.mark.parametrize("fmt", ["slack", "discord", "teams", "ntfy"])
+    def test_every_format_ends_with_the_more_line(self, fmt):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, _ = format_webhook_payload(self._hits(), fmt)
+
+        text = body.decode() if fmt == "ntfy" else str(json.loads(body))
+        assert text.count("below your $11.25 credit") == 20
+        assert "Book C22" in text
+        assert "Book C02" not in text
+        assert "and 3 more below your credit price" in text
+        assert "Audible Deals (24)" in text
+
+    def test_template_ends_with_the_more_line(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        body, _ = format_webhook_payload(self._hits(), "generic", template="{asin}")
+
+        lines = body.decode().splitlines()
+        assert lines[:2] == ["T1", "C22"]
+        assert len(lines) == 22
+        assert lines[-1] == "and 3 more below your credit price"
+
+    def test_twenty_below_credit_hits_are_all_listed(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        hits = [_credit_hit(f"C{i:02d}", 5.0) for i in range(20)]
+        payload = json.loads(format_webhook_payload(hits, "generic")[0])
+
+        assert payload["count"] == 20
+        assert "more_below_credit_price" not in payload
+
+    def test_target_hits_are_never_capped(self):
+        from audible_deals.webhooks import format_webhook_payload
+
+        hits = [_target_hit(f"T{i:02d}") for i in range(30)]
+        body, _ = format_webhook_payload(hits, "slack")
+
+        text = json.loads(body)["text"]
+        assert text.count("(target $5.00)") == 30
+        assert "more below" not in text
+
+
+class TestNotifyAudibleWishlist:
+    def _opt_in(self, **extra):
+        config_store_mod.save_config(
+            {"credit_price": 11.25, "audible_wishlist": True, **extra}
+        )
+
+    def test_off_never_fetches_the_audible_wishlist(self, mock_client, tmp_config):
+        config_store_mod.save_config({"credit_price": 11.25})
+        _seed_tracked_wishlist()
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="B00TRACK01", price=3.99)
+        ]
+
+        result = CliRunner().invoke(cli, ["notify"])
+
+        assert result.exit_code == 0, result.output
+        mock_client.get_wishlist.assert_not_called()
+        assert json.loads(result.stdout)["deals"][0]["asin"] == "B00TRACK01"
+
+    def test_prints_below_credit_hit_from_audible_wishlist(
+        self, mock_client, tmp_config
+    ):
+        self._opt_in()
+        mock_client.get_wishlist.return_value = [
+            make_product(asin="ACCT1", price=4.99),
+            make_product(asin="ACCT2", price=14.99),
+        ]
+
+        result = CliRunner().invoke(cli, ["notify", "--exit-code"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["count"] == 1
+        assert payload["deals"][0]["asin"] == "ACCT1"
+        assert payload["deals"][0]["reason"] == "below_credit_price"
+        mock_client.get_products_batch.assert_not_called()
+
+    def test_terminal_output_is_capped_like_the_generic_webhook(
+        self, mock_client, tmp_config
+    ):
+        self._opt_in()
+        mock_client.get_wishlist.return_value = [
+            make_product(asin=f"ACCT{i:02d}", price=5.0) for i in range(25)
+        ]
+
+        result = CliRunner().invoke(cli, ["notify"])
+
+        assert result.exit_code == 0, result.output
+        payload = json.loads(result.stdout)
+        assert payload["count"] == 20
+        assert payload["more_below_credit_price"] == 5
+
+    def test_missing_credit_price_warns_and_skips(self, mock_client, tmp_config):
+        config_store_mod.save_config({"audible_wishlist": True})
+        _seed_tracked_wishlist()
+        mock_client.get_products_batch.return_value = []
+
+        result = CliRunner().invoke(cli, ["notify"])
+
+        assert result.exit_code == 0, result.output
+        mock_client.get_wishlist.assert_not_called()
+        assert "deals config set credit-price" in result.stderr
+        assert json.loads(result.stdout) == {"deals": [], "count": 0}
+
+    def test_audible_wishlist_failure_warns_and_keeps_local_hits(
+        self, mock_client, tmp_config
+    ):
+        self._opt_in()
+        _seed_tracked_wishlist()
+        mock_client.get_wishlist.side_effect = RuntimeError("wishlist down")
+        mock_client.get_products_batch.return_value = [
+            make_product(asin="B00TRACK01", price=3.99)
+        ]
+
+        result = CliRunner().invoke(cli, ["notify"])
+
+        assert result.exit_code == 0, result.output
+        assert "could not check your Audible wishlist" in result.stderr
+        assert "wishlist down" in result.stderr
+        assert json.loads(result.stdout)["deals"][0]["asin"] == "B00TRACK01"
+
+
+class TestTrackRunAudibleWishlist:
+    def test_missing_credit_price_warns_and_skips(self, mock_client, tmp_config):
+        config_store_mod.save_config({"audible_wishlist": True})
+
+        result = CliRunner().invoke(cli, ["track", "run"])
+
+        assert result.exit_code == 0, result.output
+        mock_client.get_wishlist.assert_not_called()
+        assert "deals config set credit-price" in result.output
+
+    def test_summary_counts_audible_wishlist_books(self, mock_client, tmp_config):
+        config_store_mod.save_config({"credit_price": 11.25, "audible_wishlist": True})
+        mock_client.get_wishlist.return_value = [make_product(asin="ACCT1", price=4.99)]
+
+        result = CliRunner().invoke(cli, ["track", "run"])
+
+        assert result.exit_code == 0, result.output
+        assert "0 wishlist + 1 Audible wishlist + 0 tracked" in result.output
+        assert "1 at target" in result.output
+
+
 class TestRoutesWatchCommand:
     def test_watch_empty_wishlist(self, tmp_config, mock_client):
         result = _routes_run(CliRunner(), ["watch"])

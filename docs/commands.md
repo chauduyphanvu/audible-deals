@@ -275,6 +275,8 @@ Result tables, `watch`, `detail`, and `compare` then recommend `cash`, `credit`,
 
 Remove the setting with `deals config reset credit-price` to restore cash-only output.
 
+With a credit price set, `deals config set audible-wishlist true` makes `notify` and scheduled `track run` also check your Audible account wishlist and alert when a book there costs less than one credit. See [Alert on your Audible wishlist](automation.md#alert-on-your-audible-wishlist).
+
 ## Library and exports
 
 ```bash

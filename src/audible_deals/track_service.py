@@ -29,9 +29,11 @@ from audible_deals.notification_service import (
     apply_cooldown,
     build_notify_state,
     collect_wishlist_hits,
+    cooldown_keep_asins,
     deliver_auth_error,
     deliver_hits,
     deliver_monitor_events,
+    is_auth_error,
 )
 from audible_deals.product import Product
 from audible_deals.refresh_eligibility import load_refresh_eligibility
@@ -149,16 +151,6 @@ def refresh_eligible_asins(
     }
 
 
-def is_auth_error(exc: Exception) -> bool:
-    status = getattr(exc, "status_code", None) or getattr(
-        getattr(exc, "response", None), "status_code", None
-    )
-    if status in (401, 403):
-        return True
-    message = str(exc).lower()
-    return "not authenticated" in message or "deals login" in message
-
-
 def _notify_auth_failure(
     state: dict,
     error: str,
@@ -215,16 +207,21 @@ def _run_locked(
     wishlist_asins = {item["asin"] for item in asin_items}
     today = runtime.today()
 
-    hits, extras, hit_asins = collect_wishlist_hits(
+    collected = collect_wishlist_hits(
         runtime.get_client,
         asin_items,
         author_items,
         runtime.record_products,
         locale=request.locale,
         credit_price=request.credit_price,
+        account_wishlist=request.audible_wishlist,
+        load_dismissed_asins=runtime.load_dismissed_asins,
     )
+    hits = collected.hits
 
-    excluded_asins = wishlist_asins | runtime.load_dismissed_asins()
+    excluded_asins = (
+        wishlist_asins | collected.account_asins | runtime.load_dismissed_asins()
+    )
     eligibility = runtime.load_refresh_eligibility()
     cursors = state.get("refresh_cursors")
     if not isinstance(cursors, dict):
@@ -255,7 +252,7 @@ def _run_locked(
         if kept:
             deliver_hits(
                 kept,
-                extras,
+                collected.extras,
                 request.webhook,
                 request.webhook_format,
                 request.currency,
@@ -268,7 +265,7 @@ def _run_locked(
                     notify_state,
                     kept,
                     asin_items,
-                    hit_asins,
+                    cooldown_keep_asins(collected, notify_state),
                     today,
                 )
             )
@@ -323,6 +320,8 @@ def _run_locked(
         monitor_events=monitor_events_count,
         monitor_failures=tuple(monitor_failures),
         error=None,
+        audible_wishlist_checked=len(collected.account_asins - wishlist_asins),
+        audible_wishlist_error=collected.account_error,
         wishlist_issues=tuple(inspection.issues),
     )
     append_run(state, result.to_dict())

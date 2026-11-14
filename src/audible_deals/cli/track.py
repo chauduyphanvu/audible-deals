@@ -10,6 +10,7 @@ import click
 from audible_deals import constants, scheduler
 from audible_deals.automation_models import TrackRunRequest
 from audible_deals.cli.helpers import (
+    _audible_wishlist,
     _credit_price,
     _currency,
     _get_client,
@@ -27,6 +28,7 @@ from audible_deals.locking import LockHeldError, run_lock
 from audible_deals.monitor_service import MonitorRuntime
 from audible_deals.notification_workflow import parse_webhook_headers
 from audible_deals.parsing import parse_interval
+from audible_deals.presentation.common import price_str
 from audible_deals.presentation.terminal import (
     catalog_scan_progress,
     console,
@@ -55,6 +57,18 @@ def _run_history(state: dict) -> list[dict]:
     return run_history(state)
 
 
+def _audible_wishlist_status(ctx: click.Context) -> str | None:
+    """Describe the Audible wishlist switch when it is on."""
+    if ctx.obj.get("config", {}).get("audible_wishlist") is not True:
+        return None
+    credit_price = _credit_price(ctx)
+    if credit_price is None:
+        return "[yellow]skipped: run 'deals config set credit-price AMOUNT'[/yellow]"
+    return (
+        f"included, alerts below your {price_str(credit_price, _currency(ctx))} credit"
+    )
+
+
 def _parse_cfg_webhook_headers(raw_list: list) -> dict[str, str]:
     """Parse stored webhook_headers config, skipping bad entries with a warning."""
     str_items = []
@@ -74,7 +88,8 @@ def track(ctx):
     'deals track install' registers a launchd agent (macOS), systemd user
     timer or cron entry (Linux), or scheduled task (Windows) that runs
     'deals track run' on an interval. Each run refreshes prices for your
-    wishlist, author watches, and recently tracked ASINs, records history,
+    wishlist, author watches, and recently tracked ASINs (plus your Audible
+    wishlist with 'deals config set audible-wishlist true'), records history,
     and sends webhook alerts for items at target.
     """
     if ctx.invoked_subcommand is None:
@@ -98,14 +113,16 @@ def track_run(ctx, cooldown):
     webhook_format = cfg.get("webhook_format") or "generic"
     webhook_headers = _parse_cfg_webhook_headers(cfg.get("webhook_headers") or [])
     webhook_client = WebhookClient()
+    credit_price = _credit_price(ctx)
     request = TrackRunRequest(
         locale=ctx.obj["locale"],
         currency=_currency(ctx),
-        credit_price=_credit_price(ctx),
+        credit_price=credit_price,
         cooldown=cooldown,
         webhook=webhook,
         webhook_format=webhook_format,
         webhook_headers=webhook_headers,
+        audible_wishlist=_audible_wishlist(ctx, credit_price),
     )
     runtime = TrackRuntime(
         get_client=_get_client,
@@ -211,6 +228,8 @@ def track_install(ctx, every, webhook, webhook_format, webhook_headers):
 
     console.print(f"[green]Installed:[/green] {safe_markup(description)}")
     console.print(f"  Runs 'deals track run' every {safe_markup(every)}")
+    if audible_wishlist := _audible_wishlist_status(ctx):
+        console.print(f"  Audible wishlist: {audible_wishlist}")
     console.print(f"  Log: {safe_markup(constants.TRACK_LOG_FILE)}")
     console.print("  Check with: deals track status")
 
@@ -239,7 +258,8 @@ def track_uninstall():
     default=False,
     help="Print full run history table",
 )
-def track_status(show_history):
+@click.pass_context
+def track_status(ctx, show_history):
     """Show schedule and last-run status for background tracking."""
     from audible_deals.presentation.reports import display_track_history
 
@@ -294,6 +314,8 @@ def track_status(show_history):
             detail += f", [yellow]{len(failed)} with errors: "
             detail += f"{safe_markup(', '.join(failed))}[/yellow]"
         console.print(detail)
+    if audible_wishlist := _audible_wishlist_status(ctx):
+        console.print(f"  [dim]Audible wishlist:[/dim]  {audible_wishlist}")
     if not last:
         console.print("  [dim]Last run:[/dim]  never")
         return
