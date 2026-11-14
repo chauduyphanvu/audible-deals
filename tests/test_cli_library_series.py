@@ -1018,6 +1018,12 @@ class TestSeriesCommand:
                         "price": None,
                     }
                 ],
+                "finish": {
+                    "books": 0,
+                    "cash_total": 0.0,
+                    "unavailable": 1,
+                    "plus": 0,
+                },
             }
         ]
 

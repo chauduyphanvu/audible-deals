@@ -41,6 +41,7 @@ from audible_deals.result_publication import (
     record_prices_safely,
 )
 from audible_deals.serialization import validate_export_path
+from audible_deals.series_cost import finish_cost
 from audible_deals.series_identity import (
     group_series_books,
     normalize_identity_text,
@@ -221,6 +222,7 @@ def _series_gaps_report(
     json_flag: bool,
     quiet: bool,
     currency: str,
+    credit_price: float | None,
 ) -> None:
     """Emit the per-series gap report (JSON or table) from filtered candidates."""
     by_series: dict[str, dict[str, Product]] = {}
@@ -259,6 +261,7 @@ def _series_gaps_report(
                 "owned": len(owned_identities),
                 "total_known": len(owned_identities | set(missing_by_identity)),
                 "missing": missing_entries,
+                "finish": finish_cost(missing_products, credit_price),
             }
         )
 
@@ -266,6 +269,7 @@ def _series_gaps_report(
         stripped = [
             {
                 **g,
+                "finish": g["finish"].to_dict(),
                 "missing": [
                     {k: v for k, v in m.items() if k != "atl"} for m in g["missing"]
                 ],
@@ -574,6 +578,7 @@ def series(
             json_flag=json_flag,
             quiet=quiet,
             currency=cur,
+            credit_price=_credit_price(ctx),
         )
         return
 
