@@ -16,6 +16,7 @@ def test_expected_top_level_commands_are_registered_and_resolve():
         "compare",
         "completions",
         "config",
+        "credits",
         "detail",
         "doctor",
         "find",
