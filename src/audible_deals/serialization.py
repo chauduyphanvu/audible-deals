@@ -13,7 +13,6 @@ import click
 
 from audible_deals.product import Product
 from audible_deals.metrics import price_per_hour
-from audible_deals.presentation.markdown import render_markdown
 
 logger = logging.getLogger(__name__)
 
@@ -103,4 +102,6 @@ def export_products(
             writer.writeheader()
             writer.writerows(rows)
     elif suffix in _MARKDOWN_SUFFIXES:
+        from audible_deals.presentation.markdown import render_markdown
+
         path.write_text(render_markdown(products, title=title), encoding="utf-8")

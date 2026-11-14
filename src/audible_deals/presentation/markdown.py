@@ -1,4 +1,4 @@
-"""Markdown table rendering for pasting results into Reddit, GitHub, and Discord."""
+"""Markdown table rendering for pasting results into Reddit and GitHub."""
 
 from __future__ import annotations
 

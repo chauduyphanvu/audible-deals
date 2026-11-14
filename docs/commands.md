@@ -295,7 +295,7 @@ deals library --sort rating -n 20
 
 Multi-value CSV fields are joined with a semicolon and space.
 
-The Markdown table pastes into Reddit, GitHub, and Discord, and `deals last --markdown` prints just that table to standard output, so `deals last --markdown | pbcopy` works.
+The Markdown table pastes into Reddit and GitHub, and `deals last --markdown` prints just that table to standard output, so `deals last --markdown | pbcopy` works.
 
 ## Marketplace support
 
