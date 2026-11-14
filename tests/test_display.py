@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import datetime
 from io import StringIO
 
 import pytest
 from rich.console import Console
+from rich.text import Text
 
 from audible_deals.presentation.common import (
     _buy_cell,
@@ -32,6 +34,7 @@ from audible_deals.presentation.reports import (
     display_watch_table,
     display_wishlist,
 )
+from tests.conftest import make_deal_grade as _grade
 from tests.conftest import make_product
 
 
@@ -49,6 +52,10 @@ def _capture(func, *args, width: int = 120, **kwargs):
     finally:
         display_mod.console = original
     return buf.getvalue()
+
+
+def _plain(markup: str) -> str:
+    return Text.from_markup(markup).plain
 
 
 class TestPriceStr:
@@ -156,7 +163,7 @@ def test_product_layout_is_pure_and_preserves_width_boundaries():
     options = ProductDisplayOptions(
         show_url=True,
         credit_price=11.25,
-        hist_context={product.asin: -20},
+        deal_grades={product.asin: _grade("good")},
         match_context={product.asin: "favorite narrator and exact author"},
     )
 
@@ -197,29 +204,23 @@ def test_product_layout_accepts_empty_match_context_at_wide_width():
 
 def test_product_display_options_detach_and_freeze_mutable_inputs():
     product = make_product()
-    atl_asins = {product.asin}
-    hist_context = {product.asin: -20}
+    deal_grades = {product.asin: _grade("good")}
     match_context = {product.asin: "favorite narrator"}
     options = ProductDisplayOptions(
-        atl_asins=atl_asins,
-        hist_context=hist_context,
+        deal_grades=deal_grades,
         match_context=match_context,
     )
     original_layout = calculate_product_layout([product], options, 160)
 
-    atl_asins.add("B00OTHER")
-    hist_context[product.asin] = 123_456_789
+    deal_grades[product.asin] = _grade("new")
     match_context[product.asin] = "x" * 100
 
-    assert options.atl_asins == frozenset({product.asin})
-    assert options.hist_context == {product.asin: -20}
+    assert options.deal_grades == {product.asin: _grade("good")}
     assert options.match_context == {product.asin: "favorite narrator"}
     assert calculate_product_layout([product], options, 160) == original_layout
 
-    with pytest.raises(AttributeError):
-        options.atl_asins.add("B00BLOCKED")
     with pytest.raises(TypeError):
-        options.hist_context[product.asin] = 0
+        options.deal_grades[product.asin] = _grade("high")
     with pytest.raises(TypeError):
         options.match_context[product.asin] = "changed"
 
@@ -408,7 +409,7 @@ class TestDisplayProductsShowUrl:
             width=180,
             show_url=True,
             credit_price=11.25,
-            hist_context={product.asin: -10},
+            deal_grades={product.asin: _grade("good")},
             match_context={product.asin: "exact title match"},
         )
 
@@ -447,34 +448,201 @@ class TestDisplaySummary:
         assert "2 series collapsed" in out
 
 
-class TestATLBadge:
-    def test_star_shown_for_atl_asin(self):
-        products = [make_product(asin="BXXX", title="ATL Book", price=2.99)]
-        out = _capture(display_products, products, atl_asins={"BXXX"})
-        assert "★" in out
+_GRADE_KINDS = ("lowest", "good", "typical", "high", "new")
 
-    def test_star_not_shown_without_atl_asins(self):
-        products = [make_product(asin="BXXX", title="Normal Book", price=5.99)]
-        out = _capture(display_products, products)
-        assert "★" not in out
 
-    def test_star_not_shown_for_non_atl_asin(self):
-        products = [
-            make_product(asin="BXXX", title="ATL Book", price=2.99),
-            make_product(asin="BYYY", title="Not ATL Book", price=4.99),
+class TestHistoryGrade:
+    """The History grade replaces the vs-hist percentage and the low-price star."""
+
+    @staticmethod
+    def _products():
+        return [
+            make_product(
+                asin="B00GOOD001", title="Graded Book", price=9.99, series_name=""
+            ),
+            make_product(
+                asin="B00FRESH01", title="Fresh Listing", price=4.99, series_name=""
+            ),
+            make_product(
+                asin="B00NOPRICE", title="Unpriced Book", price=None, series_name=""
+            ),
         ]
-        out_atl = _capture(display_products, products, atl_asins={"BXXX"})
-        assert "★" in out_atl
 
-    def test_star_not_shown_for_none_atl_asins(self):
-        products = [make_product(asin="BXXX", title="Normal Book", price=5.99)]
-        out = _capture(display_products, products, atl_asins=None)
+    @staticmethod
+    def _grades():
+        return {"B00GOOD001": _grade("good"), "B00FRESH01": _grade("new")}
+
+    def test_wide_table_has_a_history_column(self):
+        out = _capture(
+            display_products, self._products(), width=160, deal_grades=self._grades()
+        )
+
+        def history_cell(title: str) -> str:
+            row = next(line for line in out.splitlines() if title in line)
+            return row.split("│")[-2].strip()
+
+        assert "History" in out
+        assert "vs hist" not in out
+        assert history_cell("Graded Book") == "good"
+        assert history_cell("Fresh Listing") == "-"
+        assert history_cell("Unpriced Book") == "-"
+        assert all(len(line) <= 160 for line in out.splitlines())
+
+    @pytest.mark.parametrize("width", [60, 100])
+    def test_narrow_layouts_fold_the_grade_into_a_secondary_line(self, width):
+        out = _capture(
+            display_products,
+            self._products(),
+            width=width,
+            deal_grades=self._grades(),
+        )
+
+        assert out.count("History good") == 1
+        assert "History -" not in out
+        assert all(len(line) <= width for line in out.splitlines())
+
+    @pytest.mark.parametrize("width", [60, 100, 160])
+    def test_new_and_unpriced_products_show_no_verdict(self, width):
+        out = _capture(
+            display_products,
+            self._products(),
+            width=width,
+            deal_grades=self._grades(),
+        )
+
+        assert "new" not in out.lower()
+        assert "lowest" not in out and "typical" not in out and "high" not in out
+
+    @pytest.mark.parametrize("width", [60, 100, 160])
+    def test_history_is_hidden_when_no_product_has_a_verdict(self, width):
+        out = _capture(
+            display_products,
+            self._products(),
+            width=width,
+            deal_grades={"B00GOOD001": _grade("new"), "B00FRESH01": _grade("new")},
+        )
+
+        assert "History" not in out
+
+    @pytest.mark.parametrize("kind", ["lowest", "good", "typical", "high"])
+    def test_each_grade_renders_as_its_word(self, kind):
+        product = make_product(asin="B00KIND001", price=9.99)
+
+        out = _capture(
+            display_products,
+            [product],
+            width=160,
+            deal_grades={product.asin: _grade(kind)},
+        )
+
+        assert kind in out
+
+    def test_lowest_replaces_the_star(self):
+        product = make_product(asin="B00LOW0001", price=6.99)
+
+        out = _capture(
+            display_products,
+            [product],
+            width=160,
+            deal_grades={product.asin: _grade("lowest")},
+        )
+
+        assert "lowest" in out
         assert "★" not in out
 
-    def test_star_not_shown_for_empty_atl_set(self):
-        products = [make_product(asin="BXXX", title="Normal Book", price=5.99)]
-        out = _capture(display_products, products, atl_asins=set())
-        assert "★" not in out
+    def test_grade_cell_words_are_distinct_without_colour(self):
+        from audible_deals.presentation.common import grade_cell
+
+        cells = {kind: grade_cell(_grade(kind)) for kind in _GRADE_KINDS}
+
+        assert cells["new"] == grade_cell(None) == "[dim]-[/dim]"
+        assert cells["typical"] == "[dim]typical[/dim]"
+        assert cells["lowest"] == "[bold green]lowest[/bold green]"
+        assert cells["good"] == "[green]good[/green]"
+        assert cells["high"] == "[yellow]high[/yellow]"
+
+
+class TestGradeVerdict:
+    def _lines(self, grade, currency="$"):
+        from audible_deals.presentation.common import grade_verdict
+
+        return [_plain(line) for line in grade_verdict(grade, currency)]
+
+    def test_new_low(self):
+        assert self._lines(_grade("lowest")) == [
+            "LOWEST: below every price in 102 earlier checks since 12 May",
+            "Previous low $7.49 on 1 Aug · usual price $24.50",
+        ]
+
+    def test_tie_with_the_previous_low(self):
+        from audible_deals.deal_grade import grade_price
+        from tests.conftest import STANDARD_WITH_DIPS, daily_history
+
+        entries = daily_history(*STANDARD_WITH_DIPS)
+        grade = grade_price(entries, 7.49, _grade("good").observed_on)
+
+        assert self._lines(grade) == [
+            "LOWEST: ties the lowest price in 102 earlier checks since 12 May",
+            "This low once before, last on 1 Aug · usual price $24.50",
+        ]
+
+    def test_good(self):
+        assert self._lines(_grade("good")) == [
+            "GOOD: second-lowest price in 102 earlier checks since 12 May",
+            "Lowest $7.49 on 1 Aug · usual price $24.50 · at or below $9.99 twice "
+            "before",
+        ]
+
+    def test_typical(self):
+        assert self._lines(_grade("typical")) == [
+            "TYPICAL: usually $24.50 in 102 earlier checks since 12 May",
+            "Lowest $7.49 on 1 Aug · it has dropped to $12.99 or less 3 times",
+        ]
+
+    def test_high_says_what_to_wait_for(self):
+        assert self._lines(_grade("high"), "£") == [
+            "HIGH: above the usual £24.50 in 102 earlier checks since 12 May",
+            "It was £7.49 on 1 Aug; it has dropped to £12.99 or less 3 times.",
+        ]
+
+    def test_high_without_earlier_dips(self):
+        from audible_deals.deal_grade import grade_price
+        from tests.conftest import daily_history
+
+        grade = grade_price(
+            daily_history((30, 20.00)), 25.00, datetime.date(2026, 6, 11)
+        )
+
+        assert self._lines(grade) == [
+            "HIGH: above the usual $20.00 in 30 earlier checks since 12 May",
+            "It was $20.00 on 10 Jun.",
+        ]
+
+    def test_new_states_its_evidence_and_how_to_build_more(self):
+        assert self._lines(_grade("new")) == [
+            "NEW: not enough history yet (2 earlier checks over 2 days)",
+            "A verdict needs 5 checks over 14 days; deals track install builds them.",
+        ]
+
+    def test_dates_from_another_year_include_the_year(self):
+        from audible_deals.deal_grade import grade_price
+        from tests.conftest import daily_history
+
+        start = datetime.date(2025, 12, 20)
+        grade = grade_price(
+            daily_history((20, 10.00), start=start), 10.00, datetime.date(2026, 1, 9)
+        )
+
+        assert self._lines(grade)[0] == (
+            "TYPICAL: usually $10.00 in 20 earlier checks since 20 Dec 2025"
+        )
+
+    @pytest.mark.parametrize("kind", _GRADE_KINDS)
+    def test_every_verdict_states_its_checks_in_at_most_three_lines(self, kind):
+        lines = self._lines(_grade(kind))
+
+        assert len(lines) <= 3
+        assert "earlier check" in lines[0]
 
 
 class TestDisplayWatchTableZeroTarget:
@@ -736,3 +904,132 @@ class TestPriceHistoryNonNumeric:
         entries = [{"date": "2026-06-01", "price": "n/a", "title": "X"}]
         out = _capture(display_price_history, entries, "B00ASIN")
         assert "No numeric prices" in out
+        assert "NEW" not in out
+
+
+class TestPriceHistoryVerdict:
+    def test_verdict_block_follows_the_sparkline(self):
+        from tests.conftest import STANDARD_WITH_DIPS, daily_history
+
+        entries = daily_history(*STANDARD_WITH_DIPS, (1, 9.99))
+
+        lines = _capture(display_price_history, entries, "B00ASIN", width=200)
+        lines = lines.splitlines()
+
+        sparkline = next(i for i, line in enumerate(lines) if "▁" in line)
+        assert lines[sparkline + 1 :] == [
+            "",
+            "  GOOD: second-lowest price in 102 earlier checks since 12 May",
+            "  Lowest $7.49 on 1 Aug · usual price $24.50 · at or below $9.99 twice "
+            "before",
+        ]
+
+    def test_latest_check_is_graded_even_when_it_is_old(self):
+        entries = [
+            {"date": f"2024-01-{day:02d}", "price": 20.0, "title": "X"}
+            for day in range(1, 21)
+        ]
+        entries.append({"date": "2024-02-01", "price": 25.0, "title": "X"})
+
+        out = _capture(display_price_history, entries, "B00ASIN", currency="€")
+
+        assert "HIGH: above the usual €20.00 in 20 earlier checks since 1 Jan" in out
+        assert "It was €20.00 on 20 Jan." in out
+
+    def test_thin_history_says_new_and_how_many_checks(self):
+        entries = [
+            {"date": "2026-06-01", "price": 9.99, "title": "X"},
+            {"date": "2026-06-04", "price": 7.99, "title": "X"},
+        ]
+
+        out = _capture(display_price_history, entries, "B00ASIN")
+
+        assert "NEW: not enough history yet (1 earlier check over 3 days)" in out
+        assert "deals track install builds them." in out
+        assert "GOOD" not in out and "LOWEST" not in out
+
+    def test_single_check_has_no_earlier_checks(self):
+        entries = [{"date": "2026-06-01", "price": 9.99, "title": "X"}]
+
+        out = _capture(display_price_history, entries, "B00ASIN")
+
+        assert "NEW: not enough history yet (no earlier checks)" in out
+
+
+class TestProductDetailVerdict:
+    def test_detail_shows_the_one_line_verdict(self):
+        out = _capture(
+            display_product_detail,
+            make_product(price=9.99),
+            deal_grade=_grade("good"),
+        )
+
+        assert (
+            "History:    GOOD: second-lowest price in 102 earlier checks since 12 May"
+            in out
+        )
+        assert "Lowest $7.49" not in out
+
+    def test_detail_with_thin_history_says_new(self):
+        out = _capture(
+            display_product_detail, make_product(price=9.99), deal_grade=_grade("new")
+        )
+
+        assert "History:    NEW: not enough history yet (2 earlier checks" in out
+
+    def test_detail_without_earlier_checks_has_no_history_line(self):
+        from audible_deals.deal_grade import grade_price
+
+        first_look = grade_price([], 9.99, datetime.date(2026, 6, 1))
+
+        with_grade = _capture(
+            display_product_detail, make_product(price=9.99), deal_grade=first_look
+        )
+        without = _capture(display_product_detail, make_product(price=9.99))
+
+        assert "History:" not in with_grade
+        assert with_grade == without
+
+
+class TestWatchTableGrade:
+    def _rows(self):
+        products = [
+            make_product(asin="W1", title="Graded Book", price=9.99),
+            make_product(asin="W2", title="Pricey Book", price=27.99, list_price=None),
+            make_product(asin="W3", title="Fresh Book", price=4.00),
+        ]
+        targets = {"W1": 5.0, "W2": 20.0, "W3": 5.0}
+        grades = {"W1": _grade("good"), "W2": _grade("high"), "W3": _grade("new")}
+        return products, targets, grades
+
+    @pytest.mark.parametrize("width", [60, 80, 120])
+    def test_grade_sits_under_the_price_without_widening_the_table(self, width):
+        products, targets, grades = self._rows()
+
+        plain = _capture(
+            display_watch_table, products, targets, width=width, credit_price=11.25
+        )
+        graded = _capture(
+            display_watch_table,
+            products,
+            targets,
+            width=width,
+            credit_price=11.25,
+            deal_grades=grades,
+        )
+
+        def table_width(out: str) -> int:
+            return max(len(line) for line in out.splitlines())
+
+        assert table_width(graded) == table_width(plain) <= width
+        assert len(graded.splitlines()) == len(plain.splitlines())
+        assert "good" in graded and "high" in graded
+        assert "new" not in graded.lower()
+
+    def test_buy_status_is_unchanged_by_grades(self):
+        products, targets, grades = self._rows()
+
+        out = _capture(display_watch_table, products, targets, deal_grades=grades)
+
+        assert "BUY" in out
+        assert "1 item(s) at or below target price!" in out

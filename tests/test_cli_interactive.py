@@ -19,7 +19,7 @@ from audible_deals.results_cache import (
     load_result_session,
     save_last_results,
 )
-from tests.conftest import make_product
+from tests.conftest import make_deal_grade, make_product
 
 
 def _run_browse(products, user_input, tmp_config):
@@ -286,6 +286,8 @@ class TestInteractiveBrowserDispatcher:
         import audible_deals.cli.interactive as interactive_mod
 
         browser = self._browser()
+        grade = make_deal_grade("good")
+        browser.deal_grades = {"IB1": grade}
         details = []
         comparisons = []
         launches = []
@@ -307,7 +309,7 @@ class TestInteractiveBrowserDispatcher:
         assert browser.dispatch(interactive_mod.InteractiveCommand("compare", (0, 1)))
         assert browser.dispatch(interactive_mod.InteractiveCommand("open", (1,)))
         assert not browser.dispatch(interactive_mod.InteractiveCommand("quit"))
-        assert details == [("IB1", {"credit_price": 9.99})]
+        assert details == [("IB1", {"credit_price": 9.99, "deal_grade": grade})]
         assert comparisons == [(["IB1", "IB2"], {"credit_price": 9.99})]
         assert launches == [browser.products[1].url]
 
@@ -477,8 +479,7 @@ class TestInteractiveBrowserDispatcher:
             title="Context results",
             max_price=6.0,
             show_url=True,
-            atl_asins={remaining.asin},
-            hist_context={remaining.asin: -25},
+            deal_grades={remaining.asin: make_deal_grade("good")},
             match_context={remaining.asin: "revised match"},
         )
         rendered = []
@@ -510,8 +511,7 @@ class TestInteractiveBrowserDispatcher:
                     "title": "Context results",
                     "currency": "£",
                     "show_url": True,
-                    "atl_asins": {remaining.asin},
-                    "hist_context": {remaining.asin: -25},
+                    "deal_grades": {remaining.asin: make_deal_grade("good")},
                     "credit_price": 8.5,
                     "match_context": {remaining.asin: "revised match"},
                 },
@@ -681,7 +681,7 @@ class TestInteractiveBrowseWishlistCheck:
 
 class TestQuietInteractiveContext:
     def test_quiet_interactive_passes_context_to_browse(self, monkeypatch, tmp_config):
-        """_emit_output in quiet+interactive must compute and pass atl/hist context."""
+        """_emit_output in quiet+interactive must compute and pass deal grades."""
         from audible_deals.presentation.result_output import (
             ResultPresentationRequest,
             emit_results,
@@ -709,8 +709,8 @@ class TestQuietInteractiveContext:
                 interactive=True,
             )
         )
-        assert "atl_asins" in captured
-        assert "hist_context" in captured
+        assert captured["deal_grades"]["QI1"].grade == "new"
+        assert captured["deal_grades"]["QI1"].checks == 0
 
 
 class TestInteractiveBrowseVerbs:

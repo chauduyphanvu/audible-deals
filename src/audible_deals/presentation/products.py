@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Set
+from collections.abc import Mapping
 from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Literal
@@ -10,6 +10,7 @@ from typing import Literal
 from rich.panel import Panel
 from rich.table import Table
 
+from audible_deals.deal_grade import DealGrade
 from audible_deals.metrics import buy_verdict, price_per_hour
 from audible_deals.presentation import terminal
 from audible_deals.presentation.terminal import safe_markup
@@ -19,10 +20,15 @@ from audible_deals.presentation.common import (
     _discount_color,
     _pph_str,
     discount_str,
+    grade_cell,
+    grade_verdict,
     price_str,
     rating_str,
 )
 from audible_deals.product import Product
+
+
+_HISTORY_WIDTH = len("typical")
 
 
 @dataclass(frozen=True)
@@ -31,23 +37,17 @@ class ProductDisplayOptions:
     title: str = "Results"
     currency: str = "$"
     show_url: bool = False
-    atl_asins: Set[str] | None = None
-    hist_context: Mapping[str, int] | None = None
+    deal_grades: Mapping[str, DealGrade] | None = None
     credit_price: float | None = None
     match_context: Mapping[str, str] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(
             self,
-            "atl_asins",
-            None if self.atl_asins is None else frozenset(self.atl_asins),
-        )
-        object.__setattr__(
-            self,
-            "hist_context",
+            "deal_grades",
             None
-            if self.hist_context is None
-            else MappingProxyType(dict(self.hist_context)),
+            if self.deal_grades is None
+            else MappingProxyType(dict(self.deal_grades)),
         )
         object.__setattr__(
             self,
@@ -99,7 +99,7 @@ def calculate_product_layout(
             hours_width=3,
             pph_width=7,
             rating_width=10,
-            history_width=7,
+            history_width=_HISTORY_WIDTH,
             match_width=0,
             url_width=0,
             show_buy_column=False,
@@ -109,8 +109,8 @@ def calculate_product_layout(
         )
 
     url_width = max(len(product.url) for product in products)
-    show_history = options.hist_context is not None and any(
-        product.asin in options.hist_context for product in products
+    show_history = any(
+        _graded(options.deal_grades, product) is not None for product in products
     )
     price_width = max(
         10,
@@ -138,18 +138,7 @@ def calculate_product_layout(
     pph_width = max(
         7, max(len(_pph_str(product, product.currency)) for product in products)
     )
-    history_width = max(
-        7,
-        max(
-            (
-                len(f"{options.hist_context.get(product.asin):+d}%")
-                if options.hist_context
-                and options.hist_context.get(product.asin) is not None
-                else 1
-            )
-            for product in products
-        ),
-    )
+    history_width = _HISTORY_WIDTH
 
     if terminal_width < 80:
         return ProductLayout(
@@ -242,15 +231,8 @@ def calculate_product_layout(
     )
 
 
-def _price_cell(
-    product: Product,
-    currency: str,
-    max_price: float | None,
-    atl_asins: Set[str] | None,
-) -> str:
+def _price_cell(product: Product, currency: str, max_price: float | None) -> str:
     rendered = price_str(product.price, currency)
-    if atl_asins and product.asin in atl_asins:
-        rendered = "[bold gold1]★[/bold gold1] " + rendered
     if product.price is not None and max_price is not None:
         if product.price <= max_price * 0.6:
             rendered = f"[bold green]{rendered}[/bold green]"
@@ -277,14 +259,12 @@ def _product_identity(product: Product) -> str:
     return identity
 
 
-def _hist_cell(pct: int | None) -> str:
-    if pct is None:
-        return "[dim]-[/dim]"
-    if pct < 0:
-        return f"[green]{pct}%[/green]"
-    if pct == 0:
-        return "[dim]0%[/dim]"
-    return f"[dim]+{pct}%[/dim]"
+def _graded(
+    deal_grades: Mapping[str, DealGrade] | None, product: Product
+) -> DealGrade | None:
+    """The product's grade when it carries a verdict; NEW reads as no verdict."""
+    grade = deal_grades.get(product.asin) if deal_grades else None
+    return None if grade is None or grade.grade == "new" else grade
 
 
 def _inline_signals(
@@ -292,7 +272,7 @@ def _inline_signals(
     *,
     currency: str,
     credit_price: float | None,
-    hist_context: Mapping[str, int] | None,
+    deal_grades: Mapping[str, DealGrade] | None,
     match_context: Mapping[str, str] | None,
     include_length: bool,
     include_buy: bool,
@@ -309,10 +289,8 @@ def _inline_signals(
     signals: list[str] = []
     if include_buy and credit_price is not None:
         signals.append(f"[dim]Buy[/dim] {_buy_cell(product, credit_price)}")
-    if include_history and hist_context is not None:
-        signals.append(
-            f"[dim]vs hist[/dim] {_hist_cell(hist_context.get(product.asin))}"
-        )
+    if include_history and (grade := _graded(deal_grades, product)):
+        signals.append(f"[dim]History[/dim] {grade_cell(grade)}")
     if include_match and match_context is not None and match_context.get(product.asin):
         signals.append(
             f"[dim]Match[/dim] [cyan]{safe_markup(match_context[product.asin])}[/cyan]"
@@ -336,7 +314,7 @@ def _display_product_cards(
             terminal.console.print(f"[dim]By[/dim] {safe_markup(product.authors_str)}")
         terminal.console.print(
             f"[dim]Price[/dim] "
-            f"{_price_cell(product, product.currency, options.max_price, options.atl_asins)}"
+            f"{_price_cell(product, product.currency, options.max_price)}"
         )
         terminal.console.print(
             f"[dim]Length[/dim] {product.hours if product.hours else '-'}h · "
@@ -349,7 +327,7 @@ def _display_product_cards(
             product,
             currency=product.currency,
             credit_price=options.credit_price,
-            hist_context=options.hist_context,
+            deal_grades=options.deal_grades,
             match_context=options.match_context,
             include_length=False,
             include_buy=True,
@@ -376,7 +354,7 @@ def _render_product_row(
                 product,
                 currency=currency,
                 credit_price=options.credit_price,
-                hist_context=options.hist_context,
+                deal_grades=options.deal_grades,
                 match_context=options.match_context,
                 include_length=True,
                 include_buy=True,
@@ -390,7 +368,7 @@ def _render_product_row(
             product,
             currency=currency,
             credit_price=options.credit_price,
-            hist_context=options.hist_context,
+            deal_grades=options.deal_grades,
             match_context=options.match_context,
             include_length=False,
             include_buy=not layout.show_buy_column,
@@ -403,7 +381,7 @@ def _render_product_row(
     row = [
         f"@{index}",
         title_cell,
-        _price_cell(product, currency, options.max_price, options.atl_asins),
+        _price_cell(product, currency, options.max_price),
     ]
     if layout.wide:
         row.extend(
@@ -416,8 +394,7 @@ def _render_product_row(
     if layout.show_buy_column:
         row.append(_buy_cell(product, options.credit_price))
     if layout.show_history_column:
-        pct = options.hist_context.get(product.asin) if options.hist_context else None
-        row.append(_hist_cell(pct))
+        row.append(grade_cell(_graded(options.deal_grades, product)))
     if layout.show_match_column:
         row.append(safe_markup(options.match_context.get(product.asin, "")))
     if layout.show_url_column:
@@ -456,9 +433,7 @@ def _build_product_table(
     if layout.show_buy_column:
         table.add_column("Buy", width=7)
     if layout.show_history_column:
-        table.add_column(
-            "vs hist", justify="right", width=layout.history_width, no_wrap=True
-        )
+        table.add_column("History", width=layout.history_width, no_wrap=True)
     if layout.show_match_column:
         table.add_column("Match", width=layout.match_width, style="cyan")
     if layout.show_url_column:
@@ -493,8 +468,7 @@ def display_products(
     title: str = "Results",
     currency: str = "$",
     show_url: bool = False,
-    atl_asins: Set[str] | None = None,
-    hist_context: Mapping[str, int] | None = None,
+    deal_grades: Mapping[str, DealGrade] | None = None,
     credit_price: float | None = None,
     match_context: Mapping[str, str] | None = None,
 ) -> None:
@@ -507,8 +481,7 @@ def display_products(
         title=title,
         currency=currency,
         show_url=show_url,
-        atl_asins=atl_asins,
-        hist_context=hist_context,
+        deal_grades=deal_grades,
         credit_price=credit_price,
         match_context=match_context,
     )
@@ -524,7 +497,11 @@ def display_products(
         _display_url_fallback(products)
 
 
-def display_product_detail(product: Product, credit_price: float | None = None) -> None:
+def display_product_detail(
+    product: Product,
+    credit_price: float | None = None,
+    deal_grade: DealGrade | None = None,
+) -> None:
     lines: list[str] = [f"[bold]{safe_markup(product.full_title)}[/bold]", ""]
     if product.authors:
         lines.append(
@@ -555,6 +532,11 @@ def display_product_detail(product: Product, credit_price: float | None = None) 
         else:
             buy_line += "  [dim](free with membership)[/dim]"
         lines.append(buy_line)
+
+    if deal_grade is not None and deal_grade.checks:
+        lines.append(
+            f"  [dim]History:[/dim]    {grade_verdict(deal_grade, currency)[0]}"
+        )
 
     lines.append(
         f"  [dim]Rating:[/dim]     {rating_str(product.rating, product.num_ratings)}"

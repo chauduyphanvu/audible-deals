@@ -25,6 +25,7 @@ from audible_deals.config_store import (
     load_monitors,
 )
 from audible_deals.constants import _CONFIG_SCHEMA, product_url
+from audible_deals.deal_grade import grade_price
 from audible_deals.monitor_service import (
     MonitorServiceError,
     validated_monitor_definition,
@@ -35,6 +36,8 @@ from audible_deals.presentation.products import (
 )
 from audible_deals.presentation.reports import display_categories
 from audible_deals.presentation.terminal import console, safe_markup, safe_text
+from audible_deals.price_history import load_price_history
+from audible_deals.result_publication import record_prices_safely
 from audible_deals.settings import (
     _PROFILE_EXTRA_KEYS,
     profile_validation_error,
@@ -251,7 +254,16 @@ def detail(ctx, asin, last_ref):
         except ValueError as e:
             raise click.ClickException(str(e))
 
-    display_product_detail(product, credit_price=_credit_price(ctx))
+    record_prices_safely([product])
+    display_product_detail(
+        product,
+        credit_price=_credit_price(ctx),
+        deal_grade=grade_price(
+            load_price_history(product.asin, product.locale),
+            product.price,
+            datetime.date.today(),
+        ),
+    )
 
 
 @click.command("open")

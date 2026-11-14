@@ -750,8 +750,6 @@ class DiscoveryResult:
     series_collapsed: int = 0
     histories: HistoryEntries | None = None
     match_reasons: Mapping[str, str] | None = None
-    atl_asins: frozenset[str] | None = None
-    hist_context: Mapping[str, int] | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "products", tuple(self.products))
@@ -761,12 +759,6 @@ class DiscoveryResult:
             object.__setattr__(
                 self, "match_reasons", MappingProxyType(dict(self.match_reasons))
             )
-        if self.atl_asins is not None:
-            object.__setattr__(self, "atl_asins", frozenset(self.atl_asins))
-        if self.hist_context is not None:
-            object.__setattr__(
-                self, "hist_context", MappingProxyType(dict(self.hist_context))
-            )
 
     @classmethod
     def from_outcome(
@@ -775,8 +767,6 @@ class DiscoveryResult:
         *,
         histories: Mapping[str, list[dict]] | None = None,
         match_reasons: Mapping[str, str] | None = None,
-        atl_asins: set[str] | None = None,
-        hist_context: Mapping[str, int] | None = None,
     ) -> DiscoveryResult:
         return cls(
             products=outcome.products,
@@ -785,6 +775,4 @@ class DiscoveryResult:
             series_collapsed=outcome.series_collapsed,
             histories=histories,
             match_reasons=match_reasons,
-            atl_asins=atl_asins,
-            hist_context=hist_context,
         )

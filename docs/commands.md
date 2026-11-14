@@ -12,13 +12,13 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals series` | Find continuation books in series represented in your library |
 | `deals library` | List or export books in your Audible library |
 | `deals last` | Re-display and re-filter the last search or find without an API call |
-| `deals detail ASIN` | Show detailed information for one audiobook |
+| `deals detail ASIN` | Show detailed information and the price grade for one audiobook |
 | `deals open ASIN` | Open an audiobook on Audible |
 | `deals compare ASIN ASIN ...` | Compare audiobooks side by side |
 | `deals categories` | List genres; use `--parent ID` to drill down |
 | `deals wishlist` | Add, list, remove, sync, or repair tracked books |
 | `deals watch` | Check wishlist prices |
-| `deals history ASIN` | View local price history |
+| `deals history ASIN` | View local price history and a buy-or-wait verdict |
 | `deals notify` | Print or send alerts for wishlist deals |
 | `deals track` | Install and manage background price tracking |
 | `deals monitor` | Save catalog searches and alert on new matches or price drops |
@@ -193,7 +193,9 @@ deals compare B00EXAMPLE @2
 `--last` remains supported as a compatibility spelling. Single-item commands such as `detail`, `open`, and `history` reject ranges. Bulk commands deduplicate selections in first-seen order. A URL or cached row supplies its marketplace unless global `--locale` was explicitly provided.
 Wishlist additions retain that marketplace for later `watch`, `notify`, and price-history checks.
 
-Product lists use a full table at 120 columns and wider, a compact table from 80–119 columns, and wrapped cards below 80 columns. Optional Buy, history, Match, identifiers, series details, and URLs fold into secondary lines instead of disappearing.
+Product lists use a full table at 120 columns and wider, a compact table from 80–119 columns, and wrapped cards below 80 columns. Optional Buy, History, Match, identifiers, series details, and URLs fold into secondary lines instead of disappearing.
+
+The History column grades each price against the book's own recorded prices: `lowest`, `good`, `typical`, or `high`. It appears only when at least one row has enough history for a grade (five earlier checks over at least 14 days); other rows show `-` in the column and nothing in the folded line. See [Price grades](automation.md#price-grades) for what each grade means. In these tables the grade replaces the earlier `vs hist` percentage and all-time-low star.
 
 Seen results used by `--exclude-seen`, dismissed results, and the last-results cache are independent. Clear them with `deals last --clear-seen`, `deals last --clear-dismissed`, and `deals last --clear`, respectively.
 
@@ -207,7 +209,7 @@ Add `-i` to `find`, `search`, `for-me`, flat `series`, or `last`, then enter an 
 | `o @3` | Open item 3 in a browser |
 | `w @1-3,5` | Add several items to the wishlist |
 | `c @1 @3` | Compare two items |
-| `h @3` | Show price history |
+| `h @3` | Show price history and its verdict |
 | `s discount` | Re-sort in place |
 | `n 1-3` | Dismiss items globally and remove them from the current view immediately |
 | `q` | Quit |

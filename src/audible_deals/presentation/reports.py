@@ -5,11 +5,18 @@ from __future__ import annotations
 import collections
 import datetime
 import math
+from collections.abc import Mapping
 
 from rich.table import Table
 
+from audible_deals.deal_grade import DealGrade, grade_latest
 from audible_deals.presentation import terminal
-from audible_deals.presentation.common import _buy_cell, price_str
+from audible_deals.presentation.common import (
+    _buy_cell,
+    grade_cell,
+    grade_verdict,
+    price_str,
+)
 from audible_deals.presentation.terminal import safe_markup, safe_text
 from audible_deals.product import Product
 
@@ -149,6 +156,11 @@ def display_price_history(entries: list[dict], asin: str, currency: str = "$") -
     )
     if len(prices) > 1:
         terminal.console.print(f"  [dim]{_sparkline(prices)}[/dim]")
+    grade = grade_latest(entries)
+    if grade is not None:
+        terminal.console.print()
+        for line in grade_verdict(grade, currency):
+            terminal.console.print(f"  {line}")
 
 
 def display_recap(
@@ -274,6 +286,7 @@ def display_watch_table(
     buy_only: bool = False,
     show_url: bool = False,
     credit_price: float | None = None,
+    deal_grades: Mapping[str, DealGrade] | None = None,
 ) -> int:
     show_url_column = show_url and (terminal.console.width or 80) >= 180
     url_width = max((len(product.url) for product in products), default=len("URL"))
@@ -327,6 +340,10 @@ def display_watch_table(
             status = "[dim]waiting[/dim]"
         if buy_only and not is_buy:
             continue
+        grade = (deal_grades or {}).get(product.asin)
+        if grade is not None and grade.grade != "new":
+            # A second line beside the two-line title keeps the table width.
+            product_price += f"\n{grade_cell(grade)}"
         displayed_products.append(product)
         row = [
             f"{safe_markup(product.title)}\n[dim]{safe_markup(product.authors_str)}  "
