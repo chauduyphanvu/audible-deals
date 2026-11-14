@@ -166,9 +166,9 @@ def publish_discovery(
 
     serialized_all = [serialize_product(product) for product in all_products]
     serialized = serialized_all[: len(visible)]
+    observation_date = datetime.datetime.fromisoformat(session.timestamp).date()
 
     def commit_presentation() -> None:
-        observation_date = datetime.datetime.fromisoformat(session.timestamp).date()
         record_prices_safely(
             recordable_products(request.candidates), observation_date=observation_date
         )
@@ -200,6 +200,7 @@ def publish_discovery(
             suppress_action_footer=request.output is not None,
             json_writer=request.json_writer,
             on_presented=commit_presentation,
+            observed_on=observation_date,
         )
     )
     return ResultPublicationOutcome(

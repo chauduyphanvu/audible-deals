@@ -365,14 +365,13 @@ def last_cmd(
         and math.isfinite(product.price)
     ]
 
+    observation_date = datetime.datetime.fromisoformat(session.timestamp).date()
+
     def commit_presentation() -> None:
         if outcome.persist:
             save_result_session(outcome.session)
         if newly_visible:
             if not session.legacy:
-                observation_date = datetime.datetime.fromisoformat(
-                    session.timestamp
-                ).date()
                 candidates = (deserialize_product(item) for item in session.candidates)
                 record_prices_safely(
                     recordable_products(
@@ -403,5 +402,6 @@ def last_cmd(
             credit_price=outcome.credit_price,
             json_writer=click.echo,
             on_presented=commit_presentation,
+            observed_on=observation_date,
         )
     )

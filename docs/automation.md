@@ -49,7 +49,7 @@ The watchlist is stored in `~/.config/audible-deals/wishlist.json`.
 
 ## Check prices
 
-`watch` labels an item without a numeric price `unavailable`. Otherwise it shows `BUY` at the target price, a discount when the item is on sale above its target, or `waiting`.
+`watch` labels an item without a numeric price `unavailable`. Otherwise it shows `BUY` at the target price, a discount when the item is on sale above its target, or `waiting`. Items with enough history also show their [price grade](#price-grades) under the price.
 
 ```bash
 # Check once
@@ -78,7 +78,32 @@ Flat discovery with `find`, `search`, `for-me`, or `series` caches its complete 
 deals history B00R6S1RCY
 ```
 
-The history view includes relative dates and a sparkline. Result tables include a `vs hist` column after an ASIN has at least three price points, and mark an all-time low with a star. When `last` first surfaces a cached finite-price product, it backfills the session's whole finite-price candidate pool at the original session date, which changes nothing for books already recorded, and marks refresh eligibility on the date shown for the newly shown products only. Unavailable products create neither record.
+The history view includes relative dates, a sparkline, and a verdict on the latest price. Result tables, `watch`, and `detail` grade the price on screen the same way. `detail` also records the price it fetches, so looking a book up adds to its history. When `last` first surfaces a cached finite-price product, it backfills the session's whole finite-price candidate pool at the original session date, which changes nothing for books already recorded, and marks refresh eligibility on the date shown for the newly shown products only. Unavailable products create neither record.
+
+### Price grades
+
+Audible's discount badge is measured against a list price few members pay, and member prices can differ between accounts. A grade instead compares a price with the prices this tool has recorded for the same book, on your account, in the same marketplace.
+
+| Grade | What it means |
+|-------|---------------|
+| `lowest` | At or below every earlier price, and at least 10% under the usual price. |
+| `good` | At least 10% under the usual price, and closer to the lowest price than to the usual one. |
+| `typical` | Close to the usual price, or under it but nearer the usual price than the lowest. |
+| `high` | At least 10% above the usual price. It has been cheaper; the history view says how cheap and how often. |
+| `new` | Not enough history to judge yet. Tables show `-`. |
+
+A grade needs at least five earlier checks, and the first of them at least 14 days before the price being graded. Fewer checks, or checks bunched inside two weeks, cannot tell a sale from the normal price. Checks from the same day as the price are never counted, so seeing a book twice in one day does not change its grade. `last` grades cached prices against the history before the session date.
+
+The usual price is the middle price over time rather than over checks: each check stands for the days until the next one, up to 14 days. Checking a book daily during a one-week sale therefore does not make the sale price look normal. A price that has never changed is `typical`, however long the history.
+
+Under the sparkline, `deals history` and interactive `h @N` print a verdict that names how many earlier checks it rests on:
+
+```text
+  GOOD: second-lowest price in 102 earlier checks since 12 May
+  Lowest $7.49 on 1 Aug · usual price $24.50 · at or below $9.99 twice before
+```
+
+For a `high` price, the second line says what to wait for, for example `It was $7.49 on 1 Aug; it has dropped to $12.99 or less 3 times.` The `detail` panel shows the first line. Each grade only knows the checks this tool has made, so a book seen rarely can miss sales that happened between checks; [background tracking](#background-tracking) fills those gaps for wishlist items and recent results.
 
 ## Background tracking
 

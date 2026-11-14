@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 import math
 from typing import Literal
 
 import click
 
+from audible_deals.deal_grade import DealGrade
 from audible_deals.filtering import _SORT_KEYS, sort_local
 from audible_deals.presentation.products import (
     display_comparison,
@@ -117,8 +119,7 @@ class InteractiveBrowser:
         title: str = "Results",
         max_price: float | None = None,
         show_url: bool = False,
-        atl_asins: set[str] | None = None,
-        hist_context: dict[str, int] | None = None,
+        deal_grades: Mapping[str, DealGrade] | None = None,
         match_context: dict[str, str] | None = None,
     ) -> None:
         self.products = products
@@ -127,8 +128,7 @@ class InteractiveBrowser:
         self.title = title
         self.max_price = max_price
         self.show_url = show_url
-        self.atl_asins = atl_asins
-        self.hist_context = hist_context
+        self.deal_grades = deal_grades
         self.match_context = match_context
 
     def dispatch(self, command: InteractiveCommand) -> bool:
@@ -164,8 +164,11 @@ class InteractiveBrowser:
     def _handle_detail(self, command: InteractiveCommand) -> bool:
         if not self._positions_in_bounds(command.positions):
             return True
+        product = self.products[command.positions[0]]
         display_product_detail(
-            self.products[command.positions[0]], credit_price=self.credit_price
+            product,
+            credit_price=self.credit_price,
+            deal_grade=(self.deal_grades or {}).get(product.asin),
         )
         return True
 
@@ -289,8 +292,7 @@ class InteractiveBrowser:
             title=self.title,
             currency=self.currency,
             show_url=self.show_url,
-            atl_asins=self.atl_asins,
-            hist_context=self.hist_context,
+            deal_grades=self.deal_grades,
             credit_price=self.credit_price,
             match_context=self.match_context,
         )
@@ -320,8 +322,7 @@ class InteractiveBrowser:
             title=self.title,
             currency=self.currency,
             show_url=self.show_url,
-            atl_asins=self.atl_asins,
-            hist_context=self.hist_context,
+            deal_grades=self.deal_grades,
             credit_price=self.credit_price,
             match_context=self.match_context,
         )
@@ -336,8 +337,7 @@ def _interactive_browse(
     title: str = "Results",
     max_price: float | None = None,
     show_url: bool = False,
-    atl_asins: set[str] | None = None,
-    hist_context: dict[str, int] | None = None,
+    deal_grades: Mapping[str, DealGrade] | None = None,
     match_context: dict[str, str] | None = None,
 ) -> None:
     """Interactive mode: let user pick items to view details, open, or wishlist."""
@@ -348,8 +348,7 @@ def _interactive_browse(
         title=title,
         max_price=max_price,
         show_url=show_url,
-        atl_asins=atl_asins,
-        hist_context=hist_context,
+        deal_grades=deal_grades,
         match_context=match_context,
     )
     console.print(INTERACTIVE_HINT)

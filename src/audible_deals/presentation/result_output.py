@@ -7,11 +7,8 @@ import json
 from collections.abc import Callable
 from dataclasses import dataclass
 
-from audible_deals.price_history import (
-    history_key,
-    load_price_history,
-    price_history_context,
-)
+from audible_deals.deal_grade import grade_products
+from audible_deals.price_history import history_key, load_price_history
 from audible_deals.presentation.products import display_products
 from audible_deals.presentation.reports import display_summary
 from audible_deals.presentation.terminal import console
@@ -35,25 +32,23 @@ class ResultPresentationRequest:
     suppress_action_footer: bool = False
     json_writer: Callable[[str], object] = print
     on_presented: Callable[[], object] | None = None
+    # When the shown prices were fetched: a cached session's prices are graded
+    # against the history before that day, not before today.
+    observed_on: datetime.date | None = None
 
     def __post_init__(self) -> None:
         object.__setattr__(self, "serialized", tuple(self.serialized))
 
 
-def _prior_histories(products: list[Product], histories) -> dict[str, list[dict]]:
-    today_iso = datetime.date.today().isoformat()
-    source = histories
-    if source is None:
-        source = {
-            history_key(product.asin, product.locale): load_price_history(
-                product.asin, product.locale
-            )
-            for product in products
-            if product.price is not None
-        }
+def _histories(products: list[Product], histories):
+    if histories is not None:
+        return histories
     return {
-        key: [dict(entry) for entry in entries if entry.get("date") != today_iso]
-        for key, entries in source.items()
+        history_key(product.asin, product.locale): load_price_history(
+            product.asin, product.locale
+        )
+        for product in products
+        if product.price is not None
     }
 
 
@@ -66,13 +61,15 @@ def emit_results(request: ResultPresentationRequest) -> None:
             )
         )
     need_context = (not request.json_flag and not request.quiet) or request.interactive
-    atl_asins = request.result.atl_asins
-    hist_context = request.result.hist_context
-    if need_context and atl_asins is None and hist_context is None:
-        atl_asins, hist_context = price_history_context(
+    deal_grades = (
+        grade_products(
             filtered,
-            histories=_prior_histories(filtered, request.result.histories),
+            _histories(filtered, request.result.histories),
+            request.observed_on or datetime.date.today(),
         )
+        if need_context
+        else None
+    )
     if not request.json_flag and not request.quiet:
         console.print()
         display_products(
@@ -81,8 +78,7 @@ def emit_results(request: ResultPresentationRequest) -> None:
             title=request.title,
             currency=request.currency,
             show_url=request.show_url,
-            atl_asins=atl_asins,
-            hist_context=hist_context,
+            deal_grades=deal_grades,
             credit_price=request.credit_price,
             match_context=request.result.match_reasons,
         )
@@ -117,7 +113,6 @@ def emit_results(request: ResultPresentationRequest) -> None:
             title=request.title,
             max_price=request.max_price,
             show_url=request.show_url,
-            atl_asins=atl_asins,
-            hist_context=hist_context,
+            deal_grades=deal_grades,
             match_context=request.result.match_reasons,
         )

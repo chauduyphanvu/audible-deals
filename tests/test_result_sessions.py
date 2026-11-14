@@ -54,7 +54,7 @@ from audible_deals.result_models import (
 )
 from audible_deals.selectors import resolve_selectors
 from audible_deals.serialization import serialize_product
-from tests.conftest import make_product
+from tests.conftest import make_deal_grade, make_product
 
 
 def _session(products, *, visible, recipe=None, locale="us"):
@@ -1369,7 +1369,7 @@ def test_product_renderer_uses_cards_below_80_without_losing_values(monkeypatch)
     display_products(
         [product],
         credit_price=11.25,
-        hist_context={product.asin: -20},
+        deal_grades={product.asin: make_deal_grade("good")},
         match_context={product.asin: "favorite narrator and exact author"},
     )
     rendered = output.getvalue()
@@ -1377,7 +1377,7 @@ def test_product_renderer_uses_cards_below_80_without_losing_values(monkeypatch)
     assert "$20.60" in rendered
     assert "18,432" in rendered
     assert "credit" in rendered
-    assert "-20%" in rendered
+    assert "History good" in rendered
     assert "favorite narrator" in rendered
     assert all(len(line) <= 60 for line in rendered.splitlines())
 
@@ -1403,7 +1403,7 @@ def test_product_renderer_preserves_signals_at_layout_boundaries(monkeypatch, wi
         [product],
         show_url=True,
         credit_price=11.25,
-        hist_context={product.asin: -20},
+        deal_grades={product.asin: make_deal_grade("good")},
         match_context={product.asin: "exact author and narrator match"},
     )
     rendered = output.getvalue()
@@ -1413,7 +1413,7 @@ def test_product_renderer_preserves_signals_at_layout_boundaries(monkeypatch, wi
         "20.6",
         "18,432",
         "credit",
-        "-20%",
+        "good",
         "B00BOUND01",
         "exact author",
         product.url,

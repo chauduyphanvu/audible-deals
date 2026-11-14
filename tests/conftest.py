@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import copy
+import datetime
 import json
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -10,6 +11,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from audible_deals.client import CatalogSearchResult, SeriesProductsBatch
+from audible_deals.deal_grade import DealGrade, grade_price
 from audible_deals.product import Product
 
 
@@ -43,6 +45,53 @@ def make_product(**overrides) -> Product:
     )
     defaults.update(overrides)
     return Product(**defaults)
+
+
+# ---------------------------------------------------------------------------
+# Price history and deal grades
+# ---------------------------------------------------------------------------
+
+HISTORY_START = datetime.date(2026, 5, 12)
+
+# A standard member price with three short sales: 9.99, 12.99, then 7.49.
+STANDARD_WITH_DIPS = (
+    (30, 24.50),
+    (5, 9.99),
+    (20, 24.50),
+    (3, 12.99),
+    (20, 24.50),
+    (4, 7.49),
+    (20, 24.50),
+)
+
+_GRADE_PRICES = {
+    "lowest": 6.99,
+    "good": 9.99,
+    "typical": 24.50,
+    "high": 27.99,
+    "new": 9.99,
+}
+
+
+def daily_history(
+    *segments: tuple[int, float], start: datetime.date = HISTORY_START
+) -> list[dict]:
+    """Price history entries, one per consecutive day; segments are (days, price)."""
+    entries: list[dict] = []
+    for days, price in segments:
+        for _ in range(days):
+            day = start + datetime.timedelta(days=len(entries))
+            entries.append({"date": day.isoformat(), "price": price, "title": "Book"})
+    return entries
+
+
+def make_deal_grade(grade: str = "good") -> DealGrade:
+    """A real grade of the given kind, graded against STANDARD_WITH_DIPS."""
+    entries = daily_history(*STANDARD_WITH_DIPS)
+    if grade == "new":
+        entries = entries[:2]
+    observed = HISTORY_START + datetime.timedelta(days=len(entries))
+    return grade_price(entries, _GRADE_PRICES[grade], observed)
 
 
 def make_series_products_batch(

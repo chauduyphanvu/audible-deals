@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import csv
+import datetime
 import json as json_mod
 import logging
 import math
@@ -18,9 +19,11 @@ from audible_deals.cli.helpers import (
     _get_client,
     _resolve_cli_selectors,
 )
+from audible_deals.deal_grade import grade_products
 from audible_deals.validation import NONNEGATIVE_FLOAT
 from audible_deals.filtering import sort_local
 from audible_deals.parsing import parse_interval
+from audible_deals.price_history import history_key, load_price_history
 from audible_deals.presentation.common import price_str
 from audible_deals.presentation.reports import display_watch_table, display_wishlist
 from audible_deals.presentation.terminal import console, safe_markup, safe_text
@@ -627,9 +630,20 @@ def _watch_once(
     if sort_by:
         products = sort_local(products, sort_by)
 
+    histories = {
+        history_key(p.asin, p.locale): load_price_history(p.asin, p.locale)
+        for p in products
+        if p.price is not None
+    }
     cur = _currency(ctx)
     return display_watch_table(
-        products, targets, cur, buy_only, show_url, credit_price=_credit_price(ctx)
+        products,
+        targets,
+        cur,
+        buy_only,
+        show_url,
+        credit_price=_credit_price(ctx),
+        deal_grades=grade_products(products, histories, datetime.date.today()),
     )
 
 

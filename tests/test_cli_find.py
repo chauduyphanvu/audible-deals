@@ -28,17 +28,19 @@ def _seed_price_history(asin: str, prices: list[float]) -> None:
         }
         for i, price in enumerate(prices)
     ]
-    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(json.dumps(entries))
+    (constants_mod.HISTORY_DIR / f"{asin}.json").write_text(
+        json.dumps({"marketplaces": {"us": entries}})
+    )
 
 
-def _capture_history_context(monkeypatch):
-    """Patch display_products to record the hist_context it receives."""
+def _capture_deal_grades(monkeypatch):
+    """Patch display_products to record the deal_grades it receives."""
     import audible_deals.presentation.result_output as result_output_mod
 
     captured: dict[str, dict] = {}
 
     def fake_display_products(filtered, **kwargs):
-        captured["hist_context"] = kwargs.get("hist_context")
+        captured["deal_grades"] = kwargs.get("deal_grades")
 
     monkeypatch.setattr(result_output_mod, "display_products", fake_display_products)
     return captured
@@ -1011,29 +1013,33 @@ class TestCreditAdviceInFind:
         assert asins == ["CR3", "CR4"] or set(asins) == {"CR3", "CR4"}
 
 
-class TestHistoricalMedianBadgeFlagIndependence:
-    def test_vs_median_independent_of_hist_below_flag(
-        self, mock_client, tmp_config, monkeypatch
+class TestHistoryGradeFlagIndependence:
+    @pytest.mark.parametrize(
+        ("prior", "expected", "checks"),
+        [([9.0, 8.0], "new", 2), ([9.0] * 20, "lowest", 20)],
+    )
+    def test_grade_independent_of_hist_below_flag(
+        self, mock_client, tmp_config, monkeypatch, prior, expected, checks
     ):
-        # Exactly 2 prior on-disk entries. The 'vs median' badge requires >=3
-        # entries; today's just-recorded price must be excluded (matching ATL),
-        # so the badge must be absent in BOTH runs regardless of --hist-below.
+        # The grade counts prior days only; today's just-recorded price must be
+        # excluded, and loading histories for --hist-below must not change it.
         product = make_product(asin="F1", price=5.0, series_name="", series_position="")
 
         def reset_and_run(args):
-            _seed_price_history("F1", [9.0, 8.0])
+            _seed_price_history("F1", prior)
             mock_client.search_pages.return_value = iter([([product], 1, 1)])
-            captured = _capture_history_context(monkeypatch)
+            captured = _capture_deal_grades(monkeypatch)
             runner = CliRunner()
             result = runner.invoke(cli, args)
             assert result.exit_code == 0, result.output
-            return captured["hist_context"]
+            return captured["deal_grades"]
 
         plain = reset_and_run(["find", "--pages", "1"])
         with_flag = reset_and_run(["find", "--pages", "1", "--hist-below", "100"])
 
         assert plain == with_flag
-        assert "F1" not in plain
+        assert plain["F1"].grade == expected
+        assert plain["F1"].checks == checks
 
 
 def _history_asins() -> set[str]:

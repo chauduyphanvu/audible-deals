@@ -625,10 +625,6 @@ def for_me(
             product for product in result.products if product.asin in allowed_asins
         ),
     )
-    atl_asins, hist_context = price_history_context(
-        list(result.products), histories=candidate_histories
-    )
-
     wishlist_asins = {i["asin"] for i in partition_wishlist(load_wishlist())[0]}
     for asin in all_match_context:
         if asin in wishlist_asins:
@@ -641,8 +637,6 @@ def for_me(
         result,
         histories=candidate_histories,
         match_reasons=match_context,
-        atl_asins=atl_asins,
-        hist_context=hist_context,
     )
     publish_discovery(
         ResultPublicationRequest(
