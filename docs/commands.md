@@ -18,6 +18,7 @@ Run `deals --help` to see every command or `deals COMMAND --help` for authoritat
 | `deals categories` | List genres; use `--parent ID` to drill down |
 | `deals wishlist` | Add, list, remove, sync, or repair tracked books |
 | `deals watch` | Check wishlist prices |
+| `deals credits [N]` | Plan which wishlist books to buy with N credits, with cash, or to leave |
 | `deals history ASIN` | View local price history |
 | `deals notify` | Print or send alerts for wishlist deals |
 | `deals track` | Install and manage background price tracking |
@@ -274,6 +275,19 @@ deals config set credit-price 11.25
 Result tables, `watch`, `detail`, and `compare` then recommend `cash`, `credit`, or `plus`. `--max-effective-price` filters on the cheaper of cash and one credit, and notification payloads include `verdict` and `effective_price`.
 
 Remove the setting with `deals config reset credit-price` to restore cash-only output.
+
+### Credit planner
+
+`deals credits [N]` looks at your wishlist and says which books to spend `N` credits on (default 1), which to buy with cash, and which to leave for later. Credits go to the most expensive books, since a credit is worth the most there. With `credit-price` set, any book cheaper than a credit is a cash buy. Audible Plus titles are listed as included, and books you already own or that have no price are left out.
+
+```bash
+deals credits
+deals credits 3
+deals credits 2 --audible-wishlist
+deals credits 3 --json
+```
+
+By default it reads the books you track with `deals wishlist add`. Entries saved for another marketplace are skipped, and the command says how many. `--audible-wishlist` also includes your Audible account wishlist, with duplicates removed. `--json` prints the plan as JSON: `credits`, `credit_price`, `credit`, `cash`, `plus`, `wait`, `unavailable`, and `totals`. Without `credit-price`, the plan has no cash section and a hint on how to set it.
 
 ## Library and exports
 

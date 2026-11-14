@@ -11,6 +11,7 @@ Usage:
     deals compare SELECTOR ...     Side-by-side comparison
     deals wishlist add/remove/list/sync/repair Manage your watchlist
     deals watch                    Check wishlist for price drops
+    deals credits [N]              Plan which wishlist books to buy with N credits
     deals notify [--webhook URL]   Send notifications for deals at target
     deals profile save/list/delete Manage saved search profiles
     deals monitor add/list/show/remove Manage saved-search monitors
@@ -135,6 +136,12 @@ _COMMAND_SPECS = {
         "Check wishlist prices and highlight deals.",
         False,
     ),
+    "credits": (
+        "audible_deals.cli.credits",
+        "credits_cmd",
+        "Plan which wishlist books to buy with credits, with cash, or to leave.",
+        False,
+    ),
     "config": (
         "audible_deals.cli.config",
         "config_cmd",
@@ -184,7 +191,16 @@ _COMMAND_GROUPS = (
     ("Library & Results", ("library", "last", "detail", "compare", "open")),
     (
         "Watch & Automate",
-        ("wishlist", "watch", "history", "recap", "notify", "monitor", "track"),
+        (
+            "wishlist",
+            "watch",
+            "credits",
+            "history",
+            "recap",
+            "notify",
+            "monitor",
+            "track",
+        ),
     ),
     (
         "Setup & Support",

@@ -264,6 +264,7 @@ def _cli_console_modules():
     import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.catalog as cli_catalog_mod
     import audible_deals.cli.config as cli_config_mod
+    import audible_deals.cli.credits as cli_credits_mod
     import audible_deals.cli.last as cli_last_mod
     import audible_deals.cli.library as cli_library_mod
     import audible_deals.cli.monitor as cli_monitor_mod
@@ -284,6 +285,7 @@ def _cli_console_modules():
         cli_interactive_mod,
         cli_catalog_mod,
         cli_config_mod,
+        cli_credits_mod,
         cli_history_mod,
         cli_library_mod,
         cli_series_mod,
@@ -305,6 +307,7 @@ def mock_client(monkeypatch):
     import audible_deals.cli.helpers as cli_helpers_mod
     import audible_deals.cli.misc as cli_misc_mod
     import audible_deals.cli.catalog as cli_catalog_mod
+    import audible_deals.cli.credits as cli_credits_mod
     import audible_deals.cli.library as cli_library_mod
     import audible_deals.cli.notify as cli_notify_mod
     import audible_deals.cli.series as cli_series_mod
@@ -353,6 +356,7 @@ def mock_client(monkeypatch):
     for mod in (
         cli_helpers_mod,
         cli_catalog_mod,
+        cli_credits_mod,
         cli_library_mod,
         cli_series_mod,
         cli_notify_mod,
