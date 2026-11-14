@@ -273,3 +273,327 @@ def test_notify_webhook_orders_post_success_output_then_state_save(
 
     assert result.exit_code == 0, result.output
     assert events == ["post", "success", "save"]
+
+
+class AccountClient(Client):
+    """One marketplace's catalog plus the account's Audible wishlist."""
+
+    def __init__(self, locale="us", products=(), wishlist=(), wishlist_error=None):
+        super().__init__(products)
+        self.locale = locale
+        self.wishlist = list(wishlist)
+        self.wishlist_error = wishlist_error
+        self.calls = []
+
+    def get_products_batch(self, asins):
+        self.calls.append(("batch", list(asins)))
+        return super().get_products_batch(asins)
+
+    def get_wishlist(self):
+        self.calls.append(("wishlist",))
+        if self.wishlist_error:
+            raise self.wishlist_error
+        return list(self.wishlist)
+
+
+def _credit_request(**kwargs):
+    kwargs.setdefault("audible_wishlist", True)
+    return NotificationRequest("us", "$", 11.25, **kwargs)
+
+
+def _credit_runtime(clients, *, wishlist=(), dismissed=(), recorded=None, **kwargs):
+    if not isinstance(clients, dict):
+        clients = {"us": clients}
+    return NotificationRuntime(
+        get_client=lambda locale: clients[locale],
+        record_products=(
+            recorded.extend if recorded is not None else lambda products: None
+        ),
+        webhook_client=Webhook(),
+        load_wishlist=lambda: list(wishlist),
+        load_dismissed_asins=lambda: set(dismissed),
+        **kwargs,
+    )
+
+
+def test_audible_wishlist_off_never_fetches_it():
+    client = AccountClient(products=[make_product(asin="LOCAL1", price=3)])
+    client.get_wishlist = lambda: pytest.fail("Audible wishlist fetched")
+
+    result = run_notification(
+        _credit_request(audible_wishlist=False),
+        _credit_runtime(client, wishlist=[{"asin": "LOCAL1", "max_price": 5}]),
+    )
+
+    assert [hit.asin for hit in result.hits] == ["LOCAL1"]
+    assert result.hits[0].reason is None
+    assert client.calls == [("batch", ["LOCAL1"])]
+
+
+def test_audible_wishlist_off_with_empty_local_wishlist_reports_empty():
+    result = run_notification(
+        _credit_request(audible_wishlist=False),
+        _credit_runtime({}, wishlist=[]),
+    )
+
+    assert result.empty_wishlist
+
+
+def test_audible_wishlist_books_alert_only_strictly_below_the_credit_price():
+    client = AccountClient(
+        wishlist=[
+            make_product(asin="BELOW", price=5.99),
+            make_product(asin="EQUAL", price=11.25),
+            make_product(asin="ABOVE", price=14.95),
+            make_product(asin="NOPRICE", price=None),
+        ]
+    )
+
+    result = run_notification(_credit_request(), _credit_runtime(client, wishlist=[]))
+
+    assert not result.empty_wishlist
+    assert [hit.to_dict() for hit in result.hits] == [
+        {
+            "asin": "BELOW",
+            "title": "Test Book",
+            "price": 5.99,
+            "target": 11.25,
+            "url": "https://www.audible.com/pd/BELOW",
+            "verdict": "cash",
+            "effective_price": 5.99,
+            "reason": "below_credit_price",
+        }
+    ]
+    assert client.calls == [("wishlist",)]
+
+
+def test_audible_wishlist_skips_dismissed_and_plus_titles():
+    client = AccountClient(
+        wishlist=[
+            make_product(asin="DISMISSED", price=1),
+            make_product(asin="PLUS", price=1, in_plus_catalog=True),
+            make_product(asin="WANTED", price=1),
+        ]
+    )
+
+    result = run_notification(
+        _credit_request(),
+        _credit_runtime(client, dismissed={"DISMISSED"}),
+    )
+
+    assert [hit.asin for hit in result.hits] == ["WANTED"]
+
+
+def test_local_entry_governs_its_target_and_marketplace():
+    us = AccountClient(
+        wishlist=[
+            make_product(asin="TARGETED", price=5),
+            make_product(asin="UKENTRY", price=1),
+        ]
+    )
+    uk = AccountClient("uk", products=[make_product(asin="UKENTRY", price=12)])
+    wishlist = [
+        {"asin": "TARGETED", "max_price": 4, "locale": "us"},
+        {"asin": "UKENTRY", "max_price": 10, "locale": "uk"},
+    ]
+
+    result = run_notification(
+        _credit_request(), _credit_runtime({"us": us, "uk": uk}, wishlist=wishlist)
+    )
+
+    assert result.hits == ()
+    assert us.calls == [("wishlist",)]
+    assert uk.calls == [("batch", ["UKENTRY"])]
+
+
+def test_book_on_both_wishlists_is_fetched_once_and_alerts_once():
+    recorded = []
+    client = AccountClient(
+        wishlist=[
+            make_product(asin="TARGETED", price=3),
+            make_product(asin="NOTARGET", price=3),
+        ]
+    )
+    wishlist = [
+        {"asin": "TARGETED", "max_price": 5, "locale": "us"},
+        {"asin": "NOTARGET", "max_price": None},
+    ]
+
+    result = run_notification(
+        _credit_request(),
+        _credit_runtime(client, wishlist=wishlist, recorded=recorded),
+    )
+
+    assert [(hit.asin, hit.target, hit.reason) for hit in result.hits] == [
+        ("TARGETED", 5, None),
+        ("NOTARGET", 11.25, "below_credit_price"),
+    ]
+    assert client.calls == [("wishlist",)]
+    assert sorted(product.asin for product in recorded) == ["NOTARGET", "TARGETED"]
+
+
+@pytest.mark.parametrize(
+    "credit_price, price, plus, locale, alerts",
+    [
+        (11.25, 5.0, False, "us", True),
+        (11.25, 11.25, False, "us", False),
+        (11.25, 12.0, False, "us", False),
+        (11.25, 5.0, True, "us", False),
+        (None, 0.5, False, "us", False),
+        (11.25, 5.0, False, "uk", False),
+    ],
+)
+def test_target_less_local_entry_alerts_only_below_a_configured_credit_price(
+    credit_price, price, plus, locale, alerts
+):
+    client = AccountClient(
+        locale,
+        products=[make_product(asin="NOTARGET", price=price, in_plus_catalog=plus)],
+    )
+    client.get_wishlist = lambda: pytest.fail("Audible wishlist fetched")
+
+    result = run_notification(
+        NotificationRequest("us", "$", credit_price),
+        _credit_runtime(
+            {locale: client},
+            wishlist=[{"asin": "NOTARGET", "max_price": None, "locale": locale}],
+        ),
+    )
+
+    assert [hit.asin for hit in result.hits] == (["NOTARGET"] if alerts else [])
+    if alerts:
+        assert result.hits[0].target == credit_price
+        assert result.hits[0].reason == "below_credit_price"
+
+
+def test_below_credit_hit_respects_cooldown_until_the_price_falls_again():
+    today = datetime.date(2026, 11, 14)
+    client = AccountClient(wishlist=[make_product(asin="SALE1", price=5)])
+
+    def run(previous_price):
+        return run_notification(
+            _credit_request(cooldown=7),
+            _credit_runtime(
+                client,
+                load_notify_state=lambda: {
+                    "SALE1": {"price": previous_price, "date": "2026-11-13"}
+                },
+                today=lambda: today,
+            ),
+        )
+
+    repeat = run(5)
+    assert repeat.hits == ()
+    assert repeat.suppressed == 1
+    assert repeat.had_hits
+
+    dropped = run(6)
+    assert [hit.asin for hit in dropped.hits] == ["SALE1"]
+    assert dropped.pending_notify_state == {
+        "SALE1": {"price": 5, "date": "2026-11-14", "reason": "below_credit_price"}
+    }
+
+
+def _standing_run(wishlist_price, state, cooldown=1):
+    client = AccountClient(wishlist=[make_product(asin="SALE1", price=wishlist_price)])
+    return run_notification(
+        _credit_request(cooldown=cooldown),
+        _credit_runtime(
+            client,
+            load_notify_state=lambda: state,
+            today=lambda: datetime.date(2026, 11, 14),
+        ),
+    )
+
+
+def test_book_that_stays_below_the_credit_price_does_not_alert_again_after_cooldown():
+    alerted_long_ago = {
+        "SALE1": {"price": 5, "date": "2026-08-01", "reason": "below_credit_price"}
+    }
+
+    same_price = _standing_run(5, alerted_long_ago)
+    assert same_price.hits == ()
+    assert same_price.suppressed == 1
+    assert same_price.pending_notify_state is None
+
+    cheaper = _standing_run(4, alerted_long_ago)
+    assert [hit.price for hit in cheaper.hits] == [4]
+
+
+def test_book_that_rose_above_the_credit_price_alerts_on_the_next_dip():
+    alerted = {
+        "SALE1": {"price": 5, "date": "2026-11-13", "reason": "below_credit_price"}
+    }
+
+    risen = _standing_run(20, alerted)
+    assert risen.hits == ()
+    assert risen.pending_notify_state == {}
+
+    dipped = _standing_run(5, risen.pending_notify_state)
+    assert [hit.asin for hit in dipped.hits] == ["SALE1"]
+
+
+def test_target_alert_cooldown_entries_are_not_treated_as_standing():
+    # An entry written by a target-price alert keeps the dated cooldown.
+    target_entry = {"SALE1": {"price": 5, "date": "2026-08-01"}}
+
+    result = _standing_run(5, target_entry)
+
+    assert [hit.asin for hit in result.hits] == ["SALE1"]
+
+
+def test_audible_wishlist_failure_keeps_local_hits_and_cooldown_entries():
+    today = datetime.date(2026, 11, 14)
+    client = AccountClient(
+        products=[make_product(asin="LOCAL1", price=3)],
+        wishlist_error=RuntimeError("wishlist endpoint down"),
+    )
+
+    result = run_notification(
+        _credit_request(cooldown=3),
+        _credit_runtime(
+            client,
+            wishlist=[{"asin": "LOCAL1", "max_price": 5}],
+            load_notify_state=lambda: {"ACCOUNT1": {"price": 4, "date": "2026-11-13"}},
+            today=lambda: today,
+        ),
+    )
+
+    assert [hit.asin for hit in result.hits] == ["LOCAL1"]
+    assert result.audible_wishlist_error == "RuntimeError: wishlist endpoint down"
+    assert "ACCOUNT1" in result.pending_notify_state
+
+
+def test_audible_wishlist_auth_failure_is_raised():
+    client = AccountClient(
+        products=[make_product(asin="LOCAL1", price=3)],
+        wishlist_error=RuntimeError("Not authenticated. Run 'deals login' first."),
+    )
+
+    with pytest.raises(RuntimeError, match="Not authenticated"):
+        run_notification(
+            _credit_request(),
+            _credit_runtime(client, wishlist=[{"asin": "LOCAL1", "max_price": 5}]),
+        )
+
+
+def test_audible_wishlist_books_are_recorded_in_the_account_marketplace(tmp_config):
+    from audible_deals.price_history import load_price_history, record_prices
+
+    client = AccountClient(
+        "uk", wishlist=[make_product(asin="UKBOOK", price=20, locale="uk")]
+    )
+
+    run_notification(
+        NotificationRequest("uk", "£", 7.0, audible_wishlist=True),
+        NotificationRuntime(
+            get_client=lambda locale: client,
+            record_products=record_prices,
+            webhook_client=Webhook(),
+            load_wishlist=lambda: [],
+            load_dismissed_asins=set,
+        ),
+    )
+
+    assert load_price_history("UKBOOK", "uk")
+    assert not load_price_history("UKBOOK", "us")

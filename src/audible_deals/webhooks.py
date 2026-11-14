@@ -12,6 +12,7 @@ import logging
 from decimal import Decimal
 from typing import Callable
 
+from audible_deals.automation_models import CREDIT_PRICE_REASON
 from audible_deals.presentation.common import price_str
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,25 @@ def parse_webhook_headers(
 
 _TEMPLATE_KEYS = "title, price, target, url, currency, asin, discount_pct"
 
+CREDIT_HIT_LIMIT = 20
+
+
+def _cap_credit_hits(hits: list[dict]) -> tuple[list[dict], int]:
+    """List every target hit and the 20 below-credit hits that save the most.
+
+    Returns the hits to list and how many below-credit hits were left out.
+    """
+    credit = [h for h in hits if h.get("reason") == CREDIT_PRICE_REASON]
+    if not credit:
+        return hits, 0
+    others = [h for h in hits if h.get("reason") != CREDIT_PRICE_REASON]
+    credit.sort(key=lambda h: h["target"] - h["price"], reverse=True)
+    return others + credit[:CREDIT_HIT_LIMIT], max(len(credit) - CREDIT_HIT_LIMIT, 0)
+
+
+def _more_lines(more: int) -> list[str]:
+    return [f"and {more} more below your credit price"] if more else []
+
 
 def _webhook_heading(hits: list[dict]) -> str:
     """Return an event-aware heading while preserving ordinary deal payloads."""
@@ -73,6 +93,12 @@ def _webhook_heading(hits: list[dict]) -> str:
 
 def _webhook_item_prefix(hit: dict) -> str:
     return f"[{hit['event']}] " if hit.get("event") else ""
+
+
+def _webhook_why(hit: dict, currency: str) -> str:
+    if hit.get("reason") == CREDIT_PRICE_REASON:
+        return f"below your {price_str(hit['target'], currency)} credit"
+    return f"target {price_str(hit['target'], currency)}"
 
 
 def _template_number(value: object) -> float | Decimal:
@@ -87,6 +113,7 @@ def _render_webhook_template(
     template: str,
     currency: str,
     extras: dict[str, dict] | None,
+    more: int,
 ) -> tuple[bytes, dict[str, str]]:
     rendered_parts: list[str] = []
     for h in hits:
@@ -111,41 +138,67 @@ def _render_webhook_template(
                 f"Template format error: {e}. Valid keys: {_TEMPLATE_KEYS}. "
                 "Use {{ and }} for literal braces."
             )
-    body = "\n".join(rendered_parts)
+    body = "\n".join([*rendered_parts, *_more_lines(more)])
     return body.encode("utf-8"), {"Content-Type": "text/plain; charset=utf-8"}
 
 
-def _webhook_generic(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
-    body = _strict_json_dumps({"deals": hits, "count": len(hits)}, indent=2)
+def _webhook_generic(
+    hits: list[dict], currency: str, more: int
+) -> tuple[str, dict[str, str]]:
+    payload: dict = {"deals": hits, "count": len(hits)}
+    if more:
+        payload["more_below_credit_price"] = more
+    body = _strict_json_dumps(payload, indent=2)
     return body, {"Content-Type": "application/json"}
 
 
-def _webhook_slack(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
+def _webhook_slack(
+    hits: list[dict], currency: str, more: int
+) -> tuple[str, dict[str, str]]:
     lines = "\n".join(
-        f"• {_webhook_item_prefix(h)}<{h['url']}|{h['title']}> — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
-        for h in hits
+        [
+            *(
+                f"• {_webhook_item_prefix(h)}<{h['url']}|{h['title']}> — {price_str(h['price'], currency)} ({_webhook_why(h, currency)})"
+                for h in hits
+            ),
+            *_more_lines(more),
+        ]
     )
     body = _strict_json_dumps(
-        {"text": f"*{_webhook_heading(hits)} ({len(hits)})*\n{lines}"}
+        {"text": f"*{_webhook_heading(hits)} ({len(hits) + more})*\n{lines}"}
     )
     return body, {"Content-Type": "application/json"}
 
 
-def _webhook_discord(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
+def _webhook_discord(
+    hits: list[dict], currency: str, more: int
+) -> tuple[str, dict[str, str]]:
     lines = "\n".join(
-        f"• {_webhook_item_prefix(h)}[{h['title']}](<{h['url']}>) — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
-        for h in hits
+        [
+            *(
+                f"• {_webhook_item_prefix(h)}[{h['title']}](<{h['url']}>) — {price_str(h['price'], currency)} ({_webhook_why(h, currency)})"
+                for h in hits
+            ),
+            *_more_lines(more),
+        ]
     )
     body = _strict_json_dumps(
-        {"content": f"**{_webhook_heading(hits)} ({len(hits)})**\n{lines}"}
+        {"content": f"**{_webhook_heading(hits)} ({len(hits) + more})**\n{lines}"}
     )
     return body, {"Content-Type": "application/json"}
 
 
-def _webhook_teams(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
+def _webhook_teams(
+    hits: list[dict], currency: str, more: int
+) -> tuple[str, dict[str, str]]:
     text = "  \n".join(
-        f"• {_webhook_item_prefix(h)}[{h['title']}]({h['url']}) — {price_str(h['price'], currency)} (target {price_str(h['target'], currency)})"
-        for h in hits
+        [
+            *(
+                f"• {_webhook_item_prefix(h)}[{h['title']}]({h['url']}) — {price_str(h['price'], currency)} ({_webhook_why(h, currency)})"
+                for h in hits
+            ),
+            *_more_lines(more),
+        ]
     )
     body = _strict_json_dumps(
         {
@@ -153,19 +206,26 @@ def _webhook_teams(hits: list[dict], currency: str) -> tuple[str, dict[str, str]
             "@context": "https://schema.org/extensions",
             "summary": _webhook_heading(hits),
             "themeColor": "0078D7",
-            "title": f"{_webhook_heading(hits)} ({len(hits)})",
+            "title": f"{_webhook_heading(hits)} ({len(hits) + more})",
             "sections": [{"text": text}],
         }
     )
     return body, {"Content-Type": "application/json"}
 
 
-def _webhook_ntfy(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]:
-    n = len(hits)
-    lines = "\n".join(
-        f"• {_webhook_item_prefix(h)}{h['title']} — {currency}{h['price']:.2f} ({h['url']})"
-        for h in hits
-    )
+def _webhook_ntfy(
+    hits: list[dict], currency: str, more: int
+) -> tuple[str, dict[str, str]]:
+    def item(h: dict) -> str:
+        why = (
+            f", {_webhook_why(h, currency)}"
+            if h.get("reason") == CREDIT_PRICE_REASON
+            else ""
+        )
+        return f"• {_webhook_item_prefix(h)}{h['title']} — {currency}{h['price']:.2f}{why} ({h['url']})"
+
+    n = len(hits) + more
+    lines = "\n".join([*(item(h) for h in hits), *_more_lines(more)])
     heading = _webhook_heading(hits)
     body = f"{heading} ({n})\n{lines}"
     headers = {
@@ -178,7 +238,7 @@ def _webhook_ntfy(hits: list[dict], currency: str) -> tuple[str, dict[str, str]]
 
 
 _WEBHOOK_FORMATTERS: dict[
-    str, Callable[[list[dict], str], tuple[str, dict[str, str]]]
+    str, Callable[[list[dict], str, int], tuple[str, dict[str, str]]]
 ] = {
     "generic": _webhook_generic,
     "slack": _webhook_slack,
@@ -197,14 +257,15 @@ def format_webhook_payload(
     extras: dict[str, dict] | None = None,
 ) -> tuple[bytes, dict[str, str]]:
     """Format webhook payload for the given platform. Returns (body_bytes, headers)."""
-    if template is not None:
-        if fmt != "generic":
-            raise ValueError("template is incompatible with non-generic fmt")
-        return _render_webhook_template(hits, template, currency, extras)
+    if template is not None and fmt != "generic":
+        raise ValueError("template is incompatible with non-generic fmt")
     formatter = _WEBHOOK_FORMATTERS.get(fmt)
     if formatter is None:
         raise ValueError(f"Unknown webhook format: {fmt!r}")
-    body, headers = formatter(hits, currency)
+    hits, more = _cap_credit_hits(hits)
+    if template is not None:
+        return _render_webhook_template(hits, template, currency, extras, more)
+    body, headers = formatter(hits, currency, more)
     return body.encode("utf-8"), headers
 
 

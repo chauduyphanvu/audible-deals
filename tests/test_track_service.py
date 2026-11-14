@@ -201,9 +201,8 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
     )
 
     run_track(request(), track_runtime)
-    first = calls[1]
     run_track(request(), track_runtime)
-    second = calls[3]
+    first, second = calls
 
     assert first == [f"A{index:03d}" for index in range(200)]
     assert second[:50] == [f"A{index:03d}" for index in range(200, 250)]
@@ -212,6 +211,44 @@ def test_track_rotates_capped_eligibility_and_persists_cursor(tmp_config):
         "surfaced_on": today.isoformat(),
         "asin": "A149",
     }
+
+
+class MarketplaceClient(Client):
+    """Answers any ASIN in its own marketplace, like the real catalog."""
+
+    def __init__(self, locale, calls):
+        super().__init__()
+        self.locale = locale
+        self.calls = calls
+
+    def get_products_batch(self, asins):
+        self.calls.append((self.locale, list(asins)))
+        return [make_product(asin=asin, price=3, locale=self.locale) for asin in asins]
+
+
+def test_mixed_marketplace_wishlist_prices_each_entry_in_its_own_marketplace(
+    tmp_config,
+):
+    from audible_deals.price_history import load_price_history, record_prices
+
+    calls = []
+    wishlist = [
+        {"asin": "US1", "max_price": 5, "locale": "us"},
+        {"asin": "UK1", "max_price": 5, "locale": "uk"},
+    ]
+    track_runtime = replace(
+        runtime(None, Webhook(), wishlist=wishlist),
+        get_client=lambda locale: MarketplaceClient(locale, calls),
+        record_products=record_prices,
+    )
+
+    result = run_track(request(), track_runtime)
+
+    assert sorted(calls) == [("uk", ["UK1"]), ("us", ["US1"])]
+    assert result.wishlist_checked == 2
+    assert result.hits == 2
+    assert load_price_history("US1", "us") and not load_price_history("US1", "uk")
+    assert load_price_history("UK1", "uk") and not load_price_history("UK1", "us")
 
 
 def test_partial_monitor_failure_isolated_and_success_saved(tmp_config, monkeypatch):
@@ -349,3 +386,168 @@ def test_track_cli_preserves_webhook_error_prefix(tmp_config, monkeypatch):
     assert result.exit_code != 0
     assert "Webhook failed: down" in result.output
     assert "track run failed:" not in result.output
+
+
+class WishlistClient(Client):
+    def __init__(self, wishlist=(), wishlist_error=None, products=()):
+        super().__init__(products=products)
+        self.wishlist = list(wishlist)
+        self.wishlist_error = wishlist_error
+        self.batches = []
+
+    def get_products_batch(self, asins):
+        self.batches.append(list(asins))
+        return super().get_products_batch(asins)
+
+    def get_wishlist(self):
+        if self.wishlist_error:
+            raise self.wishlist_error
+        return list(self.wishlist)
+
+
+def credit_request(webhook=None):
+    return TrackRunRequest(
+        "us", "$", 11.25, 1, webhook, "generic", {}, audible_wishlist=True
+    )
+
+
+def test_track_without_audible_wishlist_never_fetches_it(tmp_config):
+    client = WishlistClient(products=[make_product(asin="A1", price=3)])
+    client.get_wishlist = lambda: pytest.fail("Audible wishlist fetched")
+
+    result = run_track(
+        replace(credit_request(), audible_wishlist=False),
+        runtime(client, Webhook(), wishlist=[{"asin": "A1", "max_price": 5}]),
+    )
+
+    assert result.hits == 1
+    assert client.batches == [["A1"]]
+    entry = load_track_state()["run_history"][0]
+    assert "audible_wishlist_checked" not in entry
+    assert "audible_wishlist_error" not in entry
+
+
+def test_track_alerts_audible_wishlist_books_and_skips_them_in_refresh(tmp_config):
+    import json
+
+    today = datetime.date(2026, 11, 14)
+    client = WishlistClient(
+        wishlist=[
+            make_product(asin="ACCT1", price=5),
+            make_product(asin="ACCT2", price=20),
+        ]
+    )
+    webhook = Webhook()
+    track_runtime = replace(
+        runtime(client, webhook, wishlist=[]),
+        load_refresh_eligibility=lambda: {
+            "us": {"ACCT1": today.isoformat(), "EXTRA1": today.isoformat()}
+        },
+        today=lambda: today,
+    )
+
+    result = run_track(credit_request("https://example.test"), track_runtime)
+
+    assert client.batches == [["EXTRA1"]]
+    assert result.hits == 1
+    assert result.audible_wishlist_checked == 2
+    assert "2 Audible wishlist" in result.summary()
+    deals = json.loads(webhook.calls[0][1])["deals"]
+    assert [(deal["asin"], deal["reason"]) for deal in deals] == [
+        ("ACCT1", "below_credit_price")
+    ]
+
+
+def test_track_audible_wishlist_failure_is_reported_as_a_partial_failure(
+    tmp_config,
+):
+    client = WishlistClient(
+        products=[make_product(asin="LOCAL1", price=3)],
+        wishlist_error=RuntimeError("wishlist endpoint down"),
+    )
+
+    result = run_track(
+        credit_request(),
+        runtime(client, Webhook(), wishlist=[{"asin": "LOCAL1", "max_price": 5}]),
+    )
+
+    assert result.error is None
+    assert result.hits == 1
+    assert result.audible_wishlist_error == "RuntimeError: wishlist endpoint down"
+    assert "Audible wishlist failed: RuntimeError" in result.summary()
+    entry = load_track_state()["run_history"][0]
+    assert entry["error"] is None
+    assert entry["audible_wishlist_error"] == "RuntimeError: wishlist endpoint down"
+
+
+def test_track_audible_wishlist_auth_failure_uses_the_auth_failure_path(
+    tmp_config,
+):
+    webhook = Webhook()
+    client = WishlistClient(
+        products=[make_product(asin="LOCAL1", price=3)],
+        wishlist_error=RuntimeError("Not authenticated. Run 'deals login' first."),
+    )
+
+    with pytest.raises(RuntimeError, match="Not authenticated"):
+        run_track(
+            credit_request("https://example.test"),
+            runtime(client, webhook, wishlist=[{"asin": "LOCAL1", "max_price": 5}]),
+        )
+
+    state = load_track_state()
+    assert set(state["run_history"][0]) == {"at", "duration_s", "error"}
+    assert state["auth_error_notified"] is True
+    assert b"deals login" in webhook.calls[0][1]
+
+
+def test_track_repeat_below_credit_alert_is_suppressed_by_cooldown(tmp_config):
+    notify_state = {}
+    webhook = Webhook()
+    client = WishlistClient(wishlist=[make_product(asin="ACCT1", price=5)])
+    track_runtime = replace(
+        runtime(client, webhook, wishlist=[]),
+        load_notify_state=lambda: notify_state,
+        save_notify_state=lambda state: notify_state.update(state),
+    )
+
+    first = run_track(credit_request("https://example.test"), track_runtime)
+    second = run_track(credit_request("https://example.test"), track_runtime)
+
+    assert first.webhook_sent
+    assert not second.webhook_sent
+    assert second.suppressed == 1
+    assert len(webhook.calls) == 1
+    assert "ACCT1" in notify_state
+
+
+def test_track_below_credit_alert_stays_quiet_until_the_book_rises_and_dips_again(
+    tmp_config,
+):
+    saved = [
+        {"ACCT1": {"price": 5, "date": "2026-01-01", "reason": "below_credit_price"}}
+    ]
+    webhook = Webhook()
+
+    def run(price):
+        client = WishlistClient(wishlist=[make_product(asin="ACCT1", price=price)])
+        return run_track(
+            credit_request("https://example.test"),
+            replace(
+                runtime(client, webhook, wishlist=[]),
+                load_notify_state=lambda: saved[-1],
+                save_notify_state=saved.append,
+            ),
+        )
+
+    months_later = run(5)
+    assert not months_later.webhook_sent
+    assert months_later.suppressed == 1
+
+    risen = run(20)
+    assert not risen.webhook_sent
+    assert saved[-1] == {}
+
+    dipped = run(5)
+    assert dipped.webhook_sent
+    assert len(webhook.calls) == 1

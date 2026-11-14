@@ -59,6 +59,36 @@ def test_event_and_notification_hit_roundtrip_exact_wire_shape():
     assert NotificationHit.from_dict(hit).to_dict() == hit
 
 
+def test_below_credit_hit_roundtrips_its_reason():
+    hit = {
+        "asin": "A1",
+        "title": "Book",
+        "price": 4.99,
+        "target": 11.25,
+        "url": "https://example.test/A1",
+        "verdict": "cash",
+        "effective_price": 4.99,
+        "reason": "below_credit_price",
+    }
+
+    model = NotificationHit.from_dict(hit)
+
+    assert model.reason == "below_credit_price"
+    assert model.to_dict() == hit
+
+
+def test_track_result_writes_audible_wishlist_fields_only_when_used():
+    assert "audible_wishlist_error" not in TrackRunResult("now", 0).to_dict()
+
+    used = TrackRunResult("now", 0, audible_wishlist_checked=3).to_dict()
+    assert used["audible_wishlist_checked"] == 3
+    assert used["audible_wishlist_error"] is None
+
+    failed = TrackRunResult("now", 0, audible_wishlist_error="RuntimeError: x")
+    assert TrackRunResult.from_dict(failed.to_dict()).to_dict() == failed.to_dict()
+    assert "Audible wishlist failed: RuntimeError: x" in failed.summary()
+
+
 def test_track_result_normalizes_failure_lists_and_preserves_sparse_wire_shape():
     success = {
         "at": "2026-08-21T12:00:00",

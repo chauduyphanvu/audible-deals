@@ -37,6 +37,8 @@ deals wishlist list -o wishlist.csv
 
 `wishlist sync` skips existing local entries, so running it repeatedly is safe. Add `--update` with `--max-price` to change existing targets in bulk.
 
+An entry without a target alerts in `notify` and `track run` only when you have set a credit price and the book costs less than one credit in the current marketplace; see [Alert on your Audible wishlist](#alert-on-your-audible-wishlist).
+
 ASIN commands also accept `@N` positions, ranges such as `@1-3,5`, Audible product URLs, and the retained `--last` compatibility option. Remove an author watch with `deals wishlist remove --author "NAME"`. To remove owned items after previewing them, rerun `deals wishlist purge --owned` and confirm the prompt.
 
 `wishlist repair` refuses malformed JSON and non-list files. When confirmed, it keeps valid entries in order and saves an owner-only backup beside `wishlist.json` before removing invalid entries. Use `--yes` to skip confirmation in trusted automation.
@@ -109,9 +111,10 @@ The installer uses launchd on macOS, a systemd user timer or cron on Linux, and 
 
 Each run:
 
-- refreshes every wishlist item and author watch regardless of recent-result eligibility;
+- refreshes every wishlist item in its own marketplace, and every author watch, regardless of recent-result eligibility;
+- checks your Audible wishlist when `audible-wishlist` is on;
 - refreshes up to 200 eligible recent-result ASINs for the current marketplace;
-- records history, including every priced book a monitor scans, and sends target-price alerts;
+- records history, including every priced book a monitor scans, and sends target-price and below-credit alerts;
 - applies a one-day alert cooldown unless the price falls further; and
 - stores the last 10 run summaries in `track_state.json`.
 
@@ -168,6 +171,23 @@ deals notify --cooldown 7
 ```
 
 It prints `{"deals": [...], "count": N}`. An empty result still prints a valid payload with a count of zero, allowing automation to distinguish “no deals” from a failure.
+
+### Alert on your Audible wishlist
+
+You can be told when a book on your Audible account wishlist costs less than one of your credits, without copying the list into `deals wishlist` or setting a target for each book. Set what you pay for a credit, then switch the check on:
+
+```bash
+deals config set credit-price 11.25
+deals config set audible-wishlist true
+```
+
+`deals notify` and scheduled `deals track run` then read your Audible wishlist in the current marketplace, one request per 50 books. A book alerts when its cash price is below your credit price, and the alert says so, for example “below your $11.25 credit”. A book at or above the credit price does not alert. Plus catalog titles and titles you dismissed are skipped. A book that also has a local wishlist entry follows that entry's target and marketplace instead. Local entries saved without a target use the same credit-price rule in the current marketplace, whether or not `audible-wishlist` is on.
+
+A book that stays below your credit price alerts once, then again only if its price falls further, or after it rises above the credit price and drops back. `track run` always works this way; `notify` suppresses repeats only when you pass `--cooldown`. One message lists at most 20 below-credit books, largest saving first, followed by a line such as “and 37 more below your credit price”. Target-price hits are always listed in full.
+
+In JSON output and the `generic` webhook, a below-credit hit has `"reason": "below_credit_price"` and its `target` is your credit price. A message that hit the cap also has `"more_below_credit_price": 37`; `count` stays the number of listed deals.
+
+If the credit price is removed later, runs print a warning and skip your Audible wishlist. If the Audible wishlist cannot be fetched, the local wishlist is still checked and the failure appears in the run summary or as a warning. Turn the check off with `deals config reset audible-wishlist`.
 
 ### Webhook formats
 
@@ -226,7 +246,7 @@ deals notify \
   --webhook-template ./tmpl.txt
 ```
 
-The Python `str.format`-style template is rendered once per hit and joined with newlines. It can use `title`, `price`, `target`, `url`, `currency`, `asin`, and `discount_pct`. Use `{{` and `}}` for literal braces.
+The Python `str.format`-style template is rendered once per hit and joined with newlines. It can use `title`, `price`, `target`, `url`, `currency`, `asin`, and `discount_pct`. Use `{{` and `}}` for literal braces. For a below-credit hit, `target` is your credit price, and a message over the 20-book cap ends with its “and N more” line.
 
 Custom templates are sent as `text/plain; charset=utf-8`. They require `--webhook` and cannot be combined with a non-default webhook format.
 

@@ -39,8 +39,8 @@ def config_set(key, value):
                 min-ratings, min-hours, min-discount, language, locale, sort,
                 pages, on-sale, deep, first-in-series, all-languages,
                 interactive, limit, narrator, author, series, publisher,
-                skip-plus, only-plus, credit-price, webhook, webhook-format,
-                webhook-headers
+                skip-plus, only-plus, credit-price, audible-wishlist, webhook,
+                webhook-format, webhook-headers
     Example:
         deals config set max-price 5
         deals config set skip-owned true
@@ -49,6 +49,16 @@ def config_set(key, value):
     coerced = coerce_config_value(norm_key, value)
     removed_key = None
     with config_transaction() as cfg:
+        if (
+            norm_key == "audible_wishlist"
+            and coerced
+            and cfg.get("credit_price") is None
+        ):
+            raise click.ClickException(
+                "audible-wishlist alerts when a book costs less than one credit, "
+                "so set your credit price first, for example: "
+                "deals config set credit-price 11.25"
+            )
         if norm_key in {"skip_plus", "only_plus"} and coerced:
             opposite = "only_plus" if norm_key == "skip_plus" else "skip_plus"
             if opposite in cfg:

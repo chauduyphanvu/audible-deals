@@ -205,7 +205,7 @@ deals compare B00EXAMPLE @2
 ```
 
 `--last` remains supported as a compatibility spelling. Single-item commands such as `detail`, `open`, and `history` reject ranges. Bulk commands deduplicate selections in first-seen order. A URL or cached row supplies its marketplace unless global `--locale` was explicitly provided.
-Wishlist additions retain that marketplace for later `watch`, `notify`, and price-history checks.
+Wishlist additions retain that marketplace for later `watch`, `notify`, scheduled `track run`, and price-history checks.
 
 Product lists use a full table at 120 columns and wider, a compact table from 80–119 columns, and wrapped cards below 80 columns. Optional Buy, history, Match, identifiers, series details, and URLs fold into secondary lines instead of disappearing.
 
@@ -288,6 +288,8 @@ deals config set credit-price 11.25
 Result tables, `watch`, `detail`, and `compare` then recommend `cash`, `credit`, or `plus`. `--max-effective-price` filters on the cheaper of cash and one credit, and notification payloads include `verdict` and `effective_price`.
 
 Remove the setting with `deals config reset credit-price` to restore cash-only output.
+
+With a credit price set, `deals config set audible-wishlist true` makes `notify` and scheduled `track run` also check your Audible account wishlist and alert when a book there costs less than one credit. See [Alert on your Audible wishlist](automation.md#alert-on-your-audible-wishlist).
 
 ### Credit planner
 
