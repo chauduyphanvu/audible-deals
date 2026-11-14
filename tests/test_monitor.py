@@ -40,6 +40,8 @@ def monitor_files(monkeypatch, tmp_path):
         ("PROFILES_FILE", "profiles.json"),
         ("CONFIG_FILE", "config.json"),
         ("LOCK_FILE", "monitor.lock"),
+        # Monitor scans can record prices; keep them out of the real history.
+        ("HISTORY_DIR", "history"),
     ):
         monkeypatch.setattr(constants, name, tmp_path / filename)
     return tmp_path
