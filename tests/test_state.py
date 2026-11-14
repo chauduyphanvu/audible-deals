@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import contextlib
 import datetime
 import json
 import logging
@@ -1158,6 +1159,80 @@ class TestBugfixPriceHistoryValidationLegacyHistoryMigration:
         assert not legacy.exists()
         assert legacy.with_name(f"{legacy.name}.legacy").read_bytes() == original_bytes
         assert "archived 1" in caplog.text
+
+    @staticmethod
+    def _count_history_reads(monkeypatch) -> list[Path]:
+        reads: list[Path] = []
+        original = Path.read_bytes
+
+        def counting(path):
+            if path.parent == constants_mod.HISTORY_DIR:
+                reads.append(path)
+            return original(path)
+
+        monkeypatch.setattr(Path, "read_bytes", counting)
+        return reads
+
+    def test_clean_migration_is_not_repeated_on_later_loads(
+        self, tmp_config, monkeypatch
+    ):
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        legacy = constants_mod.HISTORY_DIR / "B00LEGACY6.json"
+        legacy.write_bytes(b'[{"date":"2024-01-01","price":4}]')
+        _write_history(tmp_config, "B00CURRENT2", [3.0])
+        reads = self._count_history_reads(monkeypatch)
+
+        first = price_history.load_all_price_histories()
+
+        assert set(first) == {"B00CURRENT2"}
+        assert {path.name for path in reads} == {"B00LEGACY6.json", "B00CURRENT2.json"}
+        assert (constants_mod.HISTORY_DIR / ".legacy-migrated").exists()
+        reads.clear()
+
+        assert price_history.load_all_price_histories() == first
+        assert reads == []
+
+    def test_migration_is_retried_until_every_file_was_read(
+        self, tmp_config, monkeypatch
+    ):
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        legacy = constants_mod.HISTORY_DIR / "B00LEGACY7.json"
+        legacy.write_bytes(b'[{"date":"2024-01-01","price":4}]')
+        original = Path.read_bytes
+
+        def unreadable(path):
+            if path == legacy:
+                raise PermissionError("locked")
+            return original(path)
+
+        monkeypatch.setattr(Path, "read_bytes", unreadable)
+        assert price_history.load_all_price_histories() == {}
+        assert legacy.exists()
+        assert not (constants_mod.HISTORY_DIR / ".legacy-migrated").exists()
+
+        monkeypatch.setattr(Path, "read_bytes", original)
+        assert price_history.load_all_price_histories() == {}
+        assert not legacy.exists()
+        assert (constants_mod.HISTORY_DIR / ".legacy-migrated").exists()
+
+    def test_migration_skips_the_scan_when_a_peer_finished_while_waiting(
+        self, tmp_config, monkeypatch
+    ):
+        constants_mod.HISTORY_DIR.mkdir(parents=True)
+        _write_history(tmp_config, "B00CURRENT3", [3.0])
+        real_lock = price_history.advisory_lock
+
+        @contextlib.contextmanager
+        def lock_released_by_peer(path, **kwargs):
+            with real_lock(path, **kwargs):
+                (constants_mod.HISTORY_DIR / ".legacy-migrated").touch()
+                yield
+
+        monkeypatch.setattr(price_history, "advisory_lock", lock_released_by_peer)
+        reads = self._count_history_reads(monkeypatch)
+
+        assert price_history.migrate_legacy_histories() == (0, 0)
+        assert reads == []
 
     def test_archive_retries_when_backup_appears_during_move(
         self, tmp_config, monkeypatch

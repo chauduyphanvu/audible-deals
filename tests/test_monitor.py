@@ -438,6 +438,25 @@ def test_pause_resume_are_idempotent_and_test_does_not_persist(
     assert constants.MONITOR_STATE_FILE.read_text() == before
 
 
+def test_monitor_test_scans_without_recording_history(
+    mock_client, tmp_config, monkeypatch
+):
+    save_monitors({"cheap": _definition(skip_owned=False, max_price=5.0)})
+    monkeypatch.setattr(monitor_module, "_get_client", lambda locale: mock_client)
+    scanned = [
+        Product(asin="B00MONTST1", title="Cheap", price=3.0, length_minutes=60),
+        Product(asin="B00MONTST2", title="Pricey", price=40.0, length_minutes=60),
+    ]
+    mock_client.search_pages.return_value = iter([(scanned, 1, 2)])
+
+    result = CliRunner().invoke(cli, ["monitor", "test", "cheap"])
+
+    assert result.exit_code == 0, result.output
+    assert "B00MONTST1" in result.output
+    mock_client.search_pages.assert_called_once()
+    assert not constants.HISTORY_DIR.exists()
+
+
 def test_add_clears_orphaned_state(monitor_files):
     save_profiles({"scifi": {}})
     save_monitor_state(

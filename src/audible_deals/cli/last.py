@@ -16,6 +16,7 @@ from audible_deals.presentation.result_output import (
 )
 from audible_deals.constants import LOCALE_CURRENCY
 from audible_deals.presentation.terminal import console, safe_markup
+from audible_deals.price_history import recordable_products
 from audible_deals.result_publication import (
     mark_refresh_eligible_safely,
     record_prices_safely,
@@ -37,6 +38,7 @@ from audible_deals.result_refinement import (
     refine_cached_results,
 )
 from audible_deals.serialization import (
+    deserialize_product,
     export_products,
     serialize_product,
     validate_export_path,
@@ -371,7 +373,13 @@ def last_cmd(
                 observation_date = datetime.datetime.fromisoformat(
                     session.timestamp
                 ).date()
-                record_prices_safely(newly_visible, observation_date=observation_date)
+                candidates = (deserialize_product(item) for item in session.candidates)
+                record_prices_safely(
+                    recordable_products(
+                        product for product in candidates if product is not None
+                    ),
+                    observation_date=observation_date,
+                )
             mark_refresh_eligible_safely(newly_visible)
 
     if markdown_flag:

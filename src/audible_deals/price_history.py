@@ -8,6 +8,7 @@ import logging
 import math
 import os
 import statistics
+from collections.abc import Iterable
 from pathlib import Path
 
 from audible_deals import constants, wishlist
@@ -20,6 +21,7 @@ logger = logging.getLogger(__name__)
 
 _MAX_HISTORY_ENTRIES = 365
 _MARKETPLACES_KEY = "marketplaces"
+_LEGACY_MIGRATED_MARKER = ".legacy-migrated"
 
 
 def history_key(asin: str, locale: str) -> str:
@@ -104,15 +106,26 @@ def migrate_legacy_histories() -> tuple[int, int]:
     """Archive legacy top-level history lists without rewriting their bytes."""
     if not constants.HISTORY_DIR.exists():
         return 0, 0
+    # A clean pass leaves this marker so later calls skip reading every file.
+    # record_prices still archives any legacy list it meets afterwards.
+    marker = constants.HISTORY_DIR / _LEGACY_MIGRATED_MARKER
+    if marker.exists():
+        return 0, 0
     archived = 0
     failed = 0
+    unreadable = 0
     migration_lock = constants.HISTORY_DIR / ".legacy-migration.lock"
     with advisory_lock(migration_lock, wait=True):
+        if marker.exists():
+            return 0, 0
         for hist_file in sorted(constants.HISTORY_DIR.glob("*.json")):
             with _history_update_lock(hist_file):
                 try:
                     raw = json.loads(hist_file.read_bytes())
-                except (json.JSONDecodeError, OSError, UnicodeDecodeError):
+                except OSError:
+                    unreadable += 1
+                    continue
+                except (json.JSONDecodeError, UnicodeDecodeError):
                     continue
                 if not isinstance(raw, list):
                     continue
@@ -122,8 +135,22 @@ def migrate_legacy_histories() -> tuple[int, int]:
                     failed += 1
                 else:
                     archived += 1
+        if not (failed or unreadable):
+            try:
+                marker.touch()
+            except OSError:
+                logger.debug("could not write %s", marker, exc_info=True)
     _log_legacy_migration(archived, failed)
     return archived, failed
+
+
+def recordable_products(products: Iterable[Product]) -> list[Product]:
+    """Finite-priced products, one per marketplace and ASIN, in first-seen order."""
+    unique: dict[str, Product] = {}
+    for product in products:
+        if _as_float(product.price) is not None:
+            unique.setdefault(history_key(product.asin, product.locale), product)
+    return list(unique.values())
 
 
 def record_prices(
@@ -238,11 +265,6 @@ def record_prices(
         bad_asin,
         corrupt,
     )
-
-
-def has_price_history(locale: str = "us") -> bool:
-    """Return whether *locale* has at least one marketplace-specific history."""
-    return bool(load_all_price_histories(locale))
 
 
 def load_price_history(asin: str, locale: str = "us") -> list[dict]:

@@ -14,7 +14,6 @@ from audible_deals.price_history import (
     find_all_atl_hits,
     find_wishlist_atl_hits,
     find_wishlist_hits,
-    has_price_history,
     load_all_price_histories,
     scan_price_changes,
 )
@@ -105,7 +104,7 @@ def run_recap(
         console.file = sys.stderr
     histories = load_all_price_histories(locale)
     drops, new_items = scan_price_changes(days, histories=histories)
-    if not drops and not new_items and not has_price_history(locale):
+    if not drops and not new_items and not histories:
         if json_flag:
             empty = empty_recap_payload(days, atl or atl_all)
             click.echo(json_mod.dumps(empty, indent=2, allow_nan=False))
