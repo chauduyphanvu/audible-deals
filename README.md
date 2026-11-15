@@ -7,6 +7,7 @@ A command-line tool for finding cheap Audible audiobooks. It scans the Audible c
 - Find inexpensive audiobooks by genre, price, rating, length, narrator, author, series, and more.
 - Get personalized recommendations from the authors, narrators, genres, and unfinished series in your library.
 - Compare cash prices with the cost of an Audible credit.
+- Spot books that cost less as a Kindle book plus Whispersync narration.
 - Plan your credits: see which wishlist books deserve a credit and which are cheaper in cash.
 - Get an alert when a book on your Audible wishlist drops below what a credit costs you.
 - See whether a price is actually good, graded against the book's own price history on your account.

@@ -5,6 +5,7 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 
+from audible_deals.metrics import whispersync_margin, whispersync_wins
 from audible_deals.presentation.common import discount_str, price_str, rating_str
 from audible_deals.product import Product
 
@@ -44,6 +45,12 @@ def _price_cell(product: Product) -> str:
             cell += f" ~~{list_price}~~ ({discount_str(discount)})"
     if product.in_plus_catalog:
         cell += " · Plus"
+    if product.owns_kindle:
+        if whispersync_wins(product, None):
+            cell += " · Kindle owner price"
+    elif (margin := whispersync_margin(product, None)) is not None and margin > 0:
+        addon = price_str(product.whispersync_price, product.currency)
+        cell += f" · [Kindle]({product.kindle_url}) + {addon} narration"
     return cell
 
 

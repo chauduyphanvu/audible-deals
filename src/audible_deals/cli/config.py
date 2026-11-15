@@ -185,6 +185,7 @@ def profile(ctx):
 @click.option("--exclude-author", "exclude_authors", multiple=True)
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True)
 @click.option("--on-sale/--no-on-sale", default=False)
+@click.option("--whispersync/--no-whispersync", default=False)
 @click.option("--min-discount", type=click.IntRange(min=0, max=100), default=0)
 @click.option("--max-price-per-hour", "max_pph", type=NONNEGATIVE_FLOAT, default=None)
 @click.option("--publisher", default="")

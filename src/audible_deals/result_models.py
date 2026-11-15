@@ -122,6 +122,7 @@ _RECIPE_TUPLE_FIELDS = {
 }
 _RECIPE_BOOL_FIELDS = {
     "on_sale",
+    "whispersync",
     "first_in_series",
     "skip_plus",
     "only_plus",
@@ -243,6 +244,7 @@ class ResultRecipe:
     exclude_narrators: tuple[str, ...] = ()
     language: str = ""
     on_sale: bool = False
+    whispersync: bool = False
     min_discount: int = 0
     first_in_series: bool = False
     sort: str = ""
@@ -621,6 +623,7 @@ class RecipePatch:
     exclude_narrators: tuple[str, ...] | _Unset = UNSET
     language: str | _Unset = UNSET
     on_sale: bool | _Unset = UNSET
+    whispersync: bool | _Unset = UNSET
     min_discount: int | _Unset = UNSET
     first_in_series: bool | _Unset = UNSET
     sort: str | _Unset = UNSET
@@ -674,6 +677,7 @@ class FilterContext:
     exclude_authors: tuple[str, ...] = ()
     exclude_narrators: tuple[str, ...] = ()
     on_sale: bool = False
+    whispersync: bool = False
     skip_asins: frozenset[str] | None = None
     exclude_category_ids: frozenset[str] = frozenset()
     genre: str = ""

@@ -93,6 +93,11 @@ def _common_filter_options(func):
             "--on-sale/--no-on-sale", default=False, help="Only show discounted items"
         ),
         click.option(
+            "--whispersync/--no-whispersync",
+            default=False,
+            help="Only show books where the Kindle book plus Audible narration can cost less",
+        ),
+        click.option(
             "--min-discount",
             type=click.IntRange(min=0, max=100),
             default=0,

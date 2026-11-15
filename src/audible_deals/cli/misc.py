@@ -43,6 +43,7 @@ from audible_deals.settings import (
     profile_validation_error,
     resolve_plus_flags,
 )
+from audible_deals.validation import NONNEGATIVE_FLOAT
 from audible_deals.wishlist import inspect_wishlist
 
 
@@ -235,9 +236,20 @@ def categories(ctx, parent):
     default=None,
     help="Use result #N from the last result session",
 )
+@click.option(
+    "--kindle-price",
+    type=NONNEGATIVE_FLOAT,
+    default=None,
+    help="Kindle book price from Amazon; shows the Whispersync total",
+)
 @click.pass_context
-def detail(ctx, asin, last_ref):
-    """Show product details using an ASIN, Audible URL, or @N selector."""
+def detail(ctx, asin, last_ref, kindle_price):
+    """Show product details using an ASIN, Audible URL, or @N selector.
+
+    \b
+    Whispersync: open the Kindle link shown, then rerun with its price
+        deals detail @1 --kindle-price 9.99
+    """
     if not asin and last_ref is None:
         raise click.UsageError("Provide an ASIN, Audible URL, @N, or use --last N.")
     resolved, locale = _resolve_cli_selectors(
@@ -253,11 +265,17 @@ def detail(ctx, asin, last_ref):
             product = dc.get_product(asin)
         except ValueError as e:
             raise click.ClickException(str(e))
+    if kindle_price is not None and product.whispersync_price is None:
+        raise click.ClickException(
+            "--kindle-price needs a Whispersync title; this book has no "
+            "narration add-on."
+        )
 
     record_prices_safely([product])
     display_product_detail(
         product,
         credit_price=_credit_price(ctx),
+        kindle_price=kindle_price,
         deal_grade=grade_price(
             load_price_history(product.asin, product.locale),
             product.price,

@@ -69,6 +69,26 @@ def product_url(asin: str, locale: str) -> str:
     return f"https://{domain}/pd/{asin}"
 
 
+AMAZON_DOMAIN: dict[str, str] = {
+    "us": "www.amazon.com",
+    "uk": "www.amazon.co.uk",
+    "ca": "www.amazon.ca",
+    "au": "www.amazon.com.au",
+    "in": "www.amazon.in",
+    "de": "www.amazon.de",
+    "fr": "www.amazon.fr",
+    "jp": "www.amazon.co.jp",
+    "es": "www.amazon.es",
+    "br": "www.amazon.com.br",
+}
+
+
+def kindle_url(asin: str, locale: str) -> str:
+    """Amazon page URL for a Kindle book in the given marketplace."""
+    domain = AMAZON_DOMAIN.get(locale, "www.amazon.com")
+    return f"https://{domain}/dp/{asin}"
+
+
 LOCALE_LANGUAGES: dict[str, str] = {
     "us": "english",
     "uk": "english",
@@ -102,6 +122,7 @@ CATALOG_RESPONSE_GROUPS = ",".join(
         "product_plan_details",
         "product_plans",
         "price",
+        "ws4v",
     ]
 )
 

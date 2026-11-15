@@ -7,7 +7,12 @@ import math
 from dataclasses import dataclass, field
 from typing import Any
 
-from audible_deals.constants import LOCALE_CURRENCY, product_url
+from audible_deals.constants import (
+    _ASIN_RE,
+    LOCALE_CURRENCY,
+    kindle_url,
+    product_url,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +41,10 @@ class Product:
     release_date: str = ""
     in_plus_catalog: bool = False
     locale: str = "us"
+    # Price to add Audible narration to the Kindle book (Whispersync for Voice).
+    whispersync_price: float | None = None
+    kindle_asin: str = ""
+    owns_kindle: bool = False
 
     @property
     def full_title(self) -> str:
@@ -68,6 +77,10 @@ class Product:
     @property
     def url(self) -> str:
         return product_url(self.asin, self.locale)
+
+    @property
+    def kindle_url(self) -> str:
+        return kindle_url(self.kindle_asin, self.locale) if self.kindle_asin else ""
 
 
 def _finite_float(
@@ -202,6 +215,11 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
     categories, category_ids = _extract_categories(raw)
     series_name, series_position, series_asin = _extract_series(raw)
     in_plus = _extract_plus(raw)
+    whispersync_price, kindle_asin, owns_kindle = _extract_whispersync(raw)
+    if owns_kindle and whispersync_price is None:
+        # For Kindle owners the API folds the narration price into the regular
+        # price instead of sending ws4v_upsell_price (checked against Amazon).
+        whispersync_price = price
 
     return Product(
         asin=asin,
@@ -224,7 +242,28 @@ def parse_product(raw: dict[str, Any], locale: str = "us") -> Product:
         release_date=_text(raw.get("release_date")),
         in_plus_catalog=in_plus,
         locale=locale,
+        whispersync_price=whispersync_price,
+        kindle_asin=kindle_asin,
+        owns_kindle=owns_kindle,
     )
+
+
+def _extract_whispersync(raw: dict) -> tuple[float | None, str, bool]:
+    """Extract (narration add-on price, Kindle ASIN, owns Kindle book).
+
+    The API attaches ws4v_upsell_price to many titles with no Kindle companion,
+    so the price only counts when the title is flagged Whispersync-ready.
+    """
+    kindle_asin = _text(raw.get("ws4v_companion_asin")).strip()
+    if raw.get("is_ws4v_enabled") is not True or not _ASIN_RE.fullmatch(kindle_asin):
+        return None, "", False
+    price_obj = raw.get("price")
+    upsell = (
+        _base_price(price_obj.get("ws4v_upsell_price"))
+        if isinstance(price_obj, dict)
+        else None
+    )
+    return upsell, kindle_asin, raw.get("is_ws4v_companion_asin_owned") is True
 
 
 def _base_price(obj) -> float | None:

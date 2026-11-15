@@ -13,6 +13,7 @@ from audible_deals.deal_grade import DealGrade, grade_latest
 from audible_deals.presentation import terminal
 from audible_deals.presentation.common import (
     _buy_cell,
+    _whispersync_summary,
     grade_cell,
     grade_verdict,
     price_str,
@@ -346,9 +347,14 @@ def display_watch_table(
             # A second line beside the two-line title keeps the table width.
             product_price += f"\n{grade_cell(grade)}"
         displayed_products.append(product)
-        row = [
+        title_cell = (
             f"{safe_markup(product.title)}\n[dim]{safe_markup(product.authors_str)}  "
-            f"[cyan]{safe_markup(product.asin)}[/cyan][/dim]",
+            f"[cyan]{safe_markup(product.asin)}[/cyan][/dim]"
+        )
+        if whispersync := _whispersync_summary(product, credit_price):
+            title_cell += f"\n[dim]Whispersync[/dim] {whispersync}"
+        row = [
+            title_cell,
             product_price,
             target_str,
             status,

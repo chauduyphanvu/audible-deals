@@ -11,7 +11,7 @@ from rich.panel import Panel
 from rich.table import Table
 
 from audible_deals.deal_grade import DealGrade
-from audible_deals.metrics import buy_verdict, price_per_hour
+from audible_deals.metrics import buy_verdict, price_per_hour, whispersync_margin
 from audible_deals.presentation import terminal
 from audible_deals.presentation.terminal import safe_markup
 from audible_deals.presentation.common import (
@@ -19,6 +19,7 @@ from audible_deals.presentation.common import (
     _buy_cell,
     _discount_color,
     _pph_str,
+    _whispersync_summary,
     discount_str,
     grade_cell,
     grade_verdict,
@@ -289,6 +290,8 @@ def _inline_signals(
     signals: list[str] = []
     if include_buy and credit_price is not None:
         signals.append(f"[dim]Buy[/dim] {_buy_cell(product, credit_price)}")
+    if whispersync := _whispersync_summary(product, credit_price):
+        signals.append(f"[dim]Whispersync[/dim] {whispersync}")
     if include_history and (grade := _graded(deal_grades, product)):
         signals.append(f"[dim]History[/dim] {grade_cell(grade)}")
     if include_match and match_context is not None and match_context.get(product.asin):
@@ -501,6 +504,7 @@ def display_product_detail(
     product: Product,
     credit_price: float | None = None,
     deal_grade: DealGrade | None = None,
+    kindle_price: float | None = None,
 ) -> None:
     lines: list[str] = [f"[bold]{safe_markup(product.full_title)}[/bold]", ""]
     if product.authors:
@@ -533,6 +537,11 @@ def display_product_detail(
             buy_line += "  [dim](free with membership)[/dim]"
         lines.append(buy_line)
 
+    if whispersync := _whispersync_detail(product, credit_price, kindle_price):
+        addon_line, verdict_line = whispersync
+        lines.append(f"  [dim]Whispersync:[/dim] {addon_line}")
+        lines.append(f"               [dim]{verdict_line}[/dim]")
+
     if deal_grade is not None and deal_grade.checks:
         lines.append(
             f"  [dim]History:[/dim]    {grade_verdict(deal_grade, currency)[0]}"
@@ -560,6 +569,8 @@ def display_product_detail(
     if product.in_plus_catalog:
         lines.append("  [magenta]Included in Audible Plus[/magenta]")
     lines.extend(["", f"  [dim]{safe_markup(product.url)}[/dim]"])
+    if product.kindle_url and product.whispersync_price is not None:
+        lines.append(f"  [dim]Kindle: {safe_markup(product.kindle_url)}[/dim]")
 
     terminal.console.print(
         Panel(
@@ -568,6 +579,61 @@ def display_product_detail(
             border_style="dim",
             padding=(1, 2),
         )
+    )
+
+
+def _whispersync_detail(
+    product: Product, credit_price: float | None, kindle_price: float | None
+) -> tuple[str, str] | None:
+    """(add-on line, verdict line) for the detail view."""
+    if product.whispersync_price is None:
+        return None
+    currency = product.currency
+    addon = price_str(product.whispersync_price, currency)
+    margin = whispersync_margin(product, credit_price)
+    uses_credit = (
+        credit_price is not None
+        and product.price is not None
+        and credit_price < product.price
+    )
+    audible = "a credit" if uses_credit else "the Audible price"
+    if product.owns_kindle:
+        addon_line = f"{addon} to add narration to your Kindle book"
+        if margin is None or margin < 0:
+            return addon_line, f"No cheaper than {audible}"
+        if margin == 0:
+            return (
+                f"[bold green]{addon_line}[/bold green]",
+                "This is the price shown above",
+            )
+        return (
+            f"[bold green]{addon_line}[/bold green]",
+            f"Saves {price_str(margin, currency)} over {audible}",
+        )
+    addon_line = f"{addon} to add narration to the Kindle book"
+    if kindle_price is not None:
+        total = price_str(kindle_price + product.whispersync_price, currency)
+        summary = f"Kindle {price_str(kindle_price, currency)} + narration = {total}"
+        if margin is None:
+            return addon_line, summary
+        difference = margin - kindle_price
+        if difference > 0:
+            return (
+                f"[bold green]{addon_line}[/bold green]",
+                f"{summary}, saves {price_str(difference, currency)} over {audible}",
+            )
+        if difference == 0:
+            return addon_line, f"{summary}, the same as {audible}"
+        return (
+            addon_line,
+            f"{summary}, {price_str(-difference, currency)} more than {audible}",
+        )
+    if margin is None or margin <= 0:
+        return addon_line, f"No cheaper than {audible}"
+    verb = "Beats a credit" if uses_credit else "Cheaper"
+    return (
+        addon_line,
+        f"{verb} if the Kindle book costs under {price_str(margin, currency)}",
     )
 
 
@@ -626,6 +692,13 @@ def display_comparison(
             [safe_markup(product.release_date or "-") for product in products],
         ),
         ("Plus", ["Yes" if product.in_plus_catalog else "-" for product in products]),
+        (
+            "Whispersync",
+            [
+                _whispersync_summary(product, credit_price) or "-"
+                for product in products
+            ],
+        ),
     ]
     if credit_price is not None:
         rows.insert(

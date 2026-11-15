@@ -10,7 +10,12 @@ import logging
 from typing import Callable
 
 from audible_deals.product import Product
-from audible_deals.metrics import effective_price, price_per_hour, value_score
+from audible_deals.metrics import (
+    effective_price,
+    price_per_hour,
+    value_score,
+    whispersync_wins,
+)
 from audible_deals.parsing import parse_series_position
 from audible_deals.result_models import FilterContext, FilterOutcome
 
@@ -140,6 +145,19 @@ def _deal_specs(on_sale: bool, min_discount: int) -> list[_FilterSpec]:
             )
         )
     return specs
+
+
+def _whispersync_specs(
+    whispersync: bool, credit_price: float | None
+) -> list[_FilterSpec]:
+    if not whispersync:
+        return []
+    return [
+        (
+            "whispersync",
+            lambda p: whispersync_wins(p, credit_price),
+        )
+    ]
 
 
 def _catalog_specs(
@@ -272,6 +290,7 @@ def filter_products(
             context.exclude_narrators,
         ),
         *_deal_specs(context.on_sale, context.min_discount),
+        *_whispersync_specs(context.whispersync, context.credit_price),
         *_catalog_specs(
             context.exclude_category_ids,
             context.genre,

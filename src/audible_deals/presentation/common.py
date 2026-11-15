@@ -5,7 +5,12 @@ from __future__ import annotations
 import datetime
 
 from audible_deals.deal_grade import MIN_CHECKS, MIN_SPAN_DAYS, DealGrade
-from audible_deals.metrics import buy_verdict, price_per_hour
+from audible_deals.metrics import (
+    buy_verdict,
+    price_per_hour,
+    whispersync_margin,
+    whispersync_wins,
+)
 from audible_deals.product import Product
 
 
@@ -50,6 +55,20 @@ def _buy_cell(product: Product, credit_price: float) -> str:
     if verdict is None:
         return "[dim]-[/dim]"
     return _VERDICT_MARKUP[verdict]
+
+
+def _whispersync_summary(product: Product, credit_price: float | None) -> str | None:
+    """Short Whispersync note, only when Kindle + narration can beat Audible."""
+    if not whispersync_wins(product, credit_price):
+        return None
+    margin = whispersync_margin(product, credit_price)
+    addon = price_str(product.whispersync_price, product.currency)
+    margin_str = price_str(margin, product.currency)
+    if product.owns_kindle:
+        if margin > 0:
+            return f"[green]{addon} with your Kindle book, saves {margin_str}[/green]"
+        return "[green]price for owners of the Kindle book[/green]"
+    return f"{addon} + Kindle under {margin_str}"
 
 
 def _pph_str(product: Product, currency: str = "$") -> str:

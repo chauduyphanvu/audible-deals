@@ -34,12 +34,15 @@ def serialize_product(p: Product) -> dict:
         d["price"] = round(d["price"], 2)
     if d["list_price"] is not None:
         d["list_price"] = round(d["list_price"], 2)
+    if d["whispersync_price"] is not None:
+        d["whispersync_price"] = round(d["whispersync_price"], 2)
     d["full_title"] = p.full_title
     d["hours"] = p.hours
     d["discount_pct"] = p.discount_pct
     pph = price_per_hour(p)
     d["price_per_hour"] = round(pph, 2) if pph != float("inf") else None
     d["url"] = p.url
+    d["kindle_url"] = p.kindle_url
     return d
 
 

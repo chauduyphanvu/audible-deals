@@ -85,6 +85,7 @@ Use `--deep` to scan three catalog sort orders for broader coverage. It makes ro
 | `--first-in-series` | Keep only the first book in each series |
 | `--max-price-per-hour 0.50` | Set a maximum cash price per hour |
 | `--max-effective-price 12` | Limit the cheaper of cash and one configured credit |
+| `--whispersync` | Keep only books where the Kindle book plus Audible narration can cost less; see [Whispersync](#whispersync) |
 | `--skip-owned` | Exclude books already in your library |
 | `--skip-plus` | Exclude Audible Plus titles |
 | `--only-plus` | Keep only Audible Plus titles |
@@ -305,6 +306,39 @@ deals credits 3 --json
 ```
 
 By default it reads the books you track with `deals wishlist add`. Entries saved for another marketplace are skipped, and the command says how many. `--audible-wishlist` also includes your Audible account wishlist, with duplicates removed. It is on by default once `deals config set audible-wishlist true` is set. `--json` prints the plan as JSON: `credits`, `credit_price`, `credit`, `cash`, `plus`, `wait`, `unavailable`, and `totals`. Without `credit-price`, the plan has no cash section and a hint on how to set it.
+
+### Whispersync
+
+Many audiobooks can also be bought as a Kindle book plus a discounted Audible narration add-on (Whispersync for Voice). That pair is sometimes cheaper than the audiobook alone.
+
+```bash
+deals search "Ada Palmer" --max-price 40 --whispersync
+deals last --whispersync
+deals detail @1
+```
+
+Audible reports the add-on price but not the Kindle price, so the tool shows the highest Kindle price at which the pair still wins:
+
+```text
+Whispersync: $5.60 to add narration to the Kindle book
+             Cheaper if the Kindle book costs under $15.39
+Kindle: https://www.amazon.com/dp/B0DNNGRN3C
+```
+
+Whispersync works in every store except Japan, which doesn't offer it. Open the Kindle link to check its price, then pass it back for the exact total:
+
+```bash
+deals detail @1 --kindle-price 9.99
+```
+
+```text
+Whispersync: $5.60 to add narration to the Kindle book
+             Kindle $9.99 + narration = $15.59, saves $5.40 over the Audible price
+```
+
+If you already own the Kindle book, including one borrowed through Prime Reading or Kindle Unlimited, Audible already charges you the narration price. The tool labels that price `price for owners of the Kindle book`, and `--whispersync` keeps those books unless a credit is cheaper. With `credit-price` set, every comparison uses the cheaper of cash and one credit.
+
+Result rows show a `Whispersync` line only when it is the cheapest route, and `--whispersync` keeps just those books. `detail` always shows the add-on for Whispersync titles, `compare` adds a row, Markdown exports link the Kindle book, and JSON and CSV exports include `whispersync_price`, `kindle_asin`, `owns_kindle`, and `kindle_url`.
 
 ## Library and exports
 

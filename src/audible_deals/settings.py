@@ -53,6 +53,7 @@ _PROFILE_EXTRA_KEYS: tuple[str, ...] = (
     "exclude_narrators",
     "keywords",
     "exclude_keywords",
+    "whispersync",
 )
 
 _TEXT_FIELDS = frozenset(
@@ -73,6 +74,7 @@ _TUPLE_FIELDS = frozenset(
 _BOOL_FIELDS = frozenset(
     {
         "on_sale",
+        "whispersync",
         "deep",
         "first_in_series",
         "all_languages",
@@ -103,6 +105,7 @@ class Settings:
     series: str = ""
     publisher: str = ""
     on_sale: bool = False
+    whispersync: bool = False
     deep: bool = False
     first_in_series: bool = False
     all_languages: bool = False

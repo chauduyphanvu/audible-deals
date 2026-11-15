@@ -202,6 +202,7 @@ def _active_filter_labels(
     add("series", s.series, bool(s.series))
     add("publisher", s.publisher, bool(s.publisher))
     add("on-sale", "yes", s.on_sale)
+    add("whispersync", "yes", s.whispersync)
     add("first-in-series", "yes", s.first_in_series)
     add("skip-owned", "yes", s.skip_owned)
     add("skip-plus", "yes", s.skip_plus)
@@ -318,6 +319,7 @@ def search(
     exclude_authors,
     exclude_narrators,
     on_sale,
+    whispersync,
     min_discount,
     deep,
     pages,
@@ -374,6 +376,7 @@ def search(
         pages=pages,
         limit=limit,
         on_sale=on_sale,
+        whispersync=whispersync,
         deep=deep,
         first_in_series=first_in_series,
         all_languages=all_languages,
@@ -615,6 +618,7 @@ def find(
     exclude_authors,
     exclude_narrators,
     on_sale,
+    whispersync,
     min_discount,
     deep,
     pages,
@@ -689,6 +693,7 @@ def find(
         pages=pages,
         limit=limit,
         on_sale=on_sale,
+        whispersync=whispersync,
         deep=deep,
         first_in_series=first_in_series,
         all_languages=all_languages,

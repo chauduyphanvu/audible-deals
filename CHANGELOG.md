@@ -6,6 +6,9 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/), and this
 
 ## [Unreleased]
 
+### Added
+- Whispersync for Voice pricing. Result rows, `detail`, `compare`, and Markdown exports show when a Kindle book plus Audible's narration add-on can cost less than the audiobook, with the add-on price, the highest Kindle price at which the pair still wins, and a Kindle link. If you own the Kindle book, the price is labeled as the owner's narration price. `--whispersync` on `find`, `search`, `last`, and `profile save` keeps only those books, and `deals detail --kindle-price PRICE` gives the exact Whispersync total once you've checked the Kindle price. With `credit-price` set, the comparison uses the cheaper of cash and one credit. Exports gain `whispersync_price`, `kindle_asin`, `owns_kindle`, and `kindle_url`. Audible doesn't report Kindle prices, so the Kindle price comes from you.
+
 ## [0.13.0] - 2026-11-14
 
 ### Added

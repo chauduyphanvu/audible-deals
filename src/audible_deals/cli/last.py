@@ -101,6 +101,7 @@ def _option_given(ctx: click.Context, name: str) -> bool:
 @click.option("--exclude-narrator", "exclude_narrators", multiple=True)
 @click.option("--language", default=None)
 @click.option("--on-sale/--no-on-sale", default=None)
+@click.option("--whispersync/--no-whispersync", default=None)
 @click.option("--min-discount", type=click.IntRange(min=0, max=100), default=None)
 @click.option("--first-in-series/--no-first-in-series", default=None)
 @click.option("--skip-plus/--no-skip-plus", default=None)
@@ -173,6 +174,7 @@ def last_cmd(
     exclude_narrators,
     language,
     on_sale,
+    whispersync,
     min_discount,
     first_in_series,
     skip_plus,
@@ -267,6 +269,7 @@ def last_cmd(
         "publisher": publisher,
         "language": language,
         "on_sale": on_sale,
+        "whispersync": whispersync,
         "min_discount": min_discount,
         "first_in_series": first_in_series,
         "skip_plus": skip_plus,
