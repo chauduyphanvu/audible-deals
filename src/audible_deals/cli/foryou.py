@@ -18,6 +18,7 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _other_store_hint,
     _report_partial_series_outcomes,
     _resolve_output_quiet,
 )
@@ -536,8 +537,10 @@ def for_me(
 
             lib_products = fetch_library_with_progress(dc, show_progress=not json_flag)
             if not lib_products:
+                hint = _other_store_hint(ctx)
                 raise click.ClickException(
                     "Your library is empty — for-me learns your taste from books you own."
+                    + (f" {hint}" if hint else "")
                 )
             profile = taste.build_profile(lib_products)
             taste.save_profile(profile)

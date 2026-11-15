@@ -9,7 +9,12 @@ from pathlib import Path
 
 import click
 
-from audible_deals.cli.helpers import _currency, _get_client, _resolve_output_quiet
+from audible_deals.cli.helpers import (
+    _currency,
+    _get_client,
+    _other_store_hint,
+    _resolve_output_quiet,
+)
 from audible_deals.validation import NONNEGATIVE_FLOAT, NONNEGATIVE_INT, RATING_FLOAT
 from audible_deals.client import DealsClient
 from audible_deals.filtering import filter_products, sort_local
@@ -250,3 +255,5 @@ def library(
         quiet=quiet,
         currency=_currency(ctx),
     )
+    if not all_products and not json_flag and (hint := _other_store_hint(ctx)):
+        console.print(f"  [dim]{safe_markup(hint)}[/dim]")

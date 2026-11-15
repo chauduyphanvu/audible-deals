@@ -17,6 +17,7 @@ class AuthInspection:
 
     status: str
     error: str = ""
+    locale: str = ""
 
     @property
     def is_usable(self) -> bool:
@@ -50,17 +51,17 @@ def inspect_auth_file(
 
     expires = data.get("expires")
     if expires is None:
-        return AuthInspection("unknown_expiry")
+        return AuthInspection("unknown_expiry", locale=locale_code)
     try:
         expiry = float(expires)
         if not math.isfinite(expiry):
             raise ValueError("expires is not finite")
     except (TypeError, ValueError):
-        return AuthInspection("unknown_expiry")
+        return AuthInspection("unknown_expiry", locale=locale_code)
 
     current_time = time.time() if now is None else now
     if expiry < current_time:
-        return AuthInspection("expired")
+        return AuthInspection("expired", locale=locale_code)
     if expiry < current_time + 86400:
-        return AuthInspection("expiring")
-    return AuthInspection("valid")
+        return AuthInspection("expiring", locale=locale_code)
+    return AuthInspection("valid", locale=locale_code)

@@ -17,6 +17,7 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _other_store_hint,
     _resolve_cli_selectors,
 )
 from audible_deals.deal_grade import grade_products
@@ -445,6 +446,8 @@ def wishlist_sync(ctx, max_price, update):
         f"{result.skipped} already tracked, "
         f"{result.valid_total} total on wishlist"
     )
+    if not audible_items and (hint := _other_store_hint(ctx)):
+        console.print(f"[dim]{safe_markup(hint)}[/dim]")
 
 
 @wishlist.command("repair")

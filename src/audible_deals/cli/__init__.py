@@ -363,6 +363,11 @@ def cli(ctx, locale, verbose):
                     f"Stored locale {cfg_locale!r} is invalid. "
                     "Run 'deals config set locale us' or 'deals config reset locale'."
                 )
+        else:
+            from audible_deals.auth_state import inspect_auth_file
+
+            # With no marketplace chosen, use the one the saved login belongs to.
+            locale = inspect_auth_file().locale or locale
     if locale not in LOCALE_DOMAIN:
         raise click.BadParameter(
             f"Invalid locale {locale!r}. Valid: {', '.join(sorted(LOCALE_DOMAIN))}",

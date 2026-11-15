@@ -14,6 +14,7 @@ from audible_deals.cli.helpers import (
     _credit_price,
     _currency,
     _get_client,
+    _other_store_hint,
     _report_partial_series_outcomes,
     _resolve_output_quiet,
 )
@@ -503,6 +504,8 @@ def series(
                 console.print(
                     f"[dim]No series with {min_books}+ owned books found.[/dim]"
                 )
+            if not lib_products and (hint := _other_store_hint(ctx)):
+                console.print(f"[dim]{safe_markup(hint)}[/dim]")
             return
 
         # Sort by most-invested (most owned books) first, then limit

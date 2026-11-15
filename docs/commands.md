@@ -363,7 +363,7 @@ The Markdown table pastes into Reddit and GitHub, and `deals last --markdown` pr
 
 ## Marketplace support
 
-Pass `--locale` before the command. Currency symbols, Audible URLs, and price-per-hour headings adjust automatically.
+Pass `--locale` before the command to query that Audible store. Prices, currency symbols, Audible and Amazon URLs, and price-per-hour headings follow it. Without `--locale` or `deals config set locale`, commands use the store your login belongs to.
 
 ```bash
 deals --locale uk find --genre fantasy --max-price 3

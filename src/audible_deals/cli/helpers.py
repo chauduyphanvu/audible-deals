@@ -26,6 +26,20 @@ def _get_client(locale: str) -> DealsClient:
     return DealsClient(locale=locale)
 
 
+def _other_store_hint(ctx: click.Context) -> str:
+    """Why account data is empty when querying a store other than the login's."""
+    from audible_deals.auth_state import inspect_auth_file
+
+    login = inspect_auth_file().locale
+    locale = ctx.obj["locale"]
+    if not login or login == locale:
+        return ""
+    return (
+        f"Your login belongs to the {login} store, and Audible keeps a separate "
+        f"library and wishlist for each store. Use --locale {login} to see yours."
+    )
+
+
 def _currency(ctx: click.Context) -> str:
     return LOCALE_CURRENCY.get(ctx.obj["locale"], "$")
 

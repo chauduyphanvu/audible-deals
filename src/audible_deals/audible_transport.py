@@ -76,7 +76,9 @@ class AudibleTransport:
         with self._lifecycle:
             if self._client is None:
                 auth = self._auth_store.load_authenticator()
-                self._client = audible.Client(auth=auth)
+                self._client = audible.Client(
+                    auth=auth, country_code=self._auth_store.locale
+                )
             return self._client
 
     def _begin_request(self) -> None:
